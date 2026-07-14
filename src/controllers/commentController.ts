@@ -1,9 +1,72 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import sendMail, { isOutboundSmtpConfigured } from '../config/nodemailer';
-import { areApplicationNotificationEmailsDisabled } from '../services/emailService';
-import type { AuthenticatedUser } from '../services/applicationService';
+import {
+  getApplicationForUser,
+  getAuthenticatedUserFromRequest,
+  type AuthenticatedUser,
+} from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import { notificationTriageDefaults } from '../services/notificationCategory';
+
+const applicationAccessDeniedMessage =
+  'Forbidden: you do not have access to this application';
+
+const applicationCommentAccessSelect = {
+  id: true,
+  currentQueue: true,
+  claimedByUnderwriterId: true,
+  clientId: true,
+  applicationId: true,
+} as const;
+
+type ApplicationCommentAccessRow = {
+  id: string;
+  currentQueue: string;
+  claimedByUnderwriterId?: string | null;
+  clientId: string;
+  applicationId: number;
+};
+
+async function requireApplicationAccessById(
+  req: Request,
+  res: Response,
+  applicationId: string,
+): Promise<ApplicationCommentAccessRow | null> {
+  const publicApprovalActor = String((req as any).user?.publicApprovalActor || '').toUpperCase();
+  if (publicApprovalActor === 'CLIENT' || publicApprovalActor === 'ISO') {
+    const application = await prisma.application.findUnique({
+      where: { id: applicationId },
+      select: applicationCommentAccessSelect,
+    });
+    if (!application) {
+      res.status(404).json({ success: false, message: 'Application not found' });
+      return null;
+    }
+    return application;
+  }
+
+  const authUser = getAuthenticatedUserFromRequest(req);
+  const { application, forbidden } = await getApplicationForUser({ id: applicationId }, authUser);
+  if (forbidden) {
+    res.status(403).json({ success: false, message: applicationAccessDeniedMessage });
+    return null;
+  }
+  if (!application) {
+    res.status(404).json({ success: false, message: 'Application not found' });
+    return null;
+  }
+  return application;
+}
+
+async function requireApplicationAccessForComment(
+  req: Request,
+  res: Response,
+  commentApplicationId: string,
+): Promise<boolean> {
+  const app = await requireApplicationAccessById(req, res, commentApplicationId);
+  return app != null;
+}
 
 const mapCommentToApi = (comment: any) => {
   if (!comment) return comment;
@@ -22,7 +85,6 @@ const mapCommentToApi = (comment: any) => {
     updatedAt,
     ...rest
   } = comment;
-
 
   const mappedCreatedBy =
     createdBy &&
@@ -59,7 +121,6 @@ const mapCommentToApi = (comment: any) => {
   };
 };
 
-
 class CommentController {
   // Create a new comment on an application
   async create(req: Request, res: Response) {
@@ -78,14 +139,23 @@ class CommentController {
         });
       }
 
-      const application = await prisma.application.findUnique({
-        where: { id: applicationId },
-      });
-      if (!application) {
-        return res.status(404).json({
-          success: false,
-          message: 'Application not found',
+      let application: ApplicationCommentAccessRow | null = null;
+      if (isPublicClientActor || isPublicIsoActor) {
+        application = await prisma.application.findUnique({
+          where: { id: applicationId },
+          select: applicationCommentAccessSelect,
         });
+        if (!application) {
+          return res.status(404).json({
+            success: false,
+            message: 'Application not found',
+          });
+        }
+      } else {
+        application = await requireApplicationAccessById(req, res, applicationId);
+        if (!application) {
+          return;
+        }
       }
 
       if (!isPublicClientActor && !isPublicIsoActor && userId) {
@@ -135,7 +205,15 @@ class CommentController {
         },
       });
 
-      // Notify Final Underwriter(s) when ISO comments are added from approval page.
+      // Re-open ISO Query pipeline when ISO posts a new comment after prior resolution.
+      if (normalizedType === 'ISO Comment') {
+        await prisma.application.update({
+          where: { id: application.id },
+          data: { isoQueryResolved: false },
+        });
+      }
+
+      // Notify Underwriter(s) when ISO comments are added from approval page.
       if (normalizedType === 'ISO Comment') {
         try {
           const finalUwRecipients = new Set<string>();
@@ -144,7 +222,7 @@ class CommentController {
           const latestFinalUwLog = await prisma.applicationActivityLog.findFirst({
             where: {
               applicationId: application.id,
-              userRole: 'FINAL_UNDERWRITER' as any,
+              userRole: 'UNDERWRITER' as any,
             },
             orderBy: { createdAt: 'desc' },
             select: { userId: true },
@@ -157,7 +235,7 @@ class CommentController {
           // Fallback: notify active Final Underwriters if no dedicated one found from activity.
           if (finalUwRecipients.size === 0) {
             const finalUnderwriters = await prisma.user.findMany({
-              where: { role: 'FINAL_UNDERWRITER', isActive: true },
+              where: { role: 'UNDERWRITER', isActive: true },
               select: { id: true },
             });
             finalUnderwriters.forEach((u) => finalUwRecipients.add(String(u.id)));
@@ -190,10 +268,11 @@ class CommentController {
                 recipientId,
                 applicationId: application.id,
                 createdById: userId || undefined,
+                ...notificationTriageDefaults('application_update', application),
               })),
             });
 
-            if (isOutboundSmtpConfigured() && !areApplicationNotificationEmailsDisabled()) {
+            if (isOutboundSmtpConfigured()) {
               const recipientUsers = await prisma.user.findMany({
                 where: { id: { in: Array.from(finalUwRecipients) } },
                 select: { email: true, firstName: true, lastName: true },
@@ -244,14 +323,9 @@ class CommentController {
     try {
       const { applicationId } = req.params;
 
-      const application = await prisma.application.findUnique({
-        where: { id: applicationId },
-      });
+      const application = await requireApplicationAccessById(req, res, applicationId);
       if (!application) {
-        return res.status(404).json({
-          success: false,
-          message: 'Application not found',
-        });
+        return;
       }
 
       const commentsRecords = await prisma.comment.findMany({
@@ -326,6 +400,15 @@ class CommentController {
         });
       }
 
+      const allowed = await requireApplicationAccessForComment(
+        req,
+        res,
+        commentRecord.applicationId,
+      );
+      if (!allowed) {
+        return;
+      }
+
       return res.status(200).json({
         success: true,
         data: mapCommentToApi(commentRecord),
@@ -362,11 +445,12 @@ class CommentController {
         });
       }
 
+      const appRow = await requireApplicationAccessById(req, res, comment.applicationId);
+      if (!appRow) {
+        return;
+      }
+
       if (userId) {
-        const appRow = await prisma.application.findUnique({
-          where: { id: comment.applicationId },
-          select: { currentQueue: true, claimedByUnderwriterId: true },
-        });
         const denyUw = getUnderwriterClaimMutationDenial(
           { id: String(userId), role: String((req as any).user?.role || '') },
           appRow,
@@ -460,10 +544,10 @@ class CommentController {
         });
       }
 
-      const appRowDel = await prisma.application.findUnique({
-        where: { id: comment.applicationId },
-        select: { currentQueue: true, claimedByUnderwriterId: true },
-      });
+      const appRowDel = await requireApplicationAccessById(req, res, comment.applicationId);
+      if (!appRowDel) {
+        return;
+      }
       const denyUwDel = getUnderwriterClaimMutationDenial(
         { id: String(userId), role: String((req as any).user?.role || '') },
         appRowDel,
@@ -512,14 +596,9 @@ class CommentController {
     try {
       const { applicationId } = req.params;
 
-      const application = await prisma.application.findUnique({
-        where: { id: applicationId },
-      });
+      const application = await requireApplicationAccessById(req, res, applicationId);
       if (!application) {
-        return res.status(404).json({
-          success: false,
-          message: 'Application not found',
-        });
+        return;
       }
 
       const count = await prisma.comment.count({

@@ -20,7 +20,8 @@ const pool = new Pool({
   // Prevent "ConnectionClosed" (P1017) when DB closes idle connections
   keepAlive: true,
   idleTimeoutMillis: 20000,
-  connectionTimeoutMillis: 10000,
+  // Neon cold starts can exceed 10s; allow longer connect attempts locally.
+  connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS ?? '60000'),
 });
 
 pool.on('error', (err) => {

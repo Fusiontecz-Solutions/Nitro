@@ -12,8 +12,8 @@ router.get(
   collectionPaymentController.financialOverviewSummary.bind(collectionPaymentController),
 );
 router.get(
-  '/financial-overview',
-  collectionPaymentController.financialOverview.bind(collectionPaymentController),
+  '/dashboard/credit-debit-trend',
+  collectionPaymentController.creditDebitTrend.bind(collectionPaymentController),
 );
 router.get(
   '/failed-transactions/summary',

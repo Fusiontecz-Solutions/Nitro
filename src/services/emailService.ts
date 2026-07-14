@@ -21,6 +21,32 @@ import {
 
 export { buildBrandLogoAttachments } from '../constants/brand';
 
+export {
+    injectApplicationApprovalEmailValues,
+    buildApplicationApprovedEmailInjectValues,
+    resolveMerchantContactForOfferEmail,
+} from './applicationApprovalEmailValues';
+export type {
+    ApplicationApprovalEmailInjectValues,
+    ResolveMerchantContactOptions,
+} from './applicationApprovalEmailValues';
+
+/** Trims, de-dupes, and drops empty carbon-copy recipients. */
+function normalizeCcRecipients(cc?: string[] | null): string[] {
+    if (!Array.isArray(cc)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of cc) {
+        const value = String(raw ?? '').trim();
+        if (!value) continue;
+        const key = value.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(value);
+    }
+    return out;
+}
+
 /**
  * Logo shown **above** the dark title box on ISO "Application Approved" and
  * "Offer Updated" emails (white background — use a dark/black logo URL, not white).
@@ -148,6 +174,8 @@ export async function sendWelcomeEmail({
 
 export interface ApplicationApprovalEmailParams {
     to: string;
+    /** Optional carbon-copy recipients. */
+    cc?: string[];
     clientName: string;
     companyName: string;
     viewApplicationUrl?: string;
@@ -279,10 +307,19 @@ export const buildApplicationApprovalEmailHtml = ({
 
 export interface ApplicationRejectionEmailParams {
     to: string;
+    /** Optional carbon-copy recipients (e.g. account managers). */
+    cc?: string[];
     subject?: string;
     /** Fully-rendered, branded rejection email HTML (built by the caller). */
-    html: string;
+    html?: string;
     trackingId?: string;
+    /** Threading hints (accepted for API compatibility; delivery is best-effort). */
+    inReplyTo?: string | null;
+    references?: string | string[] | null;
+    freshSubject?: string;
+    clientName?: string;
+    primaryReason?: string;
+    otherReasons?: string;
 }
 
 /**
@@ -294,22 +331,30 @@ export interface ApplicationRejectionEmailParams {
  */
 export async function sendApplicationRejectionEmail({
     to,
+    cc,
     subject,
     html,
     trackingId,
-}: ApplicationRejectionEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
+}: ApplicationRejectionEmailParams): Promise<{
+    sent: boolean;
+    emailedTo: string[];
+    emailedCc: string[];
+    ccErrors: string[];
+    sgMessageId?: string;
+}> {
     const toTrimmed = String(to || '').trim();
+    const ccList = normalizeCcRecipients(cc);
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Application rejection skipped: empty recipient');
-        return { sent: false };
+        return { sent: false, emailedTo: [], emailedCc: [], ccErrors: [] };
     }
 
     const htmlBody = String(html || '').trim();
     if (!htmlBody) {
         // eslint-disable-next-line no-console
         console.warn('[email] Application rejection skipped: empty html');
-        return { sent: false };
+        return { sent: false, emailedTo: [], emailedCc: [], ccErrors: [] };
     }
 
     const safeSubject = String(subject || '').trim() || 'Application Update';
@@ -318,6 +363,7 @@ export async function sendApplicationRejectionEmail({
         const pdfAttachment = await buildHtmlPdfMailAttachment(htmlBody, 'application-rejected');
         const response = await sendMail({
             to: toTrimmed,
+            cc: ccList.length ? ccList : undefined,
             subject: safeSubject,
             html: htmlBody,
             attachments: [
@@ -327,11 +373,17 @@ export async function sendApplicationRejectionEmail({
             trackingId,
             categories: ['application-rejection'],
         });
-        return { sent: true, sgMessageId: response?.messageId };
+        return {
+            sent: true,
+            emailedTo: [toTrimmed],
+            emailedCc: ccList,
+            ccErrors: [],
+            sgMessageId: response?.messageId,
+        };
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Application rejection email send failed:', { to: toTrimmed, error });
-        return { sent: false };
+        return { sent: false, emailedTo: [], emailedCc: [], ccErrors: [] };
     }
 }
 
@@ -350,6 +402,7 @@ function assertSendReadyApprovalHtml(html: string): string | null {
 /** @returns send result; `sgMessageId` is stored for webhook fallback matching */
 export async function sendApplicationApprovalEmail({
     to,
+    cc,
     clientName,
     companyName,
     viewApplicationUrl,
@@ -359,6 +412,7 @@ export async function sendApplicationApprovalEmail({
     trackingId,
 }: ApplicationApprovalEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
+    const ccList = normalizeCcRecipients(cc);
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Application approval skipped: empty recipient');
@@ -390,6 +444,7 @@ export async function sendApplicationApprovalEmail({
         const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'application-approved');
         const response = await sendMail({
             to: toTrimmed,
+            cc: ccList.length ? ccList : undefined,
             subject,
             html,
             attachments: pdfAttachment ? [pdfAttachment] : undefined,
@@ -668,6 +723,8 @@ function buildIsoOfferEmailApplicationDetailsHtml({
 /** Client email when offer values are updated after approval comments. */
 export interface ApplicationOfferUpdatedEmailParams {
     to: string;
+    /** Optional carbon-copy recipients. */
+    cc?: string[];
     clientName: string;
     companyName: string;
     viewApplicationUrl?: string;
@@ -780,7 +837,7 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
                                             <tr>
                                                 <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${primaryActionUrl}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Review Updated Offer</a>
+                                                    <a href="${primaryActionUrl}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Review Approval</a>
                                                 </td>
                                             </tr>
                                         </table>
@@ -804,6 +861,7 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
 
 export async function sendApplicationOfferUpdatedEmail({
     to,
+    cc,
     clientName,
     companyName,
     viewApplicationUrl,
@@ -813,6 +871,7 @@ export async function sendApplicationOfferUpdatedEmail({
     trackingId,
 }: ApplicationOfferUpdatedEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
+    const ccList = normalizeCcRecipients(cc);
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Offer update skipped: empty recipient');
@@ -844,6 +903,7 @@ export async function sendApplicationOfferUpdatedEmail({
         const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'offer-updated');
         const response = await sendMail({
             to: toTrimmed,
+            cc: ccList.length ? ccList : undefined,
             subject,
             html,
             attachments: pdfAttachment ? [pdfAttachment] : undefined,

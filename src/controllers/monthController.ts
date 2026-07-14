@@ -1,10 +1,6 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import {
-  APPLICATION_USER_ATTRIBUTION_ERROR,
-  resolveApplicationAttributedUserId,
-} from '../middleware/authMiddleware';
 
 const mapMonthToApi = (month: any) => {
   if (!month) return month;
@@ -59,7 +55,7 @@ const mapMonthToApi = (month: any) => {
   };
 };
 
-// Resolve application by UUID (id) or numeric applicationId — role-independent; same data for Agent and Underwriter
+// Resolve application by UUID (id) or numeric applicationId — role-independent; same data for Agent and Scrubbing
 async function resolveApplicationByAnyId(applicationParam: string): Promise<{ id: string } | null> {
   const s = String(applicationParam).trim();
   if (!s) return null;
@@ -147,18 +143,11 @@ class MonthController {
         }
       }
 
-      if (!req.user) {
+      const createdBy = (req as any).user?.id;
+      if (!createdBy) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
-        });
-      }
-
-      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
-      if (!createdById) {
-        return res.status(400).json({
-          success: false,
-          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -180,7 +169,7 @@ class MonthController {
           date: new Date(dateObj),
           amount: amountNum,
           applicationId: applicationRecord.id,
-          createdById,
+          createdById: createdBy,
         },
         include: {
           application: {
@@ -452,7 +441,7 @@ class MonthController {
         });
       }
 
-      // Accept UUID or numeric applicationId — role-independent; Agent and Underwriter see same months (and thus same transactions)
+      // Accept UUID or numeric applicationId — role-independent; Agent and Scrubbing see same months (and thus same transactions)
       const appRecord = await resolveApplicationByAnyId(String(application));
       if (!appRecord) {
         return res.status(404).json({

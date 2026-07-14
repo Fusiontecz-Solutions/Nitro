@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
-import type { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import uploadService from '../services/uploadService';
 import pdfExtractionService from '../services/pdfExtractionService';
@@ -12,13 +12,23 @@ import {
     createClientAndApplicationFromPDFBuffer,
     InsufficientParsedPdfError,
     assertReadyToCreateNewClientFromPdf,
+    applyPdfExtractToApplicationFromStoredFile,
     type AuthenticatedUser,
 } from '../services/applicationService';
+import { allocateNextDealId, withAllocatedDealId } from '../services/nextDealIdService';
+import { resolveFinalApprovalUnderwriterTarget } from '../services/finalApprovalTargetService';
+import { mapClientToApi, resolveClientOwners } from '../utils/clientMapper';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import {
+    buildUnderwriterPipelineWhere,
+    countUnderwriterPipelineDeals,
+    normalizeUnderwriterPipelineParam,
+} from '../services/underwriterPipelineFilter';
 import { getApplicationStageAccessForUser } from '../services/applicationStageAccess';
 import {
     aggregateApplicationStats,
     aggregateApplicationMonthlyTrend,
+    type UnderwriterClaimScope,
 } from '../services/applicationStatsService';
 import { classifyFundedApprovedRejected } from '../services/applicationStatsPredicates';
 import {
@@ -38,50 +48,82 @@ import {
 } from '../services/operationsDashboardSummaryService';
 import {
     buildOperationsStatusFilterWhere,
+    applySoftDeleteListScope,
+    normalizeOperationsStatusKey,
     resolveOperationsListFilterMode,
     dashboardStateQueueAliases,
-    contractedCombinedMatchWhere,
     isContractedOpsKey,
-    isContractedPipelineKey,
-    normalizeOperationsStatusKey,
 } from '../services/operationsStatusFilter';
 import {
     buildApplicationStatsBucketWhere,
     type ApplicationStatsBucketWhereOptions,
 } from '../services/applicationStatsBucketWhere';
 import { getBalancesForApplicationIds } from '../services/collectionPaymentFinancials';
-import { applyContractCompletedSyncToApplicationRecord } from '../services/contractApplicationWorkflowSync';
 import {
+    applyContractCompletedSyncToApplicationRecord,
+} from '../services/contractApplicationWorkflowSync';
+import {
+    APPLICATION_QUEUE_APPROVAL_SENT,
+    APPLICATION_STATE_APPROVAL_SENT,
+} from '../services/applicationApprovalEmailValues';
+import {
+    reinitiateContractForApplication,
+    reconcileStaleContractReinitiationFlags,
+} from '../services/contractReinitiationService';
+import {
+    buildApplicationApprovalEmailHtml,
+    buildApplicationApprovedEmailInjectValues,
+    buildApplicationOfferUpdatedEmailHtml,
+    injectApplicationApprovalEmailValues,
     sendApplicationApprovalEmail,
-    sendApplicationOfferUpdatedEmail,
-    sendApplicationFundedEmail,
-    sendApplicationSentToUnderwritingClientEmail,
-    sendApplicationUnderwritingCompletedClientEmail,
-    sendUnderwriterNewApplicationEmail,
     sendApplicationRejectionEmail,
+    resolveMerchantContactForOfferEmail,
+    sendApplicationOfferUpdatedEmail,
+    sendUnderwriterNewApplicationEmail,
 } from '../services/emailService';
-import { isOutboundSmtpConfigured } from '../config/nodemailer';
-import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
-import { notifyDocumentRequestRecipientsOnUpload } from '../services/documentRequestNotificationService';
-import { resolveUploadDocumentSlug } from '../utils/documentRequestMatch';
+import { recordCommunicationAudit } from '../services/systemActivityLogService';
+import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
+import {
+    findHistoricalSamePdfFileApplications,
+    findSamePdfFileApplications,
+    gmailAutoCreateMessageNote,
+    parseGmailMessageIdFromApplicationNote,
+    pickPrimaryPdfFile,
+    readPdfFileDedupeDays,
+} from '../services/pdfFileDedupeService';
+import {
+    buildApplicationRejectionEmailSubject,
+    resolveIsoSubmissionEmailThreadContext,
+} from '../services/applicationRejectionThreadService';
+import {
+    buildPublicApprovalPortalUrl,
+    resolveCrmFrontendBaseUrl,
+} from '../utils/crmFrontendUrl';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
-import { generateNextDealId } from '../utils/generateNextDealId';
+import {
+    CANONICAL_WORKFLOW_QUEUES,
+    normalizeStoredWorkflowQueue,
+    normalizeStoredWorkflowState,
+} from '../utils/workflowQueueStorage';
 import {
     resolveApplicationAttributedUserId,
     resolveTenantUserId,
 } from '../middleware/authMiddleware';
 import { createPublicPortalToken } from '../services/publicPortalTokenService';
+import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
+import { fetchPaginatedApplicationsForList } from '../services/applicationListSort';
+import { buildApplicationListSearchWhere } from '../services/applicationListSearch';
 import {
     createApplicationActivityLog,
     getApplicationActivityLogsForUser,
     type ApplicationActivityActionType,
 } from '../services/applicationActivityLogService';
+import { recordApplicationUpdateActivityLog } from '../services/applicationUpdateActivityLog';
 import {
     listPaymentMailLogs,
-    createPaymentMailLog as persistPaymentMailLog,
-    updatePaymentMailLog as persistUpdatePaymentMailLog,
     enrichPaymentMailLogsForApi,
-    formatPaymentMailLogApiRow,
+    createPaymentMailLog as persistPaymentMailLog,
+    fromPrismaMailLogStatus,
 } from '../services/paymentMailLogService';
 import { extractPdfPlainTextForParsing } from '../services/pdfIngestionService';
 import { normalizeOcrTextForParsing } from '../services/ocrFieldExtraction';
@@ -97,19 +139,13 @@ import {
     type BulkImportRowError,
     type BulkImportSummary,
 } from '../services/applicationBulkExcelIngestService';
-import { approveApplication } from '../services/applicationApprovalService';
+import { approveApplication } from '../services/business/applicationApprovalService';
 import {
-    buildIsoApprovalEmailPackage,
-    resolveIsoApprovalEmailSubject,
-} from '../services/applicationApprovalEmailRenderService';
-import { resolveIsoApprovalPortalUrl } from '../services/isoApprovalPortalUrlService';
-import { recordCommunicationAudit } from '../services/systemActivityLogService';
-import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
-import {
-    generateApplicationActionCode,
-    type ActionCodeOperation,
-} from '../services/actionCodeService';
-import { resolveApplicationApprovalEmailContext } from '../services/applicationApprovalEmailContext';
+    scheduleApplicationStageNotification,
+    notifyApplicationRejected,
+    notifyAdminAssignedApplicationToUnderwriter,
+} from '../services/applicationStageNotificationService';
+
 type ApplicationState =
     | 'DRAFT'
     | 'PENDING'
@@ -118,9 +154,6 @@ type ApplicationState =
     | 'COMPLETED'
     | 'CANCELLED'
     | 'CONTRACT_PENDING'
-    | 'CONTRACT_GENERATED'
-    | 'CONTRACT_SENT'
-    | 'CONTRACT_CANCELLED'
     | 'CONTRACTS_OUT'
     | 'SIGNED_CONTRACTS'
     | 'FUNDING_CALL'
@@ -137,9 +170,6 @@ const ApplicationState = {
     COMPLETED: 'COMPLETED',
     CANCELLED: 'CANCELLED',
     CONTRACT_PENDING: 'CONTRACT_PENDING',
-    CONTRACT_GENERATED: 'CONTRACT_GENERATED',
-    CONTRACT_SENT: 'CONTRACT_SENT',
-    CONTRACT_CANCELLED: 'CONTRACT_CANCELLED',
     CONTRACTS_OUT: 'CONTRACTS_OUT',
     SIGNED_CONTRACTS: 'SIGNED_CONTRACTS',
     FUNDING_CALL: 'FUNDING_CALL',
@@ -281,9 +311,6 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
     Approved: 'COMPLETED' as ApplicationState,
     Cancelled: 'CANCELLED' as ApplicationState,
     Contract_Pending: 'CONTRACT_PENDING' as ApplicationState,
-    Contract_Generated: 'CONTRACT_GENERATED' as ApplicationState,
-    Contract_Sent: 'CONTRACT_SENT' as ApplicationState,
-    Contract_Cancelled: 'CONTRACT_CANCELLED' as ApplicationState,
     Contracts_Out: 'CONTRACTS_OUT' as ApplicationState,
     /** Legacy spelling — still accepted on input. */
     'Contracts Out': 'CONTRACTS_OUT' as ApplicationState,
@@ -302,10 +329,22 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
 
 /** API input → verbatim `Application.currentState` string (not a Prisma workflow enum). */
 const verbatimApplicationStateByInput: Record<string, string> = {
-    'Contract Out': 'Contract Sent',
-    'Contract Generated': 'Contract Generated',
-    'Contract Sent': 'Contract Sent',
-    'Contract Cancelled': 'Contract Cancelled',
+    Approved: 'Approved',
+    'Underwriter Approved': 'Underwriter Approved',
+    Underwriter_Approved: 'Underwriter Approved',
+    'Final Approval': 'Final Approval',
+    Final_Approval: 'Final Approval',
+    'Approval Sent': 'Approval Sent',
+    Approval_Sent: 'Approval Sent',
+    'ISO Approved': 'ISO Approved',
+    ISO_Approved: 'ISO Approved',
+    Approved_By_ISO: 'ISO Approved',
+    'Contract Out': 'Contract Out',
+    'On Hold': 'On Hold',
+    On_Hold: 'On Hold',
+    Contract_Generated: 'CONTRACT_GENERATED',
+    CONTRACT_GENERATED: 'CONTRACT_GENERATED',
+    'Contract Generated': 'CONTRACT_GENERATED',
 };
 
 const applicationStatePrismaToApi: Record<ApplicationState, string> = {
@@ -316,10 +355,7 @@ const applicationStatePrismaToApi: Record<ApplicationState, string> = {
     [ApplicationState.COMPLETED]: 'Completed',
     [ApplicationState.CANCELLED]: 'Cancelled',
     [ApplicationState.CONTRACT_PENDING]: 'Contract_Pending',
-    [ApplicationState.CONTRACT_GENERATED]: 'Contract_Generated',
-    [ApplicationState.CONTRACT_SENT]: 'Contract_Sent',
-    [ApplicationState.CONTRACT_CANCELLED]: 'Contract_Cancelled',
-    [ApplicationState.CONTRACTS_OUT]: 'Contract Out',
+    [ApplicationState.CONTRACTS_OUT]: 'Contract Sent',
     [ApplicationState.SIGNED_CONTRACTS]: 'Signed_Contracts',
     [ApplicationState.FUNDING_CALL]: 'Funding Call',
     [ApplicationState.DISBURSMENT]: 'Disbursment',
@@ -350,23 +386,60 @@ const toPrismaApplicationState = (value: unknown): ApplicationState | undefined 
     );
 };
 
+const normalizeContractSentWorkflowLabel = (value: string): string | null => {
+    const compact = value.trim().replace(/[\s_-]+/g, '').toLowerCase();
+    if (
+        compact === 'contractout' ||
+        compact === 'contractsout' ||
+        compact === 'contractsent' ||
+        value.trim() === 'CONTRACT_SENT' ||
+        value.trim() === 'Contract_Sent'
+    ) {
+        return 'Contract Sent';
+    }
+    return null;
+};
+
 const toApiApplicationState = (value: ApplicationState | string | null | undefined): string | undefined => {
     if (!value) return undefined;
+    const asString = String(value);
+    const contractSentLabel = normalizeContractSentWorkflowLabel(asString);
+    if (contractSentLabel) return contractSentLabel;
     if (value in applicationStatePrismaToApi) {
         return applicationStatePrismaToApi[value as ApplicationState];
     }
-    return String(value);
+    return asString;
 };
 
-const WORKFLOW_QUEUES = {
-    AGENT: 'Agent',
-    UNDERWRITER: 'Underwriter',
-    /** Stored in `Application.currentQueue` (human-readable label used across the app). */
-    FINAL_UNDERWRITER: 'Final Underwriter',
-} as const;
+const normalizeWorkflowQueueForApi = (queue: string | null | undefined): string | undefined => {
+    if (!queue) return undefined;
+    const trimmed = String(queue).trim();
+    const contractSentLabel = normalizeContractSentWorkflowLabel(trimmed);
+    return contractSentLabel ?? trimmed;
+};
 
-/** Stored in `Application.currentState` when a Final Underwriter approves (queue stays Final Underwriter). */
-const FINAL_UNDERWRITER_APPROVED_STATE = 'Approved' as const;
+const WORKFLOW_QUEUES = CANONICAL_WORKFLOW_QUEUES;
+
+/** Stored when a Underwriter approves — both queue and state use this label. */
+const FINAL_UNDERWRITER_APPROVED_STATE = 'Underwriter Approved' as const;
+const FINAL_UNDERWRITER_APPROVED_QUEUE = 'Underwriter Approved' as const;
+const FINAL_APPROVAL_QUEUE = 'Final Approval' as const;
+const FINAL_APPROVAL_STATE = 'Final Approval' as const;
+
+/**
+ * Canonical labels persisted on `Application.underwriterAction` so the deal carries
+ * a record of the last action the Underwriter took (surfaced in lists / dashboards).
+ */
+const UNDERWRITER_ACTION_APPROVED = 'Approved By UW' as const;
+const UNDERWRITER_ACTION_DECLINED = 'Decline by UW' as const;
+const UNDERWRITER_ACTION_FINAL_APPROVED = 'Final Approved by UW' as const;
+
+/** Stored when Super Admin / FUW sends the approval email to the linked ISO. */
+const APPROVAL_SENT_STATE = APPLICATION_STATE_APPROVAL_SENT;
+const APPROVAL_SENT_QUEUE = APPLICATION_QUEUE_APPROVAL_SENT;
+
+const isUnderwriterApprovedToken = (value: unknown): boolean =>
+    normalizeQueueToken(value) === 'UNDERWRITER_APPROVED';
 
 const PENDING_QUEUES = [
     'New',
@@ -377,15 +450,21 @@ const PENDING_QUEUES = [
     'Contracts Out',
     'Review',
     'Underwriting',
-    WORKFLOW_QUEUES.UNDERWRITER,
+    WORKFLOW_QUEUES.SCRUBBING,
     'Final Review',
-    WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+    WORKFLOW_QUEUES.UNDERWRITER,
 ];
 
 type WorkflowTransition = {
     queue: string;
-    state?: ApplicationState | typeof FINAL_UNDERWRITER_APPROVED_STATE;
-    action?: 'SEND_TO_UNDERWRITER' | 'SEND_TO_FINAL_UNDERWRITER' | 'APPROVED';
+    state?:
+        | ApplicationState
+        | typeof FINAL_UNDERWRITER_APPROVED_STATE
+        | typeof APPROVAL_SENT_STATE
+        | typeof FINAL_APPROVAL_STATE
+        | 'ISO Approved'
+        | 'On Hold';
+    action?: 'SEND_TO_UNDERWRITER' | 'SEND_TO_FINAL_UNDERWRITER' | 'SEND_FOR_FINAL_APPROVAL' | 'APPROVED';
 };
 
 const normalizeQueueToken = (value: unknown): string => {
@@ -393,47 +472,177 @@ const normalizeQueueToken = (value: unknown): string => {
     return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
 };
 
-/** Clear exclusive underwriter claim when a deal enters or leaves the Underwriter queue. */
+/** Clear exclusive scrubbing claim when a deal (re-)enters the Scrubbing queue. */
 const patchClearUnderwriterClaimIfQueueChanged = (
     previousQueue: string | null | undefined,
     nextQueue: string | null | undefined,
 ): Pick<Prisma.ApplicationUpdateInput, 'claimedByUnderwriter' | 'claimedAt'> | undefined => {
-    const prevIs = normalizeQueueToken(previousQueue ?? '') === 'UNDERWRITER';
-    const nextIs = normalizeQueueToken(nextQueue ?? '') === 'UNDERWRITER';
-    if (prevIs === nextIs) return undefined;
+    const prevIs = normalizeQueueToken(previousQueue ?? '') === 'SCRUBBING';
+    const nextIs = normalizeQueueToken(nextQueue ?? '') === 'SCRUBBING';
+    // Preserve who claimed/scrubbed the deal when it advances past Scrubbing (ops list "Scrubber" column).
+    if (!nextIs || prevIs) return undefined;
     return {
         claimedByUnderwriter: { disconnect: true },
         claimedAt: null,
     };
 };
 
+/**
+ * Record who scrubbed the deal when a Scrubbing user advances it out of the
+ * Scrubbing queue (mirrors how the Underwriter is captured). Only sets the
+ * scrubber when the actor holds the SCRUBBING role and no scrubber claim is
+ * recorded yet — never overwrites an existing explicit claim.
+ */
+const patchRecordScrubberClaimOnAdvance = (
+    authUser: AuthenticatedUser | null | undefined,
+    application: { claimedByUnderwriterId?: string | null },
+    previousQueue: string | null | undefined,
+    nextQueue: string | null | undefined,
+): Pick<Prisma.ApplicationUpdateInput, 'claimedByUnderwriter' | 'claimedAt'> | undefined => {
+    if (!authUser?.id) return undefined;
+    const roleUpper = String(authUser.role || '').toUpperCase().replace(/-/g, '_');
+    if (roleUpper !== 'SCRUBBING') return undefined;
+    // Only when the deal is leaving the Scrubbing queue for a different queue.
+    const prevIs = normalizeQueueToken(previousQueue ?? '') === 'SCRUBBING';
+    const nextIs = normalizeQueueToken(nextQueue ?? '') === 'SCRUBBING';
+    if (!prevIs || nextIs) return undefined;
+    // Preserve an existing scrubber claim (e.g. someone explicitly claimed it).
+    if (application.claimedByUnderwriterId) return undefined;
+    return {
+        claimedByUnderwriter: { connect: { id: authUser.id } },
+        claimedAt: new Date(),
+    };
+};
+
+const APPLICATION_USER_LITE_SELECT = {
+    id: true,
+    firstName: true,
+    lastName: true,
+    email: true,
+    role: true,
+} as const;
+
+const APPLICATION_DETAIL_INCLUDE = {
+    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+    client: {
+        include: {
+            owners: {
+                orderBy: { sortOrder: 'asc' as const },
+            },
+        },
+    },
+    iso: true,
+    files: true,
+    claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+    approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+    assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+} as const satisfies Prisma.ApplicationInclude;
+
+const isUnderwriterApproverRole = (role?: string | null): boolean => {
+    const normalizedRole = String(role || '')
+        .toUpperCase()
+        .replace(/-/g, '_');
+    return normalizedRole === 'UNDERWRITER' || normalizedRole === 'SCRUBBING';
+};
+
+/** Resolve who should be credited as the approving underwriter (not Super Admin / Operations). */
+const resolveUnderwriterApproverId = (
+    authUser: AuthenticatedUser | null | undefined,
+    application: {
+        assignedUnderwriterId?: string | null;
+        claimedByUnderwriterId?: string | null;
+        approvedByUnderwriterId?: string | null;
+    },
+): string | undefined => {
+    const actorId = authUser?.id;
+    if (!actorId) return undefined;
+
+    if (isUnderwriterApproverRole(authUser?.role)) {
+        return actorId;
+    }
+
+    const assignedId = String(application.assignedUnderwriterId ?? '').trim();
+    if (assignedId) return assignedId;
+
+    const claimedId = String(application.claimedByUnderwriterId ?? '').trim();
+    if (claimedId) return claimedId;
+
+    const existingId = String(application.approvedByUnderwriterId ?? '').trim();
+    if (existingId) return undefined;
+
+    return undefined;
+};
+
+/** Record which underwriter approved the deal (queue/state → Underwriter Approved). */
+const patchRecordUnderwriterApproval = (
+    authUser: AuthenticatedUser | null | undefined,
+    application: {
+        assignedUnderwriterId?: string | null;
+        claimedByUnderwriterId?: string | null;
+        approvedByUnderwriterId?: string | null;
+    },
+): Pick<Prisma.ApplicationUpdateInput, 'approvedByUnderwriter' | 'approvedAt' | 'underwriterAction'> | undefined => {
+    const approverId = resolveUnderwriterApproverId(authUser, application);
+    if (!approverId) return undefined;
+    return {
+        approvedByUnderwriter: { connect: { id: approverId } },
+        approvedAt: new Date(),
+        underwriterAction: UNDERWRITER_ACTION_APPROVED,
+    };
+};
+
+const shouldRecordUnderwriterApproval = (
+    queue: string | null | undefined,
+    state?: string | null | undefined,
+): boolean =>
+    isUnderwriterApprovedToken(queue) ||
+    isUnderwriterApprovedToken(state) ||
+    (typeof state === 'string' && state.trim().toLowerCase() === 'approved');
+
 const resolveWorkflowQueueTransition = (targetQueue: string, actorRole?: string | null): WorkflowTransition => {
     const normalizedQueue = normalizeQueueToken(targetQueue);
     const normalizedRole = normalizeQueueToken(actorRole || '');
 
-    const isUnderwriterTarget = normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'UNDERWRITER';
+    const isUnderwriterTarget = normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'SCRUBBING';
     if (isUnderwriterTarget) {
         return {
-            queue: WORKFLOW_QUEUES.UNDERWRITER,
+            queue: WORKFLOW_QUEUES.SCRUBBING,
             state: ApplicationState.IN_PROGRESS,
             action: 'SEND_TO_UNDERWRITER',
         };
     }
 
-    const isFinalUnderwriterTarget = normalizedQueue === 'FINAL_REVIEW' || normalizedQueue === 'FINAL_UNDERWRITER';
+    const isFinalUnderwriterTarget = normalizedQueue === 'FINAL_REVIEW' || normalizedQueue === 'UNDERWRITER';
     if (isFinalUnderwriterTarget) {
         return {
-            queue: WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+            queue: WORKFLOW_QUEUES.UNDERWRITER,
             state: ApplicationState.IN_PROGRESS,
             action: 'SEND_TO_FINAL_UNDERWRITER',
         };
     }
 
-    const isFinalUnderwriterActor =
-        normalizedRole === 'FINAL_UNDERWRITER' || normalizedRole === 'FINALUNDERWRITER';
-    if (normalizedQueue === 'APPROVED' && isFinalUnderwriterActor) {
+    if (normalizedQueue === 'FINAL_APPROVAL') {
         return {
-            queue: WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+            queue: FINAL_APPROVAL_QUEUE,
+            state: FINAL_APPROVAL_STATE,
+            action: 'SEND_FOR_FINAL_APPROVAL',
+        };
+    }
+
+    const isFinalUnderwriterActor =
+        normalizedRole === 'UNDERWRITER' ||
+        normalizedRole === 'FINALUNDERWRITER' ||
+        normalizedRole === 'SUPER_ADMIN' ||
+        normalizedRole === 'ADMIN' ||
+        normalizedRole === 'OPERATIONS';
+    if (
+        (normalizedQueue === 'APPROVED' || normalizedQueue === 'UNDERWRITER_APPROVED') &&
+        isFinalUnderwriterActor
+    ) {
+        return {
+            queue: FINAL_UNDERWRITER_APPROVED_QUEUE,
             state: FINAL_UNDERWRITER_APPROVED_STATE,
             action: 'APPROVED',
         };
@@ -460,6 +669,29 @@ const resolveWorkflowQueueTransition = (targetQueue: string, actorRole?: string 
         return { queue: 'Funded', state: ApplicationState.FUNDED };
     }
 
+    if (normalizedQueue === 'APPROVAL_SENT') {
+        return { queue: APPROVAL_SENT_QUEUE, state: APPROVAL_SENT_STATE };
+    }
+    if (normalizedQueue === 'ISO_APPROVED' || normalizedQueue === 'APPROVED_BY_ISO') {
+        return { queue: 'ISO Approved', state: 'ISO Approved' };
+    }
+
+    if (normalizedQueue === 'UNDERWRITER_APPROVED') {
+        return {
+            queue: FINAL_UNDERWRITER_APPROVED_QUEUE,
+            state: FINAL_UNDERWRITER_APPROVED_STATE,
+            action: 'APPROVED',
+        };
+    }
+
+    if (normalizedQueue === 'CONTRACT_PENDING' || normalizedQueue === 'CONTRACTPENDING') {
+        return { queue: 'Contract Pending', state: ApplicationState.CONTRACT_PENDING };
+    }
+
+    if (normalizedQueue === 'ON_HOLD' || normalizedQueue === 'ONHOLD') {
+        return { queue: 'On Hold', state: 'On Hold' };
+    }
+
     return { queue: targetQueue };
 };
 
@@ -475,6 +707,25 @@ const toWorkflowApiState = (queue: string | null | undefined, state: Application
     if (normalizedQueue === 'DISBURSEMENT') return 'DISBURSEMENT';
     if (normalizedQueue === 'FUNDED') return 'FUNDED';
 
+    if (normalizedQueue === 'UNDERWRITER_APPROVED') {
+        if (normalizeQueueToken(rawState) === 'FINAL_APPROVAL') {
+            return FINAL_APPROVAL_STATE;
+        }
+        return FINAL_UNDERWRITER_APPROVED_STATE;
+    }
+
+    if (normalizedQueue === 'FINAL_APPROVAL') {
+        return FINAL_APPROVAL_STATE;
+    }
+
+    if (normalizedQueue === 'APPROVAL_SENT') {
+        return APPROVAL_SENT_STATE;
+    }
+
+    if (normalizedQueue === 'ISO_APPROVED' || normalizedQueue === 'APPROVED_BY_ISO') {
+        return 'ISO Approved';
+    }
+
     if (normalizedQueue === 'APPROVED') {
         if (state === ApplicationState.COMPLETED) return mappedState;
         return 'Approved';
@@ -482,13 +733,19 @@ const toWorkflowApiState = (queue: string | null | undefined, state: Application
 
     if (normalizedQueue === 'AGENT' || normalizedQueue === 'NEW') return 'Pending';
 
-    if (normalizedQueue === 'UNDERWRITER' || normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'REVIEW') {
+    if (normalizedQueue === 'SCRUBBING' || normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'REVIEW') {
         return 'In Progress';
     }
 
-    if (normalizedQueue === 'FINAL_UNDERWRITER' || normalizedQueue === 'FINAL_REVIEW') {
+    if (normalizedQueue === 'UNDERWRITER' || normalizedQueue === 'FINAL_REVIEW') {
         const stateLower = typeof state === 'string' ? state.trim().toLowerCase() : '';
-        if (state === ApplicationState.COMPLETED || stateLower === 'approved') return 'Approved';
+        if (
+            state === ApplicationState.COMPLETED ||
+            stateLower === 'approved' ||
+            isUnderwriterApprovedToken(state)
+        ) {
+            return FINAL_UNDERWRITER_APPROVED_STATE;
+        }
         return 'In Progress';
     }
 
@@ -525,8 +782,8 @@ const normalizeWorkflowQueueKeyForDisbursement = (queue: string | null | undefin
 
 const QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT = new Set([
     'agent',
+    'scrubbing',
     'underwriter',
-    'finalunderwriter',
     'contracted',
     'contractout',
     'contractsout',
@@ -562,6 +819,16 @@ export const mapApplicationToApi = (app: any) => {
         claimedByUnderwriterId,
         claimedAt,
         claimedByUnderwriter,
+        deletedAt,
+        deletedById,
+        approvedByUnderwriterId,
+        approvedAt,
+        approvedByUnderwriter,
+        assignedUnderwriterId,
+        assignedUnderwriter,
+        needsContractReinitiation,
+        isoUpdatedOfferApproved,
+        isoQueryResolved,
         ...rest
     } = app;
 
@@ -576,6 +843,9 @@ export const mapApplicationToApi = (app: any) => {
                 ...(u.role != null ? { role: u.role } : {}),
             }
             : undefined;
+
+    const owners = client ? resolveClientOwners(client) : [];
+    const primaryOwner = owners[0];
 
     const mappedClient =
         client &&
@@ -603,7 +873,7 @@ export const mapApplicationToApi = (app: any) => {
                     zipCode: client.businessZipCode || '',
                 },
             },
-            owner: {
+            owner: primaryOwner ?? {
                 firstName: client.ownerFirstName,
                 middleName: client.ownerMiddleName || '',
                 lastName: client.ownerLastName,
@@ -622,6 +892,7 @@ export const mapApplicationToApi = (app: any) => {
                     zipCode: client.ownerZipCode || '',
                 },
             },
+            owners,
         } as any);
 
     // files in Mongo were subdocuments with _id; here we synthesize _id from id
@@ -635,8 +906,8 @@ export const mapApplicationToApi = (app: any) => {
             mimeType: f.mimeType,
             size: f.size,
             uploadedAt: f.uploadedAt,
-            requestedDocumentSlug: f.requestedDocumentSlug ?? null,
-            documentType: f.requestedDocumentSlug ?? null,
+            requestedDocumentSlug: f.requestedDocumentSlug,
+            documentType: f.requestedDocumentSlug,
         })) || [];
 
     /** Matches ISO portal `/iso/:id/application-payout-status` (IsoApplicationPayout). */
@@ -689,7 +960,7 @@ export const mapApplicationToApi = (app: any) => {
         type,
         loanAmount: loanAmount ?? undefined,
         note,
-        currentQueue,
+        currentQueue: normalizeWorkflowQueueForApi(currentQueue) ?? currentQueue,
         currentState: toWorkflowApiState(currentQueue, currentState),
         /** DB `currentState` before workflow API mapping — use for dashboard buckets matching `/applications/stats`. */
         statsCurrentState: currentState,
@@ -706,6 +977,26 @@ export const mapApplicationToApi = (app: any) => {
                     ? String(claimedAt)
                     : undefined,
         claimedByUnderwriter: mapUserLite(claimedByUnderwriter),
+        deletedAt:
+            deletedAt instanceof Date
+                ? deletedAt.toISOString()
+                : deletedAt
+                    ? String(deletedAt)
+                    : undefined,
+        deletedById: deletedById ?? undefined,
+        approvedByUnderwriterId: approvedByUnderwriterId ?? undefined,
+        approvedAt:
+            approvedAt instanceof Date
+                ? approvedAt.toISOString()
+                : approvedAt
+                    ? String(approvedAt)
+                    : undefined,
+        approvedByUnderwriter: mapUserLite(approvedByUnderwriter),
+        assignedUnderwriterId: assignedUnderwriterId ?? undefined,
+        assignedUnderwriter: mapUserLite(assignedUnderwriter),
+        needsContractReinitiation: needsContractReinitiation === true,
+        isoUpdatedOfferApproved: isoUpdatedOfferApproved === true,
+        isoQueryResolved: isoQueryResolved === true,
         client: mappedClient,
         iso: iso
             ? {
@@ -716,59 +1007,6 @@ export const mapApplicationToApi = (app: any) => {
             : null,
         isoCommissionPayout,
         files: mappedFiles,
-    };
-};
-
-// Helper to map Prisma Client to the API shape previously returned by Mongoose
-const mapClientToApi = (client: any) => {
-    if (!client) return client;
-
-    return {
-        _id: client.id,
-        id: client.id,
-        clientId: client.clientId,
-        business: {
-            name: client.businessName,
-            email: client.businessEmail || '',
-            number: client.businessNumber || '',
-            website: client.businessWebsite || '',
-            incorporationDate: client.businessIncorporationDate,
-            incorporationState: client.businessIncorporationState || '',
-            businessEntityType: client.businessEntityType || '',
-            einNumber: client.businessEinNumber || '',
-            annualRevenue: client.businessAnnualRevenue ?? undefined,
-            monthlyRevenue: client.businessMonthlyRevenue ?? undefined,
-            address: {
-                address1: client.businessAddress1 || '',
-                address2: client.businessAddress2 || '',
-                city: client.businessCity || '',
-                state: client.businessState || '',
-                zipCode: client.businessZipCode || '',
-            },
-        },
-        owner: {
-            firstName: client.ownerFirstName,
-            middleName: client.ownerMiddleName || '',
-            lastName: client.ownerLastName,
-            email: client.ownerEmail || '',
-            mobileNumber: client.ownerMobileNumber || '',
-            dateOfBirth: client.ownerDateOfBirth,
-            ssn: client.ownerSsn || '',
-            ficoScore: client.ownerFicoScore ?? undefined,
-            ownershipStartDate: client.ownerOwnershipStartDate,
-            ownershipPercentage: client.ownerOwnershipPercentage ?? undefined,
-            address: {
-                address1: client.ownerAddress1 || '',
-                address2: client.ownerAddress2 || '',
-                city: client.ownerCity || '',
-                state: client.ownerState || '',
-                zipCode: client.ownerZipCode || '',
-            },
-        },
-        status: client.status,
-        notes: client.notes || '',
-        createdAt: client.createdAt,
-        updatedAt: client.updatedAt,
     };
 };
 
@@ -793,14 +1031,14 @@ const blockIfUnderwriterUnclaimedDeal = (
     return true;
 };
 
-/** PUT body only sets `isoId` — allowed on overview without an underwriter claim. */
+/** PUT body only sets `isoId` — allowed on overview without an scrubbing claim. */
 const isApplicationIsoLinkOnlyBody = (body: Record<string, unknown>): boolean => {
     const keys = Object.keys(body ?? {}).filter((k) => body[k] !== undefined);
     return keys.length === 1 && keys[0] === 'isoId';
 };
 
 /**
- * Returns 403 when a workflow role (Agent/Underwriter/Final Underwriter) tries to
+ * Returns 403 when a workflow role (Agent/Scrubbing/Underwriter) tries to
  * mutate an application that has advanced past their stage. Non-workflow roles
  * (Operations/Admin/Super Admin/Accountant/etc.) always pass through.
  *
@@ -833,6 +1071,22 @@ const sendPreviewOnlyForbidden = (
         return true;
     }
     return false;
+};
+
+const APPLICATION_ROUTE_ID_UUID =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const resolveApplicationWhere = (
+    idParam: string,
+): Prisma.ApplicationWhereUniqueInput | null => {
+    const ref = String(idParam ?? '').trim();
+    if (!ref) return null;
+    if (/^\d+$/.test(ref)) {
+        const numericId = Number(ref);
+        return Number.isFinite(numericId) ? { applicationId: numericId } : null;
+    }
+    if (!APPLICATION_ROUTE_ID_UUID.test(ref)) return null;
+    return { id: ref };
 };
 
 class ApplicationController {
@@ -928,47 +1182,47 @@ class ApplicationController {
             const creationQueue = roleUpper === 'AGENT' ? WORKFLOW_QUEUES.AGENT : undefined;
             const creationState = roleUpper === 'AGENT' ? ApplicationState.PENDING : undefined;
 
-            const nextDealId = await generateNextDealId();
-
-            const application = await prisma.application.create({
-                data: applicationCreateUncheckedData({
-                    priority,
-                    type,
-                    salesRepresentativeId: String(salesRepresentative),
-                    clientId: clientRecord.id,
-                    note: note || '',
-                    loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                    commissionPercentage: commissionPercentageFromIso,
-                    createdById,
-                    referringAgentId: effectiveReferringAgentId,
-                    isoId: normalizedIsoId,
-                    currentQueue: creationQueue,
-                    currentState: creationState,
-                    dealId: nextDealId,
-                    files: uploadedFiles.length
-                        ? {
-                            createMany: {
-                                data: uploadedFiles.map((f) => ({
-                                    url: f.url,
-                                    publicId: f.publicId,
-                                    originalName: f.originalName,
-                                    mimeType: f.mimeType,
-                                    size: f.size,
-                                    uploadedAt: f.uploadedAt,
-                                })),
-                            },
-                        }
-                        : undefined,
+            const application = await withAllocatedDealId((dealId, tx) =>
+                tx.application.create({
+                    data: applicationCreateUncheckedData({
+                        priority,
+                        type,
+                        salesRepresentativeId: String(salesRepresentative),
+                        clientId: clientRecord.id,
+                        note: note || '',
+                        loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
+                        commissionPercentage: commissionPercentageFromIso,
+                        createdById,
+                        referringAgentId: effectiveReferringAgentId,
+                        isoId: normalizedIsoId,
+                        currentQueue: creationQueue,
+                        currentState: creationState,
+                        dealId,
+                        files: uploadedFiles.length
+                            ? {
+                                createMany: {
+                                    data: uploadedFiles.map((f) => ({
+                                        url: f.url,
+                                        publicId: f.publicId,
+                                        originalName: f.originalName,
+                                        mimeType: f.mimeType,
+                                        size: f.size,
+                                        uploadedAt: f.uploadedAt,
+                                    })),
+                                },
+                            }
+                            : undefined,
+                    }),
+                    include: {
+                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        client: true,
+                        iso: true,
+                        files: true,
+                    },
                 }),
-                include: {
-                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    client: true,
-                    iso: true,
-                    files: true,
-                },
-            });
+            );
 
             const populatedApplication = mapApplicationToApi(application);
 
@@ -998,52 +1252,13 @@ class ApplicationController {
                 console.error('Failed to create activity log for application creation:', logError);
             }
 
-            // Best-effort ISO recipient email for newly created ISO-linked applications.
-            try {
-                const isoEmail = String((application as any)?.iso?.email || '').trim();
-                if (isoEmail) {
-                    const isoName = String((application as any)?.iso?.name || '').trim();
-                    const clientBusinessName = String((application as any)?.client?.businessName || '').trim();
-                    const ownerName = `${(application as any)?.client?.ownerFirstName || ''} ${(application as any)?.client?.ownerLastName || ''}`.trim();
-                    const recipientName = isoName || isoEmail || ownerName || clientBusinessName || 'Valued Client';
-                    const appIdNumber = (application as any)?.applicationId ?? '';
-                    const appRouteId =
-                        (application as any)?.applicationId != null &&
-                            String((application as any).applicationId).trim() !== ''
-                            ? String((application as any).applicationId)
-                            : String((application as any)?.id || application.id);
-                    const baseUrl = resolveCrmFrontendBaseUrl();
-                    const viewApplicationUrl = baseUrl
-                        ? `${baseUrl.replace(/\/$/, '')}/application-details/${appRouteId}`
-                        : undefined;
-
-                    let publicPortalUrl: string | undefined;
-                    try {
-                        const portalToken = await createPublicPortalToken(application.id, {
-                            expiresInDays: 90,
-                        });
-                        if (portalToken && baseUrl) {
-                            publicPortalUrl = `${baseUrl.replace(/\/$/, '')}/public/application/status/${portalToken}`;
-                        }
-                    } catch (tokenErr) {
-                        console.error('Public portal token failed (create ISO email):', tokenErr);
-                    }
-
-                    setImmediate(() => {
-                        void sendApplicationSentToUnderwritingClientEmail({
-                            to: isoEmail,
-                            clientName: recipientName,
-                            companyName: clientBusinessName || 'your business',
-                            agentName: String((req as any)?.user?.name || 'your representative').trim() || 'your representative',
-                            applicationNumber: appIdNumber,
-                            viewApplicationUrl,
-                            publicPortalUrl,
-                        });
-                    });
-                }
-            } catch (emailErr) {
-                console.error('Create application ISO email enqueue failed:', emailErr);
-            }
+            scheduleApplicationStageNotification({
+                application: application as any,
+                transitionAction: 'CREATED',
+                actorId: createdById,
+                actorName: (req as any).user?.name || '',
+                actorRole: authUser?.role || null,
+            });
 
             invalidateAllApplicationStatsCache();
 
@@ -1117,29 +1332,19 @@ class ApplicationController {
 
             const newFiles: any[] = [];
             const failedUploads: string[] = [];
-            const uploadBodyFields = {
-                documentType: (req.body as { documentType?: unknown })?.documentType,
-                requestedDocumentSlug: (req.body as { requestedDocumentSlug?: unknown })
-                    ?.requestedDocumentSlug,
-            };
 
             for (let i = 0; i < uploadResults.length; i++) {
                 const result = uploadResults[i];
                 const fileName = filesToUpload[i]?.name || 'unknown';
 
                 if (result.success && result.data) {
-                    const storedOriginalName = result.fileName || fileName;
                     newFiles.push({
                         url: result.data.secure_url,
                         publicId: result.data.public_id,
-                        originalName: storedOriginalName,
+                        originalName: result.fileName || fileName,
                         mimeType: result.data.format,
                         size: result.data.bytes,
                         uploadedAt: new Date(),
-                        requestedDocumentSlug: resolveUploadDocumentSlug(
-                            storedOriginalName,
-                            uploadBodyFields,
-                        ),
                     });
                 } else {
                     console.error(`Failed to upload file ${fileName}:`, result.error || result.message);
@@ -1154,6 +1359,15 @@ class ApplicationController {
                 });
             }
 
+            const requestedDocumentSlug = String(
+                (req.body as { requestedDocumentSlug?: string; documentType?: string })?.requestedDocumentSlug ||
+                    // ISO approval-portal uploads tag the file with a documentType (driving_license / voided_check / other).
+                    (req.body as { documentType?: string })?.documentType ||
+                    '',
+            )
+                .trim()
+                .toLowerCase();
+
             // Add new files to database
             try {
                 await prisma.applicationFile.createMany({
@@ -1165,7 +1379,7 @@ class ApplicationController {
                         mimeType: f.mimeType,
                         size: f.size,
                         uploadedAt: f.uploadedAt,
-                        requestedDocumentSlug: f.requestedDocumentSlug ?? undefined,
+                        ...(requestedDocumentSlug ? { requestedDocumentSlug } : {}),
                     })),
                 });
             } catch (dbError: any) {
@@ -1233,17 +1447,19 @@ class ApplicationController {
                 console.error('Failed to create activity log for file upload:', logError);
             }
 
-            try {
-                const authUserForNotify = getAuthenticatedUser(req);
-                await notifyDocumentRequestRecipientsOnUpload({
-                    applicationId: updatedApplicationRecord.id,
-                    applicationNumber: updatedApplicationRecord.applicationId,
-                    uploaderUserId: authUserForNotify?.id ?? null,
-                    filesBefore: (application as { files?: Array<{ originalName?: string | null }> }).files || [],
-                    filesAfter: updatedApplicationRecord.files || [],
-                });
-            } catch (notifyError) {
-                console.error('Failed to notify document request recipients on upload:', notifyError);
+            if (requestedDocumentSlug && authUser?.id) {
+                try {
+                    const { notifyRequestersDocumentReceived } = await import(
+                        '../services/documentRequestFulfillmentService'
+                    );
+                    await notifyRequestersDocumentReceived({
+                        applicationUuid: application.id,
+                        documentSlug: requestedDocumentSlug,
+                        uploadedByUserId: String(authUser.id),
+                    });
+                } catch (notifyErr) {
+                    console.error('Failed to notify document request fulfillment:', notifyErr);
+                }
             }
 
             return res.status(200).json({
@@ -1275,6 +1491,126 @@ class ApplicationController {
             return res.status(500).json({
                 success: false,
                 message: error?.message || 'Internal server error',
+            });
+        }
+    }
+
+    // Tag an uploaded file with a document-request slug (used when matching CRM uploads to requests).
+    async updateFileDocumentType(req: Request, res: Response) {
+        try {
+            const { id, fileId } = req.params;
+            const requestedDocumentSlug = String(
+                (req.body as { requestedDocumentSlug?: string | null })?.requestedDocumentSlug ?? '',
+            )
+                .trim()
+                .toLowerCase();
+
+            if (!fileId || !id) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'ID is required',
+                });
+            }
+
+            const { getDocumentRequestConfig } = await import('../constants/documentRequestTypes');
+            if (requestedDocumentSlug && !getDocumentRequestConfig(requestedDocumentSlug)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid document type',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const { application, forbidden } = await getApplicationForUser(
+                { id },
+                authUser,
+                { files: true },
+            );
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
+                return;
+            }
+
+            const file = application.files?.find((f: { id: string }) => f.id === fileId);
+            if (!file) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'File not found',
+                });
+            }
+
+            if (requestedDocumentSlug) {
+                await prisma.applicationFile.updateMany({
+                    where: {
+                        applicationId: application.id,
+                        requestedDocumentSlug,
+                        NOT: { id: fileId },
+                    },
+                    data: { requestedDocumentSlug: null },
+                });
+            }
+
+            await prisma.applicationFile.update({
+                where: { id: fileId },
+                data: {
+                    requestedDocumentSlug: requestedDocumentSlug || null,
+                },
+            });
+
+            if (requestedDocumentSlug && authUser?.id) {
+                try {
+                    const { notifyRequestersDocumentReceived } = await import(
+                        '../services/documentRequestFulfillmentService'
+                    );
+                    await notifyRequestersDocumentReceived({
+                        applicationUuid: application.id,
+                        documentSlug: requestedDocumentSlug,
+                        uploadedByUserId: String(authUser.id),
+                    });
+                } catch (notifyErr) {
+                    console.error('Failed to notify document request fulfillment:', notifyErr);
+                }
+            }
+
+            const applicationIdForLookup = /^\d+$/.test(id) ? { applicationId: Number(id) } : { id };
+            const updatedApplicationRecord = await prisma.application.findUnique({
+                where: applicationIdForLookup,
+                include: {
+                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    client: true,
+                    iso: true,
+                    files: true,
+                },
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: requestedDocumentSlug
+                    ? 'Document type assigned successfully'
+                    : 'Document type cleared',
+                data: updatedApplicationRecord ? mapApplicationToApi(updatedApplicationRecord) : null,
+            });
+        } catch (error: unknown) {
+            console.error('Update file document type error:', error);
+            return res.status(500).json({
+                success: false,
+                message: error instanceof Error ? error.message : 'Internal server error',
             });
         }
     }
@@ -1356,6 +1692,78 @@ class ApplicationController {
         }
     }
 
+    /** Extract business/owner fields from a stored PDF and merge into the application's client. */
+    async fillApplicationFromPdfFile(req: Request, res: Response) {
+        try {
+            const { id, fileId } = req.params;
+
+            if (!fileId || !id) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application id and file id are required',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const { application, forbidden } = await getApplicationForUser(
+                { id },
+                authUser,
+                { client: true, files: true },
+            );
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
+                return;
+            }
+
+            const file = application.files?.find((f: { id: string }) => f.id === fileId);
+            if (!file) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'File not found on this application',
+                });
+            }
+
+            const result = await applyPdfExtractToApplicationFromStoredFile(application.id, fileId);
+
+            const populatedApplication = mapApplicationToApi(result.application);
+            const mappedClient = mapClientToApi(result.client);
+
+            return res.status(200).json({
+                success: true,
+                message: 'Application details updated from PDF extraction',
+                data: {
+                    client: mappedClient,
+                    application: populatedApplication,
+                    parsedData: result.parsedData,
+                },
+            });
+        } catch (error: unknown) {
+            const message =
+                error instanceof Error && error.message
+                    ? error.message
+                    : 'Failed to fill application from PDF';
+            console.error('[fillApplicationFromPdfFile] Error:', error);
+            return res.status(400).json({
+                success: false,
+                message,
+            });
+        }
+    }
+
     // Get all applications with pagination and filters
     async getAll(req: Request, res: Response) {
         try {
@@ -1385,6 +1793,9 @@ class ApplicationController {
                         .trim()
                         .toLowerCase()
                     : '';
+            const underwriterPipelineParam = normalizeUnderwriterPipelineParam(
+                req.query.underwriterPipeline,
+            );
             const authRoleUpper = authUser?.role
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
@@ -1403,6 +1814,17 @@ class ApplicationController {
             if (priority) where.priority = String(priority);
             if (type) where.type = { contains: String(type), mode: 'insensitive' };
             if (operationsStatus) {
+                const operationsStatusKey = normalizeOperationsStatusKey(String(operationsStatus));
+                if (operationsStatusKey === 'Reinitiate_Contract') {
+                    try {
+                        await reconcileStaleContractReinitiationFlags();
+                    } catch (reconcileErr) {
+                        console.error(
+                            '[applications list] reconcile stale reinitiation flags failed:',
+                            reconcileErr,
+                        );
+                    }
+                }
                 const operationsFilter = buildOperationsStatusFilterWhere(
                     String(operationsStatus),
                     resolveOperationsListFilterMode(authUser?.role),
@@ -1419,11 +1841,9 @@ class ApplicationController {
             }
             if (currentState) {
                 const rawState = String(currentState).trim();
-                const mappedState =
-                    isContractedPipelineKey(rawState) ||
-                    normalizeOperationsStatusKey(rawState) === 'Contracts_Out'
-                        ? undefined
-                        : toPrismaApplicationState(rawState);
+                const mappedState = isContractedOpsKey(rawState)
+                    ? undefined
+                    : toPrismaApplicationState(rawState);
                 const aliasValues =
                     dashboardStateQueueAliases[rawState] ||
                     dashboardStateQueueAliases[rawState.replace(/\s+/g, '_')] ||
@@ -1453,18 +1873,16 @@ class ApplicationController {
                             { currentQueue: { in: queueFallbackVariants } },
                         ],
                     }
-                    : isContractedPipelineKey(rawState)
-                        ? contractedCombinedMatchWhere()
-                        : isContractedOpsKey(rawState)
-                          ? {
-                                OR: [
-                                    { currentQueue: { in: queueFallbackVariants } },
-                                    { currentState: { in: contractedStateLiterals } },
-                                ],
-                            }
-                          : {
-                                currentQueue: { in: queueFallbackVariants },
-                            };
+                    : isContractedOpsKey(rawState)
+                        ? {
+                            OR: [
+                                { currentQueue: { in: queueFallbackVariants } },
+                                { currentState: { in: contractedStateLiterals } },
+                            ],
+                        }
+                        : {
+                            currentQueue: { in: queueFallbackVariants },
+                        };
 
                 const existingAnd = where.AND
                     ? Array.isArray(where.AND)
@@ -1481,6 +1899,21 @@ class ApplicationController {
             if (statsBucket) {
                 let uwBucketOpts: ApplicationStatsBucketWhereOptions | undefined;
                 if (
+                    (uwClaimNorm === 'unclaimed' ||
+                        uwClaimNorm === 'claimed' ||
+                        uwClaimNorm === 'mine') &&
+                    authRoleUpper === 'SCRUBBING' &&
+                    authUser?.id
+                ) {
+                    uwBucketOpts = {
+                        uwInbox: {
+                            tab: uwClaimNorm as 'unclaimed' | 'claimed' | 'mine',
+                            viewerId: authUser.id,
+                            stage: 'scrubbing',
+                        },
+                    };
+                }
+                if (
                     (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
                     authRoleUpper === 'UNDERWRITER' &&
                     authUser?.id
@@ -1489,6 +1922,7 @@ class ApplicationController {
                         uwInbox: {
                             tab: uwClaimNorm as 'mine' | 'unclaimed',
                             viewerId: authUser.id,
+                            stage: 'underwriter',
                         },
                     };
                 }
@@ -1534,25 +1968,85 @@ class ApplicationController {
             }
 
             if (search) {
-                const searchStr = String(search);
-                where.OR = [
-                    { type: { contains: searchStr, mode: 'insensitive' } },
-                    { note: { contains: searchStr, mode: 'insensitive' } },
-                    {
-                        client: {
-                            OR: [
-                                { businessName: { contains: searchStr, mode: 'insensitive' } },
-                                { businessEmail: { contains: searchStr, mode: 'insensitive' } },
-                                { ownerFirstName: { contains: searchStr, mode: 'insensitive' } },
-                                { ownerLastName: { contains: searchStr, mode: 'insensitive' } },
-                                { ownerEmail: { contains: searchStr, mode: 'insensitive' } },
-                            ],
-                        },
-                    },
-                ];
+                const searchWhere = buildApplicationListSearchWhere(String(search));
+                if (Object.keys(searchWhere).length > 0) {
+                    const existingAnd = where.AND
+                        ? Array.isArray(where.AND)
+                            ? where.AND
+                            : [where.AND]
+                        : [];
+                    where = {
+                        ...where,
+                        AND: [...existingAnd, searchWhere],
+                    };
+                }
             }
 
             if (
+                underwriterPipelineParam &&
+                authRoleUpper === 'UNDERWRITER' &&
+                authUser?.id
+            ) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                where = {
+                    ...where,
+                    AND: [
+                        ...existingAnd,
+                        buildUnderwriterPipelineWhere(
+                            underwriterPipelineParam,
+                            authUser.id,
+                        ),
+                    ],
+                };
+            } else if (
+                (uwClaimNorm === 'unclaimed' ||
+                    uwClaimNorm === 'claimed' ||
+                    uwClaimNorm === 'mine') &&
+                authRoleUpper === 'SCRUBBING' &&
+                authUser?.id
+            ) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                const scrubbingQueueFilter: Prisma.ApplicationWhereInput = {
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
+                };
+                const pastScrubbingFilter: Prisma.ApplicationWhereInput = {
+                    NOT: {
+                        currentQueue: {
+                            equals: WORKFLOW_QUEUES.SCRUBBING,
+                            mode: 'insensitive',
+                        },
+                    },
+                };
+                let scrubbingInboxFilters: Prisma.ApplicationWhereInput[];
+                if (uwClaimNorm === 'unclaimed') {
+                    scrubbingInboxFilters = [
+                        scrubbingQueueFilter,
+                        { claimedByUnderwriterId: null },
+                    ];
+                } else if (uwClaimNorm === 'claimed') {
+                    scrubbingInboxFilters = [
+                        scrubbingQueueFilter,
+                        { claimedByUnderwriterId: authUser.id },
+                    ];
+                } else {
+                    scrubbingInboxFilters = [
+                        { claimedByUnderwriterId: authUser.id },
+                        pastScrubbingFilter,
+                    ];
+                }
+                where = {
+                    ...where,
+                    AND: [...existingAnd, ...scrubbingInboxFilters],
+                };
+            } else if (
                 (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
                 authRoleUpper === 'UNDERWRITER' &&
                 authUser?.id
@@ -1564,8 +2058,8 @@ class ApplicationController {
                     : [];
                 const claimFilter: Prisma.ApplicationWhereInput =
                     uwClaimNorm === 'unclaimed'
-                        ? { claimedByUnderwriterId: null }
-                        : { claimedByUnderwriterId: authUser.id };
+                        ? { assignedUnderwriterId: null }
+                        : { assignedUnderwriterId: authUser.id };
                 where = {
                     ...where,
                     AND: [
@@ -1576,17 +2070,102 @@ class ApplicationController {
                 };
             }
 
-            let orderByField: string = 'createdAt';
-            if (
-                sortBy === 'createdAt' ||
-                sortBy === 'applicationId' ||
-                sortBy === 'updatedAt'
-            ) {
-                orderByField = String(sortBy);
+            const canFilterByClaimAssignments =
+                authRoleUpper === 'SUPER_ADMIN' ||
+                authRoleUpper === 'SUPERADMIN' ||
+                authRoleUpper === 'OPERATIONS';
+            if (canFilterByClaimAssignments) {
+                const rawClaimedByScrubberId = req.query.claimedByUnderwriterId;
+                const rawAssignedUnderwriterId = req.query.assignedUnderwriterId;
+                const claimedByScrubberId =
+                    rawClaimedByScrubberId != null
+                        ? String(
+                              Array.isArray(rawClaimedByScrubberId)
+                                  ? rawClaimedByScrubberId[0]
+                                  : rawClaimedByScrubberId,
+                          ).trim()
+                        : '';
+                const assignedUnderwriterFilterId =
+                    rawAssignedUnderwriterId != null
+                        ? String(
+                              Array.isArray(rawAssignedUnderwriterId)
+                                  ? rawAssignedUnderwriterId[0]
+                                  : rawAssignedUnderwriterId,
+                          ).trim()
+                        : '';
+                if (claimedByScrubberId) {
+                    where.claimedByUnderwriterId = claimedByScrubberId;
+                }
+                if (assignedUnderwriterFilterId) {
+                    where.assignedUnderwriterId = assignedUnderwriterFilterId;
+                }
             }
-            const orderBy: Prisma.ApplicationOrderByWithRelationInput = {
-                [orderByField]: sortOrder === 'asc' ? 'asc' : 'desc',
-            };
+
+            if (
+                authRoleUpper === 'UNDERWRITER' &&
+                authUser?.id &&
+                !underwriterPipelineParam
+            ) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                where = {
+                    ...where,
+                    AND: [
+                        ...existingAnd,
+                        {
+                            OR: [
+                                {
+                                    NOT: {
+                                        currentQueue: {
+                                            equals: FINAL_APPROVAL_QUEUE,
+                                            mode: 'insensitive',
+                                        },
+                                    },
+                                },
+                                { assignedUnderwriterId: authUser.id },
+                                {
+                                    AND: [
+                                        { assignedUnderwriterId: null },
+                                        { approvedByUnderwriterId: authUser.id },
+                                    ],
+                                },
+                            ],
+                        },
+                        // A deal assigned to a specific Underwriter is private to them.
+                        // Unassigned deals stay visible to every Underwriter (legacy behavior).
+                        {
+                            OR: [
+                                { assignedUnderwriterId: null },
+                                { assignedUnderwriterId: authUser.id },
+                            ],
+                        },
+                    ],
+                };
+            }
+
+            const operationsStatusParam = operationsStatus
+                ? String(operationsStatus)
+                : undefined;
+            const opsStatusCanonical = operationsStatusParam
+                ? normalizeOperationsStatusKey(operationsStatusParam)
+                : '';
+            if (opsStatusCanonical === 'Recently_Deleted') {
+                if (
+                    authRoleUpper !== 'SUPER_ADMIN' &&
+                    authRoleUpper !== 'SUPERADMIN' &&
+                    authRoleUpper !== 'OPERATIONS'
+                ) {
+                    return res.status(403).json({
+                        success: false,
+                        message:
+                            'Only Super Admin or Operations can view Recently Deleted applications',
+                    });
+                }
+            }
+            where = applySoftDeleteListScope(where, operationsStatusParam);
 
             const listInclude: Prisma.ApplicationInclude = useLitePayload
                 ? {
@@ -1631,7 +2210,21 @@ class ApplicationController {
                     },
                     iso: { select: { id: true, name: true, email: true, phone: true } },
                     claimedByUnderwriter: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    assignedUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    approvedByUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    termsOffers: {
+                        orderBy: { updatedAt: 'desc' },
+                        take: 1,
+                        select: { approvedAmount: true },
+                    },
+                    OfferDecision: {
+                        select: { offer: true, decision: true },
                     },
                 }
                 : {
@@ -1641,7 +2234,13 @@ class ApplicationController {
                     client: true,
                     iso: true,
                     claimedByUnderwriter: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    assignedUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    approvedByUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
                     },
                     isoApplicationPayouts: true,
                     termsOffers: {
@@ -1670,16 +2269,14 @@ class ApplicationController {
                     },
                 };
 
-            const [apps, total] = await Promise.all([
-                prisma.application.findMany({
-                    where,
-                    orderBy,
-                    skip,
-                    take: limitNum,
-                    include: listInclude,
-                }),
-                prisma.application.count({ where }),
-            ]);
+            const { apps, total } = await fetchPaginatedApplicationsForList(prisma, {
+                where,
+                skip,
+                take: limitNum,
+                sortBy,
+                sortOrder,
+                include: listInclude,
+            });
 
             let collectionBalanceByApplicationId = new Map<
                 string,
@@ -1747,7 +2344,7 @@ class ApplicationController {
      * Get applications by agent ID (referringAgentId).
      * - Frontend may send agentId in query (e.g. ?agentId=uuid).
      * - If logged-in user is AGENT: agentId is ignored and only their own applications are returned.
-     * - If logged-in user is ADMIN/UNDERWRITER/FINAL_UNDERWRITER/ACCOUNTANT: applications for the given agentId are returned.
+     * - If logged-in user is ADMIN/SCRUBBING/UNDERWRITER/ACCOUNTANT: applications for the given agentId are returned.
      */
     async getApplicationsByAgentId(req: Request, res: Response) {
         try {
@@ -1870,16 +2467,26 @@ class ApplicationController {
                         .trim()
                         .toLowerCase()
                     : '';
-            let underwriterClaimParam: 'unclaimed' | 'mine' | null = null;
-            if (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') {
+            let underwriterClaimParam: UnderwriterClaimScope | null = null;
+            if (
+                uwClaimNorm === 'unclaimed' ||
+                uwClaimNorm === 'claimed' ||
+                uwClaimNorm === 'mine'
+            ) {
                 const roleUpper = String(currentUserRole ?? '')
                     .trim()
                     .toUpperCase()
                     .replace(/-/g, '_');
-                if (roleUpper !== 'UNDERWRITER') {
+                if (roleUpper !== 'SCRUBBING' && roleUpper !== 'UNDERWRITER') {
                     return res.status(403).json({
                         success: false,
-                        message: 'underwriterClaim stats are only available for the Underwriter role',
+                        message: 'underwriterClaim stats are only available for the Scrubbing or Underwriter role',
+                    });
+                }
+                if (roleUpper === 'UNDERWRITER' && uwClaimNorm === 'claimed') {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'underwriterClaim=claimed is only available for the Scrubbing role',
                     });
                 }
                 if (!authUser?.id) {
@@ -1888,7 +2495,7 @@ class ApplicationController {
                         message: 'Unauthorized',
                     });
                 }
-                underwriterClaimParam = uwClaimNorm as 'unclaimed' | 'mine';
+                underwriterClaimParam = uwClaimNorm as UnderwriterClaimScope;
             }
 
             const cacheKey = [
@@ -1925,6 +2532,42 @@ class ApplicationController {
             });
         } catch (error) {
             console.error('Get application stats error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Underwriter sidebar: per-pipeline deal counts scoped to the logged-in underwriter. */
+    async getUnderwriterPipelineCounts(req: Request, res: Response) {
+        try {
+            const authUser = getAuthenticatedUser(req);
+            if (!authUser?.id) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Unauthorized',
+                });
+            }
+            const roleUpper = String(authUser.role ?? '')
+                .trim()
+                .toUpperCase()
+                .replace(/-/g, '_');
+            if (roleUpper !== 'UNDERWRITER') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Underwriter pipeline counts are only available for the Underwriter role',
+                });
+            }
+
+            const counts = await countUnderwriterPipelineDeals(prisma, authUser.id);
+            res.set('Cache-Control', 'private, max-age=5');
+            return res.status(200).json({
+                success: true,
+                data: counts,
+            });
+        } catch (error) {
+            console.error('Get underwriter pipeline counts error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',
@@ -2072,8 +2715,8 @@ class ApplicationController {
             ] = await Promise.all([
                 prisma.user.count(),
                 prisma.user.count({ where: { role: 'AGENT' } }),
+                prisma.user.count({ where: { role: 'SCRUBBING' } }),
                 prisma.user.count({ where: { role: 'UNDERWRITER' } }),
-                prisma.user.count({ where: { role: 'FINAL_UNDERWRITER' } }),
                 prisma.user.count({ where: { role: 'OPERATIONS' } }),
                 prisma.user.count({ where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } } }),
                 prisma.client.count(),
@@ -2222,9 +2865,9 @@ class ApplicationController {
                     WORKFLOW_QUEUES.AGENT,
                     'Review',
                     'Underwriting',
-                    WORKFLOW_QUEUES.UNDERWRITER,
+                    WORKFLOW_QUEUES.SCRUBBING,
                     'Final Review',
-                    WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+                    WORKFLOW_QUEUES.UNDERWRITER,
                 ];
                 const waitingQueues = ['On Hold', 'Waiting for Documents'];
                 const decisionQueues = ['Approved', 'Declined', 'Contracted', 'Contract Out', 'Contracts Out'];
@@ -2337,33 +2980,26 @@ class ApplicationController {
             };
     }
 
-    // Get single application by MongoDB ObjectId
+    // Get single application by UUID or numeric applicationId
     async getById(req: Request, res: Response) {
         try {
             const { id } = req.params;
             const authUser = getAuthenticatedUser(req);
+            const where = resolveApplicationWhere(String(id ?? ''));
+            if (!where) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid application ID (expected UUID or numeric applicationId).',
+                });
+            }
 
-            // OPERATIONS / SUPER_ADMIN can fetch any application by UUID directly, bypassing visibility filters
+            const applicationInclude = APPLICATION_DETAIL_INCLUDE;
+
+            // OPERATIONS / SUPER_ADMIN can fetch any application directly, bypassing visibility filters
             if (authUser?.role === 'OPERATIONS' || authUser?.role === 'SUPER_ADMIN') {
-                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                if (!id || !uuidRegex.test(String(id))) {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Invalid application ID (expected UUID).',
-                    });
-                }
-
                 const applicationRecord = await prisma.application.findUnique({
-                    where: { id },
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                        claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    },
+                    where,
+                    include: applicationInclude,
                 });
 
                 if (!applicationRecord) {
@@ -2386,25 +3022,10 @@ class ApplicationController {
                 });
             }
 
-            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-            if (!id || !uuidRegex.test(String(id))) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Invalid application ID (expected UUID). Use GET /applications/by-agent for agent-filtered list.',
-                });
-            }
             const { application: applicationRecord, forbidden } = await getApplicationForUser(
-                { id },
+                where,
                 authUser,
-                {
-                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    client: true,
-                    iso: true,
-                    files: true,
-                    claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
-                }
+                applicationInclude,
             );
 
             if (forbidden) {
@@ -2459,13 +3080,7 @@ class ApplicationController {
 
                 const applicationRecord = await prisma.application.findUnique({
                     where: { applicationId: numericId },
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
+                    include: APPLICATION_DETAIL_INCLUDE,
                 });
 
                 if (!applicationRecord) {
@@ -2491,13 +3106,7 @@ class ApplicationController {
             const { application: applicationRecord, forbidden } = await getApplicationForUser(
                 { applicationId: Number(applicationId) },
                 authUser,
-                {
-                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    client: true,
-                    iso: true,
-                    files: true,
-                }
+                APPLICATION_DETAIL_INCLUDE,
             );
 
             if (forbidden) {
@@ -2612,61 +3221,6 @@ class ApplicationController {
         }
     }
 
-    // Generate a 4-digit action code for edit/delete (notifies Super Admins)
-    async requestActionCode(req: Request, res: Response) {
-        try {
-            const { id } = req.params;
-            const operation = String(req.body?.operation ?? '').trim().toLowerCase() as ActionCodeOperation;
-            if (operation !== 'edit' && operation !== 'delete') {
-                return res.status(400).json({
-                    success: false,
-                    message: 'operation must be "edit" or "delete"',
-                });
-            }
-
-            const authUser = getAuthenticatedUser(req);
-            const idStr = String(id ?? '');
-            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
-                ? { applicationId: Number(idStr) }
-                : { id: idStr };
-
-            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
-            if (forbidden) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Forbidden: you do not have access to this application',
-                });
-            }
-            if (!application) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Application not found',
-                });
-            }
-
-            const result = await generateApplicationActionCode(
-                application.id,
-                operation,
-                authUser?.id ?? null,
-            );
-
-            return res.status(200).json({
-                success: true,
-                message: 'Action code generated and sent to Super Admins',
-                data: {
-                    expiresAt: result.expiresAt,
-                    operation,
-                },
-            });
-        } catch (error) {
-            console.error('Request application action code error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Internal server error',
-            });
-        }
-    }
-
     // Update application
     async update(req: Request, res: Response) {
         try {
@@ -2685,7 +3239,15 @@ class ApplicationController {
                 status,
                 isoId,
                 commissionPercentage,
+                underwriterCommissionPercentage,
+                brokerCommissionPercentage,
+                commissionAmount,
+                underwriterCommissionAmount,
+                brokerCommissionAmount,
+                brokerName,
+                underwriterCommissionName,
                 category,
+                isoQueryResolved,
             } = req.body;
             const authUser = getAuthenticatedUser(req);
 
@@ -2694,7 +3256,22 @@ class ApplicationController {
                 ? { applicationId: Number(idStr) }
                 : { id: idStr };
 
-            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+            const activityLogInclude = {
+                client: { select: { id: true, businessName: true, clientId: true } },
+                iso: { select: { id: true, name: true } },
+                referringAgent: {
+                    select: { id: true, firstName: true, lastName: true, email: true },
+                },
+                salesRepresentative: {
+                    select: { id: true, firstName: true, lastName: true, email: true },
+                },
+            } as const;
+
+            const { application, forbidden } = await getApplicationForUser(
+                whereClause,
+                authUser,
+                activityLogInclude,
+            );
 
             if (forbidden) {
                 return res.status(403).json({
@@ -2736,13 +3313,13 @@ class ApplicationController {
                         message: 'Client not found',
                     });
                 }
-                data.clientId = clientRecord.id;
+                data.client = { connect: { id: clientRecord.id } };
             }
 
             if (isoId !== undefined) {
                 const trimmedIsoId = String(isoId ?? '').trim();
                 if (!trimmedIsoId) {
-                    data.isoId = null;
+                    data.iso = { disconnect: true };
                     data.commissionPercentage = 0;
                 } else {
                     const isoRecord = await (prisma as any).iso.findUnique({
@@ -2755,7 +3332,7 @@ class ApplicationController {
                             message: 'ISO not found',
                         });
                     }
-                    data.isoId = trimmedIsoId;
+                    data.iso = { connect: { id: trimmedIsoId } };
                     data.commissionPercentage = Number(isoRecord.commissionPercentage ?? 0);
                 }
             }
@@ -2785,11 +3362,13 @@ class ApplicationController {
                         }
                     }
                 } else {
-                    data.currentQueue = currentQueue;
+                    const normalizedQueue =
+                        normalizeStoredWorkflowQueue(String(currentQueue)) ?? String(currentQueue);
+                    data.currentQueue = normalizedQueue;
                     if (currentState === undefined) {
-                        if (currentQueue === 'Final') {
+                        if (normalizedQueue === 'Final') {
                             data.currentState = ApplicationState.FINAL;
-                        } else if (currentQueue === 'Funding Call') {
+                        } else if (normalizedQueue === 'Funding Call') {
                             data.currentState = ApplicationState.FUNDING_CALL;
                         }
                     }
@@ -2797,13 +3376,18 @@ class ApplicationController {
             }
             if (currentState !== undefined) {
                 const trimmedState = String(currentState).trim();
-                const queueForState =
+                const queueForStateRaw =
                     currentQueue !== undefined ? String(currentQueue) : String(application.currentQueue || '');
-                const stateIsApproved = trimmedState.toLowerCase() === 'approved';
+                const queueForState =
+                    normalizeStoredWorkflowQueue(queueForStateRaw) ?? queueForStateRaw;
+                const stateIsApproved =
+                    trimmedState.toLowerCase() === 'approved' ||
+                    isUnderwriterApprovedToken(trimmedState);
                 const queueIsFinalUw =
-                    normalizeQueueToken(queueForState) === 'FINAL_UNDERWRITER';
+                    normalizeQueueToken(queueForState) === 'UNDERWRITER';
                 if (stateIsApproved && queueIsFinalUw) {
                     data.currentState = FINAL_UNDERWRITER_APPROVED_STATE;
+                    data.currentQueue = FINAL_UNDERWRITER_APPROVED_QUEUE;
                 } else if (verbatimApplicationStateByInput[trimmedState] !== undefined) {
                     data.currentState = verbatimApplicationStateByInput[trimmedState];
                 } else {
@@ -2825,28 +3409,28 @@ class ApplicationController {
                 const st = String(status).trim().toLowerCase();
                 if (st === 'approved') {
                     const canFuApprove = [
-                        'FINAL_UNDERWRITER',
+                        'UNDERWRITER',
                         'SUPER_ADMIN',
                         'ADMIN',
                         'OPERATIONS',
                     ].includes(roleUpper);
                     if (canFuApprove) {
-                        data.currentQueue = WORKFLOW_QUEUES.FINAL_UNDERWRITER;
+                        data.currentQueue = FINAL_UNDERWRITER_APPROVED_QUEUE;
                         data.currentState = FINAL_UNDERWRITER_APPROVED_STATE;
                     }
-                } else if (st === 'sent to final underwriter') {
+                } else if (st === 'sent to final scrubbing' || st === 'sent to underwriter') {
                     const canSendToFu = [
                         'AGENT',
-                        'UNDERWRITER',
+                        'SCRUBBING',
                         'ADMIN',
                         'SUPER_ADMIN',
                         'OPERATIONS',
-                        'FINAL_UNDERWRITER',
+                        'UNDERWRITER',
                         'ACCOUNTANT',
                         'ACCOUNTS',
                     ].includes(roleUpper);
                     if (canSendToFu) {
-                        data.currentQueue = WORKFLOW_QUEUES.FINAL_UNDERWRITER;
+                        data.currentQueue = WORKFLOW_QUEUES.UNDERWRITER;
                         data.currentState = ApplicationState.IN_PROGRESS;
                     }
                 }
@@ -2873,6 +3457,118 @@ class ApplicationController {
                 data.commissionPercentage = raw;
             }
 
+            if (underwriterCommissionPercentage !== undefined) {
+                const raw =
+                    typeof underwriterCommissionPercentage === 'number'
+                        ? underwriterCommissionPercentage
+                        : parseFloat(
+                              String(underwriterCommissionPercentage).replace(/[^0-9.-]+/g, ''),
+                          );
+                if (Number.isNaN(raw) || raw < 0 || raw > 100) {
+                    return res.status(400).json({
+                        success: false,
+                        message:
+                            'underwriterCommissionPercentage must be a number between 0 and 100',
+                    });
+                }
+                data.underwriterCommissionPercentage = raw;
+            }
+
+            if (brokerCommissionPercentage !== undefined) {
+                const raw =
+                    typeof brokerCommissionPercentage === 'number'
+                        ? brokerCommissionPercentage
+                        : parseFloat(
+                              String(brokerCommissionPercentage).replace(/[^0-9.-]+/g, ''),
+                          );
+                if (Number.isNaN(raw) || raw < 0 || raw > 100) {
+                    return res.status(400).json({
+                        success: false,
+                        message:
+                            'brokerCommissionPercentage must be a number between 0 and 100',
+                    });
+                }
+                data.brokerCommissionPercentage = raw;
+            }
+
+            if (commissionAmount !== undefined) {
+                const commissionAmountNum =
+                    commissionAmount === '' || commissionAmount === null
+                        ? null
+                        : typeof commissionAmount === 'number'
+                          ? commissionAmount
+                          : parseFloat(String(commissionAmount).replace(/[^0-9.-]+/g, ''));
+                if (
+                    commissionAmountNum !== null &&
+                    (Number.isNaN(commissionAmountNum) || commissionAmountNum < 0)
+                ) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'commissionAmount must be a non-negative number',
+                    });
+                }
+                data.commissionAmount = commissionAmountNum;
+            }
+
+            if (underwriterCommissionAmount !== undefined) {
+                const underwriterCommissionAmountNum =
+                    underwriterCommissionAmount === '' || underwriterCommissionAmount === null
+                        ? null
+                        : typeof underwriterCommissionAmount === 'number'
+                          ? underwriterCommissionAmount
+                          : parseFloat(
+                                String(underwriterCommissionAmount).replace(/[^0-9.-]+/g, ''),
+                            );
+                if (
+                    underwriterCommissionAmountNum !== null &&
+                    (Number.isNaN(underwriterCommissionAmountNum) ||
+                        underwriterCommissionAmountNum < 0)
+                ) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'underwriterCommissionAmount must be a non-negative number',
+                    });
+                }
+                data.underwriterCommissionAmount = underwriterCommissionAmountNum;
+            }
+
+            if (brokerCommissionAmount !== undefined) {
+                const brokerCommissionAmountNum =
+                    brokerCommissionAmount === '' || brokerCommissionAmount === null
+                        ? null
+                        : typeof brokerCommissionAmount === 'number'
+                          ? brokerCommissionAmount
+                          : parseFloat(
+                                String(brokerCommissionAmount).replace(/[^0-9.-]+/g, ''),
+                            );
+                if (
+                    brokerCommissionAmountNum !== null &&
+                    (Number.isNaN(brokerCommissionAmountNum) ||
+                        brokerCommissionAmountNum < 0)
+                ) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'brokerCommissionAmount must be a non-negative number',
+                    });
+                }
+                data.brokerCommissionAmount = brokerCommissionAmountNum;
+            }
+
+            if (brokerName !== undefined) {
+                const trimmedBrokerName = String(brokerName ?? '').trim();
+                data.brokerName = trimmedBrokerName.length > 0 ? trimmedBrokerName : null;
+            }
+
+            if (underwriterCommissionName !== undefined) {
+                const trimmedUnderwriterCommissionName = String(
+                    underwriterCommissionName ?? '',
+                ).trim();
+                data.underwriterCommissionName =
+                    trimmedUnderwriterCommissionName.length > 0
+                        ? trimmedUnderwriterCommissionName
+                        : null;
+            }
+
             if (category !== undefined) {
                 if (category === null) {
                     data.category = null;
@@ -2880,6 +3576,42 @@ class ApplicationController {
                     const trimmedCategory = String(category).trim();
                     data.category = trimmedCategory.length > 0 ? trimmedCategory : null;
                 }
+            }
+
+            if (isoQueryResolved !== undefined) {
+                const roleUpper = String(authUser?.role || '')
+                    .toUpperCase()
+                    .replace(/-/g, '_');
+                const canResolveIsoQuery = [
+                    'UNDERWRITER',
+                    'SUPER_ADMIN',
+                    'ADMIN',
+                    'OPERATIONS',
+                ].includes(roleUpper);
+                if (!canResolveIsoQuery) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'You do not have permission to update ISO query resolution.',
+                    });
+                }
+                const resolved = isoQueryResolved === true;
+                if (resolved) {
+                    const isoCommentCount = await prisma.comment.count({
+                        where: {
+                            applicationId: application.id,
+                            type: 'ISO Comment',
+                            isDeleted: false,
+                        },
+                    });
+                    if (isoCommentCount === 0) {
+                        return res.status(400).json({
+                            success: false,
+                            message:
+                                'Cannot mark ISO query as resolved without an ISO comment on this application.',
+                        });
+                    }
+                }
+                data.isoQueryResolved = resolved;
             }
 
             if (Object.keys(data).length === 0) {
@@ -2912,6 +3644,40 @@ class ApplicationController {
                 }
             }
 
+            const authUserForUpdate = getAuthenticatedUser(req);
+            const resolvedNextQueue =
+                data.currentQueue !== undefined
+                    ? String(data.currentQueue)
+                    : String(application.currentQueue || '');
+            const resolvedNextState =
+                data.currentState !== undefined
+                    ? String(data.currentState)
+                    : String(application.currentState || '');
+            if (shouldRecordUnderwriterApproval(resolvedNextQueue, resolvedNextState)) {
+                Object.assign(
+                    data,
+                    patchRecordUnderwriterApproval(authUserForUpdate, application),
+                );
+            }
+
+            if (data.currentQueue !== undefined) {
+                const scrubberPatch = patchRecordScrubberClaimOnAdvance(
+                    authUserForUpdate,
+                    application,
+                    application.currentQueue,
+                    resolvedNextQueue,
+                );
+                if (scrubberPatch) {
+                    Object.assign(data, scrubberPatch);
+                }
+            }
+
+            const previousQueue = application.currentQueue;
+            const previousState = application.currentState;
+            const statusNorm = status !== undefined ? String(status).trim().toLowerCase() : '';
+            const statusSentToFu =
+                statusNorm === 'sent to final scrubbing' || statusNorm === 'sent to underwriter';
+
             const updatedRecord = await prisma.application.update({
                 where: whereClause,
                 data,
@@ -2922,11 +3688,41 @@ class ApplicationController {
                     client: true,
                     iso: true,
                     files: true,
-                    claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
                 },
             });
 
             const updatedApplication = mapApplicationToApi(updatedRecord);
+
+            if (
+                data.currentQueue !== undefined ||
+                data.currentState !== undefined ||
+                status !== undefined
+            ) {
+                const authUserForNotif = getAuthenticatedUser(req);
+                scheduleApplicationStageNotification({
+                    application: updatedRecord as any,
+                    previousQueue,
+                    previousState,
+                    actorId: authUserForNotif?.id || null,
+                    actorName: (req as any).user?.name || '',
+                    actorRole: authUserForNotif?.role || null,
+                    transitionAction: statusSentToFu ? 'SEND_TO_FINAL_UNDERWRITER' : 'QUEUE_CHANGED',
+                });
+            }
+
+            try {
+                await recordApplicationUpdateActivityLog({
+                    req,
+                    before: application as any,
+                    after: updatedRecord as any,
+                    user: authUserForUpdate,
+                    actorName: (req as any).user?.name || '',
+                });
+            } catch (logError) {
+                console.error('Failed to create activity log for application update:', logError);
+            }
 
             invalidateAllApplicationStatsCache();
 
@@ -2954,10 +3750,17 @@ class ApplicationController {
                 'New',
                 'Review',
                 'Underwriting',
-                'Underwriter',
+                'Scrubbing',
                 'Final Review',
                 'Final Underwriter',
+                'Underwriter',
+                'Underwriter Approved',
+                'Final Approval',
+                'Approval Sent',
+                'ISO Approved',
                 'Approved',
+                'Contract Pending',
+                'Contract_Pending',
                 'Declined',
                 'On Hold',
                 'Contracted',
@@ -3000,28 +3803,13 @@ class ApplicationController {
                 });
             }
 
-            const previousQueue = existingApplication.currentQueue;
-            const roleUpper = String((req as any).user?.role || '')
-                .toUpperCase()
-                .replace(/-/g, '_');
-            const transition = resolveWorkflowQueueTransition(currentQueue, roleUpper);
-
-            const isUnderwriterSendToFinalUw =
-                transition.action === 'SEND_TO_FINAL_UNDERWRITER' && roleUpper === 'UNDERWRITER';
-
-            if (isUnderwriterSendToFinalUw) {
-                const claimId = existingApplication.claimedByUnderwriterId ?? null;
-                const userId = authUser?.id ?? null;
-                if (claimId && userId && claimId !== userId) {
-                    return res.status(403).json({
-                        success: false,
-                        message:
-                            'This deal is claimed by another underwriter. You cannot send it to Final Underwriter.',
-                    });
-                }
-            } else if (blockIfUnderwriterUnclaimedDeal(res, authUser, existingApplication)) {
+            if (blockIfUnderwriterUnclaimedDeal(res, authUser, existingApplication)) {
                 return;
             }
+
+            const previousQueue = existingApplication.currentQueue;
+            const roleUpper = String((req as any).user?.role || '').toUpperCase();
+            const transition = resolveWorkflowQueueTransition(currentQueue, roleUpper);
 
             const updateData: Prisma.ApplicationUpdateInput = {
                 currentQueue: transition.queue,
@@ -3029,12 +3817,55 @@ class ApplicationController {
             if (transition.state) {
                 updateData.currentState = transition.state;
             }
-            if (transition.action === 'SEND_TO_FINAL_UNDERWRITER') {
-                updateData.status = 'Sent to Final Underwriter';
+            // Scrubber's recommendation captured on the compliance-check modal
+            // ("Recommend Approval" / "Recommend Decline"). Persisted alongside the
+            // queue advance so the ops list "Scrubber Request" column can show it.
+            const rawScrubberRecommendation = (req.body as { scrubberRecommendation?: unknown })
+                ?.scrubberRecommendation;
+            if (rawScrubberRecommendation != null) {
+                const recommendation = String(rawScrubberRecommendation).trim();
+                const validRecommendations = ['Recommend Approval', 'Recommend Decline'];
+                if (recommendation && validRecommendations.includes(recommendation)) {
+                    updateData.scrubberRecommendation = recommendation;
+                }
             }
             const claimClear = patchClearUnderwriterClaimIfQueueChanged(previousQueue, transition.queue);
             if (claimClear) {
                 Object.assign(updateData, claimClear);
+            }
+            if (
+                transition.action === 'APPROVED' ||
+                shouldRecordUnderwriterApproval(transition.queue, transition.state)
+            ) {
+                Object.assign(
+                    updateData,
+                    patchRecordUnderwriterApproval(authUser, existingApplication),
+                );
+            }
+            const scrubberClaimPatch = patchRecordScrubberClaimOnAdvance(
+                authUser,
+                existingApplication,
+                previousQueue,
+                transition.queue,
+            );
+            if (scrubberClaimPatch) {
+                Object.assign(updateData, scrubberClaimPatch);
+            }
+
+            // Final approval: Underwriter signs off out of Final Approval — either into
+            // Contract Pending (Decision Logic path) or Final (Funding Call path).
+            const movingToContractPending =
+                normalizeQueueToken(transition.queue) === 'CONTRACT_PENDING';
+            const movingToFinal = normalizeQueueToken(transition.queue) === 'FINAL';
+            const previousWasFinalApproval =
+                normalizeQueueToken(previousQueue) === 'FINAL_APPROVAL' ||
+                normalizeQueueToken(existingApplication.currentState) === 'FINAL_APPROVAL';
+            if (
+                (movingToContractPending || movingToFinal) &&
+                previousWasFinalApproval &&
+                isUnderwriterApproverRole(authUser?.role)
+            ) {
+                updateData.underwriterAction = UNDERWRITER_ACTION_FINAL_APPROVED;
             }
 
             const applicationRecord = await prisma.application.update({
@@ -3047,7 +3878,8 @@ class ApplicationController {
                     client: true,
                     iso: true,
                     files: true,
-                    claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
                 },
             });
 
@@ -3076,10 +3908,10 @@ class ApplicationController {
 
                 if (transition.action === 'SEND_TO_UNDERWRITER' && roleUpper === 'AGENT') {
                     actionType = 'SEND_TO_UNDERWRITER';
-                    description = `${roleLabel} ${actorName}`.trim() + ' sent the application to Underwriter.';
-                } else if (transition.action === 'SEND_TO_FINAL_UNDERWRITER' && roleUpper === 'UNDERWRITER') {
+                    description = `${roleLabel} ${actorName}`.trim() + ' sent the application to Scrubbing.';
+                } else if (transition.action === 'SEND_TO_FINAL_UNDERWRITER' && roleUpper === 'SCRUBBING') {
                     actionType = 'SEND_TO_FINAL_UNDERWRITER';
-                    description = `${roleLabel} ${actorName}`.trim() + ' forwarded the application to Final Underwriter.';
+                    description = `${roleLabel} ${actorName}`.trim() + ' sent a recommend request for approval.';
                 } else if (transition.action === 'APPROVED') {
                     actionType = 'APPROVED';
                     description = `${roleLabel} ${actorName}`.trim() + ' approved the application.';
@@ -3102,13 +3934,23 @@ class ApplicationController {
                 console.error('Failed to create activity log for queue update:', logError);
             }
 
-            // Best-effort notification: when an Agent sends an application to Underwriting, notify all Underwriters
+            // Stage notifications (all queue transitions + realtime push)
             try {
-                const upperQueue = normalizeQueueToken(applicationRecord.currentQueue);
                 const authUserForNotif = getAuthenticatedUser(req);
-                const roleUpper = String(authUserForNotif?.role || '').toUpperCase();
+                scheduleApplicationStageNotification({
+                    application: applicationRecord as any,
+                    previousQueue,
+                    previousState: existingApplication.currentState,
+                    actorId: authUserForNotif?.id || null,
+                    actorName: (req as any).user?.name || '',
+                    actorRole: authUserForNotif?.role || null,
+                    transitionAction: transition.action ?? 'QUEUE_CHANGED',
+                });
 
-                if (upperQueue === 'UNDERWRITER' && roleUpper === 'AGENT') {
+                // Best-effort email when Agent sends to Scrubbing (unchanged behaviour)
+                const upperQueue = normalizeQueueToken(applicationRecord.currentQueue);
+                const roleUpper = String(authUserForNotif?.role || '').toUpperCase();
+                if (upperQueue === 'SCRUBBING' && roleUpper === 'AGENT') {
                     const attributedSenderId = await resolveApplicationAttributedUserId(
                         req,
                         applicationRecord,
@@ -3122,11 +3964,8 @@ class ApplicationController {
                         'Client';
                     const appIdNumber = (applicationRecord as any)?.applicationId ?? '';
 
-                    const title = `${senderName} sent a new application`;
-                    const message = `New application${appIdNumber ? ` #${appIdNumber}` : ''} for ${clientName}.`;
-
                     const underwriters = await prisma.user.findMany({
-                        where: { role: 'UNDERWRITER', isActive: true },
+                        where: { role: 'SCRUBBING', isActive: true },
                         select: { id: true, email: true, firstName: true, lastName: true },
                     });
 
@@ -3138,20 +3977,6 @@ class ApplicationController {
                         }))
                         .filter((u) => u.id && u.id !== senderId);
 
-                    if (recipients.length > 0) {
-                        await prisma.notification.createMany({
-                            data: recipients.map(({ id: recipientId }) => ({
-                                title,
-                                message,
-                                type: 'application_update',
-                                recipientId,
-                                applicationId: applicationRecord.id,
-                                createdById: senderId || null,
-                            })),
-                        });
-                    }
-
-                    // Best-effort email to underwriters (fire-and-forget; does not block request)
                     const baseUrl = resolveCrmFrontendBaseUrl();
                     const appRouteId =
                         (applicationRecord as any)?.applicationId != null &&
@@ -3162,25 +3987,8 @@ class ApplicationController {
                         ? `${baseUrl.replace(/\/$/, '')}/application-details/${appRouteId}`
                         : undefined;
 
-                    const companyName =
-                        (applicationRecord as any)?.client?.businessName || clientName || 'your business';
-                    const isoEmail = String((applicationRecord as any)?.iso?.email || '').trim();
-                    const isoName = String((applicationRecord as any)?.iso?.name || '').trim();
-                    const templateRecipientName = isoName || isoEmail || clientName;
-
-                    let publicPortalUrl: string | undefined;
-                    if (isoEmail.length > 0) {
-                        const portalToken = await createPublicPortalToken(applicationRecord.id, {
-                            expiresInDays: 90,
-                        });
-                        const feBase = resolveCrmFrontendBaseUrl();
-                        if (portalToken && feBase) {
-                            publicPortalUrl = `${feBase}/public/application/status/${portalToken}`;
-                        }
-                    }
-
                     setImmediate(() => {
-                        const underwriterEmails = Promise.allSettled(
+                        void Promise.allSettled(
                             recipients
                                 .filter((r) => r.email)
                                 .map((r) =>
@@ -3194,84 +4002,10 @@ class ApplicationController {
                                     })
                                 ),
                         );
-                        const clientEmailPromise =
-                            isoEmail.length > 0
-                                ? sendApplicationSentToUnderwritingClientEmail({
-                                    to: isoEmail,
-                                    clientName: templateRecipientName,
-                                    companyName,
-                                    agentName: senderName,
-                                    applicationNumber: appIdNumber,
-                                    viewApplicationUrl,
-                                    publicPortalUrl,
-                                })
-                                : Promise.resolve();
-                        void Promise.allSettled([underwriterEmails, clientEmailPromise]);
-                    });
-                } else if (transition.action === 'SEND_TO_FINAL_UNDERWRITER') {
-                    // Client email for any authenticated user who may move the deal to Final Underwriter
-                    // (not only role UNDERWRITER — ADMIN/OPERATIONS/etc. were previously excluded and never notified the client).
-                    const clientName =
-                        (applicationRecord as any)?.client?.businessName ||
-                        `${(applicationRecord as any)?.client?.ownerFirstName || ''} ${(applicationRecord as any)?.client?.ownerLastName || ''}`.trim() ||
-                        'Client';
-                    const appIdNumber = (applicationRecord as any)?.applicationId ?? '';
-
-                    const baseUrl = resolveCrmFrontendBaseUrl();
-                    const appRouteId =
-                        (applicationRecord as any)?.applicationId != null &&
-                            String((applicationRecord as any).applicationId).trim() !== ''
-                            ? String((applicationRecord as any).applicationId)
-                            : String((applicationRecord as any)?.id || applicationRecord.id);
-                    const viewApplicationUrl = baseUrl
-                        ? `${baseUrl.replace(/\/$/, '')}/application-details/${appRouteId}`
-                        : undefined;
-
-                    const companyName =
-                        (applicationRecord as any)?.client?.businessName || clientName || 'your business';
-                    const isoEmail = String((applicationRecord as any)?.iso?.email || '').trim();
-                    const isoName = String((applicationRecord as any)?.iso?.name || '').trim();
-                    const templateRecipientName = isoName || isoEmail || clientName;
-
-                    let publicPortalUrl: string | undefined;
-                    if (isoEmail.length > 0) {
-                        try {
-                            const portalToken = await createPublicPortalToken(applicationRecord.id, {
-                                expiresInDays: 90,
-                            });
-                            const feBase = resolveCrmFrontendBaseUrl();
-                            if (portalToken && feBase) {
-                                publicPortalUrl = `${feBase}/public/application/status/${portalToken}`;
-                            }
-                        } catch (tokenErr) {
-                            console.error('Public portal token failed (underwriting-complete ISO email will still attempt send):', tokenErr);
-                        }
-                    }
-
-                    if (isoEmail.length === 0) {
-                        console.warn(
-                            '[email] Underwriting-complete ISO email skipped: deal ISO has no email — application',
-                            (applicationRecord as any)?.applicationId ?? applicationRecord.id,
-                        );
-                    }
-
-                    setImmediate(() => {
-                        const clientEmailPromise =
-                            isoEmail.length > 0
-                                ? sendApplicationUnderwritingCompletedClientEmail({
-                                    to: isoEmail,
-                                    clientName: templateRecipientName,
-                                    companyName,
-                                    viewApplicationUrl,
-                                    publicPortalUrl,
-                                    applicationNumber: appIdNumber,
-                                })
-                                : Promise.resolve();
-                        void clientEmailPromise;
                     });
                 }
             } catch (notifError) {
-                console.error('Failed to create underwriter notification for queue update:', notifError);
+                console.error('Failed to create stage notification for queue update:', notifError);
             }
 
             invalidateAllApplicationStatsCache();
@@ -3291,6 +4025,133 @@ class ApplicationController {
     }
 
     async claimUnderwriterDeal(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role ? String(authUser.role).toUpperCase().replace(/-/g, '_') : '';
+            if (roleUpper !== 'SCRUBBING') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only underwriters can claim deals',
+                });
+            }
+            const userId = authUser?.id;
+            if (!userId) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const claimInclude: Prisma.ApplicationInclude = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, claimInclude);
+
+            if (forbidden) {
+                return res.status(403).json({ success: false, message: 'Forbidden' });
+            }
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            if (normalizeQueueToken(application.currentQueue) !== 'SCRUBBING') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Only applications in the Scrubbing queue can be claimed',
+                });
+            }
+
+            const appRow = application as typeof application & {
+                claimedByUnderwriterId?: string | null;
+            };
+
+            if (appRow.claimedByUnderwriterId && appRow.claimedByUnderwriterId === userId) {
+                return res.status(200).json({
+                    success: true,
+                    message: 'Already claimed',
+                    data: mapApplicationToApi(application),
+                });
+            }
+
+            const updated = await prisma.application.updateMany({
+                where: {
+                    id: application.id,
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
+                    claimedByUnderwriterId: null,
+                },
+                data: {
+                    claimedByUnderwriterId: userId,
+                    claimedAt: new Date(),
+                },
+            });
+
+            if (updated.count === 0) {
+                const refreshedLost = await prisma.application.findUnique({
+                    where: { id: application.id },
+                    include: claimInclude,
+                });
+                if (refreshedLost?.claimedByUnderwriterId === userId) {
+                    return res.status(200).json({
+                        success: true,
+                        message: 'Already claimed',
+                        data: mapApplicationToApi(refreshedLost),
+                    });
+                }
+                return res.status(409).json({
+                    success: false,
+                    message: 'This deal was claimed by another scrubbing',
+                });
+            }
+
+            const refreshed = await prisma.application.findUnique({
+                where: { id: application.id },
+                include: claimInclude,
+            });
+            if (!refreshed) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            try {
+                const actorName = String((req as any).user?.name || '').trim() || 'Scrubbing';
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'UNDERWRITER_CLAIMED',
+                    actionDescription: `${actorName} claimed this deal for underwriting.`,
+                    previousStatus: `${application.currentQueue} / ${application.currentState}`,
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: { claimedByUnderwriterId: userId },
+                });
+            } catch (logErr) {
+                console.error('Failed to log scrubbing claim:', logErr);
+            }
+
+            return res.status(200).json({
+                success: true,
+                message: 'Deal claimed',
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Claim scrubbing deal error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    async claimFinalUnderwriterDeal(req: Request, res: Response) {
         try {
             const { id } = req.params;
             const authUser = getAuthenticatedUser(req);
@@ -3317,7 +4178,9 @@ class ApplicationController {
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
                 client: true,
                 iso: true,
-                claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
             };
 
             const { application, forbidden } = await getApplicationForUser(whereClause, authUser, claimInclude);
@@ -3337,10 +4200,10 @@ class ApplicationController {
             }
 
             const appRow = application as typeof application & {
-                claimedByUnderwriterId?: string | null;
+                assignedUnderwriterId?: string | null;
             };
 
-            if (appRow.claimedByUnderwriterId && appRow.claimedByUnderwriterId === userId) {
+            if (appRow.assignedUnderwriterId && appRow.assignedUnderwriterId === userId) {
                 return res.status(200).json({
                     success: true,
                     message: 'Already claimed',
@@ -3352,11 +4215,10 @@ class ApplicationController {
                 where: {
                     id: application.id,
                     currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
-                    claimedByUnderwriterId: null,
+                    assignedUnderwriterId: null,
                 },
                 data: {
-                    claimedByUnderwriterId: userId,
-                    claimedAt: new Date(),
+                    assignedUnderwriterId: userId,
                 },
             });
 
@@ -3365,7 +4227,7 @@ class ApplicationController {
                     where: { id: application.id },
                     include: claimInclude,
                 });
-                if (refreshedLost?.claimedByUnderwriterId === userId) {
+                if (refreshedLost?.assignedUnderwriterId === userId) {
                     return res.status(200).json({
                         success: true,
                         message: 'Already claimed',
@@ -3374,7 +4236,7 @@ class ApplicationController {
                 }
                 return res.status(409).json({
                     success: false,
-                    message: 'This deal was claimed by another underwriter',
+                    message: 'This application was claimed by another underwriter',
                 });
             }
 
@@ -3393,18 +4255,20 @@ class ApplicationController {
                     user: authUser,
                     req,
                     actionType: 'UNDERWRITER_CLAIMED',
-                    actionDescription: `${actorName} claimed this deal for underwriting.`,
+                    actionDescription: `${actorName} claimed this application for review.`,
                     previousStatus: `${application.currentQueue} / ${application.currentState}`,
                     currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
-                    metadata: { claimedByUnderwriterId: userId },
+                    metadata: { assignedUnderwriterId: userId },
                 });
             } catch (logErr) {
                 console.error('Failed to log underwriter claim:', logErr);
             }
 
+            invalidateAllApplicationStatsCache();
+
             return res.status(200).json({
                 success: true,
-                message: 'Deal claimed',
+                message: 'Application claimed',
                 data: mapApplicationToApi(refreshed),
             });
         } catch (error) {
@@ -3427,7 +4291,7 @@ class ApplicationController {
             if (!allowedRoles.has(roleUpper)) {
                 return res.status(403).json({
                     success: false,
-                    message: 'Only admin can take back a deal from Underwriter',
+                    message: 'Only admin can take back a deal from Scrubbing',
                 });
             }
             const userId = authUser?.id;
@@ -3446,7 +4310,8 @@ class ApplicationController {
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
                 client: true,
                 iso: true,
-                claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
             };
 
             const { application, forbidden } = await getApplicationForUser(whereClause, authUser, claimInclude);
@@ -3458,10 +4323,10 @@ class ApplicationController {
                 return res.status(404).json({ success: false, message: 'Application not found' });
             }
 
-            if (normalizeQueueToken(application.currentQueue) !== 'UNDERWRITER') {
+            if (normalizeQueueToken(application.currentQueue) !== 'SCRUBBING') {
                 return res.status(400).json({
                     success: false,
-                    message: 'Only applications in the Underwriter queue can be released to the queue',
+                    message: 'Only applications in the Scrubbing queue can be released to the queue',
                 });
             }
 
@@ -3472,14 +4337,14 @@ class ApplicationController {
             if (!claimedByUnderwriterId) {
                 return res.status(400).json({
                     success: false,
-                    message: 'This deal is not currently claimed by an underwriter',
+                    message: 'This deal is not currently claimed by an scrubbing',
                 });
             }
 
             await prisma.application.updateMany({
                 where: {
                     id: application.id,
-                    currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
                     claimedByUnderwriterId,
                 },
                 data: {
@@ -3497,18 +4362,18 @@ class ApplicationController {
             }
 
             try {
-                const actorName = String((req as any).user?.name || '').trim() || 'Underwriter';
+                const actorName = String((req as any).user?.name || '').trim() || 'Scrubbing';
                 await createApplicationActivityLog({
                     applicationId: refreshed.id,
                     user: authUser,
                     req,
                     actionType: 'UNDERWRITER_RELEASED',
-                    actionDescription: `${actorName} returned this deal to the underwriter queue.`,
+                    actionDescription: `${actorName} returned this deal to the scrubbing queue.`,
                     previousStatus: `${application.currentQueue} / ${application.currentState}`,
                     currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
                 });
             } catch (logErr) {
-                console.error('Failed to log underwriter release:', logErr);
+                console.error('Failed to log scrubbing release:', logErr);
             }
 
             return res.status(200).json({
@@ -3517,7 +4382,269 @@ class ApplicationController {
                 data: mapApplicationToApi(refreshed),
             });
         } catch (error) {
-            console.error('Release underwriter deal error:', error);
+            console.error('Release scrubbing deal error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Super Admin / Scrubbing: assign application to a specific Underwriter and notify them in-app. */
+    async assignApplicationToUnderwriter(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const { underwriterId } = req.body ?? {};
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            const canAssign =
+                roleUpper === 'SUPER_ADMIN' ||
+                roleUpper === 'SUPERADMIN' ||
+                roleUpper === 'SCRUBBING';
+            if (!canAssign) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You are not allowed to assign applications to an Underwriter',
+                });
+            }
+            const actorId = authUser?.id;
+            if (!actorId) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+            const targetUnderwriterId = String(underwriterId ?? '').trim();
+            if (!targetUnderwriterId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Underwriter is required',
+                });
+            }
+
+            const targetUser = await prisma.user.findFirst({
+                where: {
+                    id: targetUnderwriterId,
+                    role: 'UNDERWRITER',
+                    isActive: true,
+                },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            });
+            if (!targetUser) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Selected Underwriter was not found or is inactive',
+                });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const include = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            } satisfies Prisma.ApplicationInclude;
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, include);
+
+            if (forbidden) {
+                return res.status(403).json({ success: false, message: 'Forbidden' });
+            }
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            const previousQueue = application.currentQueue;
+            const previousState = application.currentState;
+            const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+            const targetName =
+                `${targetUser.firstName || ''} ${targetUser.lastName || ''}`.trim() ||
+                targetUser.email ||
+                'Underwriter';
+
+            const refreshed = await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
+                    currentState: 'Sent to Underwriter',
+                    assignedUnderwriter: { connect: { id: targetUnderwriterId } },
+                },
+                include,
+            });
+
+            try {
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'QUEUE_CHANGED',
+                    actionDescription: `${actorName} assigned application to Underwriter ${targetName}.`,
+                    previousStatus: `${previousQueue} / ${previousState}`,
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: { assignedUnderwriterId: targetUnderwriterId },
+                });
+            } catch (logErr) {
+                console.error('Failed to log underwriter assignment:', logErr);
+            }
+
+            try {
+                await notifyAdminAssignedApplicationToUnderwriter({
+                    application: refreshed as any,
+                    recipientId: targetUnderwriterId,
+                    actorId: String(actorId),
+                    actorName,
+                });
+            } catch (notifErr) {
+                console.error('Failed to notify assigned Underwriter:', notifErr);
+            }
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: 'Application assigned to Underwriter',
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Assign application to Underwriter error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Super Admin / Operations: send an Underwriter Approved deal back to the approving underwriter for final approval. */
+    async sendForFinalUnderwriterApproval(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const sourceRaw = (req.body as { source?: unknown } | undefined)?.source;
+            const finalApprovalSource =
+                sourceRaw === 'Decision Logic' || sourceRaw === 'Funding Call'
+                    ? sourceRaw
+                    : null;
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            if (
+                roleUpper !== 'SUPER_ADMIN' &&
+                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'OPERATIONS'
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        'Only Super Admin or Operations can send applications for final Underwriter approval',
+                });
+            }
+            const actorId = authUser?.id;
+            if (!actorId) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const include = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            } satisfies Prisma.ApplicationInclude;
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, include);
+
+            if (forbidden) {
+                return res.status(403).json({ success: false, message: 'Forbidden' });
+            }
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            const target = await resolveFinalApprovalUnderwriterTarget(prisma, {
+                approvedByUnderwriterId: application.approvedByUnderwriterId,
+                assignedUnderwriterId: application.assignedUnderwriterId,
+                claimedByUnderwriterId: application.claimedByUnderwriterId,
+            });
+            if (!target) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        'No active Underwriter is linked to this application. Assign or record an Underwriter approval before sending for final approval.',
+                });
+            }
+            const approvingUnderwriterId = target.userId;
+
+            const previousQueue = application.currentQueue;
+            const previousState = application.currentState;
+            const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+            const targetName =
+                `${target.firstName || ''} ${target.lastName || ''}`.trim() ||
+                target.email ||
+                'Underwriter';
+
+            const refreshed = await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    currentQueue: FINAL_APPROVAL_QUEUE,
+                    currentState: FINAL_APPROVAL_STATE,
+                    assignedUnderwriter: { connect: { id: approvingUnderwriterId } },
+                    ...(finalApprovalSource ? { finalApprovalSource } : {}),
+                },
+                include,
+            });
+
+            try {
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'QUEUE_CHANGED',
+                    actionDescription: `${actorName} sent application to ${targetName} for final Underwriter approval.`,
+                    previousStatus: `${previousQueue} / ${previousState}`,
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: {
+                        assignedUnderwriterId: approvingUnderwriterId,
+                        ...(finalApprovalSource ? { finalApprovalSource } : {}),
+                    },
+                });
+            } catch (logErr) {
+                console.error('Failed to log final Underwriter approval send:', logErr);
+            }
+
+            try {
+                await notifyAdminAssignedApplicationToUnderwriter({
+                    application: refreshed as any,
+                    recipientId: approvingUnderwriterId,
+                    actorId: String(actorId),
+                    actorName,
+                });
+            } catch (notifErr) {
+                console.error('Failed to notify approving Underwriter:', notifErr);
+            }
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: `Application sent to ${targetName} for final approval`,
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Send for final Underwriter approval error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',
@@ -3734,10 +4861,17 @@ class ApplicationController {
     async rejectApplication(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const { reason, additionalComments, emailHtml, emailSubject } = req.body;
+            const {
+                reason,
+                additionalComments,
+                emailHtml,
+                emailSubject,
+                isoEmail: isoEmailOverride,
+                ccEmails,
+            } = req.body;
             const authUser = getAuthenticatedUser(req);
             const currentUserRole = authUser?.role;
-            const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
+            const isFinalUnderwriter = currentUserRole === 'UNDERWRITER';
 
             if (!reason || reason.trim() === '') {
                 return res.status(400).json({
@@ -3758,7 +4892,8 @@ class ApplicationController {
 
             const { application: existingApplication, forbidden } = await getApplicationForUser(
                 whereClause,
-                authUser
+                authUser,
+                { client: { select: { notes: true } } },
             );
 
             if (forbidden) {
@@ -3782,17 +4917,49 @@ class ApplicationController {
             const previousQueue = existingApplication.currentQueue;
             const previousState = existingApplication.currentState;
 
+            const clientBusinessName = String(
+                (existingApplication as { client?: { businessName?: string | null } | null })
+                    .client?.businessName || '',
+            ).trim();
+            const properRejectionSubject =
+                typeof emailSubject === 'string' && emailSubject.trim()
+                    ? emailSubject.trim()
+                    : buildApplicationRejectionEmailSubject(clientBusinessName);
+            const emailThreadContext = await resolveIsoSubmissionEmailThreadContext(
+                {
+                    note: existingApplication.note,
+                    createdById: existingApplication.createdById,
+                    client: (existingApplication as { client?: { notes?: string | null } | null })
+                        .client,
+                },
+                properRejectionSubject,
+            );
+
+            const storedGmailMessageId = parseGmailMessageIdFromApplicationNote(
+                existingApplication.note,
+            );
+            const declineNote = storedGmailMessageId
+                ? `${gmailAutoCreateMessageNote(storedGmailMessageId)}\n${fullNote}`
+                : fullNote;
+
+            const declineUpdateData: Prisma.ApplicationUpdateInput = {
+                currentQueue: 'Declined',
+                currentState: ApplicationState.CANCELLED,
+                note: declineNote,
+            };
+            // Record the Underwriter's decline action on the deal record.
+            if (isUnderwriterApproverRole(currentUserRole)) {
+                declineUpdateData.underwriterAction = UNDERWRITER_ACTION_DECLINED;
+            }
+
             const applicationRecord = await prisma.application.update({
                 where: whereClause,
-                data: {
-                    currentQueue: 'Declined',
-                    currentState: ApplicationState.CANCELLED,
-                    note: fullNote,
-                },
+                data: declineUpdateData,
                 include: {
                     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
                     salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
                     client: true,
+                    iso: true,
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                     files: true,
                 },
@@ -3807,22 +4974,15 @@ class ApplicationController {
                 });
             }
 
-            // Send notification to Agent and Underwriters (when Final Underwriter rejects)
+            // Send notification to Agent and Underwriters (when Underwriter rejects)
             try {
                 const appRecord = applicationRecord as any;
-                const clientName = (application as any).client?.business?.name ||
-                    `${(application as any).client?.owner?.firstName || ''} ${(application as any).client?.owner?.lastName || ''}`.trim() ||
-                    'Unknown Client';
-                const applicationIdNumber = (application as any).applicationId || 'N/A';
-                const notificationTitle = `Application #${applicationIdNumber} Rejected`;
-                const notificationMessage = `Your application #${applicationIdNumber} for ${clientName} has been rejected. Reason: ${fullNote}`;
-
-                // Use raw IDs - exclude sender (don't notify yourself)
-                const recipientIds = new Set<string>();
                 const attributedCreatedById = await resolveApplicationAttributedUserId(
                     req,
                     appRecord,
                 );
+
+                const recipientIds = new Set<string>();
                 const addIfNotSender = (id: string) => {
                     const sid = String(id);
                     if (sid && sid !== String(attributedCreatedById)) recipientIds.add(sid);
@@ -3831,25 +4991,18 @@ class ApplicationController {
                 if (appRecord.salesRepresentativeId) addIfNotSender(appRecord.salesRepresentativeId);
                 if (isFinalUnderwriter) {
                     const underwriters = await prisma.user.findMany({
-                        where: { role: 'UNDERWRITER' },
+                        where: { role: 'SCRUBBING' },
                         select: { id: true },
                     });
                     underwriters.forEach((u) => addIfNotSender(u.id));
                 }
 
-                const appIdForNotif = appRecord.id;
-                for (const recId of recipientIds) {
-                    await prisma.notification.create({
-                        data: {
-                            title: notificationTitle,
-                            message: notificationMessage,
-                            type: 'application_update',
-                            recipientId: String(recId),
-                            applicationId: appIdForNotif,
-                            createdById: attributedCreatedById,
-                        },
-                    });
-                }
+                await notifyApplicationRejected({
+                    application: appRecord,
+                    actorId: attributedCreatedById,
+                    reason: fullNote,
+                    extraRecipientIds: Array.from(recipientIds),
+                });
 
                 if (recipientIds.size === 0) {
                     console.warn('No recipient found for rejection notification. Application:', appRecord.id);
@@ -3863,15 +5016,155 @@ class ApplicationController {
                 });
             }
 
-            // Best-effort activity log for rejection
-            try {
-                const authUserForLog = getAuthenticatedUser(req);
-                const roleLabel = authUserForLog?.role
-                    ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
-                    : 'User';
-                const actorName = (req as any).user?.name || '';
-                const reasonText = reason.trim();
+            // Best-effort activity log for rejection (skipped when the new decline template email is audited)
+            let rejectionCommunicationLogged = false;
+            let rejectionEmailDelivery: {
+                sent: boolean;
+                emailedTo: string[];
+                emailedCc: string[];
+                ccErrors: string[];
+                sgMessageId?: string;
+            } = {
+                sent: false,
+                emailedTo: [],
+                emailedCc: [],
+                ccErrors: [],
+            };
+            const authUserForLog = getAuthenticatedUser(req);
+            const roleLabel = authUserForLog?.role
+                ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
+                : 'User';
+            const actorName = (req as any).user?.name || '';
+            const reasonText = reason.trim();
 
+            const parsedCcEmails = (() => {
+                if (Array.isArray(ccEmails)) {
+                    return ccEmails.map((e: unknown) => String(e || '').trim()).filter(Boolean);
+                }
+                if (typeof ccEmails === 'string' && ccEmails.trim()) {
+                    return ccEmails
+                        .split(/[,;]+/)
+                        .map((e) => e.trim())
+                        .filter(Boolean);
+                }
+                return [];
+            })();
+            console.info('[reject] Decline request recipients', {
+                applicationId: existingApplication.id,
+                isoEmailOverride: typeof isoEmailOverride === 'string' ? isoEmailOverride.trim() : '',
+                ccEmails: parsedCcEmails,
+            });
+
+            // Best-effort: notify the linked ISO with the branded decline template.
+            try {
+                const iso = (applicationRecord as any).iso;
+                const isoName = String(iso?.name ?? '').trim();
+                const linkedIsoEmail = String(iso?.email ?? '').trim();
+                const isoEmailOverrideTrimmed =
+                    typeof isoEmailOverride === 'string' ? isoEmailOverride.trim() : '';
+                const isoEmail = isoEmailOverrideTrimmed || linkedIsoEmail;
+                const emailCcList = parsedCcEmails;
+                const uniqueCcList = [...new Set(emailCcList.map((e) => e.toLowerCase()))]
+                    .map((lower) => emailCcList.find((e) => e.toLowerCase() === lower) || lower)
+                    .filter((e) => e.toLowerCase() !== isoEmail.toLowerCase());
+
+                if (uniqueCcList.length > 0) {
+                    console.info('[reject] Decline email CC recipients:', {
+                        applicationId: applicationRecord.id,
+                        to: isoEmail,
+                        cc: uniqueCcList,
+                    });
+                }
+
+                if (isoEmail) {
+                    const clientEmailHtml =
+                        typeof emailHtml === 'string' && emailHtml.trim() ? emailHtml.trim() : undefined;
+                    const clientEmailSubject =
+                        emailThreadContext?.replySubject || properRejectionSubject;
+                    const trackingId = randomUUID();
+
+                    try {
+                        await recordCommunicationAudit(req, {
+                            outboundCommunicationId: trackingId,
+                            applicationId: applicationRecord.id,
+                            channel: 'EMAIL',
+                            recipientType: 'ISO',
+                            recipient: isoEmail,
+                            subject: clientEmailSubject || 'Application Rejected',
+                            body: clientEmailHtml,
+                            templateName: 'Application declined template',
+                            actionType: 'APPLICATION_REJECTED',
+                            actionDescription:
+                                `${roleLabel} ${actorName}`.trim() +
+                                ` rejected the application and sent the decline template to the ISO. Reason: ${reasonText}`,
+                            currentStatus: `${applicationRecord.currentQueue} / ${applicationRecord.currentState}`,
+                            user: authUserForLog,
+                            metadata: {
+                                reason: reasonText,
+                                additionalComments: additionalCommentsText,
+                                template: 'rejection',
+                                status: 'sent',
+                                ccEmails: uniqueCcList,
+                                emailThread: emailThreadContext
+                                    ? {
+                                          gmailMessageId: emailThreadContext.gmailMessageId,
+                                          gmailThreadId: emailThreadContext.gmailThreadId,
+                                          inReplyTo: emailThreadContext.inReplyTo,
+                                      }
+                                    : undefined,
+                                delivery: {
+                                    status: 'sent',
+                                    sentAt: new Date().toISOString(),
+                                },
+                            },
+                        });
+                        rejectionCommunicationLogged = true;
+                    } catch (auditErr) {
+                        console.error(
+                            'Failed to create communication audit for rejection email:',
+                            auditErr,
+                        );
+                    }
+
+                    rejectionEmailDelivery = await sendApplicationRejectionEmail({
+                        to: isoEmail,
+                        cc: uniqueCcList.length ? uniqueCcList : undefined,
+                        inReplyTo: emailThreadContext?.inReplyTo,
+                        references: emailThreadContext?.references,
+                        clientName: isoName || isoEmail,
+                        primaryReason: reason.trim(),
+                        otherReasons: additionalCommentsText,
+                        html: clientEmailHtml,
+                        subject: clientEmailSubject,
+                        freshSubject: properRejectionSubject,
+                        trackingId,
+                    });
+
+                    if (rejectionEmailDelivery.sent && rejectionEmailDelivery.sgMessageId) {
+                        try {
+                            await storeSgMessageIdOnOutbound(
+                                trackingId,
+                                rejectionEmailDelivery.sgMessageId,
+                            );
+                        } catch (metaErr) {
+                            console.error(
+                                'Failed to store SendGrid message id for rejection email:',
+                                metaErr,
+                            );
+                        }
+                    }
+                } else {
+                    console.warn(
+                        '[reject] Skipped ISO decline email — no linked ISO email on application',
+                        applicationRecord.id,
+                    );
+                }
+            } catch (rejectionEmailError) {
+                console.error('Failed to send ISO rejection email:', rejectionEmailError);
+            }
+
+            if (!rejectionCommunicationLogged) {
+            try {
                 await createApplicationActivityLog({
                     applicationId: applicationRecord.id,
                     user: authUserForLog,
@@ -3889,120 +5182,16 @@ class ApplicationController {
             } catch (logError) {
                 console.error('Failed to create activity log for rejection:', logError);
             }
-
-            // Best-effort: email the rejection template (rendered by the FE) to the
-            // linked ISO. Never fail the rejection if the email cannot be sent.
-            let rejectionEmailedTo: string | null = null;
-            try {
-                const rejectionHtml = typeof emailHtml === 'string' ? emailHtml.trim() : '';
-                if (rejectionHtml) {
-                    const appIsoId = (applicationRecord as any).isoId
-                        ? String((applicationRecord as any).isoId).trim()
-                        : '';
-
-                    let isoEmail = '';
-                    if (appIsoId) {
-                        const isoRow = await prisma.iso.findUnique({
-                            where: { id: appIsoId },
-                            select: { email: true },
-                        });
-                        isoEmail = String(isoRow?.email || '').trim();
-                    }
-
-                    if (!isoEmail) {
-                        console.warn(
-                            '[reject] No ISO email on file; rejection template not emailed. Application:',
-                            applicationRecord.id,
-                        );
-                    } else if (!isOutboundSmtpConfigured()) {
-                        console.warn(
-                            '[reject] SMTP not configured; rejection template not emailed. Set SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS.',
-                        );
-                    } else {
-                        const subject =
-                            (typeof emailSubject === 'string' && emailSubject.trim()) ||
-                            'Application Update';
-                        const rejectionTrackingId = randomUUID();
-
-                        // Create the mail-log row BEFORE sending so webhook events can
-                        // correlate delivery/open/click back to this OutboundCommunication.
-                        try {
-                            const authUserForLog = getAuthenticatedUser(req);
-                            const roleLabel = authUserForLog?.role
-                                ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
-                                : 'User';
-                            const actorName = (req as any).user?.name || '';
-
-                            await recordCommunicationAudit(req, {
-                                outboundCommunicationId: rejectionTrackingId,
-                                applicationId: applicationRecord.id,
-                                channel: 'EMAIL',
-                                recipientType: 'ISO',
-                                recipient: isoEmail,
-                                subject,
-                                body: rejectionHtml,
-                                templateName: 'Application rejected (ISO)',
-                                actionType: 'APPLICATION_REJECTED' as ApplicationActivityActionType,
-                                user: authUserForLog,
-                                currentStatus: `${applicationRecord.currentQueue} / ${applicationRecord.currentState}`,
-                                actionDescription:
-                                    `${roleLabel} ${actorName}`.trim() +
-                                    ' sent rejection email to the linked ISO.',
-                                metadata: {
-                                    emailSentTo: [isoEmail],
-                                    sentToLinkedIsoOnly: true,
-                                    template: 'rejection',
-                                    status: 'sent',
-                                },
-                            });
-                        } catch (logError) {
-                            console.error('Failed to create activity log for rejection email:', logError);
-                        }
-
-                        const result = await sendApplicationRejectionEmail({
-                            to: isoEmail,
-                            subject,
-                            html: rejectionHtml,
-                            trackingId: rejectionTrackingId,
-                        });
-
-                        if (result.sent) {
-                            rejectionEmailedTo = isoEmail;
-                        }
-
-                        if (result.sgMessageId) {
-                            try {
-                                const existing = await prisma.outboundCommunication.findUnique({
-                                    where: { id: rejectionTrackingId },
-                                    select: { metadata: true },
-                                });
-                                const mergedMeta = {
-                                    ...(existing?.metadata &&
-                                    typeof existing.metadata === 'object' &&
-                                    !Array.isArray(existing.metadata)
-                                        ? (existing.metadata as Record<string, unknown>)
-                                        : {}),
-                                    sgMessageId: result.sgMessageId,
-                                };
-                                await prisma.outboundCommunication.update({
-                                    where: { id: rejectionTrackingId },
-                                    data: { metadata: mergedMeta as object },
-                                });
-                            } catch (metaErr) {
-                                console.error('[rejectEmail] failed to store sgMessageId:', metaErr);
-                            }
-                        }
-                    }
-                }
-            } catch (emailError) {
-                console.error('Failed to send rejection email to ISO:', emailError);
             }
 
             return res.status(200).json({
                 success: true,
                 message: 'Application rejected successfully',
                 data: application,
-                rejectionEmailedTo,
+                emailSent: rejectionEmailDelivery.sent,
+                emailedTo: rejectionEmailDelivery.emailedTo,
+                emailedCc: rejectionEmailDelivery.emailedCc,
+                ccErrors: rejectionEmailDelivery.ccErrors,
             });
         } catch (error) {
             console.error('Reject application error:', error);
@@ -4013,7 +5202,7 @@ class ApplicationController {
         }
     }
 
-    // Delete application and all dependent records in a single transaction
+    // Soft-delete application (moves to Recently Deleted)
     async delete(req: Request, res: Response) {
         try {
             const { id } = req.params;
@@ -4041,139 +5230,43 @@ class ApplicationController {
                 return;
             }
 
-            await prisma.$transaction(
-                async (tx: Prisma.TransactionClient) => {
-                    await tx.scheduledRePayment.deleteMany({ where: { applicationId: id } });
+            const deletedAt = (application as { deletedAt?: Date | null }).deletedAt;
+            if (deletedAt) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application is already in Recently Deleted',
+                });
+            }
 
-                    const months = await tx.month.findMany({
-                        where: { applicationId: id },
-                        select: { id: true },
-                    });
-                    const monthIds = months.map((m) => m.id);
-                    if (monthIds.length > 0) {
-                        await tx.monthlyTransaction.deleteMany({
-                            where: { monthId: { in: monthIds } },
-                        });
-                    }
-                    await tx.month.deleteMany({ where: { applicationId: id } });
-
-                    const analyses = await tx.bankAnalysis.findMany({
-                        where: { applicationId: id },
-                        select: { id: true },
-                    });
-                    const analysisIds = analyses.map((a) => a.id);
-                    if (analysisIds.length > 0) {
-                        await tx.bankAnalysisRow.deleteMany({
-                            where: { bankAnalysisId: { in: analysisIds } },
-                        });
-                    }
-                    await tx.bankAnalysis.deleteMany({ where: { applicationId: id } });
-
-                    await tx.applicationFile.deleteMany({ where: { applicationId: id } });
-                    await tx.comment.deleteMany({ where: { applicationId: id } });
-                    await tx.complianceCheck.deleteMany({ where: { applicationId: id } });
-                    await tx.note.deleteMany({ where: { applicationId: id } });
-                    await tx.position.deleteMany({ where: { applicationId: id } });
-                    await tx.applicationQuestionResponse.deleteMany({
-                        where: { applicationId: id },
-                    });
-
-                    await tx.document.deleteMany({ where: { applicationId: id } });
-                    await tx.fundingInfo.deleteMany({ where: { applicationId: id } });
-
-                    await tx.docuSignEnvelope.deleteMany({
-                        where: {
-                            OR: [
-                                { termsOffer: { applicationId: id } },
-                                { contract: { applicationId: id } },
-                            ],
-                        },
-                    });
-
-                    await tx.paymentTerms.deleteMany({
-                        where: { contract: { applicationId: id } },
-                    });
-
-                    await tx.termsOffer.deleteMany({ where: { applicationId: id } });
-
-                    // Break optional FKs pointing at this application's contract(s) so Contract delete
-                    // does not fail when the DB uses RESTRICT (TermsOffer / ACH / EPO / Addendum).
-                    await tx.termsOffer.updateMany({
-                        where: { contracts: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-                    await tx.aCH.updateMany({
-                        where: { contract: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-                    await tx.ePO.updateMany({
-                        where: { contract: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-                    await tx.addendum.updateMany({
-                        where: { contract: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-
-                    // Contract rows reference OfferDecision (FK on Contract). Delete contracts first,
-                    // otherwise OfferDecision delete fails on DBs without ON DELETE CASCADE to Contract.
-                    await tx.funding.deleteMany({ where: { applicationId: id } });
-                    await tx.disclosure.deleteMany({ where: { applicationId: id } });
-                    await tx.contract.deleteMany({ where: { applicationId: id } });
-                    await tx.offerDecision.deleteMany({ where: { applicationId: id } });
-
-                    await tx.bankDetail.deleteMany({ where: { applicationId: id } });
-
-                    await tx.documentRequest.deleteMany({ where: { applicationId: id } });
-                    await tx.applicationSyndicatorDetails.deleteMany({ where: { applicationId: id } });
-                    await tx.commissionRequest.deleteMany({ where: { applicationId: id } });
-
-                    await tx.clientBankInfo.updateMany({
-                        where: { applicationId: id },
-                        data: { applicationId: null },
-                    });
-
-                    await tx.notification.updateMany({
-                        where: { applicationId: id },
-                        data: { applicationId: null },
-                    });
-                    await tx.conversation.updateMany({
-                        where: { applicationId: id },
-                        data: { applicationId: null },
-                    });
-
-                    await tx.applicationActivityLog.deleteMany({ where: { applicationId: id } });
-                    await tx.fundingCall.deleteMany({ where: { applicationId: id } });
-                    await tx.finalAnswer.deleteMany({ where: { applicationId: id } });
-                    await tx.publicApprovalToken.deleteMany({ where: { applicationId: id } });
-                    await tx.collectionPayment.deleteMany({ where: { applicationId: id } });
-                    await tx.offers.deleteMany({ where: { applicationId: id } });
-                    await tx.skippedActumTransactions.deleteMany({ where: { applicationId: id } });
-
-                    const withSyndicators = await tx.application.findUnique({
-                        where: { id },
-                        select: { syndicator: { select: { id: true } } },
-                    });
-                    if (withSyndicators && withSyndicators.syndicator.length > 0) {
-                        await tx.application.update({
-                            where: { id },
-                            data: { syndicator: { set: [] } },
-                        });
-                    }
-
-                    await tx.application.delete({ where: { id } });
+            const actorId = authUser?.id;
+            await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    deletedAt: new Date(),
+                    deletedById: actorId ?? null,
                 },
-                {
-                    maxWait: 15_000,
-                    timeout: 120_000,
-                },
-            );
+            });
+
+            try {
+                const actorName = String((req as any).user?.name || '').trim() || 'User';
+                await createApplicationActivityLog({
+                    applicationId: application.id,
+                    user: authUser,
+                    req,
+                    actionType: 'STATUS_CHANGED',
+                    actionDescription: `${actorName} moved application to Recently Deleted.`,
+                    previousStatus: `${application.currentQueue} / ${application.currentState}`,
+                    currentStatus: 'Recently Deleted',
+                });
+            } catch (logErr) {
+                console.error('Failed to log soft delete:', logErr);
+            }
 
             invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
                 success: true,
-                message: 'Application deleted successfully',
+                message: 'Application moved to Recently Deleted',
             });
         } catch (error) {
             console.error('Delete application error:', error);
@@ -4197,6 +5290,333 @@ class ApplicationController {
                 message: isDev ? message : 'Internal server error',
             });
         }
+    }
+
+    /** Super Admin / Operations: permanently remove a soft-deleted application. */
+    async permanentlyDelete(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            if (
+                roleUpper !== 'SUPER_ADMIN' &&
+                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'OPERATIONS'
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        'Only Super Admin or Operations can permanently delete applications',
+                });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const application = await prisma.application.findUnique({
+                where: whereClause,
+            });
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (!(application as { deletedAt?: Date | null }).deletedAt) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        'Only applications in Recently Deleted can be permanently deleted',
+                });
+            }
+
+            await this.executePermanentApplicationDelete(application.id);
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: 'Application permanently deleted',
+            });
+        } catch (error) {
+            console.error('Permanent delete application error:', error);
+            const isDev = process.env.NODE_ENV !== 'production';
+            let message = 'Internal server error';
+            if (isDev && error instanceof Error) {
+                message = error.message;
+            }
+            return res.status(500).json({
+                success: false,
+                message: isDev ? message : 'Internal server error',
+            });
+        }
+    }
+
+    /** Super Admin / Operations: restore a soft-deleted deal to a scrubber's claimed queue. */
+    async restoreApplicationToScrubber(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            if (
+                roleUpper !== 'SUPER_ADMIN' &&
+                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'OPERATIONS'
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        'Only Super Admin or Operations can restore deleted applications',
+                });
+            }
+
+            const scrubberId = String(
+                (req.body as { scrubberId?: unknown } | undefined)?.scrubberId ?? '',
+            ).trim();
+            if (!scrubberId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'scrubberId is required',
+                });
+            }
+
+            const scrubber = await prisma.user.findFirst({
+                where: {
+                    id: scrubberId,
+                    isActive: true,
+                    role: 'SCRUBBING',
+                },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            });
+            if (!scrubber) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Selected scrubber was not found or is inactive',
+                });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const include = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            } satisfies Prisma.ApplicationInclude;
+
+            const application = await prisma.application.findUnique({
+                where: whereClause,
+                include,
+            });
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (!(application as { deletedAt?: Date | null }).deletedAt) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application is not in Recently Deleted',
+                });
+            }
+
+            const scrubberName =
+                `${scrubber.firstName || ''} ${scrubber.lastName || ''}`.trim() ||
+                scrubber.email ||
+                'Scrubber';
+            const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+
+            const refreshed = await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    deletedAt: null,
+                    deletedById: null,
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
+                    currentState: ApplicationState.IN_PROGRESS,
+                    claimedByUnderwriterId: scrubberId,
+                    claimedAt: new Date(),
+                    assignedUnderwriterId: null,
+                    approvedByUnderwriterId: null,
+                    approvedAt: null,
+                    underwriterAction: null,
+                    scrubberRecommendation: null,
+                },
+                include,
+            });
+
+            try {
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'QUEUE_CHANGED',
+                    actionDescription: `${actorName} restored application from Recently Deleted and assigned it to Scrubber ${scrubberName}.`,
+                    previousStatus: 'Recently Deleted',
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: { scrubberId, claimedByUnderwriterId: scrubberId },
+                });
+            } catch (logErr) {
+                console.error('Failed to log restore to scrubber:', logErr);
+            }
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: `Application restored and assigned to ${scrubberName}`,
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Restore application to scrubber error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    private async executePermanentApplicationDelete(id: string) {
+        await prisma.$transaction(
+            async (tx: Prisma.TransactionClient) => {
+                await tx.scheduledRePayment.deleteMany({ where: { applicationId: id } });
+
+                const months = await tx.month.findMany({
+                    where: { applicationId: id },
+                    select: { id: true },
+                });
+                const monthIds = months.map((m) => m.id);
+                if (monthIds.length > 0) {
+                    await tx.monthlyTransaction.deleteMany({
+                        where: { monthId: { in: monthIds } },
+                    });
+                }
+                await tx.month.deleteMany({ where: { applicationId: id } });
+
+                const analyses = await tx.bankAnalysis.findMany({
+                    where: { applicationId: id },
+                    select: { id: true },
+                });
+                const analysisIds = analyses.map((a) => a.id);
+                if (analysisIds.length > 0) {
+                    await tx.bankAnalysisRow.deleteMany({
+                        where: { bankAnalysisId: { in: analysisIds } },
+                    });
+                }
+                await tx.bankAnalysis.deleteMany({ where: { applicationId: id } });
+
+                await tx.applicationFile.deleteMany({ where: { applicationId: id } });
+                await tx.comment.deleteMany({ where: { applicationId: id } });
+                await tx.complianceCheck.deleteMany({ where: { applicationId: id } });
+                await tx.note.deleteMany({ where: { applicationId: id } });
+                await tx.position.deleteMany({ where: { applicationId: id } });
+                await tx.applicationQuestionResponse.deleteMany({
+                    where: { applicationId: id },
+                });
+
+                await tx.document.deleteMany({ where: { applicationId: id } });
+                await tx.fundingInfo.deleteMany({ where: { applicationId: id } });
+
+                await tx.docuSignEnvelope.deleteMany({
+                    where: {
+                        OR: [
+                            { termsOffer: { applicationId: id } },
+                            { contract: { applicationId: id } },
+                        ],
+                    },
+                });
+
+                await tx.paymentTerms.deleteMany({
+                    where: { contract: { applicationId: id } },
+                });
+
+                await tx.termsOffer.deleteMany({ where: { applicationId: id } });
+
+                await tx.termsOffer.updateMany({
+                    where: { contracts: { applicationId: id } },
+                    data: { contractId: null },
+                });
+                await tx.aCH.updateMany({
+                    where: { contract: { applicationId: id } },
+                    data: { contractId: null },
+                });
+                await tx.ePO.updateMany({
+                    where: { contract: { applicationId: id } },
+                    data: { contractId: null },
+                });
+                await tx.addendum.updateMany({
+                    where: { contract: { applicationId: id } },
+                    data: { contractId: null },
+                });
+
+                await tx.funding.deleteMany({ where: { applicationId: id } });
+                await tx.disclosure.deleteMany({ where: { applicationId: id } });
+                await tx.contract.deleteMany({ where: { applicationId: id } });
+                await tx.offerDecision.deleteMany({ where: { applicationId: id } });
+
+                await tx.bankDetail.deleteMany({ where: { applicationId: id } });
+
+                await tx.documentRequest.deleteMany({ where: { applicationId: id } });
+                await tx.applicationSyndicatorDetails.deleteMany({ where: { applicationId: id } });
+                await tx.commissionRequest.deleteMany({ where: { applicationId: id } });
+
+                await tx.clientBankInfo.updateMany({
+                    where: { applicationId: id },
+                    data: { applicationId: null },
+                });
+
+                await tx.notification.updateMany({
+                    where: { applicationId: id },
+                    data: { applicationId: null },
+                });
+                await tx.conversation.updateMany({
+                    where: { applicationId: id },
+                    data: { applicationId: null },
+                });
+
+                await tx.applicationActivityLog.deleteMany({ where: { applicationId: id } });
+                await tx.fundingCall.deleteMany({ where: { applicationId: id } });
+                await tx.finalAnswer.deleteMany({ where: { applicationId: id } });
+                await tx.publicApprovalToken.deleteMany({ where: { applicationId: id } });
+                await tx.collectionPayment.deleteMany({ where: { applicationId: id } });
+                await tx.offers.deleteMany({ where: { applicationId: id } });
+                await tx.skippedActumTransactions.deleteMany({ where: { applicationId: id } });
+
+                const withSyndicators = await tx.application.findUnique({
+                    where: { id },
+                    select: { syndicator: { select: { id: true } } },
+                });
+                if (withSyndicators && withSyndicators.syndicator.length > 0) {
+                    await tx.application.update({
+                        where: { id },
+                        data: { syndicator: { set: [] } },
+                    });
+                }
+
+                await tx.application.delete({ where: { id } });
+            },
+            {
+                maxWait: 15_000,
+                timeout: 120_000,
+            },
+        );
     }
 
     // Extract information from PDF using Groq API
@@ -4507,8 +5927,8 @@ class ApplicationController {
             }
 
             const pdfRoleUpper = String((req as any).user?.role || '').toUpperCase();
-            // Same as Gmail PDF auto-create (`createClientAndApplicationFromPDFBuffer`): always land in Underwriter.
-            const pdfAgentCreationQueue = WORKFLOW_QUEUES.UNDERWRITER;
+            // Same as Gmail PDF auto-create (`createClientAndApplicationFromPDFBuffer`): always land in Scrubbing.
+            const pdfAgentCreationQueue = WORKFLOW_QUEUES.SCRUBBING;
             const pdfAgentCreationState = ApplicationState.IN_PROGRESS;
             const requestedApplicationTypeRaw = (req as any).body?.applicationType;
             const requestedIsoIdRaw = (req as any).body?.isoId;
@@ -4580,32 +6000,32 @@ class ApplicationController {
                 // Case 1: Client already exists → create application only
                 createdClient = clientRecord;
 
-                const nextDealIdExisting = await generateNextDealId();
-
-                createdApplication = await prisma.application.create({
-                    data: applicationCreateUncheckedData({
-                        priority: 'High',
-                        type: applicationTypeForCreate,
-                        salesRepresentativeId: currentUserId,
-                        referringAgentId: currentUserId,
-                        clientId: createdClient.id,
-                        isoId: validatedIsoId,
-                        commissionPercentage: commissionPercentageFromIso,
-                        loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                        createdById: currentUserId,
-                        currentQueue: pdfAgentCreationQueue,
-                        currentState: pdfAgentCreationState,
-                        dealId: nextDealIdExisting,
+                createdApplication = await withAllocatedDealId((dealId, tx) =>
+                    tx.application.create({
+                        data: applicationCreateUncheckedData({
+                            priority: 'High',
+                            type: applicationTypeForCreate,
+                            salesRepresentativeId: currentUserId,
+                            referringAgentId: currentUserId,
+                            clientId: createdClient.id,
+                            isoId: validatedIsoId,
+                            commissionPercentage: commissionPercentageFromIso,
+                            loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
+                            createdById: currentUserId,
+                            currentQueue: pdfAgentCreationQueue,
+                            currentState: pdfAgentCreationState,
+                            dealId,
+                        }),
+                        include: {
+                            referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                            salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                            createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                            client: true,
+                            iso: true,
+                            files: true,
+                        },
                     }),
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
-                });
+                );
 
                 await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, pdfOriginalName);
                 const applicationAfterPdf = await prisma.application.findUnique({
@@ -4622,54 +6042,6 @@ class ApplicationController {
                 const populatedApplication = mapApplicationToApi(applicationAfterPdf || createdApplication);
                 const mappedClient = mapClientToApi(createdClient);
 
-                // Best-effort ISO recipient email for newly created ISO-linked applications (PDF flow).
-                try {
-                    const appForEmail = applicationAfterPdf || createdApplication;
-                    const isoEmail = String((appForEmail as any)?.iso?.email || '').trim();
-                    if (isoEmail) {
-                        const isoName = String((appForEmail as any)?.iso?.name || '').trim();
-                        const clientBusinessName = String((appForEmail as any)?.client?.businessName || '').trim();
-                        const ownerName = `${(appForEmail as any)?.client?.ownerFirstName || ''} ${(appForEmail as any)?.client?.ownerLastName || ''}`.trim();
-                        const recipientName = isoName || isoEmail || ownerName || clientBusinessName || 'Valued Client';
-                        const appIdNumber = (appForEmail as any)?.applicationId ?? '';
-                        const appRouteId =
-                            (appForEmail as any)?.applicationId != null &&
-                                String((appForEmail as any).applicationId).trim() !== ''
-                                ? String((appForEmail as any).applicationId)
-                                : String((appForEmail as any)?.id || createdApplication.id);
-                        const baseUrl = resolveCrmFrontendBaseUrl();
-                        const viewApplicationUrl = baseUrl
-                            ? `${baseUrl.replace(/\/$/, '')}/application-details/${appRouteId}`
-                            : undefined;
-
-                        let publicPortalUrl: string | undefined;
-                        try {
-                            const portalToken = await createPublicPortalToken(createdApplication.id, {
-                                expiresInDays: 90,
-                            });
-                            if (portalToken && baseUrl) {
-                                publicPortalUrl = `${baseUrl.replace(/\/$/, '')}/public/application/status/${portalToken}`;
-                            }
-                        } catch (tokenErr) {
-                            console.error('Public portal token failed (pdf existing-client ISO email):', tokenErr);
-                        }
-
-                        setImmediate(() => {
-                            void sendApplicationSentToUnderwritingClientEmail({
-                                to: isoEmail,
-                                clientName: recipientName,
-                                companyName: clientBusinessName || 'your business',
-                                agentName: String((req as any)?.user?.name || 'your representative').trim() || 'your representative',
-                                applicationNumber: appIdNumber,
-                                viewApplicationUrl,
-                                publicPortalUrl,
-                            });
-                        });
-                    }
-                } catch (emailErr) {
-                    console.error('PDF existing-client ISO email enqueue failed:', emailErr);
-                }
-
                 console.log(
                     '[autoCreateFromPDF] Final DB response (existing client):',
                     JSON.stringify(
@@ -4678,6 +6050,13 @@ class ApplicationController {
                         2,
                     ),
                 );
+
+                scheduleApplicationStageNotification({
+                    application: (applicationAfterPdf || createdApplication) as any,
+                    transitionAction: 'CREATED',
+                    actorId: currentUserId,
+                    actorName: (req as any).user?.name || '',
+                });
 
                 return res.status(200).json({
                     success: true,
@@ -4704,6 +6083,8 @@ class ApplicationController {
 
             // Case 2: Client does not exist → create client + application atomically
             const result = await prisma.$transaction(async (tx) => {
+                const dealId = await allocateNextDealId(tx);
+
                 const newClient = await tx.client.create({
                     data: {
                         businessName: business.business_name || business.dba_name || null,
@@ -4745,8 +6126,6 @@ class ApplicationController {
                     },
                 });
 
-                const nextDealIdNew = await generateNextDealId(tx);
-
                 const newApplication = await tx.application.create({
                     data: applicationCreateUncheckedData({
                         priority: 'High',
@@ -4760,7 +6139,7 @@ class ApplicationController {
                         createdById: currentUserId,
                         currentQueue: pdfAgentCreationQueue,
                         currentState: pdfAgentCreationState,
-                        dealId: nextDealIdNew,
+                        dealId,
                     }),
                     include: {
                         referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -4793,54 +6172,6 @@ class ApplicationController {
             const populatedApplication = mapApplicationToApi(applicationAfterPdf || createdApplication);
             const mappedClient = mapClientToApi(createdClient);
 
-            // Best-effort ISO recipient email for newly created ISO-linked applications (PDF flow).
-            try {
-                const appForEmail = applicationAfterPdf || createdApplication;
-                const isoEmail = String((appForEmail as any)?.iso?.email || '').trim();
-                if (isoEmail) {
-                    const isoName = String((appForEmail as any)?.iso?.name || '').trim();
-                    const clientBusinessName = String((appForEmail as any)?.client?.businessName || '').trim();
-                    const ownerName = `${(appForEmail as any)?.client?.ownerFirstName || ''} ${(appForEmail as any)?.client?.ownerLastName || ''}`.trim();
-                    const recipientName = isoName || isoEmail || ownerName || clientBusinessName || 'Valued Client';
-                    const appIdNumber = (appForEmail as any)?.applicationId ?? '';
-                    const appRouteId =
-                        (appForEmail as any)?.applicationId != null &&
-                            String((appForEmail as any).applicationId).trim() !== ''
-                            ? String((appForEmail as any).applicationId)
-                            : String((appForEmail as any)?.id || createdApplication.id);
-                    const baseUrl = resolveCrmFrontendBaseUrl();
-                    const viewApplicationUrl = baseUrl
-                        ? `${baseUrl.replace(/\/$/, '')}/application-details/${appRouteId}`
-                        : undefined;
-
-                    let publicPortalUrl: string | undefined;
-                    try {
-                        const portalToken = await createPublicPortalToken(createdApplication.id, {
-                            expiresInDays: 90,
-                        });
-                        if (portalToken && baseUrl) {
-                            publicPortalUrl = `${baseUrl.replace(/\/$/, '')}/public/application/status/${portalToken}`;
-                        }
-                    } catch (tokenErr) {
-                        console.error('Public portal token failed (pdf new-client ISO email):', tokenErr);
-                    }
-
-                    setImmediate(() => {
-                        void sendApplicationSentToUnderwritingClientEmail({
-                            to: isoEmail,
-                            clientName: recipientName,
-                            companyName: clientBusinessName || 'your business',
-                            agentName: String((req as any)?.user?.name || 'your representative').trim() || 'your representative',
-                            applicationNumber: appIdNumber,
-                            viewApplicationUrl,
-                            publicPortalUrl,
-                        });
-                    });
-                }
-            } catch (emailErr) {
-                console.error('PDF new-client ISO email enqueue failed:', emailErr);
-            }
-
             console.log(
                 '[autoCreateFromPDF] Final DB response (new client):',
                 JSON.stringify(
@@ -4849,6 +6180,13 @@ class ApplicationController {
                     2,
                 ),
             );
+
+            scheduleApplicationStageNotification({
+                application: (applicationAfterPdf || createdApplication) as any,
+                transitionAction: 'CREATED',
+                actorId: currentUserId,
+                actorName: (req as any).user?.name || '',
+            });
 
             return res.status(200).json({
                 success: true,
@@ -5495,73 +6833,42 @@ class ApplicationController {
     //             });
     //         }
     //     }
-    /** Merge fields for the CRM frontend approval email template (no send). */
-    async getApprovalEmailPayload(req: Request, res: Response) {
-        try {
-            const applicationId = String(req.query.applicationId || '').trim();
-            const resend = String(req.query.resend || '').toLowerCase() === 'true';
-
-            if (!applicationId) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'applicationId is required',
-                });
-            }
-
-            const authUser = getAuthenticatedUser(req);
-            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(applicationId)
-                ? { applicationId: Number(applicationId) }
-                : { id: applicationId };
-
-            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, {
-                client: true,
-                iso: true,
-            });
-
-            if (forbidden) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Forbidden: you do not have access to this application',
-                });
-            }
-
-            if (!application) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Application not found',
-                });
-            }
-
-            const context = await resolveApplicationApprovalEmailContext(application as any, {
-                resend,
-            });
-
-            return res.status(200).json({
-                success: true,
-                data: {
-                    subject: context.subject,
-                    templateValues: context.templateValues,
-                    isoEmail: context.isoEmail,
-                },
-            });
-        } catch (error: any) {
-            const message = error?.message || 'Failed to resolve approval email payload';
-            const status = /not linked to an ISO|no email on file/i.test(message) ? 400 : 500;
-            console.error('Get approval email payload error:', error);
-            return res.status(status).json({
-                success: false,
-                message,
-            });
-        }
-    }
-
     // Send approval email to client for a given application (async email, non-blocking)
     async sendApprovalEmail(req: Request, res: Response) {
         try {
-            const { applicationId, resend } = req.body as {
-                    applicationId?: string | number;
-                    resend?: boolean;
-                };
+            const { applicationId, resend, reinitiateContract, emailHtml: clientEmailHtmlRaw, emailSubject: clientEmailSubjectRaw, isoEmail: isoEmailOverride, ccEmails } = req.body as {
+                applicationId?: string | number;
+                resend?: boolean;
+                /** When true with resend, archive the prior contract envelope and reset for regeneration. */
+                reinitiateContract?: boolean;
+                /** Frontend-rendered branded approval HTML (backend injects URL / ISO name / business name). */
+                emailHtml?: string;
+                emailSubject?: string;
+                /** Optional override for the linked ISO recipient email. */
+                isoEmail?: string;
+                /** Optional CC recipients on the approval / offer-updated template email. */
+                ccEmails?: string[] | string;
+            };
+            const clientEmailSubject =
+                typeof clientEmailSubjectRaw === 'string' && clientEmailSubjectRaw.trim()
+                    ? clientEmailSubjectRaw.trim()
+                    : undefined;
+            const parsedCcEmails = (() => {
+                if (Array.isArray(ccEmails)) {
+                    return ccEmails.map((e: unknown) => String(e || '').trim()).filter(Boolean);
+                }
+                if (typeof ccEmails === 'string' && ccEmails.trim()) {
+                    return ccEmails
+                        .split(/[,;]+/)
+                        .map((e) => e.trim())
+                        .filter(Boolean);
+                }
+                return [];
+            })();
+            const isoEmailOverrideTrimmed =
+                typeof isoEmailOverride === 'string' ? isoEmailOverride.trim() : '';
+            const uniqueCcList = [...new Set(parsedCcEmails.map((e) => e.toLowerCase()))]
+                .map((lower) => parsedCcEmails.find((e) => e.toLowerCase() === lower) || lower);
 
             if (!applicationId) {
                 return res.status(400).json({
@@ -5572,7 +6879,6 @@ class ApplicationController {
 
             const authUser = getAuthenticatedUser(req);
             const applicationIdStr = String(applicationId);
-            const isResend = !!resend;
 
             const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(applicationIdStr)
                 ? { applicationId: Number(applicationIdStr) }
@@ -5591,13 +6897,21 @@ class ApplicationController {
                             approvedAmount: true,
                             factorRate: true,
                             paybackAmount: true,
+                            termLength: true,
+                            frequency: true,
+                            paymentAmount: true,
                         },
                     },
                     OfferDecision: {
                         select: {
+                            term: true,
+                            frequency: true,
+                            repayPerPeriod: true,
+                            monthlyPayment: true,
                             offer: true,
                             rate: true,
                             totalRemit: true,
+                            fees: true,
                         },
                     },
                 }
@@ -5617,91 +6931,188 @@ class ApplicationController {
                 });
             }
 
-            let context;
+            const client: any = (application as any).client;
+            let iso: any = (application as any).iso;
+
+            const clientBusinessName = client?.businessName || 'Unknown Business';
+            let isoName = String(iso?.name || '').trim();
+            let isoEmailRaw = String(iso?.email || '').trim();
+            const appIsoId = (application as any).isoId ? String((application as any).isoId).trim() : '';
+
+            if (!appIsoId) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        'This application is not linked to an ISO. Link an ISO to the deal before sending the approval email (only the ISO record receives this message).',
+                });
+            }
+
+            if (!iso || !isoEmailRaw) {
+                const isoRow = await prisma.iso.findUnique({
+                    where: { id: appIsoId },
+                    select: { name: true, email: true },
+                });
+                if (isoRow) {
+                    iso = { ...iso, ...isoRow };
+                    isoName = isoName || String(isoRow.name || '').trim();
+                    isoEmailRaw = isoEmailRaw || String(isoRow.email || '').trim();
+                }
+            }
+
+            const merchantGreetingName =
+                `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
+                clientBusinessName ||
+                'there';
+            const companyName = clientBusinessName;
+
+            const merchantFullName =
+                `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() || undefined;
+            const { merchantEmail, merchantPhone } = resolveMerchantContactForOfferEmail(client);
+            const latestTermsOffer = (application as any).termsOffers?.[0] ?? null;
+            const offerDecision = (application as any).OfferDecision ?? null;
+            const offerApplicationNumber = (application as any).applicationId ?? undefined;
+            const offerApprovedAmount =
+                latestTermsOffer?.approvedAmount != null
+                    ? Number(latestTermsOffer.approvedAmount)
+                    : offerDecision?.offer != null
+                      ? Number(offerDecision.offer)
+                      : undefined;
+            const offerFactorRate =
+                latestTermsOffer?.factorRate != null
+                    ? Number(latestTermsOffer.factorRate)
+                    : offerDecision?.rate != null
+                      ? Number(offerDecision.rate)
+                      : undefined;
+            const offerRepaymentAmount =
+                latestTermsOffer?.paybackAmount != null
+                    ? Number(latestTermsOffer.paybackAmount)
+                    : offerDecision?.totalRemit != null
+                      ? Number(offerDecision.totalRemit)
+                      : undefined;
+
+            if (!isoEmailRaw && !isoEmailOverrideTrimmed) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        'The linked ISO has no email on file. Add an email to that ISO in the broker/ISO settings, or enter a recipient email when sending.',
+                });
+            }
+
+            const isoEmailToUse = isoEmailOverrideTrimmed || isoEmailRaw;
+            const uniqueCcForSend = uniqueCcList.filter(
+                (e) => e.toLowerCase() !== isoEmailToUse.toLowerCase(),
+            );
+
             try {
-                context = await resolveApplicationApprovalEmailContext(application as any, {
-                    resend: isResend,
-                });
-            } catch (contextErr: any) {
-                const message = contextErr?.message || 'Failed to resolve approval email context';
-                const status = /not linked to an ISO|no email on file/i.test(message) ? 400 : 500;
-                return res.status(status).json({ success: false, message });
+                await syncTermsOfferFromOfferDecision(
+                    (application as any).id,
+                    authUser?.id ?? null,
+                );
+            } catch (syncErr) {
+                console.error('Send approval email: failed to sync terms offer from offer decision:', syncErr);
             }
 
-            const emailSubjectFromBody =
-                typeof (req.body as { emailSubject?: string }).emailSubject === 'string'
-                    ? (req.body as { emailSubject?: string }).emailSubject
-                    : undefined;
+            const baseUrl = resolveCrmFrontendBaseUrl() || '';
 
-            const isoApprovalUrl = await resolveIsoApprovalPortalUrl(String((application as any).id), {
-                expiresInDays: 90,
-            });
+            const fallbackId = (application as any).id;
 
-            if (!isoApprovalUrl) {
-                return res.status(502).json({
+            if (!fallbackId) {
+                return res.status(500).json({
                     success: false,
-                    message:
-                        'Could not build the ISO approval email link. Set FRONTEND_URL (or LOCAL_FRONTEND_URL) in the API .env so the public approval portal URL can be generated.',
+                    message: 'Failed to resolve application id for approval link',
                 });
             }
 
-            const emailPackage = buildIsoApprovalEmailPackage({
-                resend: isResend,
-                clientName: context.isoRecipientName,
-                companyName: context.companyName,
-                isoApprovalUrl,
-                customSubject:
-                    typeof emailSubjectFromBody === 'string' ? emailSubjectFromBody : context.subject,
-            });
-
-            if (!emailPackage) {
-                return res.status(502).json({
-                    success: false,
-                    message:
-                        'Could not build the ISO approval email link. Set FRONTEND_URL (or LOCAL_FRONTEND_URL) in the API .env so the public approval portal URL can be generated.',
-                });
+            let approvalLinkToken = fallbackId;
+            try {
+                const portalToken = await createPublicPortalToken(fallbackId, { expiresInDays: 90 });
+                if (portalToken) {
+                    approvalLinkToken = portalToken;
+                }
+            } catch (tokenErr) {
+                console.error('Approval email: public portal token failed, using application id in link:', tokenErr);
             }
 
-            const emailSubject = emailPackage.subject;
-            const resolvedEmailHtml = emailPackage.html;
+            const publicApprovalUrl = baseUrl
+                ? buildPublicApprovalPortalUrl(baseUrl, approvalLinkToken)
+                : undefined;
+            const viewApplicationUrl = publicApprovalUrl;
+            const calculateApprovalUrl = publicApprovalUrl;
 
+            const isoRecipientName = isoName || isoEmailToUse || merchantGreetingName;
             const recipients: { to: string; clientName: string }[] = [
-                { to: context.isoEmail, clientName: context.isoRecipientName },
+                { to: isoEmailToUse, clientName: isoRecipientName },
             ];
 
-            const approvalTrackingId = randomUUID();
+            const emailSubject =
+                clientEmailSubject ||
+                (resend ? 'Your Offer Values Have Been Updated' : 'Your Application Has Been Approved');
 
-            const approvalEmailLogSuffix = isResend
+            /**
+             * Prefer the frontend-rendered branded template (the approval/update-offer HTML is now
+             * owned by the frontend). Server-only values — the signed public-portal URL, the resolved
+             * ISO recipient name, and the deal business name — are injected here. The backend builders
+             * remain only as a safety fallback when no frontend HTML is supplied.
+             */
+            const frontendEmailHtml =
+                typeof clientEmailHtmlRaw === 'string' && clientEmailHtmlRaw.trim()
+                    ? injectApplicationApprovalEmailValues(clientEmailHtmlRaw.trim(), {
+                        approvalUrl: calculateApprovalUrl,
+                        clientName: isoRecipientName,
+                        companyName,
+                    })
+                    : undefined;
+            const emailHtml =
+                frontendEmailHtml ??
+                (resend
+                    ? buildApplicationOfferUpdatedEmailHtml({
+                        clientName: isoRecipientName,
+                        companyName,
+                        calculateApprovalUrl,
+                        viewApplicationUrl,
+                    })
+                    : buildApplicationApprovalEmailHtml({
+                        clientName: isoRecipientName,
+                        companyName,
+                        calculateApprovalUrl,
+                        viewApplicationUrl,
+                    }));
+
+            const trackingId = randomUUID();
+            const approvalEmailLogSuffix = resend
                 ? ' resent updated offer email to the linked ISO.'
                 : ' sent approval email to the linked ISO.';
+            const authUserForLog = getAuthenticatedUser(req);
+            const roleLabel = authUserForLog?.role
+                ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
+                : 'User';
+            const actorName = (req as any).user?.name || '';
 
             try {
-                const authUserForLog = getAuthenticatedUser(req);
-                const roleLabel = authUserForLog?.role
-                    ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
-                    : 'User';
-                const actorName = (req as any).user?.name || '';
-
                 await recordCommunicationAudit(req, {
-                    outboundCommunicationId: approvalTrackingId,
+                    outboundCommunicationId: trackingId,
                     applicationId: (application as any).id,
                     channel: 'EMAIL',
                     recipientType: 'ISO',
                     recipient: recipients.map((r) => r.to).join(', '),
                     subject: emailSubject,
-                    body: resolvedEmailHtml,
-                    templateName: isResend ? 'Offer updated (ISO)' : 'Application approved (ISO)',
+                    body: emailHtml,
+                    templateName: resend ? 'Update offer template' : 'Application approved template',
                     actionType: 'APPROVED',
                     user: authUserForLog,
                     currentStatus: `${(application as any).currentQueue} / ${(application as any).currentState}`,
                     actionDescription: `${roleLabel} ${actorName}`.trim() + approvalEmailLogSuffix,
                     metadata: {
                         emailSentTo: recipients.map((r) => r.to),
-                        sentToLinkedIsoOnly: true,
-                        resend: isResend,
-                        template: isResend ? 'offer-updated' : 'approval',
+                        ccEmails: uniqueCcForSend,
+                        sentToLinkedIsoOnly: !isoEmailOverrideTrimmed,
+                        resend: !!resend,
+                        template: resend ? 'offer-updated' : 'approval',
                         status: 'sent',
-                        hasHtmlPdf: true,
+                        delivery: {
+                            status: 'sent',
+                            sentAt: new Date().toISOString(),
+                        },
                     },
                 });
             } catch (logError) {
@@ -5710,19 +7121,41 @@ class ApplicationController {
 
             const deliveryResults = await Promise.all(
                 recipients.map(async ({ to, clientName }) => {
-                    const sendParams = {
+                    const sendResult = resend
+                        ? await sendApplicationOfferUpdatedEmail({
+                            to,
+                            cc: uniqueCcForSend.length ? uniqueCcForSend : undefined,
+                            clientName,
+                            companyName,
+                            viewApplicationUrl,
+                            calculateApprovalUrl,
+                            applicationNumber: offerApplicationNumber,
+                            merchantName: merchantFullName,
+                            merchantEmail,
+                            merchantPhone,
+                            approvedAmount: offerApprovedAmount,
+                            factorRate: offerFactorRate,
+                            repaymentAmount: offerRepaymentAmount,
+                            html: emailHtml,
+                            subject: emailSubject,
+                            trackingId,
+                        })
+                        : await sendApplicationApprovalEmail({
+                            to,
+                            cc: uniqueCcForSend.length ? uniqueCcForSend : undefined,
+                            clientName,
+                            companyName,
+                            viewApplicationUrl,
+                            calculateApprovalUrl,
+                            html: emailHtml,
+                            subject: emailSubject,
+                            trackingId,
+                        });
+                    return {
                         to,
-                        clientName,
-                        companyName: context.companyName,
-                        calculateApprovalUrl: isoApprovalUrl,
-                        html: resolvedEmailHtml,
-                        subject: emailSubject,
-                        trackingId: approvalTrackingId,
+                        ok: sendResult.sent,
+                        sgMessageId: sendResult.sgMessageId,
                     };
-                    const result = isResend
-                        ? await sendApplicationOfferUpdatedEmail(sendParams)
-                        : await sendApplicationApprovalEmail(sendParams);
-                    return { to, ok: result.sent, sgMessageId: result.sgMessageId };
                 }),
             );
             const anyDelivered = deliveryResults.some((r) => r.ok);
@@ -5735,22 +7168,170 @@ class ApplicationController {
                 });
             }
 
-            const sgMessageId = deliveryResults.find((r) => r.sgMessageId)?.sgMessageId;
-            if (sgMessageId) {
+            const shouldReinitiateContract = !!resend && !!reinitiateContract;
+            if (shouldReinitiateContract) {
                 try {
-                    await storeSgMessageIdOnOutbound(approvalTrackingId, sgMessageId);
-                } catch (metaErr) {
-                    console.error('[approvalEmail] failed to store sgMessageId:', metaErr);
+                    await reinitiateContractForApplication(String(fallbackId), {
+                        user: getAuthenticatedUser(req),
+                        req,
+                        actorName: String((req as any).user?.name || ''),
+                        source: 'applicationController.sendApprovalEmail',
+                    });
+                } catch (reinitErr) {
+                    console.error(
+                        'Send approval email: contract reinitiation failed:',
+                        reinitErr,
+                    );
                 }
+            }
+
+            try {
+                const outbound = await prisma.outbound_communications.findUnique({
+                    where: { id: trackingId },
+                    select: { metadata: true },
+                });
+                const prior =
+                    outbound?.metadata &&
+                    typeof outbound.metadata === 'object' &&
+                    !Array.isArray(outbound.metadata)
+                        ? (outbound.metadata as Record<string, unknown>)
+                        : {};
+                await prisma.outbound_communications.update({
+                    where: { id: trackingId },
+                    data: {
+                        metadata: {
+                            ...prior,
+                            emailDelivery: deliveryResults,
+                        } as object,
+                    },
+                });
+            } catch (metaErr) {
+                console.error('Failed to update approval email delivery metadata:', metaErr);
+            }
+
+            const deliveredSgMessageId = deliveryResults.find(
+                (r) => r.ok && r.sgMessageId,
+            )?.sgMessageId;
+            if (deliveredSgMessageId) {
+                try {
+                    await storeSgMessageIdOnOutbound(trackingId, deliveredSgMessageId);
+                } catch (metaErr) {
+                    console.error('Failed to store SendGrid message id for approval email:', metaErr);
+                }
+            }
+
+            try {
+                const normalizedActorRole = String(authUser?.role || '')
+                    .toUpperCase()
+                    .replace(/-/g, '_');
+                const shouldCreditUnderwriterApproval =
+                    normalizedActorRole === 'UNDERWRITER';
+                const underwriterApprovalPatch = shouldCreditUnderwriterApproval
+                    ? patchRecordUnderwriterApproval(authUser, {
+                          assignedUnderwriterId: (application as any).assignedUnderwriterId,
+                          claimedByUnderwriterId: (application as any).claimedByUnderwriterId,
+                          approvedByUnderwriterId: (application as any).approvedByUnderwriterId,
+                      })
+                    : undefined;
+
+                await prisma.application.update({
+                    where: { id: fallbackId },
+                    data: {
+                        currentQueue: APPROVAL_SENT_QUEUE,
+                        currentState: APPROVAL_SENT_STATE,
+                        ...(underwriterApprovalPatch ?? {}),
+                    },
+                });
+            } catch (stageErr) {
+                console.error(
+                    'Send approval email: failed to set application to Approval Sent:',
+                    stageErr,
+                );
             }
 
             return res.status(200).json({
                 success: true,
-                message: isResend ? 'Updated offer email sent' : 'Approval email sent',
+                message: resend ? 'Updated offer email sent' : 'Approval email sent',
                 data: { delivered: deliveryResults.filter((r) => r.ok).map((r) => r.to) },
             });
         } catch (error: any) {
             console.error('Send approval email error:', error);
+            return res.status(500).json({
+                success: false,
+                message: error?.message || 'Internal server error',
+            });
+        }
+    }
+
+    /** Archive the current contract envelope and reset CRM state so Operations can regenerate. */
+    async reinitiateContract(req: Request, res: Response) {
+        try {
+            const { applicationId } = req.body as { applicationId?: string | number };
+            if (!applicationId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'applicationId is required',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const applicationIdStr = String(applicationId);
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(applicationIdStr)
+                ? { applicationId: Number(applicationIdStr) }
+                : { id: applicationIdStr };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const ok = await reinitiateContractForApplication(String((application as any).id), {
+                user: authUser,
+                req,
+                actorName: String((req as any).user?.name || ''),
+                source: 'applicationController.reinitiateContract',
+            });
+            if (!ok) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'No contract found for this application',
+                });
+            }
+
+            const refreshed = await prisma.application.findUnique({
+                where: { id: (application as any).id },
+                include: {
+                    referringAgent: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    salesRepresentative: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    createdBy: {
+                        select: { id: true, firstName: true, lastName: true, email: true, role: true },
+                    },
+                    client: true,
+                    iso: true,
+                    files: true,
+                },
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: 'Contract reinitiated. Generate a new contract when ready.',
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error: any) {
+            console.error('Reinitiate contract error:', error);
             return res.status(500).json({
                 success: false,
                 message: error?.message || 'Internal server error',
@@ -5808,37 +7389,10 @@ class ApplicationController {
                 });
             }
 
-            if (!isOutboundSmtpConfigured()) {
-                console.error(
-                    'Funded email skipped: set SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS.',
-                );
-                return res.status(200).json({
-                    success: true,
-                    message: 'SMTP not configured; funded notification skipped.',
-                    skipped: true,
-                });
-            }
-
-            const clientBusinessName = client?.businessName || 'Unknown Business';
-            const clientName =
-                `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
-                clientBusinessName ||
-                'Valued Client';
-            const isoName = String(iso?.name || '').trim();
-            const templateRecipientName = isoName || isoEmail || clientName;
-            const companyName = clientBusinessName;
-
-            setImmediate(() => {
-                void sendApplicationFundedEmail({
-                    to: isoEmail,
-                    clientName: templateRecipientName,
-                    companyName,
-                });
-            });
-
             return res.status(200).json({
                 success: true,
-                message: 'Funded notification email queued for sending',
+                message: 'Funded notification is not sent to ISO; only approval and offer-update emails are delivered to the linked ISO.',
+                skipped: true,
             });
         } catch (error: any) {
             console.error('Send funded email error:', error);
@@ -6074,7 +7628,18 @@ class ApplicationController {
             const log = result.log;
             return res.status(201).json({
                 success: true,
-                data: formatPaymentMailLogApiRow(log),
+                data: {
+                    id: log.id,
+                    at: log.createdAt?.toISOString() ?? new Date().toISOString(),
+                    dealKey: log.dealKey,
+                    applicationId: log.applicationId,
+                    templateName: log.templateName,
+                    category: log.category,
+                    recipient: log.recipient,
+                    subject: log.subject,
+                    body: log.body ?? undefined,
+                    status: fromPrismaMailLogStatus(log.status),
+                },
             });
         } catch (error: any) {
             console.error('Create payment mail log error:', error);
@@ -6082,63 +7647,6 @@ class ApplicationController {
                 success: false,
                 message: 'Internal server error',
             });
-        }
-    }
-
-    async updatePaymentMailLog(req: Request, res: Response) {
-        try {
-            const { id, logId } = req.params;
-            const authUser = getAuthenticatedUser(req);
-
-            const appIdStr = String(id);
-            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(appIdStr)
-                ? { applicationId: Number(appIdStr) }
-                : { id: appIdStr };
-
-            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
-
-            if (forbidden) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Forbidden: you do not have access to this application',
-                });
-            }
-
-            if (!application) {
-                return res.status(404).json({ success: false, message: 'Application not found' });
-            }
-
-            const body = req.body as Record<string, unknown>;
-            const statusRaw =
-                typeof body.status === 'string' ? body.status.trim().toLowerCase() : undefined;
-
-            const result = await persistUpdatePaymentMailLog(application.id, authUser, String(logId), {
-                status: statusRaw as 'queued' | 'sent' | 'failed' | undefined,
-            });
-
-            if (result.forbidden) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Forbidden: you do not have access to this application',
-                });
-            }
-            if (result.notFound) {
-                return res.status(404).json({ success: false, message: 'Mail log not found' });
-            }
-            if ((result as any).badRequest) {
-                return res.status(400).json({ success: false, message: 'Invalid status' });
-            }
-            if (!result.log) {
-                return res.status(500).json({ success: false, message: 'Failed to update mail log' });
-            }
-
-            return res.status(200).json({
-                success: true,
-                data: formatPaymentMailLogApiRow(result.log),
-            });
-        } catch (error: any) {
-            console.error('Update payment mail log error:', error);
-            return res.status(500).json({ success: false, message: 'Internal server error' });
         }
     }
 
@@ -6197,9 +7705,13 @@ class ApplicationController {
                           .trim()
                           .toLowerCase()
                     : '';
-            let underwriterClaimParam: 'unclaimed' | 'mine' | null = null;
-            if (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') {
-                underwriterClaimParam = uwClaimNorm;
+            let underwriterClaimParam: UnderwriterClaimScope | null = null;
+            if (
+                uwClaimNorm === 'unclaimed' ||
+                uwClaimNorm === 'claimed' ||
+                uwClaimNorm === 'mine'
+            ) {
+                underwriterClaimParam = uwClaimNorm as UnderwriterClaimScope;
             }
 
             const trendCacheKey = [
@@ -6328,7 +7840,7 @@ class ApplicationController {
             const authUser = getAuthenticatedUser(req);
 
             const role = String(authUser?.role || '').toUpperCase().replace(/-/g, '_');
-            const allowedRoles = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
+            const allowedRoles = ['SCRUBBING', 'UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
             if (!allowedRoles.includes(role)) {
                 return res.status(403).json({
                     success: false,
@@ -6358,46 +7870,20 @@ class ApplicationController {
             }
 
             const client = applicationRecord.client as any;
-            const businessName: string | null = client.businessName || null;
             const ein: string | null = client.businessEinNumber || null;
             const ssn: string | null = client.ownerSsn || null;
 
-            const orConditions: Prisma.ClientWhereInput[] = [];
-            if (businessName) {
-                orConditions.push({ businessName });
-            }
-            if (ein) {
-                orConditions.push({ businessEinNumber: ein });
-            }
-            if (ssn) {
-                orConditions.push({ ownerSsn: ssn });
-            }
-
-            if (orConditions.length === 0) {
-                return res.status(200).json({
-                    success: true,
-                    data: [],
-                });
-            }
-
-            const duplicates = await prisma.application.findMany({
-                where: {
-                    id: { not: applicationRecord.id },
-                    client: {
-                        OR: orConditions,
-                    },
-                },
-                include: {
-                    client: true,
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                },
-                orderBy: {
-                    createdAt: 'desc',
-                },
-            });
-
             const mapDuplicateRow = (
-                app: (typeof duplicates)[number],
+                app: {
+                    id: string;
+                    applicationId: number;
+                    currentQueue: string | null;
+                    currentState: string | null;
+                    createdAt: Date;
+                    loanAmount: number | null;
+                    client: any;
+                    createdBy: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
+                },
                 matchWith: string[],
             ) => {
                 const dupClient: any = app.client;
@@ -6429,27 +7915,81 @@ class ApplicationController {
 
             const byId = new Map<string, ReturnType<typeof mapDuplicateRow>>();
 
-            for (const app of duplicates) {
-                const matchWith: string[] = [];
-                const dupClient: any = app.client;
-                if (businessName && dupClient?.businessName && dupClient.businessName === businessName) {
-                    matchWith.push('Business name');
+            const mergeDuplicate = (
+                app: Parameters<typeof mapDuplicateRow>[0],
+                labels: string[],
+            ) => {
+                const existing = byId.get(app.id);
+                if (existing) {
+                    for (const label of labels) {
+                        if (!existing.matchWith.includes(label)) {
+                            existing.matchWith.push(label);
+                        }
+                    }
+                    return;
                 }
-                if (ein && dupClient?.businessEinNumber && dupClient.businessEinNumber === ein) {
-                    matchWith.push('EIN');
-                }
-                if (ssn && dupClient?.ownerSsn && dupClient.ownerSsn === ssn) {
-                    matchWith.push('SSN');
-                }
-                byId.set(app.id, mapDuplicateRow(app, matchWith));
+                byId.set(app.id, mapDuplicateRow(app, [...labels]));
+            };
+
+            // Same CRM client record (prior deals for this merchant).
+            const sameClientApps = await prisma.application.findMany({
+                where: {
+                    id: { not: applicationRecord.id },
+                    clientId: applicationRecord.clientId,
+                },
+                include: {
+                    client: true,
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                },
+                orderBy: { createdAt: 'desc' },
+            });
+            for (const app of sameClientApps) {
+                mergeDuplicate(app, ['Same client']);
             }
 
-            const { findSamePdfFileApplications, pickPrimaryPdfFile, readPdfFileDedupeDays } =
-                await import('../services/pdfFileDedupeService');
+            // Strong cross-client identity (EIN or SSN only — not loose business-name matches).
+            const crossClientOr: Prisma.ClientWhereInput[] = [];
+            if (ein) {
+                crossClientOr.push({ businessEinNumber: ein });
+            }
+            if (ssn) {
+                crossClientOr.push({ ownerSsn: ssn });
+            }
+            if (crossClientOr.length > 0) {
+                const crossClientApps = await prisma.application.findMany({
+                    where: {
+                        id: { not: applicationRecord.id },
+                        clientId: { not: applicationRecord.clientId },
+                        client: { OR: crossClientOr },
+                    },
+                    include: {
+                        client: true,
+                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    },
+                    orderBy: { createdAt: 'desc' },
+                });
+                for (const app of crossClientApps) {
+                    const dupClient: any = app.client;
+                    const labels: string[] = [];
+                    if (ein && dupClient?.businessEinNumber && dupClient.businessEinNumber === ein) {
+                        labels.push('EIN');
+                    }
+                    if (ssn && dupClient?.ownerSsn && dupClient.ownerSsn === ssn) {
+                        labels.push('SSN');
+                    }
+                    if (labels.length > 0) {
+                        mergeDuplicate(app, labels);
+                    }
+                }
+            }
+
             const pdfSig = pickPrimaryPdfFile(applicationRecord.files);
             const createdById = applicationRecord.createdById;
             if (pdfSig && createdById) {
                 const dedupeDays = readPdfFileDedupeDays();
+                const recentPdfLabel = `Same PDF file (within ${dedupeDays} days)`;
+                const historicalPdfLabel = 'Same PDF file (previous submission)';
+
                 const samePdfApps = await findSamePdfFileApplications({
                     excludeApplicationId: applicationRecord.id,
                     createdById,
@@ -6457,16 +7997,19 @@ class ApplicationController {
                     referenceCreatedAt: applicationRecord.createdAt,
                     dedupeDays,
                 });
-                const pdfMatchLabel = `Same PDF file (within ${dedupeDays} days)`;
                 for (const app of samePdfApps) {
-                    const existing = byId.get(app.id);
-                    if (existing) {
-                        if (!existing.matchWith.includes(pdfMatchLabel)) {
-                            existing.matchWith.push(pdfMatchLabel);
-                        }
-                    } else {
-                        byId.set(app.id, mapDuplicateRow(app, [pdfMatchLabel]));
-                    }
+                    mergeDuplicate(app, [recentPdfLabel]);
+                }
+
+                const historicalPdfApps = await findHistoricalSamePdfFileApplications({
+                    excludeApplicationId: applicationRecord.id,
+                    createdById,
+                    file: pdfSig,
+                    referenceCreatedAt: applicationRecord.createdAt,
+                    dedupeDays,
+                });
+                for (const app of historicalPdfApps) {
+                    mergeDuplicate(app, [historicalPdfLabel]);
                 }
             }
 
@@ -6611,6 +8154,18 @@ class ApplicationController {
                     console.log(
                         `[bulk-import] job ${jobId}: completed — inserted=${finalSummary.successCount}, updated=${finalSummary.updatedCount}, failed=${finalSummary.failedCount}/${finalSummary.totalRows}`,
                     );
+                    if (mergedErrors.length) {
+                        console.warn(
+                            `[bulk-import] job ${jobId}: ${mergedErrors.length} row(s) failed:`,
+                        );
+                        for (const rowError of mergedErrors) {
+                            console.warn(
+                                `[bulk-import]   row ${rowError.excelRowNumber}` +
+                                    `${rowError.dealId ? ` (deal ${rowError.dealId})` : ''}` +
+                                    `${rowError.dealName ? ` [${rowError.dealName}]` : ''}: ${rowError.message}`,
+                            );
+                        }
+                    }
                 } catch (error: any) {
                     job.status = 'failed';
                     job.message = error?.message || 'Bulk upload failed';
@@ -6662,6 +8217,78 @@ class ApplicationController {
                 errors: job.status === 'completed' || job.status === 'failed' ? job.errors : [],
             },
         });
+    }
+
+    // Get applications by underwriter id (assigned, approved, or claimed)
+    async getByUnderwriterId(req: Request, res: Response) {
+        try {
+            const rawUnderwriterId = req.params.underwriterId || req.query.underwriterId;
+            const underwriterId = String(rawUnderwriterId ?? '').trim();
+            if (!underwriterId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'underwriterId is required',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const where: Prisma.ApplicationWhereInput = {
+                OR: [
+                    { assignedUnderwriterId: underwriterId },
+                    { approvedByUnderwriterId: underwriterId },
+                    { claimedByUnderwriterId: underwriterId },
+                ],
+            };
+            const visibilityAwareWhere = mergeApplicationVisibilityWhere(where, authUser);
+
+            const applications = await (prisma as any).application.findMany({
+                where: visibilityAwareWhere,
+                orderBy: { createdAt: 'desc' },
+                include: {
+                    referringAgent: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    salesRepresentative: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    assignedUnderwriter: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    approvedByUnderwriter: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    claimedByUnderwriter: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    client: true,
+                    iso: true,
+                    termsOffers: {
+                        orderBy: { updatedAt: 'desc' },
+                        take: 1,
+                        select: { approvedAmount: true, factorRate: true, paybackAmount: true },
+                    },
+                    OfferDecision: {
+                        select: {
+                            offer: true,
+                            decision: true,
+                            rate: true,
+                        },
+                    },
+                },
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: applications.map(mapApplicationToApi),
+            });
+        } catch (error) {
+            console.error('Get applications by underwriter id error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
     }
 
     // Get applications by ISO id
@@ -6721,7 +8348,7 @@ class ApplicationController {
      * Approve an application (idempotent webhook-style endpoint).
      *
      * Trigger surfaces:
-     *   1. Authenticated CRM user (Final Underwriter / Admin / Operations…) clicks Approve.
+     *   1. Authenticated CRM user (Underwriter / Admin / Operations…) clicks Approve.
      *   2. ISO clicks Approve from the public approval portal — the portal first
      *      mints a short-lived JWT (see PublicApprovalController.createApprovalSession)
      *      that flows through `authenticateToken` and lands here with
@@ -6788,18 +8415,10 @@ class ApplicationController {
                 return;
             }
 
-            const publicApprovalActor = String(reqUser?.publicApprovalActor ?? '')
-                .trim()
-                .toUpperCase();
-            const approvalActorType =
-                publicApprovalActor === 'ISO' || publicApprovalActor === 'CLIENT'
-                    ? publicApprovalActor
-                    : authUser?.role || null;
-
             const result = await approveApplication(whereClause, {
                 actor: authUser,
                 req,
-                actorType: approvalActorType,
+                actorType: reqUser?.publicApprovalActor || authUser?.role || null,
                 actorName: reqUser?.name ?? null,
                 note: typeof note === 'string' ? note : null,
                 idempotencyKey: typeof idempotencyKeyHeader === 'string' ? idempotencyKeyHeader : null,

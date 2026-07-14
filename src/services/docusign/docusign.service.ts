@@ -2146,7 +2146,7 @@ export class DocusignService {
 
       const underwriters = await prisma.user.findMany({
         where: {
-          role: { in: ['UNDERWRITER', 'FINAL_UNDERWRITER'] },
+          role: { in: ['UNDERWRITER'] },
           isActive: true,
         },
         select: { id: true },
@@ -3281,18 +3281,213 @@ export class DocusignService {
     return buf;
   }
 
-  async downloadTemplatePdf(userId: string, templateId: string) {
+  /**
+   * Download a template PDF for preview.
+   * Prefers CRM `BoldSignTemplate.pdfUrl` (platform / funder Cloudinary PDFs) when
+   * `templateId` is a layout key (e.g. `contract`, `funder_<uuid>`). Falls back to
+   * DocuSign remote template download only for real DocuSign template UUIDs.
+   */
+  async downloadTemplatePdf(
+    userId: string,
+    templateId: string,
+    options?: {
+      funderName?: string;
+      funderProfileId?: string;
+      state?: string;
+    },
+  ) {
+    const rawRef = String(templateId || '').trim();
+    if (!rawRef) {
+      throw new BadRequestException('templateId is required');
+    }
+
+    let resolvedRef = rawRef;
+    const funderName = String(options?.funderName || '').trim();
+    const funderProfileId = String(options?.funderProfileId || '').trim();
+    const state = String(options?.state || '').trim() || null;
+
+    if (funderName || funderProfileId) {
+      try {
+        resolvedRef = await this.resolveTemplateRefForFunder(rawRef, {
+          funderName,
+          funderProfileId,
+          state,
+        });
+      } catch {
+        resolvedRef = rawRef;
+      }
+    }
+
+    let crmPdfUrl = await this.findCrmTemplatePdfUrl(resolvedRef);
+    // Funder uses the platform template (no own PDF for this document) — fall back
+    // to the original layout key so the preview still resolves the platform PDF.
+    if (!crmPdfUrl && resolvedRef !== rawRef) {
+      crmPdfUrl = await this.findCrmTemplatePdfUrl(rawRef);
+      if (crmPdfUrl) {
+        resolvedRef = rawRef;
+      }
+    }
+    if (crmPdfUrl) {
+      const res = await fetch(crmPdfUrl);
+      if (!res.ok) {
+        throw new BadRequestException(
+          `Failed to download CRM template PDF (${res.status}) for "${resolvedRef}"`,
+        );
+      }
+      return Buffer.from(await res.arrayBuffer());
+    }
+
+    // DocuSign template UUIDs only — layout keys like `contract` / `funder_*` are CRM-sourced.
+    const looksLikeDocusignUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resolvedRef);
+    if (!looksLikeDocusignUuid) {
+      throw new BadRequestException(
+        `No CRM PDF found for template "${resolvedRef}". Upload the funder contract PDF or set BoldSignTemplate.pdfUrl.`,
+      );
+    }
+
     const { client, accountId } = await this.getAuthContext(userId);
     const listRes = await client.get(
-      `/v2.1/accounts/${accountId}/templates/${templateId}/documents`,
+      `/v2.1/accounts/${accountId}/templates/${resolvedRef}/documents`,
     );
     const docs = listRes.data?.templateDocuments || listRes.data?.documents || [];
     const docId = docs[0]?.documentId || '1';
     const res = await client.get(
-      `/v2.1/accounts/${accountId}/templates/${templateId}/documents/${docId}`,
+      `/v2.1/accounts/${accountId}/templates/${resolvedRef}/documents/${docId}`,
       { responseType: 'arraybuffer' },
     );
     return Buffer.from(res.data);
+  }
+
+  /**
+   * Resolve the funder-specific template ref for a preview download.
+   *
+   * Supplemental documents (ACH authorization, addendum, balance transfer) map to
+   * the funder-scoped supplemental key `funder_<id>_<type>`, while the main contract
+   * uses the contract layout resolver. Funders that use platform documents keep the
+   * original layout key so the platform template is used.
+   */
+  private async resolveTemplateRefForFunder(
+    rawRef: string,
+    options: {
+      funderName?: string;
+      funderProfileId?: string;
+      state?: string | null;
+    },
+  ): Promise<string> {
+    const funderName = String(options.funderName || '').trim();
+    const funderProfileId = String(options.funderProfileId || '').trim();
+    const state = options.state ?? null;
+
+    const { getFunderProfileById, getFunderProfileByName } = await import(
+      '../funderProfileService'
+    );
+    let profile = funderProfileId ? await getFunderProfileById(funderProfileId) : null;
+    if (!profile && funderName) {
+      profile = await getFunderProfileByName(funderName, state);
+    }
+
+    const {
+      resolveFunderSupplementalStorageType,
+      funderSupplementalLayoutKeyForDocument,
+      FUNDER_SUPPLEMENTAL_LAYOUT_TYPES,
+    } = await import('../../utils/funderContractLayout');
+    const supplementalType = resolveFunderSupplementalStorageType(rawRef);
+    const isSupplemental = (
+      FUNDER_SUPPLEMENTAL_LAYOUT_TYPES as readonly string[]
+    ).includes(supplementalType);
+
+    if (isSupplemental) {
+      // Standalone/supplemental docs must NOT resolve to the funder's main contract key.
+      if (!profile) return rawRef;
+      const { resolveDocumentsLayoutFunderId } = await import(
+        '../../utils/funderDocumentSource'
+      );
+      const layoutFunderId = resolveDocumentsLayoutFunderId(profile);
+      // Platform-document funders (or Woodmere) keep the platform layout key —
+      // Woodmere ACH lives on layoutKey `ach_authorization`, not funder_<id>_….
+      if (!layoutFunderId) return rawRef;
+      const nameTokens = [
+        profile.name,
+        (profile as { displayName?: string | null }).displayName,
+        (profile as { organization?: string | null }).organization,
+        (profile as { legalName?: string | null }).legalName,
+      ]
+        .map((v) =>
+          String(v || '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, ' '),
+        )
+        .filter(Boolean);
+      const isWoodmere = nameTokens.some(
+        (t) =>
+          t === 'woodmere' ||
+          t === 'woodmere financial' ||
+          (t.includes('woodmere') && !t.includes('texas')),
+      );
+      if (isWoodmere) return rawRef;
+
+      const scoped = funderSupplementalLayoutKeyForDocument(layoutFunderId, rawRef);
+      // Only switch to the funder-scoped key when that PDF actually exists.
+      const scopedPdf = await this.findCrmTemplatePdfUrlExact(scoped);
+      return scopedPdf ? scoped : rawRef;
+    }
+
+    const { resolveMainContractLayoutKeyForSend } = await import(
+      './utils/resolve-main-contract-layout'
+    );
+    const nameForResolve = String(profile?.name || funderName || '').trim();
+    return resolveMainContractLayoutKeyForSend({
+      mainContractLayoutKey: rawRef,
+      funderName: nameForResolve || undefined,
+      state,
+    });
+  }
+
+  /** Exact BoldSignTemplate.pdfUrl match (no platform-layout aliasing). */
+  private async findCrmTemplatePdfUrlExact(templateRef: string): Promise<string | null> {
+    const ref = String(templateRef || '').trim();
+    if (!ref) return null;
+
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref);
+
+    // `BoldSignTemplate.id` is a UUID column — never query it with layout keys like `funder_<uuid>`.
+    const row = await prisma.boldSignTemplate.findFirst({
+      where: {
+        OR: [
+          { layoutKey: ref },
+          { templateId: ref },
+          ...(isUuid ? [{ id: ref }] : []),
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { pdfUrl: true },
+    });
+    const url = String(row?.pdfUrl || '').trim();
+    if (!url || url.startsWith('platform://')) return null;
+    return /^https?:\/\//i.test(url) ? url : null;
+  }
+
+  /**
+   * Resolve Cloudinary (or HTTPS) pdfUrl from BoldSignTemplate by layoutKey / templateId / row id.
+   * Platform layout keys also use the send-path resolver (incl. standalone ACH → ach_authorization).
+   */
+  private async findCrmTemplatePdfUrl(templateRef: string): Promise<string | null> {
+    const ref = String(templateRef || '').trim();
+    if (!ref) return null;
+
+    const exact = await this.findCrmTemplatePdfUrlExact(ref);
+    if (exact) return exact;
+
+    const { isDocumentLayoutKey, findBoldSignTemplatePdfUrlForLayout } = await import(
+      './platform-document-registry'
+    );
+    if (isDocumentLayoutKey(ref)) {
+      return findBoldSignTemplatePdfUrlForLayout(ref);
+    }
+    return null;
   }
 
   async downloadSignedPdf(userId: string, documentId: string) {

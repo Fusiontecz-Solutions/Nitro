@@ -1,10 +1,11 @@
 import express from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
+import { forbidRoles } from '../middleware/forbidRoles';
 import applicationSyndicatorController from '../controllers/applicationSyndicatorController';
 
 const router = express.Router();
 
-router.use(authenticateToken);
+router.use(authenticateToken, forbidRoles('AGENT'));
 
 router.get(
   '/by-syndicator/:syndicatorId',

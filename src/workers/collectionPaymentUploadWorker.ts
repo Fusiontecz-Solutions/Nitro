@@ -1,4 +1,5 @@
-import { Worker } from 'bullmq';
+import { Worker, type ConnectionOptions } from 'bullmq';
+import Redis from 'ioredis';
 import prisma from '../config/prismaClient';
 import {
   COLLECTION_PAYMENT_UPLOAD_QUEUE,
@@ -9,13 +10,13 @@ import { processCollectionPaymentUploadJob } from '../services/collectionPayment
 
 let workerInstance: Worker<CollectionPaymentUploadJobData> | null = null;
 
-const getRedisConnectionOptions = () => ({
-  url: String(process.env.REDIS_URL || '').trim(),
-  maxRetriesPerRequest: null as null,
-  retryStrategy(times: number) {
-    return Math.min(times * 200, 2000);
-  },
-});
+const createRedisConnection = (): ConnectionOptions =>
+  new Redis(String(process.env.REDIS_URL || '').trim(), {
+    maxRetriesPerRequest: null,
+    retryStrategy(times) {
+      return Math.min(times * 200, 2000);
+    },
+  }) as ConnectionOptions;
 
 export const startCollectionPaymentUploadWorker = (): void => {
   if (!isCollectionPaymentUploadQueueEnabled()) {
@@ -68,7 +69,7 @@ export const startCollectionPaymentUploadWorker = (): void => {
         });
       },
       {
-        connection: getRedisConnectionOptions(),
+        connection: createRedisConnection(),
         concurrency: 4,
       },
     );

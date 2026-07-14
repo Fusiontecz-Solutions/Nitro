@@ -114,29 +114,7 @@ export function verifySuperAdminProxy(
     actorName: pickHeader(req, ACTOR_NAME_HEADER),
   };
 
-  // Audit-friendly trace so tenant logs make the centralized SuperAdmin call
-  // path visible. Never log the secret itself.
-  console.log(
-    `[verifySuperAdminProxy] accepted trusted internal call ` +
-      `actor=${req.superAdminContext.actorEmail || req.superAdminContext.actorId || 'unknown'} ` +
-      `tenant=${req.superAdminContext.tenantCode || req.superAdminContext.tenantId || 'unspecified'} ` +
-      `${req.method} ${req.originalUrl}`,
-  );
-
   next();
-}
-
-/**
- * Tiny helper for controllers / services that want to detect a trusted
- * SuperAdmin proxy call without coupling to `req.user.role === 'SUPER_ADMIN'`.
- *
- *   if (isTrustedInternalCall(req)) { ... full-access path ... }
- *
- * Prefer this over role-string comparisons when the intent is "trust the
- * centralized SuperAdmin backend, not a tenant user with SUPER_ADMIN role".
- */
-export function isTrustedInternalCall(req: Request): boolean {
-  return req.isSuperAdminProxy === true;
 }
 
 /**

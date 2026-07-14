@@ -92,16 +92,15 @@ export async function extractCombinedTextFromOcrService(
 
     console.log('[Backend → OCR] Step 2: POST request in flight (uploading file body)...');
 
-    const response = await axios.post(url, form, {
+    const response = await axios.post<OcrExtractResponse>(url, form, {
         headers: form.getHeaders(),
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
         timeout: Number(process.env.OCR_SERVICE_TIMEOUT_MS || 600_000),
         validateStatus: () => true,
-    } as import('axios').AxiosRequestConfig);
+    });
 
-    const { status } = response;
-    const data = response.data as OcrExtractResponse;
+    const { data, status } = response;
 
     console.log('[OCR → Backend] Step 3: HTTP response received.');
     console.log('[OCR → Backend]   → status:', status);

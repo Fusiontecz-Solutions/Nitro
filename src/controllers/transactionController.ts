@@ -282,7 +282,7 @@ class TransactionController {
         }
     }
 
-    // Get all transactions for a specific month — no role-based filtering; Agent and Underwriter see same data for the same monthId
+    // Get all transactions for a specific month — no role-based filtering; Agent and Scrubbing see same data for the same monthId
     async getTransactionsByMonth(req: Request, res: Response) {
         try {
             const { monthId } = req.query;

@@ -285,7 +285,8 @@ class UserController {
                 });
             }
 
-            await deleteUserAndLinkedSyndicator(id);
+            const actingUserId = (req as any).user?.id as string | undefined;
+            await deleteUserAndLinkedSyndicator(id, actingUserId);
 
             return res.status(200).json({
                 success: true,
@@ -294,10 +295,17 @@ class UserController {
         } catch (error: any) {
             console.error('Delete user error:', error);
             const code = error?.code;
-            if (code === 'P2025') {
+            const statusCode = error?.statusCode;
+            if (code === 'P2025' || statusCode === 404) {
                 return res.status(404).json({
                     success: false,
                     message: 'User not found',
+                });
+            }
+            if (statusCode === 409) {
+                return res.status(409).json({
+                    success: false,
+                    message: error?.message ?? 'Cannot delete user',
                 });
             }
             return res.status(500).json({

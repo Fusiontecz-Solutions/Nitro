@@ -29,6 +29,7 @@ const resolveApplicationByAnyId = async (application: any) => {
     });
   }
 
+  // assume UUID primary key
   return prisma.application.findUnique({
     where: { id: applicationStr },
   });

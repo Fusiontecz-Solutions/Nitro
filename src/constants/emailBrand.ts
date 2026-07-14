@@ -8,6 +8,8 @@ const LEGACY_MAIL_FROM_NAMES = new Set([
     'in-house crm',
     'ih crm',
     'in house crm',
+    'katan capital llc',
+    'katan capital',
 ]);
 
 /**

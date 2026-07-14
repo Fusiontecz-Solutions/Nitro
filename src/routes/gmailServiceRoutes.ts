@@ -4,6 +4,7 @@ import {
   getEmailDetails,
   getAttachment,
   autoCreateFromEmails,
+  markMessageInCrm,
   sendCompose,
   getGmailLinkedAccount,
 } from '../controllers/gmail.controller';
@@ -19,7 +20,7 @@ router.get('/me', authenticateToken, getGmailLinkedAccount);
 /**
  * POST /api/gmail/sync
  */
-router.post('/sync', syncGmail);
+router.post('/sync', authenticateToken, syncGmail);
 
 /**
  * GET /api/gmail/message/:messageId
@@ -44,6 +45,11 @@ router.post(
  * Scans INBOX for PDF attachments → extracts data → creates Client + Application
  */
 router.post('/auto-create-applications', authenticateToken, autoCreateFromEmails);
+
+/**
+ * POST /api/gmail/message/:messageId/in-crm
+ */
+router.post('/message/:messageId/in-crm', authenticateToken, markMessageInCrm);
 
 /**
  * POST /api/gmail/send

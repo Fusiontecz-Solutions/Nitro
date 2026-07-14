@@ -24,8 +24,18 @@ export type DecisionLogicBusinessOwner = {
 type ClientWithBankRows = Client & {
   ClientBankInfo: ClientBankInfo[];
   applications: Array<
-    Pick<Application, "id" | "createdAt"> & {
-      bankDetails: Array<Pick<BankDetail, "id" | "bankName" | "accountNumber" | "routingNumber" | "createdAt">>;
+    Pick<Application, "id" | "applicationId" | "createdAt"> & {
+      bankDetails: Array<
+        Pick<
+          BankDetail,
+          | "id"
+          | "bankName"
+          | "accountNumber"
+          | "routingNumber"
+          | "createdAt"
+          | "updatedAt"
+        >
+      >;
     }
   >;
 };
@@ -37,32 +47,81 @@ type DecisionLogicBankRow = {
   createdAt: Date;
 };
 
-function resolvePreferredBankRows(client: ClientWithBankRows): DecisionLogicBankRow[] {
+const clientBankInclude = {
+  ClientBankInfo: true,
+  applications: {
+    select: {
+      id: true,
+      applicationId: true,
+      createdAt: true,
+      bankDetails: {
+        select: {
+          id: true,
+          bankName: true,
+          accountNumber: true,
+          routingNumber: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
+    },
+  },
+} as const;
+
+function applicationMatchesRef(
+  app: { id: string; applicationId: number },
+  ref: string,
+): boolean {
+  const trimmed = String(ref ?? "").trim();
+  if (!trimmed) return false;
+  if (trimmed === app.id) return true;
+  if (/^\d+$/.test(trimmed) && String(app.applicationId) === trimmed) return true;
+  return false;
+}
+
+function mapBankDetailRows(
+  details: ClientWithBankRows["applications"][number]["bankDetails"],
+): DecisionLogicBankRow[] {
+  return [...details]
+    .sort((a, b) => {
+      const byUpdated = b.updatedAt.getTime() - a.updatedAt.getTime();
+      if (byUpdated !== 0) return byUpdated;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    })
+    .map((d) => ({
+      bankName: String(d.bankName ?? ""),
+      accountNumber: String(decryptSensitiveField(d.accountNumber) ?? ""),
+      routingNumber: decryptSensitiveField(d.routingNumber) ?? null,
+      createdAt: d.createdAt,
+    }));
+}
+
+function resolvePreferredBankRows(
+  client: ClientWithBankRows,
+  applicationRef?: string | null,
+): DecisionLogicBankRow[] {
+  if (applicationRef) {
+    const app = (client.applications ?? []).find((row) =>
+      applicationMatchesRef(row, applicationRef),
+    );
+    if (app?.bankDetails?.length) {
+      return mapBankDetailRows(app.bankDetails);
+    }
+    return [];
+  }
+
   const appRows = [...(client.applications ?? [])].sort(
-    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
   );
 
-  // Prefer the newest application's BankDetail rows (same source used by Eligibility Analysis UI).
   for (const app of appRows) {
-    const details = [...(app.bankDetails ?? [])].sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    );
-    if (details.length) {
-      return details.map((d) => ({
-        bankName: String(d.bankName ?? ""),
-        accountNumber: String(
-          decryptSensitiveField(d.accountNumber ?? undefined) ?? d.accountNumber ?? "",
-        ),
-        routingNumber:
-          decryptSensitiveField(d.routingNumber ?? undefined) ?? d.routingNumber ?? null,
-        createdAt: d.createdAt,
-      }));
+    if (app.bankDetails?.length) {
+      return mapBankDetailRows(app.bankDetails);
     }
   }
 
-  // Backward compatibility for tenants still using ClientBankInfo.
   const legacyRows = [...(client.ClientBankInfo ?? [])].sort(
-    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
   );
   return legacyRows.map((row) => ({
     bankName: String(row.bankName ?? ""),
@@ -73,9 +132,10 @@ function resolvePreferredBankRows(client: ClientWithBankRows): DecisionLogicBank
 }
 
 function mapClientToDecisionLogicOwner(
-  client: ClientWithBankRows
+  client: ClientWithBankRows,
+  applicationRef?: string | null,
 ): DecisionLogicBusinessOwner {
-  const banks = resolvePreferredBankRows(client);
+  const banks = resolvePreferredBankRows(client, applicationRef);
   return {
     // email: client.ownerEmail ?? "",
     email: client.ownerEmail || client.businessEmail || '', 
@@ -98,65 +158,36 @@ function mapClientToDecisionLogicOwner(
 
 export const clientService = {
   async fetchBusinessOwner(
-    businessOwnerId: number
+    businessOwnerId: number,
+    applicationRef?: string | null,
   ): Promise<DecisionLogicBusinessOwner> {
     const client = await prisma.client.findUnique({
       where: { clientId: businessOwnerId },
-      include: {
-        ClientBankInfo: true,
-        applications: {
-          select: {
-            id: true,
-            createdAt: true,
-            bankDetails: {
-              select: {
-                id: true,
-                bankName: true,
-                accountNumber: true,
-                routingNumber: true,
-                createdAt: true,
-              },
-            },
-          },
-        },
-      },
+      include: clientBankInclude,
     });
     if (!client) {
       throw new NotFoundError("Client not found for the given business owner id.");
     }
-    return mapClientToDecisionLogicOwner(client as ClientWithBankRows);
+    return mapClientToDecisionLogicOwner(
+      client as ClientWithBankRows,
+      applicationRef,
+    );
   },
 
   async fetchBankAccount(
     bankAccountId: number,
-    businessOwnerId: number
+    businessOwnerId: number,
+    applicationRef?: string | null,
   ) {
     const client = await prisma.client.findUnique({
       where: { clientId: businessOwnerId },
-      include: {
-        ClientBankInfo: true,
-        applications: {
-          select: {
-            id: true,
-            createdAt: true,
-            bankDetails: {
-              select: {
-                id: true,
-                bankName: true,
-                accountNumber: true,
-                routingNumber: true,
-                createdAt: true,
-              },
-            },
-          },
-        },
-      },
+      include: clientBankInclude,
     });
     if (!client) {
       throw new NotFoundError("Client not found for the given business owner id.");
     }
     const c = client as ClientWithBankRows;
-    const banks = resolvePreferredBankRows(c);
+    const banks = resolvePreferredBankRows(c, applicationRef);
     const row = banks[bankAccountId - 1];
     if (!row) {
       throw new NotFoundError("Bank account not found for the given id.");

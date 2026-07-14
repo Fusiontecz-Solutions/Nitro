@@ -17,19 +17,7 @@ export function isEncrypted(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith(ENCRYPTION_PREFIX);
 }
 
-export function encryptField(value: string): string {
-  let plaintext = String(value ?? '').trim();
-  if (!plaintext) return plaintext;
-  if (isEncrypted(plaintext)) {
-    const decrypted = decryptSensitiveField(plaintext);
-    if (!decrypted) {
-      throw new Error(
-        'Bank field is encrypted with a different FIELD_ENCRYPTION_KEY. Re-enter the account or routing number and save again.',
-      );
-    }
-    plaintext = decrypted;
-  }
-
+function encryptPlaintext(plaintext: string): string {
   const key = getKey();
   const iv = crypto.randomBytes(12); // recommended IV length for GCM
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -41,6 +29,26 @@ export function encryptField(value: string): string {
     ENCRYPTION_PREFIX +
     `${iv.toString('base64')}.${tag.toString('base64')}.${ciphertext.toString('base64')}`
   );
+}
+
+export function encryptField(value: string): string {
+  const plaintext = String(value ?? '').trim();
+  if (!plaintext) return plaintext;
+  if (isEncrypted(plaintext)) {
+    try {
+      const decrypted = decryptField(plaintext);
+      if (decrypted == null || isEncrypted(decrypted)) {
+        throw new Error('decrypt failed');
+      }
+      return encryptPlaintext(String(decrypted).trim());
+    } catch {
+      throw new Error(
+        'Unable to decrypt stored bank value with the current FIELD_ENCRYPTION_KEY. Please re-enter the account and routing numbers.',
+      );
+    }
+  }
+
+  return encryptPlaintext(plaintext);
 }
 
 export function decryptField(value: string | null | undefined): string | null | undefined {
@@ -66,83 +74,97 @@ export function decryptField(value: string | null | undefined): string | null | 
   return plaintext.toString('utf8');
 }
 
-/**
- * Decrypt when value is `enc:v1:`; otherwise return unchanged. Never throws.
- * On key mismatch / corruption returns `null` so APIs do not leak ciphertext to the UI.
- */
+/** Never throws — returns null when decryption fails (wrong key, corrupt data, etc.). */
 export function decryptSensitiveField(value: string | null | undefined): string | null | undefined {
   if (value == null) return value;
   if (!isEncrypted(value)) return value;
   try {
-    return decryptField(value);
+    const decrypted = decryptField(value);
+    if (decrypted == null || isEncrypted(decrypted)) {
+      console.warn('[fieldEncryption] Failed to decrypt sensitive field (returning null)');
+      return null;
+    }
+    return decrypted;
   } catch (err) {
-    console.warn(
-      '[fieldEncryption] Decryption failed (FIELD_ENCRYPTION_KEY may not match data encrypted in DB). Re-enter and save bank details.',
-      err instanceof Error ? err.message : err,
-    );
+    console.warn('[fieldEncryption] Failed to decrypt sensitive field:', err);
     return null;
   }
 }
 
-/** Recursively decrypt any encrypted string leaves in JSON (e.g. contractPrefillOverrides). */
-export function decryptEncryptedStringsInJson<T>(value: T): T {
-  if (typeof value === 'string') {
-    return decryptSensitiveField(value) as T;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => decryptEncryptedStringsInJson(item)) as T;
-  }
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        k,
-        decryptEncryptedStringsInJson(v),
-      ]),
-    ) as T;
-  }
-  return value;
-}
-
-const ACH_API_BANK_KEYS = ['accountNumber', 'routingNumber'] as const;
-
-export function mapAchRecordForApi<T extends Record<string, unknown>>(ach: T): T {
-  const out: Record<string, unknown> = { ...ach };
-  for (const key of ACH_API_BANK_KEYS) {
-    if (key in out && typeof out[key] === 'string') {
-      out[key] = decryptSensitiveField(out[key] as string);
-    }
-  }
-  return out as T;
-}
-
-const CONTRACT_API_BANK_SCALAR_KEYS = [
+const CONTRACT_BANK_SCALAR_KEYS = [
   'authorizationClientBankAccount',
   'authorizationClientBankRouting',
 ] as const;
 
-export function mapContractRecordForApi<T extends Record<string, unknown>>(contract: T): T {
-  const out: Record<string, unknown> = { ...contract };
-  for (const key of CONTRACT_API_BANK_SCALAR_KEYS) {
-    if (key in out && typeof out[key] === 'string') {
-      out[key] = decryptSensitiveField(out[key] as string);
+const ACH_BANK_SCALAR_KEYS = ['accountNumber', 'routingNumber'] as const;
+
+const BANK_DETAIL_SCALAR_KEYS = ['accountNumber', 'routingNumber'] as const;
+
+export function mapBankDetailRecordForApi<T extends Record<string, unknown>>(record: T): T {
+  if (!record || typeof record !== 'object') return record;
+  const out = { ...record } as T;
+  for (const key of BANK_DETAIL_SCALAR_KEYS) {
+    if (key in out) {
+      (out as Record<string, unknown>)[key] = decryptSensitiveField(
+        out[key] as string | null | undefined,
+      );
     }
   }
-  if (out.contractPrefillOverrides != null) {
-    out.contractPrefillOverrides = decryptEncryptedStringsInJson(out.contractPrefillOverrides);
+  return out;
+}
+
+export function mapAchRecordForApi<T extends Record<string, unknown>>(record: T): T {
+  if (!record || typeof record !== 'object') return record;
+  const out = { ...record } as T;
+  for (const key of ACH_BANK_SCALAR_KEYS) {
+    if (key in out) {
+      (out as Record<string, unknown>)[key] = decryptSensitiveField(
+        out[key] as string | null | undefined,
+      );
+    }
+  }
+  return out;
+}
+
+export function mapContractRecordForApi<T extends Record<string, unknown>>(record: T): T {
+  if (!record || typeof record !== 'object') return record;
+  const out = { ...record } as T;
+  for (const key of CONTRACT_BANK_SCALAR_KEYS) {
+    if (key in out) {
+      (out as Record<string, unknown>)[key] = decryptSensitiveField(
+        out[key] as string | null | undefined,
+      );
+    }
+  }
+  if ('contractPrefillOverrides' in out && out.contractPrefillOverrides != null) {
+    (out as Record<string, unknown>).contractPrefillOverrides = decryptEncryptedStringsInJson(
+      out.contractPrefillOverrides,
+    );
   }
   if (Array.isArray(out.achs)) {
-    out.achs = out.achs.map((row) => mapAchRecordForApi(row as Record<string, unknown>));
+    (out as Record<string, unknown>).achs = out.achs.map((row) =>
+      mapAchRecordForApi(row as Record<string, unknown>),
+    );
   }
-  return out as T;
+  return out;
 }
 
-export function mapBankDetailRecordForApi<T extends Record<string, unknown>>(bank: T): T {
-  const out: Record<string, unknown> = { ...bank };
-  for (const key of ACH_API_BANK_KEYS) {
-    if (key in out && typeof out[key] === 'string') {
-      out[key] = decryptSensitiveField(out[key] as string);
+/** Recursively decrypt enc:v1: strings in JSON (e.g. contractPrefillOverrides). */
+export function decryptEncryptedStringsInJson(value: unknown): unknown {
+  if (value == null) return value;
+  if (typeof value === 'string') {
+    if (!isEncrypted(value)) return value;
+    return decryptSensitiveField(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => decryptEncryptedStringsInJson(item));
+  }
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = decryptEncryptedStringsInJson(v);
     }
+    return out;
   }
-  return out as T;
+  return value;
 }
-

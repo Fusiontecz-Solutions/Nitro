@@ -182,6 +182,32 @@ function metadataAsObject(metadata: unknown): Record<string, unknown> {
   return {};
 }
 
+function extractAttachmentNamesFromMetadata(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
+  const meta = metadata as Record<string, unknown>;
+  const names: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === 'string' && value.trim()) names.push(value.trim());
+  };
+
+  push(meta.documentName);
+  if (meta.hasLetterPdf === true) names.push('Letter PDF');
+
+  if (Array.isArray(meta.attachments)) {
+    for (const item of meta.attachments) {
+      if (typeof item === 'string') push(item);
+      else if (item && typeof item === 'object') {
+        const row = item as Record<string, unknown>;
+        push(row.filename);
+        push(row.name);
+        push(row.originalName);
+      }
+    }
+  }
+
+  return [...new Set(names)];
+}
+
 export interface GetSystemActivityLogsParams {
   page?: number;
   limit?: number;
@@ -397,7 +423,7 @@ export async function getSystemActivityLogContent(logId: string) {
       channel: 'EMAIL',
       recipient: recipients,
       recipientType: 'ISO',
-      templateName: isOfferUpdate ? 'Offer updated (ISO)' : 'Application approved (ISO)',
+      templateName: isOfferUpdate ? 'Update offer template' : 'Application approved template',
       subject: isOfferUpdate
         ? 'Your Offer Values Have Been Updated'
         : 'Your Application Has Been Approved',
@@ -412,6 +438,9 @@ export async function getSystemActivityLogContent(logId: string) {
       where: { id: String(meta.paymentMailLogId) },
     });
     if (mail) {
+      const attachments = extractAttachmentNamesFromMetadata(meta);
+      if (mail.templateName?.trim()) attachments.unshift(mail.templateName.trim());
+
       return {
         viewType: 'payment_mail',
         channel: 'TEMPLATE',
@@ -421,18 +450,28 @@ export async function getSystemActivityLogContent(logId: string) {
         category: mail.category,
         subject: mail.subject,
         body: mail.body,
-        status: mail.status,
+        status: (meta.delivery as { status?: string } | undefined)?.status ?? mail.status,
         applicationId: mail.applicationId,
+        attachments: attachments.length ? [...new Set(attachments)] : undefined,
+        delivery: meta.delivery as Record<string, unknown> | undefined,
         createdAt: mail.createdAt?.toISOString(),
       };
     }
   }
 
   if (meta.outboundCommunicationId) {
-    const outbound = await prisma.outboundCommunication.findUnique({
+    const outbound = await prisma.outbound_communications.findUnique({
       where: { id: String(meta.outboundCommunicationId) },
     });
     if (outbound) {
+      const outboundMeta = metadataAsObject(outbound.metadata);
+      const tracking =
+        outboundMeta.tracking && typeof outboundMeta.tracking === 'object'
+          ? (outboundMeta.tracking as Record<string, unknown>)
+          : null;
+      const attachments = extractAttachmentNamesFromMetadata(meta);
+      if (outbound.documentName) attachments.push(String(outbound.documentName));
+
       return {
         viewType: 'outbound_communication',
         channel: outbound.channel,
@@ -442,9 +481,24 @@ export async function getSystemActivityLogContent(logId: string) {
         documentName: outbound.documentName,
         subject: outbound.subject,
         body: outbound.body,
-        status: outbound.status,
+        status: outbound.status ?? (tracking?.status as string | undefined),
         applicationId: outbound.applicationId,
         contractId: outbound.contractId,
+        attachments: attachments.length ? [...new Set(attachments)] : undefined,
+        delivery: tracking
+          ? {
+              status: tracking.status as string | undefined,
+              deliveredAt: tracking.deliveredAt as string | undefined,
+              openedAt: tracking.openedAt as string | undefined,
+              clickedAt: tracking.clickedAt as string | undefined,
+              bouncedAt: tracking.bouncedAt as string | undefined,
+              openCount: tracking.openCount as number | undefined,
+              clickCount: tracking.clickCount as number | undefined,
+              bounceReason: tracking.bounceReason as string | undefined,
+              lastEvent: tracking.lastEvent as string | undefined,
+              lastEventAt: tracking.lastEventAt as string | undefined,
+            }
+          : (meta.delivery as Record<string, unknown> | undefined),
         createdAt: outbound.createdAt.toISOString(),
       };
     }

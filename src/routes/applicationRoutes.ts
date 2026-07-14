@@ -57,11 +57,8 @@ router.post(
 );
 
 // Send approval email to client (non-blocking email send)
-router.get(
-    '/approval-email-payload',
-    applicationController.getApprovalEmailPayload.bind(applicationController),
-);
 router.post('/send-approval-email', applicationController.sendApprovalEmail.bind(applicationController));
+router.post('/reinitiate-contract', applicationController.reinitiateContract.bind(applicationController));
 
 // Funded / funds-released email (OPERATIONS only; non-blocking)
 router.post('/send-funded-email', applicationController.sendFundedEmail.bind(applicationController));
@@ -97,6 +94,12 @@ router.get('/admin-dashboard-stats', applicationController.getAdminDashboardStat
 // Get application stats (counts and total amounts by queue/state, role-based)
 router.get('/stats', applicationController.getStats.bind(applicationController));
 
+// Underwriter deal-pipeline sidebar counts (scoped to logged-in underwriter)
+router.get(
+    '/underwriter-pipeline-counts',
+    applicationController.getUnderwriterPipelineCounts.bind(applicationController),
+);
+
 // Operations dashboard: single response for all pipeline / queue stat cards (scalable vs N list calls)
 router.get(
     '/operations-dashboard-summary',
@@ -130,6 +133,12 @@ router.get('/by-agent', applicationController.getApplicationsByAgentId.bind(appl
 // Get applications by ISO id
 router.get('/by-iso/:isoId', applicationController.getByIsoId.bind(applicationController));
 
+// Get applications by underwriter id (assigned, approved, or claimed)
+router.get(
+    '/by-underwriter/:underwriterId',
+    applicationController.getByUnderwriterId.bind(applicationController),
+);
+
 // Get application by MongoDB ObjectId
 router.get('/:id', applicationController.getById.bind(applicationController));
 
@@ -148,20 +157,51 @@ router.post('/:id/files', applicationController.addFiles.bind(applicationControl
 // Remove file from application
 router.delete('/:id/files/:fileId', applicationController.removeFile.bind(applicationController));
 
+// Tag an existing file with a document-request slug (fulfillment from CRM uploads)
+router.patch(
+    '/:id/files/:fileId',
+    applicationController.updateFileDocumentType.bind(applicationController),
+);
+
+// Fill application client fields from a stored PDF (Claude / Document AI extraction)
+router.post(
+    '/:id/files/:fileId/fill-from-pdf',
+    applicationController.fillApplicationFromPdfFile.bind(applicationController),
+);
+
 // Update application queue
 router.patch('/:id/queue', applicationController.updateQueue.bind(applicationController));
 
-// Underwriter exclusive claim (avoids multiple underwriters working the same deal)
+// Scrubbing exclusive claim (avoids multiple underwriters working the same deal)
 router.post(
-    '/:id/underwriter-claim',
-    requireRoles('UNDERWRITER'),
+    '/:id/scrubbing-claim',
+    requireRoles('SCRUBBING'),
     applicationController.claimUnderwriterDeal.bind(applicationController),
 );
 router.post(
-    '/:id/underwriter-release',
-    // Only Admin can take back a deal from the Underwriter queue.
+    '/:id/underwriter-claim',
+    requireRoles('UNDERWRITER'),
+    applicationController.claimFinalUnderwriterDeal.bind(applicationController),
+);
+router.post(
+    '/:id/scrubbing-release',
+    // Only Admin can take back a deal from the Scrubbing queue.
     requireRoles('ADMIN', 'SUPER_ADMIN'),
     applicationController.releaseUnderwriterDeal.bind(applicationController),
+);
+
+// Super Admin / Scrubbing: assign application to a specific Underwriter (in-app notification)
+router.post(
+    '/:id/assign-underwriter',
+    requireRoles('SUPER_ADMIN', 'SCRUBBING'),
+    applicationController.assignApplicationToUnderwriter.bind(applicationController),
+);
+
+// Super Admin / Operations: send Underwriter Approved deal to the approving Underwriter for final approval
+router.post(
+    '/:id/send-final-underwriter-approval',
+    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    applicationController.sendForFinalUnderwriterApproval.bind(applicationController),
 );
 
 // Update application state
@@ -169,9 +209,6 @@ router.patch('/:id/state', applicationController.updateState.bind(applicationCon
 
 // Update document checklist (checked document labels)
 router.patch('/:id/document-checklist', applicationController.updateDocumentChecklist.bind(applicationController));
-
-// Generate a one-time 4-digit action code for edit/delete (notifies Super Admins)
-router.post('/:id/action-code', applicationController.requestActionCode.bind(applicationController));
 
 // Reject/Decline application
 router.post('/:id/reject', applicationController.rejectApplication.bind(applicationController));
@@ -189,10 +226,6 @@ router.get('/:id/activity-logs', applicationController.getActivityLogs.bind(appl
 // Payment workspace: mail send history (persisted)
 router.get('/:id/payment-mail-logs', applicationController.getPaymentMailLogs.bind(applicationController));
 router.post('/:id/payment-mail-logs', applicationController.createPaymentMailLog.bind(applicationController));
-router.put(
-    '/:id/payment-mail-logs/:logId',
-    applicationController.updatePaymentMailLog.bind(applicationController),
-);
 
 // Disbursement review: planned debit schedule (persisted on confirm)
 router.get(
@@ -204,11 +237,24 @@ router.put(
     schedulePaymentTrackingController.replaceForApplication.bind(schedulePaymentTrackingController),
 );
 
-
 // Duplicate applications (dedupes) - UW/Admin only
 router.get('/:id/duplicates', applicationController.getDuplicates.bind(applicationController));
 
-// Delete application
+// Recently Deleted: restore to scrubber (Super Admin / Operations)
+router.post(
+    '/:id/restore-to-scrubber',
+    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    applicationController.restoreApplicationToScrubber.bind(applicationController),
+);
+
+// Recently Deleted: permanent removal (Super Admin / Operations)
+router.delete(
+    '/:id/permanent',
+    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    applicationController.permanentlyDelete.bind(applicationController),
+);
+
+// Soft-delete application (moves to Recently Deleted)
 router.delete('/:id', applicationController.delete.bind(applicationController));
 
 export default router;

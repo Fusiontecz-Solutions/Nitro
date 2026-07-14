@@ -23,6 +23,7 @@
     "noUnusedParameters": false,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
+    "types": ["node"],
     "typeRoots": ["./node_modules/@types"]
     
   },

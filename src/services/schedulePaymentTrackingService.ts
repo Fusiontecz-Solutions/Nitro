@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { Prisma, type SchedulePaymentTracking } from '@prisma/client';
 import { SchedulePaymentTrackingStatus } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { resolveApplicationAttributedUserIdForActor } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from './applicationService';
 import { canUserAccessApplication } from './applicationService';
 import {
@@ -41,48 +42,6 @@ const toAmountDecimal = (amount: number): Prisma.Decimal => {
   const rounded = Math.round(amount * 100) / 100;
   return new Prisma.Decimal(rounded.toFixed(2));
 };
-
-/** Super Admin proxy sentinel — not a row in tenant User. */
-const SUPER_ADMIN_PROXY_SENTINEL_ID = '00000000-0000-0000-0000-000000000000';
-
-type SchedulePaymentAttributionContext = {
-  createdById: string | null;
-  salesRepresentativeId: string | null;
-};
-
-/**
- * Tenant User.id safe for SchedulePaymentTracking.confirmedById (optional FK).
- * Super Admin proxy principals and unknown ids never write a synthetic id.
- */
-async function resolveSchedulePaymentConfirmedById(
-  user: AuthenticatedUser | null,
-  application: SchedulePaymentAttributionContext,
-): Promise<string | null> {
-  const candidateId = user?.id?.trim();
-  if (
-    candidateId &&
-    candidateId !== SUPER_ADMIN_PROXY_SENTINEL_ID
-  ) {
-    const actor = await prisma.user.findUnique({
-      where: { id: candidateId },
-      select: { id: true },
-    });
-    if (actor) return actor.id;
-  }
-
-  const fallbackIds = [application.createdById, application.salesRepresentativeId].filter(
-    (id): id is string => typeof id === 'string' && id.length > 0,
-  );
-  for (const id of fallbackIds) {
-    const row = await prisma.user.findUnique({
-      where: { id },
-      select: { id: true },
-    });
-    if (row) return row.id;
-  }
-
-  return null;
-}
 
 export const mapSchedulePaymentToApi = (row: SchedulePaymentTracking) => ({
   id: row.id,
@@ -168,6 +127,9 @@ export async function replaceSchedulePaymentTracking(
       referringAgentId: true,
       createdById: true,
       salesRepresentativeId: true,
+      currentQueue: true,
+      approvedByUnderwriterId: true,
+      assignedUnderwriterId: true,
     },
   });
 
@@ -214,7 +176,10 @@ export async function replaceSchedulePaymentTracking(
     null;
 
   const batchId = randomUUID();
-  const confirmedById = await resolveSchedulePaymentConfirmedById(user, application);
+  const confirmedById = await resolveApplicationAttributedUserIdForActor(user?.id, {
+    createdById: application.createdById,
+    salesRepresentativeId: application.salesRepresentativeId,
+  });
 
   const rows = validated.payments.map((p) => ({
     applicationId,
@@ -271,7 +236,7 @@ export async function listSchedulePaymentTracking(
 ) {
   const application = await prisma.application.findUnique({
     where: { id: applicationId },
-    select: { id: true, referringAgentId: true, createdById: true },
+    select: { id: true, referringAgentId: true, createdById: true, currentQueue: true, approvedByUnderwriterId: true, assignedUnderwriterId: true },
   });
 
   if (!application) {
@@ -319,7 +284,7 @@ export async function listSchedulePaymentTrackingWithMatch(
 
   const application = await prisma.application.findUnique({
     where: { id: applicationId },
-    select: { id: true, dealId: true, referringAgentId: true, createdById: true },
+    select: { id: true, dealId: true, referringAgentId: true, createdById: true, currentQueue: true, approvedByUnderwriterId: true, assignedUnderwriterId: true },
   });
 
   if (!application) {

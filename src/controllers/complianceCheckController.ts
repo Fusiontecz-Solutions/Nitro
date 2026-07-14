@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import {
-  APPLICATION_USER_ATTRIBUTION_ERROR,
   resolveApplicationAttributedUserId,
+  APPLICATION_USER_ATTRIBUTION_ERROR,
 } from '../middleware/authMiddleware';
 
 const findApplication = async (applicationIdOrUuid: unknown) => {
@@ -107,99 +107,82 @@ class ComplianceCheckController {
         });
       }
 
-      if (!req.user) {
-        return res.status(401).json({
-          success: false,
-          message: 'User authentication required',
-        });
-      }
-
-      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
-      if (!createdById) {
+      // Resolve a tenant User.id safe for the required createdById FK.
+      // Super Admin proxy requests have no row in the tenant User table, so we
+      // fall back to the application's creator / sales representative.
+      const createdBy = await resolveApplicationAttributedUserId(req, {
+        createdById: applicationRecord.createdById,
+        salesRepresentativeId: applicationRecord.salesRepresentativeId,
+      });
+      if (!createdBy) {
+        console.error('User attribution error - req.user:', (req as any).user);
         return res.status(400).json({
           success: false,
           message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
-      const trimmedQuestion = question.trim();
-      const checkData = {
-        answer,
-        reason: answer === 'yes' ? (reason?.trim() || '') : null,
-        signature: signature?.trim() || null,
-        date: date?.trim() || null,
-      };
-      const includeRelations = {
-        application: {
-          select: {
-            id: true,
-            applicationId: true,
-            priority: true,
-            type: true,
-            currentQueue: true,
-            currentState: true,
-          },
+      const existingCheck = await prisma.complianceCheck.findFirst({
+        where: {
+          question: question.trim(),
+          applicationId: applicationRecord.id,
         },
-        createdBy: {
-          select: { id: true, firstName: true, lastName: true, email: true },
-        },
-      } as const;
+      });
 
       let complianceCheckRecord;
 
-      const updated = await prisma.complianceCheck.updateMany({
-        where: {
-          applicationId: applicationRecord.id,
-          question: trimmedQuestion,
-        },
-        data: checkData,
-      });
-
-      if (updated.count > 0) {
-        complianceCheckRecord = await prisma.complianceCheck.findFirst({
-          where: {
-            applicationId: applicationRecord.id,
-            question: trimmedQuestion,
+      if (existingCheck) {
+        complianceCheckRecord = await prisma.complianceCheck.update({
+          where: { id: existingCheck.id },
+          data: {
+            answer,
+            reason: answer === 'yes' ? (reason?.trim() || '') : null,
+            signature: signature?.trim() || null,
+            date: date?.trim() || null,
+            createdById: existingCheck.createdById ?? createdBy,
           },
-          include: includeRelations,
+          include: {
+            application: {
+              select: {
+                id: true,
+                applicationId: true,
+                priority: true,
+                type: true,
+                currentQueue: true,
+                currentState: true,
+              },
+            },
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true, email: true },
+            },
+          },
         });
       } else {
-        try {
-          complianceCheckRecord = await prisma.complianceCheck.create({
-            data: {
-              question: trimmedQuestion,
-              ...checkData,
-              applicationId: applicationRecord.id,
-              createdById,
+        complianceCheckRecord = await prisma.complianceCheck.create({
+          data: {
+            question: question.trim(),
+            answer,
+            reason: answer === 'yes' ? (reason?.trim() || '') : null,
+            signature: signature?.trim() || null,
+            date: date?.trim() || null,
+            applicationId: applicationRecord.id,
+            createdById: createdBy,
+          },
+          include: {
+            application: {
+              select: {
+                id: true,
+                applicationId: true,
+                priority: true,
+                type: true,
+                currentQueue: true,
+                currentState: true,
+              },
             },
-            include: includeRelations,
-          });
-        } catch (err: unknown) {
-          const code = (err as { code?: string })?.code;
-          if (code !== 'P2002') {
-            throw err;
-          }
-          await prisma.complianceCheck.updateMany({
-            where: {
-              applicationId: applicationRecord.id,
-              question: trimmedQuestion,
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true, email: true },
             },
-            data: checkData,
-          });
-          complianceCheckRecord = await prisma.complianceCheck.findFirst({
-            where: {
-              applicationId: applicationRecord.id,
-              question: trimmedQuestion,
-            },
-            include: includeRelations,
-          });
-        }
-      }
-
-      if (!complianceCheckRecord) {
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to save compliance check',
+          },
         });
       }
 

@@ -1,4 +1,5 @@
 import type { ApplicationActivityLog, User } from '@prisma/client';
+import { sanitizeAuditDescription } from '../utils/auditDescription';
 
 type LogWithUser = ApplicationActivityLog & {
   User?: Pick<User, 'id' | 'firstName' | 'lastName' | 'email' | 'role'> | null;
@@ -20,7 +21,24 @@ const PAYMENT_MAIL_ACTIONS = new Set([
 function isApprovalEmailLog(log: LogWithUser, meta: Record<string, unknown>): boolean {
   return (
     log.actionType === 'APPROVED' &&
-    (Boolean(meta.emailSentTo) || meta.template === 'approval' || meta.template === 'offer-updated')
+    (Boolean(meta.emailSentTo) ||
+      meta.template === 'approval' ||
+      meta.template === 'application-approved' ||
+      meta.template === 'offer-updated')
+  );
+}
+
+function isRejectionEmailLog(log: LogWithUser, meta: Record<string, unknown>): boolean {
+  return (
+    log.actionType === 'APPLICATION_REJECTED' &&
+    (meta.template === 'rejection' || Boolean(meta.outboundCommunicationId))
+  );
+}
+
+function isDocumentRequestEmailLog(log: LogWithUser, meta: Record<string, unknown>): boolean {
+  return (
+    log.actionType === 'DOCUMENT_REQUESTED' &&
+    (meta.template === 'document-request' || Boolean(meta.outboundCommunicationId))
   );
 }
 
@@ -28,12 +46,23 @@ export function mapApplicationActivityLogEntry(log: LogWithUser) {
   const meta = metadataAsObject(log.metadata);
   const user = log.User;
   const approvalEmail = isApprovalEmailLog(log, meta);
+  const rejectionEmail = isRejectionEmailLog(log, meta);
+  const documentRequestEmail = isDocumentRequestEmailLog(log, meta);
   const category = String(
     meta.category ??
-      (PAYMENT_MAIL_ACTIONS.has(log.actionType) || approvalEmail ? 'COMMUNICATION' : 'GENERAL'),
+      (PAYMENT_MAIL_ACTIONS.has(log.actionType) ||
+      approvalEmail ||
+      rejectionEmail ||
+      documentRequestEmail
+        ? 'COMMUNICATION'
+        : 'GENERAL'),
   );
   const isCommunication =
-    category === 'COMMUNICATION' || PAYMENT_MAIL_ACTIONS.has(log.actionType) || approvalEmail;
+    category === 'COMMUNICATION' ||
+    PAYMENT_MAIL_ACTIONS.has(log.actionType) ||
+    approvalEmail ||
+    rejectionEmail ||
+    documentRequestEmail;
 
   return {
     id: log.id,
@@ -45,7 +74,7 @@ export function mapApplicationActivityLogEntry(log: LogWithUser) {
     userRole: log.userRole,
     actionType: log.actionType,
     action: isCommunication ? 'SEND' : log.actionType,
-    actionDescription: log.actionDescription,
+    actionDescription: sanitizeAuditDescription(log.actionDescription),
     previousStatus: log.previousStatus,
     currentStatus: log.currentStatus,
     metadata: log.metadata,
@@ -61,10 +90,14 @@ export function mapApplicationActivityLogEntry(log: LogWithUser) {
     recipientType: (meta.recipientType as string | undefined) ?? (approvalEmail ? 'ISO' : null),
     templateName: (meta.templateName ??
       (meta.template === 'offer-updated'
-        ? 'Offer updated (ISO)'
-        : meta.template === 'approval'
-          ? 'Application approved (ISO)'
-          : null)) as string | null,
+        ? 'Update offer template'
+        : meta.template === 'approval' || meta.template === 'application-approved'
+          ? 'Application approved template'
+          : meta.template === 'rejection'
+            ? 'Application declined template'
+            : meta.template === 'document-request'
+              ? 'Document request template'
+              : null)) as string | null,
     subject: meta.subject as string | null,
     viewType: meta.viewType as string | null,
     paymentMailLogId: meta.paymentMailLogId as string | null,
@@ -72,7 +105,9 @@ export function mapApplicationActivityLogEntry(log: LogWithUser) {
     canView: Boolean(
       meta.paymentMailLogId ||
         meta.outboundCommunicationId ||
-        approvalEmail,
+        approvalEmail ||
+        rejectionEmail ||
+        documentRequestEmail,
     ),
     createdAt: log.createdAt?.toISOString() ?? new Date().toISOString(),
   };

@@ -1,7 +1,13 @@
 import { Request, Response } from 'express';
 import axios from 'axios';
 import prisma from '../config/prismaClient';
-import oAuth2Client from '../config/gmail';
+import {
+    findUserForGmailAccess,
+    getGmailAccessTokenForUserId,
+    getGoogleRefreshTokenForUser,
+    mintGmailAccessToken,
+    resolveGmailAccessToken,
+} from '../services/googleToken.service';
 import {
     fetchRecentPdfEmails,
     // getMessageDetails,
@@ -9,7 +15,9 @@ import {
     fetchAllEmails,
     getMessageDetails,
     autoCreateApplicationsFromEmails,
+    markGmailMessageInCrm,
     sendEmail,
+    isGmailAuthError,
 } from '../services/gmail.service';
 import sendMail, {
     getDefaultMailFrom,
@@ -20,6 +28,7 @@ import {
     inferRecipientTypeFromCategory,
 } from '../services/outboundCommunicationService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
+import { isPayoffOrZeroBalanceLetterTemplate } from '../utils/payoffOrZeroBalanceLetter';
 
 /**
  * Manually trigger Gmail sync
@@ -82,84 +91,96 @@ export async function syncGmail(req: Request, res: Response): Promise<void> {
     try {
         const { accessToken, type, pageToken, limit, query } = req.body;
 
-        if (!accessToken) {
-            res.status(400).json({
-                success: false,
-                message: 'Access token is required',
+        let resolvedAccessToken: string;
+        try {
+            resolvedAccessToken = await resolveGmailAccessToken({
+                explicitAccessToken: accessToken,
+                authUserId: req.user?.id,
+                userId: req.user?.id,
+                email: req.user?.email,
             });
+        } catch (tokenErr: unknown) {
+            const message =
+                tokenErr instanceof Error
+                    ? tokenErr.message
+                    : 'Access token is required';
+            res.status(400).json({ success: false, message });
             return;
-        }
-
-        // ✅ PDF Emails
-        if (type === 'pdf') {
-            const messages = await fetchRecentPdfEmails(accessToken);
-
-            res.status(200).json({
-                success: true,
-                total: messages.length,
-                data: messages,
-            });
-
-            return;
-        }
-
-        // ✅ Map Types
-        let label: any;
-
-        switch (type) {
-            case "inbox":
-                label = "INBOX";
-                break;
-
-            case "sent":
-                label = "SENT";
-                break;
-
-            case "draft":
-                label = "DRAFT";
-                break;
-
-            case "starred":
-                label = "STARRED";
-                break;
-
-            case "important":
-                label = "IMPORTANT";
-                break;
-
-            default:
-                label = undefined;
         }
 
         const pageLimit = clampPageLimit(limit);
         const safeQuery = typeof query === 'string' && query.trim().length > 0 ? query.trim() : undefined;
 
-        const result = await fetchAllEmails(
-            accessToken,
-            pageToken,
-            pageLimit,
-            label,
-            safeQuery,
-        );
+        let label: any;
+        switch (type) {
+            case 'inbox':
+                label = 'INBOX';
+                break;
+            case 'sent':
+                label = 'SENT';
+                break;
+            case 'draft':
+                label = 'DRAFT';
+                break;
+            case 'starred':
+                label = 'STARRED';
+                break;
+            case 'important':
+                label = 'IMPORTANT';
+                break;
+            default:
+                label = undefined;
+        }
+
+        const runSync = async (token: string) => {
+            if (type === 'pdf') {
+                const messages = await fetchRecentPdfEmails(token);
+                return { kind: 'pdf' as const, messages };
+            }
+            const result = await fetchAllEmails(token, pageToken, pageLimit, label, safeQuery);
+            return { kind: 'list' as const, result };
+        };
+
+        let syncResult;
+        try {
+            syncResult = await runSync(resolvedAccessToken);
+        } catch (error: unknown) {
+            if (isGmailAuthError(error) && req.user?.id) {
+                const freshToken = await getGmailAccessTokenForUserId(req.user.id);
+                syncResult = await runSync(freshToken);
+            } else {
+                throw error;
+            }
+        }
+
+        if (syncResult.kind === 'pdf') {
+            res.status(200).json({
+                success: true,
+                total: syncResult.messages.length,
+                data: syncResult.messages,
+            });
+            return;
+        }
 
         res.status(200).json({
             success: true,
-            count: result.messages.length,
-            nextPageToken: result.nextPageToken,
-            resultSizeEstimate: result.resultSizeEstimate,
+            count: syncResult.result.messages.length,
+            nextPageToken: syncResult.result.nextPageToken,
+            resultSizeEstimate: syncResult.result.resultSizeEstimate,
             pageSize: pageLimit,
-            /** Echo for clients — ignore this response if it does not match the pageToken you sent (stale race). */
             requestedPageToken:
                 pageToken != null && String(pageToken).trim() !== ''
                     ? String(pageToken)
                     : null,
-            data: result.messages,
+            data: syncResult.result.messages,
         });
-
     } catch (error: any) {
+        const message = isGmailAuthError(error)
+            ? 'Gmail connection expired or was revoked. Reconnect Google from the Gmail page.'
+            : error.message;
         res.status(500).json({
             success: false,
-            message: error.message,
+            message,
         });
     }
 }
@@ -345,6 +366,44 @@ export async function autoCreateFromEmails(req: Request, res: Response): Promise
 }
 
 /**
+ * POST /api/gmail/message/:messageId/in-crm
+ * Adds the Gmail user label `in-crm` to the message (visible in Gmail).
+ */
+export async function markMessageInCrm(req: Request, res: Response): Promise<void> {
+    try {
+        const { messageId } = req.params;
+        const { accessToken } = req.body;
+        const userId = (req as any).user?.id;
+
+        if (!messageId) {
+            res.status(400).json({ success: false, message: 'messageId is required' });
+            return;
+        }
+        if (!accessToken) {
+            res.status(400).json({ success: false, message: 'Access token is required' });
+            return;
+        }
+        if (!userId) {
+            res.status(401).json({ success: false, message: 'User authentication required' });
+            return;
+        }
+
+        await markGmailMessageInCrm(messageId, accessToken, userId);
+
+        res.status(200).json({
+            success: true,
+            message: 'Gmail message labeled in-crm',
+        });
+    } catch (error: any) {
+        console.error('Mark Gmail message in-crm error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to label Gmail message in-crm',
+        });
+    }
+}
+
+/**
  * POST /api/gmail/send
  * Compose and send an email via Gmail API.
  *
@@ -379,32 +438,32 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
             references,
             attachLetterPdf,
             letterPdfFilename,
+            templateName,
         } = req.body;
 
-        const wantLetterPdf =
+        const requestedLetterPdf =
             attachLetterPdf === true ||
             attachLetterPdf === 'true' ||
             attachLetterPdf === 1 ||
             attachLetterPdf === '1';
+        const wantLetterPdf =
+            requestedLetterPdf &&
+            isPayoffOrZeroBalanceLetterTemplate(String(templateName || ''));
 
         let letterPdfBuffer: Buffer | undefined;
         let letterPdfName: string | undefined;
 
         if (wantLetterPdf) {
-            const { requireHtmlPdfMailAttachment } = await import(
-                '../services/emailHtmlPdfAttachment.service'
+            const { renderLetterHtmlToPdfBuffer, sanitizeLetterPdfFilename } = await import(
+                '../services/pdf/letterHtmlToPdf.service'
             );
             const rawPdfName =
                 typeof letterPdfFilename === 'string' && letterPdfFilename.trim()
                     ? letterPdfFilename.trim()
                     : `${String(subject || 'letter').trim().slice(0, 120) || 'letter'}`;
+            letterPdfName = sanitizeLetterPdfFilename(rawPdfName);
             try {
-                const pdfAttachment = await requireHtmlPdfMailAttachment(
-                    String(body ?? ''),
-                    rawPdfName,
-                );
-                letterPdfBuffer = pdfAttachment.content;
-                letterPdfName = pdfAttachment.filename;
+                letterPdfBuffer = await renderLetterHtmlToPdfBuffer(String(body ?? ''));
             } catch (pdfErr: unknown) {
                 console.error('[gmail/send] Letter PDF generation failed:', pdfErr);
                 res.status(500).json({
@@ -444,7 +503,7 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
                 cc,
                 bcc,
                 replyTo,
-                from: getDefaultMailFrom(),
+                from: from || getDefaultMailFrom(),
                 ...(letterPdfBuffer && letterPdfName
                     ? {
                           attachments: [
@@ -518,6 +577,7 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
                 metadata: {
                     cc: cc ?? null,
                     hasLetterPdf: Boolean(letterPdfBuffer),
+                    attachments: letterPdfName ? [letterPdfName] : undefined,
                 },
             });
         } catch (auditErr) {
@@ -552,17 +612,15 @@ export async function getGmailLinkedAccount(req: Request, res: Response): Promis
             return;
         }
 
-        const user = await prisma.user.findUnique({
-            where: { id: userId },
-            select: { email: true, googleRefreshToken: true },
-        });
+        const user = await findUserForGmailAccess({ authUserId: userId });
 
         if (!user) {
             res.status(404).json({ success: false, message: 'User not found' });
             return;
         }
 
-        if (!user.googleRefreshToken) {
+        const refreshToken = getGoogleRefreshTokenForUser(user);
+        if (!refreshToken) {
             res.status(200).json({
                 success: true,
                 connected: false,
@@ -572,16 +630,21 @@ export async function getGmailLinkedAccount(req: Request, res: Response): Promis
             return;
         }
 
-        oAuth2Client.setCredentials({
-            refresh_token: user.googleRefreshToken,
-        });
-        const accessTokenResponse = await oAuth2Client.getAccessToken();
-        const accessToken = accessTokenResponse?.token;
-
-        if (!accessToken) {
-            res.status(500).json({
-                success: false,
-                message: 'Could not obtain Gmail access token from refresh token',
+        let accessToken: string;
+        try {
+            accessToken = await mintGmailAccessToken(refreshToken);
+        } catch (err: unknown) {
+            const message =
+                err instanceof Error
+                    ? err.message
+                    : 'Could not obtain Gmail access token from refresh token';
+            res.status(200).json({
+                success: true,
+                connected: false,
+                crmEmail: user.email,
+                gmailEmail: null,
+                needsReconnect: true,
+                message,
             });
             return;
         }
@@ -600,13 +663,26 @@ export async function getGmailLinkedAccount(req: Request, res: Response): Promis
                 'getGmailLinkedAccount: gmail profile failed:',
                 err?.response?.data || err?.message,
             );
+            if (isGmailAuthError(err)) {
+                res.status(200).json({
+                    success: true,
+                    connected: false,
+                    crmEmail: user.email,
+                    gmailEmail: null,
+                    needsReconnect: true,
+                    message:
+                        'Gmail connection expired or was revoked. Reconnect Google from the Gmail page.',
+                });
+                return;
+            }
         }
 
         res.status(200).json({
             success: true,
-            connected: true,
+            connected: Boolean(gmailEmail),
             crmEmail: user.email,
             gmailEmail: gmailEmail || null,
+            ...(gmailEmail ? {} : { needsReconnect: true }),
         });
     } catch (error: any) {
         console.error('getGmailLinkedAccount:', error);

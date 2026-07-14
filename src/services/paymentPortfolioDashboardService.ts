@@ -18,6 +18,7 @@ import {
   buildFundedApplicationWhereForPaybackTotals,
 } from './applicationStatsBucketWhere';
 import { aggregateDebitPaymentSummary } from './collectionPaymentDebitSummary';
+import { mergeApplicationWhereWithOrganization } from '../utils/deriveOrganizationFromDealId';
 
 export type MoneyFlowPoint = { label: string; inflow: number; outflow: number };
 
@@ -140,11 +141,17 @@ const endOfDay = (date: Date) => {
 };
 
 /** Loads funded cohort apps + scoped collection payments once (shared by KPI cards and credit/debit trend). */
-export async function loadPortfolioDashboardContext(): Promise<PortfolioDashboardContext> {
-  const fundedDashboardWhere = buildApplicationStatsBucketWhere('funded');
-  if (!fundedDashboardWhere) {
+export async function loadPortfolioDashboardContext(
+  organization?: string,
+): Promise<PortfolioDashboardContext> {
+  const fundedDashboardWhereRaw = buildApplicationStatsBucketWhere('funded');
+  if (!fundedDashboardWhereRaw) {
     throw new Error('Dashboard funded scope unavailable');
   }
+  const fundedDashboardWhere = mergeApplicationWhereWithOrganization(
+    fundedDashboardWhereRaw,
+    organization ?? '',
+  );
 
   const disbursementApps = (await prisma.application.findMany({
     where: fundedDashboardWhere,

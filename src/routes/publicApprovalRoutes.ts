@@ -30,6 +30,11 @@ router.post(
   publicApprovalController.uploadDocumentRequestByToken.bind(publicApprovalController)
 );
 
+router.get(
+  '/application/:token/document-request/preview',
+  publicApprovalController.streamDocumentRequestPreview.bind(publicApprovalController)
+);
+
 // Public: open approval by token (no auth required)
 router.get(
   '/application/:token',
@@ -44,3 +49,4 @@ router.post(
 );
 
 export default router;
+

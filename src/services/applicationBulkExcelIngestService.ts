@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 import {
@@ -6,6 +7,7 @@ import {
     frequencySpecToStored,
     normalizeTermForOfferDecision,
 } from '../utils/deriveFrequencyFromTerm';
+import { deriveOrganizationFromDealId } from '../utils/deriveOrganizationFromDealId';
 
 type DbTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
@@ -239,11 +241,6 @@ function headerToFieldKey(canonical: string): string | null {
     return aliases[canonical.replace(/\s/g, '')] ?? aliases[canonical] ?? null;
 }
 
-function strOrNA(v: unknown): string {
-    const t = trimStr(v);
-    return t === '' ? NA : t;
-}
-
 /**
  * One client per business: strip trailing " #1", " #2", … from deal/merchant names so
  * "TTR MANUFACTURING #1" … "#3" all map to the same client ("TTR MANUFACTURING").
@@ -354,6 +351,29 @@ function cell(row: unknown[], col: Map<string, number>, field: string): unknown 
     const i = col.get(field);
     if (i === undefined) return '';
     return row[i];
+}
+
+/** Prefer Excel formatted text (`cell.w`) so deal ids like `KK1000` are not lost to numeric coercion. */
+function cellForField(
+    ws: XLSX.WorkSheet,
+    rowIndex0: number,
+    row: unknown[],
+    col: Map<string, number>,
+    field: string,
+): unknown {
+    const i = col.get(field);
+    if (i === undefined) return '';
+    const addr = XLSX.utils.encode_cell({ r: rowIndex0, c: i });
+    const sheetCell = ws[addr];
+    const formatted = sheetCell?.w != null ? trimStr(sheetCell.w) : '';
+    if (formatted) return formatted;
+    return row[i];
+}
+
+function normalizeDealIdFromSheet(v: unknown): string {
+    const raw = trimStr(v);
+    if (!raw) return '';
+    return raw.replace(/^['']+/g, '').trim();
 }
 
 async function getOrCreatePlaceholderIso(tx: DbTx): Promise<{ id: string }> {
@@ -538,7 +558,7 @@ export function parseApplicationBulkSheet(buffer: Buffer): {
 
         out.push({
             __excelRow: excelRowNumber,
-            dealId: cell(row, col, 'dealId'),
+            dealId: normalizeDealIdFromSheet(cellForField(ws, r, row, col, 'dealId')),
             dealName: cell(row, col, 'dealName'),
             date: cell(row, col, 'date'),
             type: cell(row, col, 'type'),
@@ -602,7 +622,7 @@ export async function ingestApplicationBulkRows(
             continue;
         }
 
-        const dealIdKey = trimStr(raw.dealId);
+        const dealIdKey = normalizeDealIdFromSheet(raw.dealId);
         if (!dealIdKey) {
             errors.push({
                 excelRowNumber,
@@ -614,6 +634,7 @@ export async function ingestApplicationBulkRows(
         }
 
         const dealIdDedupeKey = dealIdKey.toLowerCase();
+        const mappedOrganization = deriveOrganizationFromDealId(dealIdKey);
         if (dealIdsSeenInBatch.has(dealIdDedupeKey)) {
             errors.push({
                 excelRowNumber,
@@ -677,9 +698,10 @@ export async function ingestApplicationBulkRows(
                         // UPDATE path: refresh the matched application in place. We never move the
                         // application to a different client and we leave any user-authored `note`
                         // text alone (only ensuring the `[DEAL_ID:xxx]` marker exists).
-                        const updateData: Record<string, unknown> = {
+                        const updateData: Prisma.ApplicationUncheckedUpdateInput = {
                             dealId: dealIdKey,
                             dealDisplayName: dealNameTrim,
+                            organization: mappedOrganization,
                         };
 
                         if (typeRaw) updateData.type = typeVal;
@@ -797,6 +819,7 @@ export async function ingestApplicationBulkRows(
                             dealDisplayName: dealNameTrim,
                             currentQueue: 'Funded',
                             currentState: 'FUNDED',
+                            organization: mappedOrganization,
                             isoId: applicationIsoId,
                             createdAt,
                         }),

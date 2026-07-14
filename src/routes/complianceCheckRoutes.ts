@@ -1,11 +1,12 @@
 import express from 'express';
 import complianceCheckController from '../controllers/complianceCheckController';
 import { authenticateToken } from '../middleware/authMiddleware';
+import { forbidRoles } from '../middleware/forbidRoles';
 
 const router = express.Router();
 
 // All compliance check routes require authentication
-router.use(authenticateToken);
+router.use(authenticateToken, forbidRoles('AGENT'));
 
 // Create or update a compliance check
 router.post('/', complianceCheckController.createOrUpdate.bind(complianceCheckController));

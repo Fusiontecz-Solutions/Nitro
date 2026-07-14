@@ -1,7 +1,11 @@
 import express from 'express';
 import termsOfferController from '../controllers/termsOfferController';
+import { authenticateToken } from '../middleware/authMiddleware';
+import { forbidRoles } from '../middleware/forbidRoles';
 
 const router = express.Router();
+
+router.use(authenticateToken, forbidRoles('AGENT'));
 
 // Create a new terms offer
 router.post('/', termsOfferController.create.bind(termsOfferController));

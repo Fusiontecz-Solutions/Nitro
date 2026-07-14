@@ -1,7 +1,14 @@
 import { google, gmail_v1 } from 'googleapis';
-import oAuth2Client from '../config/gmail';
+import { createOAuth2Client } from '../config/gmail';
 
-const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
+function getGmailClient(refreshToken?: string) {
+  const auth = createOAuth2Client();
+  const token = refreshToken || process.env.GOOGLE_REFRESH_TOKEN;
+  if (token) {
+    auth.setCredentials({ refresh_token: token });
+  }
+  return google.gmail({ version: 'v1', auth });
+}
 
 export interface PdfAttachment {
   attachmentId: string;
@@ -9,6 +16,7 @@ export interface PdfAttachment {
 }
 
 export async function fetchNewEmails(): Promise<gmail_v1.Schema$Message[]> {
+  const gmail = getGmailClient();
   const res = await gmail.users.messages.list({
     userId: 'me',
     q: 'is:unread',
@@ -17,6 +25,7 @@ export async function fetchNewEmails(): Promise<gmail_v1.Schema$Message[]> {
 }
 
 export async function getEmailDetails(messageId: string): Promise<gmail_v1.Schema$Message> {
+  const gmail = getGmailClient();
   const res = await gmail.users.messages.get({
     userId: 'me',
     id: messageId,
@@ -26,6 +35,7 @@ export async function getEmailDetails(messageId: string): Promise<gmail_v1.Schem
 }
 
 export async function getAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
+  const gmail = getGmailClient();
   const res = await gmail.users.messages.attachments.get({
     userId: 'me',
     messageId,
@@ -42,6 +52,7 @@ export function extractPdfAttachments(email: gmail_v1.Schema$Message): PdfAttach
 }
 
 export async function markAsRead(messageId: string): Promise<void> {
+  const gmail = getGmailClient();
   await gmail.users.messages.modify({
     userId: 'me',
     id: messageId,

@@ -1,10 +1,176 @@
 import axios from 'axios';
 import prisma from '../config/prismaClient';
 import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
+import {
+    buildGmailPdfInboxQuery,
+    hasRecentGmailPdfContentHash,
+    isGmailAutoCreateMessageHandled,
+    recordGmailAutoCreateMessageHandled,
+    sha256PdfContent,
+} from './gmailAutoCreateProcessedStore';
+import { parseMerchantNameFromSubject } from './gmailSubjectMerchantParser';
+import {
+    gmailAutoCreateMessageNote,
+    hasRecentDuplicatePdfForCreator,
+    hasRecentDuplicatePdfFilenamesForCreator,
+    hasRecentApplicationForGmailMessage,
+    hasRecentSubjectFallbackMerchantApplication,
+    readPdfFileDedupeDays,
+} from './pdfFileDedupeService';
 
 const GMAIL_BASE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me';
+const IN_CRM_GMAIL_LABEL_NAME = 'in-crm';
 const inFlightAutoCreateMessageIds = new Set<string>();
-const GMAIL_AUTO_CREATE_DEDUPE_DAYS = 7;
+const inCrmLabelIdByUserId = new Map<string, string>();
+
+/** True when Gmail API rejected the OAuth access token (expired, revoked, or wrong token). */
+export function isGmailAuthError(error: unknown): boolean {
+    const err = error as {
+        message?: string;
+        response?: { status?: number; data?: { error?: { message?: string; status?: string } } };
+    };
+    const status = err?.response?.status;
+    if (status === 401 || status === 403) return true;
+    const apiMessage = String(err?.response?.data?.error?.message || err?.message || '').toLowerCase();
+    return (
+        apiMessage.includes('invalid authentication credentials') ||
+        apiMessage.includes('invalid_grant') ||
+        apiMessage.includes('token has been expired') ||
+        apiMessage.includes('token has been revoked')
+    );
+}
+
+interface GmailLabelRecord {
+    id: string;
+    name: string;
+}
+
+async function resolveInCrmLabelId(accessToken: string, userId: string): Promise<string | null> {
+    if (!accessToken || !userId) return null;
+
+    const cached = inCrmLabelIdByUserId.get(userId);
+    if (cached) return cached;
+
+    try {
+        const listResponse = await axios.get(`${GMAIL_BASE_URL}/labels`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const labels = (listResponse.data?.labels ?? []) as GmailLabelRecord[];
+        const existing = labels.find(
+            (label) => String(label.name || '').trim().toLowerCase() === IN_CRM_GMAIL_LABEL_NAME,
+        );
+        if (existing?.id) {
+            inCrmLabelIdByUserId.set(userId, existing.id);
+            return existing.id;
+        }
+
+        const createResponse = await axios.post(
+            `${GMAIL_BASE_URL}/labels`,
+            {
+                name: IN_CRM_GMAIL_LABEL_NAME,
+                labelListVisibility: 'labelShow',
+                messageListVisibility: 'show',
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            },
+        );
+        const createdId = String(createResponse.data?.id || '').trim();
+        if (createdId) {
+            inCrmLabelIdByUserId.set(userId, createdId);
+            return createdId;
+        }
+    } catch (error: any) {
+        console.warn(
+            '[gmail] Failed to resolve in-crm label:',
+            error?.response?.data?.error?.message || error?.message || error,
+        );
+    }
+
+    return null;
+}
+
+async function addInCrmLabelToMessage(
+    messageId: string,
+    accessToken: string,
+    userId: string,
+): Promise<void> {
+    if (!messageId || !accessToken || !userId) return;
+
+    const labelId = await resolveInCrmLabelId(accessToken, userId);
+    if (!labelId) return;
+
+    try {
+        await axios.post(
+            `${GMAIL_BASE_URL}/messages/${messageId}/modify`,
+            { addLabelIds: [labelId] },
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            },
+        );
+    } catch (error: any) {
+        console.warn(
+            `Failed to add in-crm label to message ${messageId}:`,
+            error?.response?.data?.error?.message || error?.message || error,
+        );
+    }
+}
+
+/** Apply the Gmail user label `in-crm` to a message after CRM application creation. */
+export async function markGmailMessageInCrm(
+    messageId: string,
+    accessToken: string,
+    userId: string,
+): Promise<void> {
+    await addInCrmLabelToMessage(messageId, accessToken, userId);
+}
+
+
+/** Gmail allows ~50 concurrent in-flight requests per mailbox — stay well under that. */
+const GMAIL_MESSAGE_FETCH_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+    if (items.length === 0) return [];
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+
+    const worker = async () => {
+        while (nextIndex < items.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            results[index] = await fn(items[index], index);
+        }
+    };
+
+    const workerCount = Math.min(Math.max(1, concurrency), items.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+}
+
+function isGmailConcurrentLimitError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    const message = String(
+        (error as { response?: { data?: { error?: { message?: string } } } })?.response?.data
+            ?.error?.message ||
+            (error as Error)?.message ||
+            '',
+    ).toLowerCase();
+    return status === 429 || message.includes('too many concurrent requests');
+}
+
+async function sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Gmail API expects repeated query‑params for arrays
@@ -43,16 +209,6 @@ export interface GmailAttachmentResponse {
     data: string; // base64 string
 }
 
-export interface GmailMessageMetadataResponse {
-    id: string;
-    threadId: string;
-    snippet?: string;
-    labelIds?: string[];
-    payload: {
-        headers: Array<{ name: string; value?: string }>;
-    };
-}
-
 /** Breadth-first MIME walk — avoids stack overflow on deeply nested multiparts. */
 function collectMimeAttachmentParts(payload: unknown): any[] {
     const found: any[] = [];
@@ -76,27 +232,6 @@ function collectMimeAttachmentParts(payload: unknown): any[] {
         console.warn('[gmail-auto-create] MIME walk hit step limit; attachments may be incomplete.');
     }
     return found;
-}
-
-async function markMessageAsRead(messageId: string, accessToken: string): Promise<void> {
-    if (!messageId || !accessToken) return;
-    try {
-        await axios.post(
-            `${GMAIL_BASE_URL}/messages/${messageId}/modify`,
-            { removeLabelIds: ['UNREAD'] },
-            {
-                headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                },
-            },
-        );
-    } catch (error: any) {
-        console.warn(
-            `Failed to mark message ${messageId} as read:`,
-            error?.response?.data?.error?.message || error?.message || error,
-        );
-    }
 }
 
 async function starMessage(messageId: string, accessToken: string): Promise<void> {
@@ -154,34 +289,6 @@ function applicationPdfAttachmentFilenameScore(filename: string): number {
 function gmailAttachmentDeclaredSize(part: { body?: { size?: unknown } | null } | null): number {
     const s = Number(part?.body?.size ?? 0);
     return Number.isFinite(s) && s > 0 ? s : 0;
-}
-
-async function hasRecentAutoCreatedDuplicate(params: {
-    userId: string;
-    fileName: string;
-    size: number;
-}): Promise<boolean> {
-    const since = new Date(Date.now() - GMAIL_AUTO_CREATE_DEDUPE_DAYS * 24 * 60 * 60 * 1000);
-    const whereBase = {
-        originalName: params.fileName,
-        application: {
-            createdById: params.userId,
-            createdAt: { gte: since },
-        },
-    } as const;
-
-    const existing = await prisma.applicationFile.findFirst({
-        where:
-            params.size > 0
-                ? {
-                      ...whereBase,
-                      size: params.size,
-                  }
-                : whereBase,
-        select: { id: true, uploadedAt: true, applicationId: true },
-        orderBy: { uploadedAt: 'desc' },
-    });
-    return !!existing;
 }
 
 function readGmailApplicationPdfMinBytes(): number {
@@ -572,47 +679,55 @@ export async function fetchAllEmails(
             };
         }
 
-        // 2️⃣ Fetch full message details
-        const detailedMessages = await Promise.all(
-            messageIds.map(async (msg: GmailMessage) => {
+        // 2️⃣ Fetch full message details (batched — Gmail caps concurrent requests per mailbox)
+        const detailedMessages = await mapWithConcurrency(
+            messageIds,
+            GMAIL_MESSAGE_FETCH_CONCURRENCY,
+            async (msg) => {
+                let attempt = 0;
+                while (attempt < 4) {
+                    try {
+                        const fullMessage = await axios.get(
+                            `${GMAIL_BASE_URL}/messages/${msg.id}`,
+                            {
+                                headers: {
+                                    Authorization: `Bearer ${accessToken}`,
+                                },
+                                params: {
+                                    format: 'metadata',
+                                    metadataHeaders: ['Subject', 'From', 'To', 'Date'],
+                                },
+                                paramsSerializer: gmailParamsSerializer,
+                            },
+                        );
 
-                const fullMessage = await axios.get<GmailMessageMetadataResponse>(
-                    `${GMAIL_BASE_URL}/messages/${msg.id}`,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${accessToken}`,
-                        },
-                        params: {
-                            format: "metadata",
-                            metadataHeaders: [
-                                "Subject",
-                                "From",
-                                "To",
-                                "Date"
-                            ],
-                        },
-                        paramsSerializer: gmailParamsSerializer,
+                        const data = fullMessage.data;
+                        const headers = data.payload.headers;
+
+                        const getHeader = (name: string) =>
+                            headers.find((h: any) => h.name === name)?.value || '';
+
+                        return {
+                            id: data.id,
+                            threadId: data.threadId,
+                            subject: getHeader('Subject'),
+                            from: getHeader('From'),
+                            to: getHeader('To'),
+                            date: getHeader('Date'),
+                            snippet: data.snippet,
+                            labelIds: data.labelIds,
+                            isRead: !data.labelIds?.includes('UNREAD'),
+                        };
+                    } catch (error: any) {
+                        if (!isGmailConcurrentLimitError(error) || attempt >= 3) {
+                            throw error;
+                        }
+                        attempt += 1;
+                        await sleep(250 * 2 ** attempt + Math.floor(Math.random() * 200));
                     }
-                );
-
-                const data = fullMessage.data;
-                const headers = data.payload.headers;
-
-                const getHeader = (name: string) =>
-                    headers.find((h: any) => h.name === name)?.value || "";
-
-                return {
-                    id: data.id,
-                    threadId: data.threadId,
-                    subject: getHeader("Subject"),
-                    from: getHeader("From"),
-                    to: getHeader("To"),
-                    date: getHeader("Date"),
-                    snippet: data.snippet,
-                    labelIds: data.labelIds,
-                    isRead: !data.labelIds?.includes("UNREAD"),
-                };
-            })
+                }
+                throw new Error('Failed to fetch message metadata');
+            },
         );
 
         return {
@@ -760,12 +875,6 @@ function plainTextBodyToHtmlEmail(body: string): string {
 </html>`;
 }
 
-export interface GmailEmailAttachment {
-    filename: string;
-    content: Buffer;
-    contentType?: string;
-}
-
 export interface SendEmailOptions {
     accessToken: string;
     to: string | string[];
@@ -778,57 +887,6 @@ export interface SendEmailOptions {
     threadId?: string;      // set when replying to an existing thread
     inReplyTo?: string;     // Message-ID header of the message being replied to
     references?: string;    // References header for threading
-    attachments?: GmailEmailAttachment[];
-}
-
-function encodeRfc2047Filename(filename: string): string {
-    const safe = String(filename || 'attachment').replace(/[\r\n"]/g, '_');
-    if (/^[\x20-\x7E]+$/.test(safe)) {
-        return `filename="${safe}"`;
-    }
-    const encoded = Buffer.from(safe, 'utf8')
-        .toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
-    return `filename*=UTF-8''${encodeURIComponent(safe)}`;
-}
-
-function buildMultipartMixedEmailBody(
-    htmlBody: string,
-    attachments: GmailEmailAttachment[],
-): { contentType: string; body: string } {
-    const boundary = `mixed_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`;
-    const parts: string[] = [];
-
-    parts.push(`--${boundary}`);
-    parts.push('Content-Type: text/html; charset=utf-8');
-    parts.push('Content-Transfer-Encoding: 7bit');
-    parts.push('');
-    parts.push(htmlBody);
-
-    for (const attachment of attachments) {
-        const filename = attachment.filename || 'attachment';
-        const contentType = attachment.contentType || 'application/octet-stream';
-        const base64 = Buffer.isBuffer(attachment.content)
-            ? attachment.content.toString('base64')
-            : Buffer.from(String(attachment.content)).toString('base64');
-
-        parts.push(`--${boundary}`);
-        parts.push(`Content-Type: ${contentType}`);
-        parts.push(`Content-Disposition: attachment; ${encodeRfc2047Filename(filename)}`);
-        parts.push('Content-Transfer-Encoding: base64');
-        parts.push('');
-        parts.push(base64.replace(/(.{76})/g, '$1\r\n').replace(/\r\n$/, ''));
-    }
-
-    parts.push(`--${boundary}--`);
-    parts.push('');
-
-    return {
-        contentType: `multipart/mixed; boundary="${boundary}"`,
-        body: parts.join('\r\n'),
-    };
 }
 
 /**
@@ -848,7 +906,6 @@ export async function sendEmail(options: SendEmailOptions): Promise<any> {
         threadId,
         inReplyTo,
         references,
-        attachments,
     } = options;
 
     if (!accessToken) {
@@ -891,23 +948,12 @@ export async function sendEmail(options: SendEmailOptions): Promise<any> {
     }
 
     headers.push('MIME-Version: 1.0');
+    headers.push('Content-Type: text/html; charset=utf-8');
 
     const htmlBody = looksLikeHtmlEmail(body) ? body : plainTextBodyToHtmlEmail(body);
-    const fileAttachments = (attachments ?? []).filter(
-        (item) => item?.content && String(item.filename || '').trim(),
-    );
-
-    let messageBody = htmlBody;
-    if (fileAttachments.length) {
-        const multipart = buildMultipartMixedEmailBody(htmlBody, fileAttachments);
-        headers.push(`Content-Type: ${multipart.contentType}`);
-        messageBody = multipart.body;
-    } else {
-        headers.push('Content-Type: text/html; charset=utf-8');
-    }
 
     // Combine headers + body into RFC 2822 message
-    const rawMessage = `${headers.join('\r\n')}\r\n\r\n${messageBody}`;
+    const rawMessage = `${headers.join('\r\n')}\r\n\r\n${htmlBody}`;
 
     // Gmail API expects web-safe base64 (base64url)
     const encodedMessage = Buffer.from(rawMessage)
@@ -939,6 +985,138 @@ export async function sendEmail(options: SendEmailOptions): Promise<any> {
     }
 }
 
+function getGmailHeaderValue(
+    headers: Array<{ name?: string; value?: string }>,
+    name: string,
+): string {
+    return headers.find((h) => h.name === name)?.value || '';
+}
+
+async function attachAllPdfPartsToApplication(
+    applicationId: string,
+    messageId: string,
+    pdfParts: Array<Record<string, any>>,
+    accessToken: string,
+): Promise<void> {
+    for (const pdfPart of pdfParts) {
+        try {
+            const attachmentId = String(pdfPart?.body?.attachmentId || '').trim();
+            if (!attachmentId) continue;
+            const fileName = String(pdfPart?.filename || '').trim() || 'document.pdf';
+            const pdfBuffer = await downloadAttachment(messageId, attachmentId, accessToken);
+            await attachBufferAsApplicationFile(applicationId, pdfBuffer, fileName);
+        } catch (attachErr) {
+            console.error(
+                `[gmail-auto-create] message=${messageId} failed to attach PDF "${String(pdfPart?.filename || '').trim() || 'document.pdf'}":`,
+                attachErr,
+            );
+        }
+    }
+}
+
+async function attemptGmailSubjectFallbackCreate(params: {
+    messageId: string;
+    subject: string;
+    pdfParts: Array<Record<string, any>>;
+    userId: string;
+    resolvedIsoId: string | null;
+    accessToken: string;
+}): Promise<
+    | { kind: 'created'; result: import('./applicationService').PdfApplicationResult }
+    | { kind: 'duplicate'; reason: string }
+    | null
+> {
+    const merchantName = parseMerchantNameFromSubject(params.subject);
+    if (!merchantName || params.pdfParts.length === 0) {
+        console.warn(
+            `[gmail-auto-create] message=${params.messageId} subject fallback skipped (merchant="${merchantName || ''}" pdfs=${params.pdfParts.length})`,
+        );
+        return null;
+    }
+
+    const dedupeDays = readPdfFileDedupeDays();
+    const pdfFileNames = params.pdfParts.map(
+        (p) => String(p?.filename || '').trim() || 'document.pdf',
+    );
+
+    if (
+        await hasRecentApplicationForGmailMessage({
+            createdById: params.userId,
+            gmailMessageId: params.messageId,
+            dedupeDays,
+        })
+    ) {
+        const reason = `Gmail message ${params.messageId} already auto-created within ${dedupeDays}d`;
+        console.log(`[gmail-auto-create] message=${params.messageId} subject fallback duplicate: ${reason}`);
+        return { kind: 'duplicate', reason };
+    }
+
+    if (
+        await hasRecentDuplicatePdfFilenamesForCreator({
+            createdById: params.userId,
+            fileNames: pdfFileNames,
+            dedupeDays,
+        })
+    ) {
+        const reason = `PDF attachment(s) already linked to a recent application`;
+        console.log(`[gmail-auto-create] message=${params.messageId} subject fallback duplicate: ${reason}`);
+        return { kind: 'duplicate', reason };
+    }
+
+    if (
+        await hasRecentSubjectFallbackMerchantApplication({
+            createdById: params.userId,
+            businessName: merchantName,
+            isoId: params.resolvedIsoId,
+            dedupeDays,
+        })
+    ) {
+        const reason = `Subject merchant "${merchantName}" already auto-created within ${dedupeDays}d`;
+        console.log(`[gmail-auto-create] message=${params.messageId} subject fallback duplicate: ${reason}`);
+        return { kind: 'duplicate', reason };
+    }
+
+    const { createApplicationFromGmailSubjectFallback } = await import('./applicationService');
+    console.log(
+        `[gmail-auto-create] message=${params.messageId} subject fallback merchant="${merchantName}"`,
+    );
+    const result = await createApplicationFromGmailSubjectFallback(merchantName, params.userId, {
+        isoId: params.resolvedIsoId,
+        gmailMessageId: params.messageId,
+    });
+    await attachAllPdfPartsToApplication(
+        result.application.id,
+        params.messageId,
+        params.pdfParts,
+        params.accessToken,
+    );
+    return { kind: 'created', result };
+}
+
+async function handleGmailSubjectFallbackOutcome(
+    messageId: string,
+    userId: string,
+    accessToken: string,
+    outcome: Awaited<ReturnType<typeof attemptGmailSubjectFallbackCreate>>,
+    onCreated: (result: import('./applicationService').PdfApplicationResult) => void,
+): Promise<void> {
+    if (outcome?.kind === 'created') {
+        onCreated(outcome.result);
+        await recordGmailAutoCreateMessageHandled(userId, messageId, 'success', {
+            applicationId: outcome.result.application?.id,
+        });
+        await addInCrmLabelToMessage(messageId, accessToken, userId);
+        await starMessage(messageId, accessToken);
+        return;
+    }
+    if (outcome?.kind === 'duplicate') {
+        await recordGmailAutoCreateMessageHandled(userId, messageId, 'skipped_duplicate');
+        return;
+    }
+    await recordGmailAutoCreateMessageHandled(userId, messageId, 'failed_parse');
+    await starMessage(messageId, accessToken);
+}
+
 /**
  * Scans INBOX for emails with PDF attachments, extracts business data
  * from each PDF, and auto-creates Clients + Applications in the DB.
@@ -955,13 +1133,14 @@ export async function autoCreateApplicationsFromEmails(
         const { createClientAndApplicationFromPDFBuffer, InsufficientParsedPdfError } =
             await import('./applicationService');
 
-        // 1️⃣ Fetch unread INBOX emails with PDF attachments
+        // 1️⃣ Fetch recent INBOX emails with PDF attachments (read + unread; idempotency via ledger)
+        const inboxQuery = buildGmailPdfInboxQuery();
         const { messages: rawMessages } = await fetchAllEmails(
             accessToken,
             undefined,
             15,
             "INBOX",
-            "has:attachment filename:pdf is:unread"
+            inboxQuery
         );
         const messages = Array.from(
             new Map((rawMessages ?? []).map((m) => [m.id, m])).values(),
@@ -969,7 +1148,7 @@ export async function autoCreateApplicationsFromEmails(
 
         const results: Array<{
             messageId: string;
-            fileName: string;
+            fileName: string | null;
             client: any;
             application: any;
             existingClient: boolean;
@@ -981,6 +1160,12 @@ export async function autoCreateApplicationsFromEmails(
             if (!msg?.id) continue;
             if (inFlightAutoCreateMessageIds.has(msg.id)) {
                 console.warn(`[gmail-auto-create] message=${msg.id} already in-flight; skipping duplicate trigger`);
+                continue;
+            }
+            if (await isGmailAutoCreateMessageHandled(userId, msg.id)) {
+                console.log(
+                    `[gmail-auto-create] message=${msg.id} already in ledger for user=${userId}; skipping (no Claude)`,
+                );
                 continue;
             }
             inFlightAutoCreateMessageIds.add(msg.id);
@@ -1004,6 +1189,23 @@ export async function autoCreateApplicationsFromEmails(
                     );
                 }
 
+                const subject = getGmailHeaderValue(headers, 'Subject');
+
+                const dedupeDays = readPdfFileDedupeDays();
+                if (
+                    await hasRecentApplicationForGmailMessage({
+                        createdById: userId,
+                        gmailMessageId: msg.id,
+                        dedupeDays,
+                    })
+                ) {
+                    console.log(
+                        `[gmail-auto-create] message=${msg.id} already processed (ledger or gmail-msg note); skipping`,
+                    );
+                    await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate');
+                    continue;
+                }
+
                 const allParts = collectMimeAttachmentParts(message?.payload);
 
                 const pdfParts = collectPdfAttachmentParts(allParts);
@@ -1022,16 +1224,33 @@ export async function autoCreateApplicationsFromEmails(
 
                 if (!part) {
                     console.warn(
-                        `[gmail-auto-create] message=${msg.id} could not confidently pick application PDF (${pdfCountBeforePick} pdf(s)); starring for manual review`,
+                        `[gmail-auto-create] message=${msg.id} could not confidently pick application PDF (${pdfCountBeforePick} pdf(s)); trying subject fallback`,
                     );
-                    await starMessage(msg.id, accessToken);
+                    const fallbackOutcome = await attemptGmailSubjectFallbackCreate({
+                        messageId: msg.id,
+                        subject,
+                        pdfParts,
+                        userId,
+                        resolvedIsoId,
+                        accessToken,
+                    });
+                    await handleGmailSubjectFallbackOutcome(msg.id, userId, accessToken, fallbackOutcome, (result) => {
+                        results.push({
+                            messageId: msg.id,
+                            fileName: null,
+                            client: result.client,
+                            application: result.application,
+                            existingClient: result.existingClient,
+                            senderEmail,
+                            matchedIsoId: resolvedIsoId,
+                        });
+                    });
                     continue;
                 }
 
                 console.log(
                     `[gmail-auto-create] message=${msg.id} pick_application_pdf attachment="${String(part.filename || '').trim()}" (among ${pdfCountBeforePick})`,
                 );
-                let processedAnyPdf = false;
 
                 try {
                     const attachmentId = part.body?.attachmentId;
@@ -1041,16 +1260,18 @@ export async function autoCreateApplicationsFromEmails(
                     }
 
                     const pickedFileName = String(part.filename || '').trim() || 'application.pdf';
-                    const declaredSize = gmailAttachmentDeclaredSize(part);
-                    const isRecentDuplicate = await hasRecentAutoCreatedDuplicate({
-                        userId,
+                    const dedupeDays = readPdfFileDedupeDays();
+                    const isRecentDuplicate = await hasRecentDuplicatePdfForCreator({
+                        createdById: userId,
                         fileName: pickedFileName,
-                        size: declaredSize,
+                        dedupeDays,
                     });
                     if (isRecentDuplicate) {
                         console.log(
-                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${GMAIL_AUTO_CREATE_DEDUPE_DAYS}d (same file): "${pickedFileName}" size=${declaredSize || 'unknown'} -- creating new application anyway`,
+                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${dedupeDays}d (same PDF filename): "${pickedFileName}" — skipping create`,
                         );
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate');
+                        continue;
                     }
 
                     const pdfBuffer = await downloadAttachment(
@@ -1058,12 +1279,45 @@ export async function autoCreateApplicationsFromEmails(
                         attachmentId,
                         accessToken,
                     );
+                    const pdfContentHash = sha256PdfContent(Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer as any));
+
+                    if (
+                        await hasRecentGmailPdfContentHash({
+                            userId,
+                            pdfContentHash,
+                            dedupeDays,
+                        })
+                    ) {
+                        console.log(
+                            `[gmail-auto-create] message=${msg.id} duplicate PDF content hash within ${dedupeDays}d — skipping create`,
+                        );
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate', {
+                            pdfContentHash,
+                        });
+                        continue;
+                    }
 
                     const { client, application, existingClient } =
                         await createClientAndApplicationFromPDFBuffer(pdfBuffer as any, userId, {
                             isoId: resolvedIsoId,
                             originalFileName: pickedFileName,
+                            gmailMessageId: msg.id,
+                            skipClaudeBusinessNameRetry: true,
                         });
+
+                    try {
+                        const gmailNote = gmailAutoCreateMessageNote(msg.id);
+                        await prisma.application.update({
+                            where: { id: application.id },
+                            data: { note: gmailNote },
+                        });
+                        (application as { note?: string }).note = gmailNote;
+                    } catch (noteErr) {
+                        console.warn(
+                            `[gmail-auto-create] message=${msg.id} failed to stamp gmail-msg on application ${application.id}:`,
+                            noteErr,
+                        );
+                    }
 
                     // Upload all remaining PDFs from the same email into the application's files/documents.
                     const extraPdfParts = pdfParts.filter(
@@ -1102,7 +1356,11 @@ export async function autoCreateApplicationsFromEmails(
                         senderEmail,
                         matchedIsoId: resolvedIsoId,
                     });
-                    processedAnyPdf = true;
+                    await recordGmailAutoCreateMessageHandled(userId, msg.id, 'success', {
+                        applicationId: application.id,
+                        pdfContentHash,
+                    });
+                    await addInCrmLabelToMessage(msg.id, accessToken, userId);
                 } catch (pdfError: unknown) {
                     const pm = pdfError instanceof Error ? pdfError.message : String(pdfError);
                     console.error(
@@ -1110,17 +1368,42 @@ export async function autoCreateApplicationsFromEmails(
                         pm,
                         pdfError,
                     );
-                    /** New-client path requires business name + owner names; starring flags manual intake. */
-                    if (pdfError instanceof InsufficientParsedPdfError) {
+
+                    const fallbackOutcome = await attemptGmailSubjectFallbackCreate({
+                        messageId: msg.id,
+                        subject,
+                        pdfParts,
+                        userId,
+                        resolvedIsoId,
+                        accessToken,
+                    });
+                    if (fallbackOutcome?.kind === 'created') {
+                        results.push({
+                            messageId: msg.id,
+                            fileName: part.filename,
+                            client: fallbackOutcome.result.client,
+                            application: fallbackOutcome.result.application,
+                            existingClient: fallbackOutcome.result.existingClient,
+                            senderEmail,
+                            matchedIsoId: resolvedIsoId,
+                        });
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'success', {
+                            applicationId: fallbackOutcome.result.application?.id,
+                        });
+                        await addInCrmLabelToMessage(msg.id, accessToken, userId);
+                        await starMessage(msg.id, accessToken);
+                    } else if (fallbackOutcome?.kind === 'duplicate') {
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate');
+                    } else if (pdfError instanceof InsufficientParsedPdfError) {
                         console.warn(
-                            `[gmail-auto-create] message=${msg.id} insufficient PDF data (owner name); starring`,
+                            `[gmail-auto-create] message=${msg.id} insufficient PDF data and no subject merchant; starring`,
                         );
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'failed_parse');
+                        await starMessage(msg.id, accessToken);
+                    } else {
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'failed_other');
                         await starMessage(msg.id, accessToken);
                     }
-                }
-
-                if (processedAnyPdf) {
-                    await markMessageAsRead(msg.id, accessToken);
                 }
             } catch (messageErr: unknown) {
                 console.error(

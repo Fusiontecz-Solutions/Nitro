@@ -2,6 +2,8 @@ import type { CollectionPayment, Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { paymentBelongsToApplicationDeal } from './collectionPaymentFinancials';
 import { buildApplicationStatsBucketWhere } from './applicationStatsBucketWhere';
+import { mergeApplicationWhereWithOrganization } from '../utils/deriveOrganizationFromDealId';
+import type { PortfolioDashboardContext } from './paymentPortfolioDashboardService';
 
 export type CreditDebitTrendView = 'monthly' | 'weekly' | 'monthlyInYear' | 'yearly';
 
@@ -11,11 +13,20 @@ export type MoneyFlowPointDto = {
   outflow: number;
 };
 
+export type CreditDebitTrendSeries = {
+  monthly: MoneyFlowPointDto[];
+  weekly: MoneyFlowPointDto[];
+  monthlyInYear: MoneyFlowPointDto[];
+  yearly: MoneyFlowPointDto[];
+};
+
 export type CreditDebitTrendQuery = {
   view: CreditDebitTrendView;
   year: number;
   month: number | 'all';
 };
+
+const BASE_YEAR = 2023;
 
 const DEBIT_STATUS_KEYWORDS = ['debit', 'debited'];
 const PAID_STATUS_KEYWORDS = ['paid', 'credit', 'manual', 'completed', 'success'];
@@ -46,7 +57,9 @@ function classifyCreditDebitTrendBucket(statusRaw: unknown): 'credit' | 'debit' 
   return null;
 }
 
-function paymentTxDate(payment: Pick<CollectionPayment, 'Date' | 'processedDate' | 'scheduledDate' | 'createdAt'>): Date | null {
+function paymentTxDate(
+  payment: Pick<TrendPaymentRow, 'Date' | 'processedDate' | 'scheduledDate' | 'createdAt'>,
+): Date | null {
   const candidates = [payment.Date, payment.processedDate, payment.scheduledDate, payment.createdAt];
   for (const c of candidates) {
     if (!c) continue;
@@ -148,60 +161,83 @@ type TrendTx = {
   dayKey: string;
 };
 
-export type CreditDebitTrendByViewDto = {
-  monthly: MoneyFlowPointDto[];
-  weekly: MoneyFlowPointDto[];
-  monthlyInYear: MoneyFlowPointDto[];
-  yearly: MoneyFlowPointDto[];
+type TrendPaymentRow = {
+  applicationId: string;
+  dealId: string | null;
+  amount: unknown;
+  status: unknown;
+  Date: Date | null;
+  processedDate: Date | null;
+  scheduledDate: Date | null;
+  createdAt?: Date | null;
 };
 
-export function parseChartYearMonth(
-  chartYear?: number,
-  chartMonth?: number | 'all',
-): CreditDebitTrendQuery {
-  const year = Number.isFinite(Number(chartYear))
-    ? Math.floor(Number(chartYear))
-    : new Date().getFullYear();
-  let month: number | 'all' = new Date().getMonth();
-  if (chartMonth === 'all') {
-    month = 'all';
-  } else if (chartMonth !== undefined && Number.isFinite(Number(chartMonth))) {
-    const m = Math.floor(Number(chartMonth));
-    if (m >= 0 && m <= 11) month = m;
-  }
-  return { view: 'monthly', year, month };
+function resolveDealToken(
+  payment: TrendPaymentRow,
+  appDealId: string | null | undefined,
+  rowIndex: number,
+): string {
+  const appDealToken = String(appDealId ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  return (
+    String(payment.dealId ?? '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '') ||
+    appDealToken ||
+    `ROW-${payment.applicationId}-${rowIndex}`
+  );
 }
 
-async function buildCreditDebitTrendBundle(
-  query: CreditDebitTrendQuery,
-): Promise<{ byView: CreditDebitTrendByViewDto; yearOptions: number[] } | null> {
-  const fundedWhere = buildApplicationStatsBucketWhere('funded');
-  if (!fundedWhere) return null;
+function collectTrendTransactions(
+  payments: TrendPaymentRow[],
+  dealIdByApplicationId: Map<string, string | null | undefined>,
+  year: number,
+  month: number | 'all',
+  yearFilterMode: 'query-year' | 'all-years',
+): TrendTx[] {
+  const isAllMonthsMode = month === 'all';
+  const trendTransactions: TrendTx[] = [];
 
-  const range = trendDateRange(query);
-  const payments = await prisma.collectionPayment.findMany({
-    where: buildTrendPaymentsWhere(fundedWhere, range),
-    select: {
-      id: true,
-      applicationId: true,
-      dealId: true,
-      amount: true,
-      status: true,
-      Date: true,
-      processedDate: true,
-      scheduledDate: true,
-      createdAt: true,
-      notes: true,
-      Application: { select: { dealId: true } },
-    },
+  payments.forEach((payment, rowIndex) => {
+    const appDealId = dealIdByApplicationId.get(payment.applicationId) ?? null;
+    if (!paymentBelongsToApplicationDeal(payment, appDealId)) return;
+
+    const bucket = classifyCreditDebitTrendBucket(payment.status);
+    if (!bucket) return;
+
+    const amount = Math.abs(toNum(payment.amount));
+    if (!Number.isFinite(amount) || amount === 0) return;
+
+    const txDate = paymentTxDate(payment);
+    if (!txDate) return;
+
+    if (yearFilterMode === 'query-year' && txDate.getFullYear() !== year) return;
+    if (!isAllMonthsMode && txDate.getMonth() !== month) return;
+
+    trendTransactions.push({
+      dealToken: resolveDealToken(payment, appDealId, rowIndex),
+      bucket,
+      amount,
+      txDate,
+      dayKey: formatDayKey(txDate),
+    });
   });
 
+  return trendTransactions;
+}
+
+function aggregateTrendTransactions(
+  trendTransactions: TrendTx[],
+  year: number,
+  month: number | 'all',
+): Omit<CreditDebitTrendSeries, 'yearly'> & { yearlyAxisInflowTotals: Map<number, number>; yearlyAxisOutflowTotals: Map<number, number>; maxYear: number } {
   const now = new Date();
   const anchor = now;
-  const currentYear = query.year;
-  const currentMonth = query.month === 'all' ? anchor.getMonth() : query.month;
-  const isAllMonthsMode = query.month === 'all';
-  const isYearAxisMode = query.view === 'yearly' && isAllMonthsMode;
+  const currentYear = year;
+  const currentMonth = month === 'all' ? anchor.getMonth() : month;
 
   const daysInCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
   const monthlyInflowTotals = new Map<number, number>();
@@ -210,9 +246,10 @@ async function buildCreditDebitTrendBundle(
   const yearlyMonthOutflowTotals = new Map<number, number>();
   const yearlyAxisInflowTotals = new Map<number, number>();
   const yearlyAxisOutflowTotals = new Map<number, number>();
+  let maxYear = Math.max(now.getFullYear(), currentYear);
 
   const weeklyWindows =
-    query.month === 'all'
+    month === 'all'
       ? (() => {
           const currentWeekStart = startOfWeekSunday(anchor);
           return Array.from({ length: 5 }, (_, index) => {
@@ -242,62 +279,21 @@ async function buildCreditDebitTrendBundle(
           return windows;
         })();
 
-  const trendTransactions: TrendTx[] = [];
-  let maxYear = Math.max(now.getFullYear(), currentYear);
-  const BASE_YEAR = 2023;
-
-  payments.forEach((payment, rowIndex) => {
-    const appDealId = payment.Application?.dealId ?? null;
-    if (!paymentBelongsToApplicationDeal(payment, appDealId)) return;
-
-    const bucket = classifyCreditDebitTrendBucket(payment.status);
-    if (!bucket) return;
-
-    const amount = Math.abs(toNum(payment.amount));
-    if (!Number.isFinite(amount) || amount === 0) return;
-
-    const txDate = paymentTxDate(payment);
-    if (!txDate) return;
-    maxYear = Math.max(maxYear, txDate.getFullYear());
-
-    if (!isYearAxisMode && txDate.getFullYear() !== query.year) return;
-    if (!isAllMonthsMode && txDate.getMonth() !== query.month) return;
-
-    const appDealToken = String(appDealId ?? '')
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '');
-    const dealToken =
-      String(payment.dealId ?? '')
-        .trim()
-        .toUpperCase()
-        .replace(/[^A-Z0-9]/g, '') ||
-      appDealToken ||
-      `ROW-${payment.applicationId}-${rowIndex}`;
-
-    trendTransactions.push({
-      dealToken,
-      bucket,
-      amount,
-      txDate,
-      dayKey: formatDayKey(txDate),
-    });
-  });
-
   const applyToTrend = (txDate: Date, creditDelta: number, debitDelta: number) => {
+    maxYear = Math.max(maxYear, txDate.getFullYear());
     if (txDate.getFullYear() === currentYear && txDate.getMonth() === currentMonth) {
       const day = txDate.getDate();
       monthlyInflowTotals.set(day, (monthlyInflowTotals.get(day) ?? 0) + creditDelta);
       monthlyOutflowTotals.set(day, (monthlyOutflowTotals.get(day) ?? 0) + debitDelta);
     }
     if (txDate.getFullYear() === currentYear) {
-      const month = txDate.getMonth();
-      yearlyMonthInflowTotals.set(month, (yearlyMonthInflowTotals.get(month) ?? 0) + creditDelta);
-      yearlyMonthOutflowTotals.set(month, (yearlyMonthOutflowTotals.get(month) ?? 0) + debitDelta);
+      const monthIndex = txDate.getMonth();
+      yearlyMonthInflowTotals.set(monthIndex, (yearlyMonthInflowTotals.get(monthIndex) ?? 0) + creditDelta);
+      yearlyMonthOutflowTotals.set(monthIndex, (yearlyMonthOutflowTotals.get(monthIndex) ?? 0) + debitDelta);
     }
-    const year = txDate.getFullYear();
-    yearlyAxisInflowTotals.set(year, (yearlyAxisInflowTotals.get(year) ?? 0) + creditDelta);
-    yearlyAxisOutflowTotals.set(year, (yearlyAxisOutflowTotals.get(year) ?? 0) + debitDelta);
+    const txYear = txDate.getFullYear();
+    yearlyAxisInflowTotals.set(txYear, (yearlyAxisInflowTotals.get(txYear) ?? 0) + creditDelta);
+    yearlyAxisOutflowTotals.set(txYear, (yearlyAxisOutflowTotals.get(txYear) ?? 0) + debitDelta);
     weeklyWindows.forEach((window) => {
       if (txDate >= window.weekStart && txDate <= window.weekEnd) {
         window.inflowTotal += creditDelta;
@@ -363,53 +359,118 @@ async function buildCreditDebitTrendBundle(
     outflow: Number((yearlyMonthOutflowTotals.get(monthIndex) ?? 0).toFixed(2)),
   }));
 
-  const yearOptions = Array.from(
-    { length: Math.max(1, maxYear - BASE_YEAR + 1) },
-    (_, idx) => BASE_YEAR + idx,
-  );
-
-  const yearlyAxis = yearOptions.map((y) => ({
-    label: String(y),
-    inflow: Number((yearlyAxisInflowTotals.get(y) ?? 0).toFixed(2)),
-    outflow: Number((yearlyAxisOutflowTotals.get(y) ?? 0).toFixed(2)),
-  }));
-
-  const byView: CreditDebitTrendByViewDto = {
+  return {
     monthly,
     weekly,
     monthlyInYear,
-    yearly: yearlyAxis,
+    yearlyAxisInflowTotals,
+    yearlyAxisOutflowTotals,
+    maxYear,
   };
-
-  return { byView, yearOptions };
 }
 
-export async function computeCreditDebitTrendPortfolio(
-  chartYear?: number,
-  chartMonth?: number | 'all',
-): Promise<{ creditDebitTrend: CreditDebitTrendByViewDto; chartYearOptions: number[] }> {
-  const query = parseChartYearMonth(chartYear, chartMonth);
-  const bundle = await buildCreditDebitTrendBundle(query);
-  const empty: CreditDebitTrendByViewDto = {
-    monthly: [],
-    weekly: [],
-    monthlyInYear: [],
-    yearly: [],
-  };
-  if (!bundle) {
-    return { creditDebitTrend: empty, chartYearOptions: [query.year] };
+function buildCreditDebitTrendSeries(
+  payments: TrendPaymentRow[],
+  dealIdByApplicationId: Map<string, string | null | undefined>,
+  year: number,
+  month: number | 'all',
+): CreditDebitTrendSeries & { maxYear: number } {
+  const scopedTrendTx = collectTrendTransactions(
+    payments,
+    dealIdByApplicationId,
+    year,
+    month,
+    'query-year',
+  );
+  const scoped = aggregateTrendTransactions(scopedTrendTx, year, month);
+
+  const isAllMonthsMode = month === 'all';
+  let yearly: MoneyFlowPointDto[];
+
+  if (isAllMonthsMode) {
+    const allYearsTrendTx = collectTrendTransactions(
+      payments,
+      dealIdByApplicationId,
+      year,
+      month,
+      'all-years',
+    );
+    const allYears = aggregateTrendTransactions(allYearsTrendTx, year, month);
+    const yearOptions = Array.from(
+      { length: Math.max(1, allYears.maxYear - BASE_YEAR + 1) },
+      (_, idx) => BASE_YEAR + idx,
+    );
+    yearly = yearOptions.map((y) => ({
+      label: String(y),
+      inflow: Number((allYears.yearlyAxisInflowTotals.get(y) ?? 0).toFixed(2)),
+      outflow: Number((allYears.yearlyAxisOutflowTotals.get(y) ?? 0).toFixed(2)),
+    }));
+    return {
+      monthly: scoped.monthly,
+      weekly: scoped.weekly,
+      monthlyInYear: scoped.monthlyInYear,
+      yearly,
+      maxYear: Math.max(scoped.maxYear, allYears.maxYear),
+    };
   }
 
-  const isAllMonthsMode = query.month === 'all';
+  yearly = scoped.monthlyInYear;
   return {
-    creditDebitTrend: {
-      monthly: bundle.byView.monthly,
-      weekly: bundle.byView.weekly,
-      monthlyInYear: bundle.byView.monthlyInYear,
-      yearly: isAllMonthsMode ? bundle.byView.yearly : bundle.byView.monthlyInYear,
-    },
-    chartYearOptions: bundle.yearOptions,
+    monthly: scoped.monthly,
+    weekly: scoped.weekly,
+    monthlyInYear: scoped.monthlyInYear,
+    yearly,
+    maxYear: scoped.maxYear,
   };
+}
+
+export function aggregateCreditDebitTrendPortfolio(
+  ctx: PortfolioDashboardContext,
+  chartYear?: number,
+  chartMonth?: number | 'all',
+): CreditDebitTrendSeries {
+  const year = Number.isFinite(Number(chartYear))
+    ? Math.floor(Number(chartYear))
+    : new Date().getFullYear();
+  const month =
+    chartMonth === undefined
+      ? new Date().getMonth()
+      : chartMonth === 'all'
+        ? 'all'
+        : Number.isFinite(Number(chartMonth))
+          ? Math.floor(Number(chartMonth))
+          : new Date().getMonth();
+
+  const dealIdByApplicationId = new Map(
+    ctx.disbursementApps.map((app) => [app.id, app.dealId]),
+  );
+
+  const { monthly, weekly, monthlyInYear, yearly } = buildCreditDebitTrendSeries(
+    ctx.paymentsForDashboardCharts,
+    dealIdByApplicationId,
+    year,
+    month,
+  );
+
+  return { monthly, weekly, monthlyInYear, yearly };
+}
+
+export function computeChartYearOptionsFromPortfolio(
+  ctx: PortfolioDashboardContext,
+  selectedYear?: number,
+): number[] {
+  const now = new Date();
+  let maxYear = Math.max(now.getFullYear(), selectedYear ?? now.getFullYear());
+
+  for (const payment of ctx.paymentsForDashboardCharts) {
+    const txDate = paymentTxDate(payment);
+    if (txDate) maxYear = Math.max(maxYear, txDate.getFullYear());
+  }
+
+  return Array.from(
+    { length: Math.max(1, maxYear - BASE_YEAR + 1) },
+    (_, idx) => BASE_YEAR + idx,
+  );
 }
 
 export async function computeCreditDebitTrend(
@@ -418,18 +479,52 @@ export async function computeCreditDebitTrend(
   const query = parseTrendQuery(queryInput);
   if (!query) return null;
 
-  const bundle = await buildCreditDebitTrendBundle(query);
-  if (!bundle) return null;
+  const organizationParam = String(queryInput.organization ?? '').trim();
+  const fundedWhereRaw = buildApplicationStatsBucketWhere('funded');
+  if (!fundedWhereRaw) return null;
+  const fundedWhere = mergeApplicationWhereWithOrganization(fundedWhereRaw, organizationParam);
 
-  const isAllMonthsMode = query.month === 'all';
-  const isYearAxisMode = query.view === 'yearly' && isAllMonthsMode;
-  const viewKey = query.view === 'monthlyInYear' ? 'monthlyInYear' : query.view;
-  const points =
-    query.view === 'yearly' && isYearAxisMode
-      ? bundle.byView.yearly
-      : bundle.byView[viewKey as keyof CreditDebitTrendByViewDto];
+  const range = trendDateRange(query);
+  const payments = await prisma.collectionPayment.findMany({
+    where: buildTrendPaymentsWhere(fundedWhere, range),
+    select: {
+      id: true,
+      applicationId: true,
+      dealId: true,
+      amount: true,
+      status: true,
+      Date: true,
+      processedDate: true,
+      scheduledDate: true,
+      createdAt: true,
+      notes: true,
+      Application: { select: { dealId: true } },
+    },
+  });
 
-  return { points, yearOptions: bundle.yearOptions };
+  const dealIdByApplicationId = new Map<string, string | null | undefined>();
+  payments.forEach((payment) => {
+    if (!dealIdByApplicationId.has(payment.applicationId)) {
+      dealIdByApplicationId.set(payment.applicationId, payment.Application?.dealId ?? null);
+    }
+  });
+
+  const { monthly, weekly, monthlyInYear, yearly, maxYear } = buildCreditDebitTrendSeries(
+    payments,
+    dealIdByApplicationId,
+    query.year,
+    query.month,
+  );
+
+  const yearOptions = Array.from(
+    { length: Math.max(1, maxYear - BASE_YEAR + 1) },
+    (_, idx) => BASE_YEAR + idx,
+  );
+
+  const byView = { monthly, weekly, monthlyInYear, yearly };
+  const points = byView[query.view === 'monthlyInYear' ? 'monthlyInYear' : query.view];
+
+  return { points, yearOptions };
 }
 
 export { parseTrendQuery };

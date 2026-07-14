@@ -1,6 +1,7 @@
 import type { Request } from 'express';
 import type { PaymentMailLog, PaymentMailLogStatus } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { resolveMailLogDisplayStatus } from './sendgridWebhookService';
 import { resolveAuditLogUserId } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from './applicationService';
 import { createApplicationActivityLog } from './applicationActivityLogService';
@@ -45,18 +46,57 @@ export type PaymentMailLogApiStatus = 'queued' | 'sent' | 'failed' | PaymentMail
 export function resolvePaymentMailDisplayStatus(
   prismaStatus: PaymentMailLogStatus,
   deliveryStatus?: string | null,
+  delivery?: PaymentMailLogDeliveryMeta | null,
 ): PaymentMailLogApiStatus {
-  const normalized = deliveryStatus?.trim().toLowerCase();
+  const fromTimeline = delivery ? statusFromDeliveryTimeline(delivery) : null;
+  const normalized = (fromTimeline ?? deliveryStatus)?.trim().toLowerCase();
   if (normalized && normalized !== 'sent' && normalized !== 'processed') {
     return normalized as PaymentMailLogApiStatus;
   }
   return fromPrismaMailLogStatus(prismaStatus);
 }
 
+function statusFromDeliveryTimeline(delivery: PaymentMailLogDeliveryMeta): string {
+  return resolveMailLogDisplayStatus({
+    status: (delivery.status as 'sent') ?? 'sent',
+    statusRank: 0,
+    lastEvent: delivery.lastEvent ?? '',
+    lastEventAt: delivery.lastEventAt ?? '',
+    sentAt: delivery.sentAt,
+    deliveredAt: delivery.deliveredAt,
+    openedAt: delivery.openedAt,
+    clickedAt: delivery.clickedAt,
+    bouncedAt: delivery.bouncedAt,
+    openCount: delivery.openCount ?? 0,
+    clickCount: delivery.clickCount ?? 0,
+    processedEventIds: [],
+  });
+}
+
+export type PaymentMailLogDeliveryMeta = {
+  status?: string;
+  sentAt?: string;
+  deliveredAt?: string;
+  openedAt?: string;
+  clickedAt?: string;
+  bouncedAt?: string;
+  openCount?: number;
+  clickCount?: number;
+  bounceReason?: string;
+  lastEvent?: string;
+  lastEventAt?: string;
+  lastClickedUrl?: string;
+};
+
 export function formatPaymentMailLogApiRow(
   log: PaymentMailLog,
-  deliveryStatus?: string | null,
+  opts?: {
+    deliveryStatus?: string | null;
+    attachments?: string[];
+    delivery?: PaymentMailLogDeliveryMeta | null;
+  },
 ) {
+  const deliveryStatus = opts?.deliveryStatus ?? null;
   return {
     id: log.id,
     at: log.createdAt?.toISOString() ?? new Date().toISOString(),
@@ -67,21 +107,131 @@ export function formatPaymentMailLogApiRow(
     recipient: log.recipient,
     subject: log.subject,
     body: log.body ?? undefined,
-    status: resolvePaymentMailDisplayStatus(log.status, deliveryStatus),
+    status: resolvePaymentMailDisplayStatus(log.status, deliveryStatus, opts?.delivery ?? null),
+    attachments: opts?.attachments?.length ? opts.attachments : undefined,
+    delivery: opts?.delivery ?? undefined,
   };
 }
 
-function deliveryStatusFromActivityMetadata(metadata: unknown): string | null {
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+function extractAttachmentNamesFromMetadata(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
   const meta = metadata as Record<string, unknown>;
-  const delivery = meta.delivery;
-  if (delivery && typeof delivery === 'object' && !Array.isArray(delivery)) {
-    const status = (delivery as Record<string, unknown>).status;
-    if (typeof status === 'string' && status.trim()) return status.trim().toLowerCase();
+  const names: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === 'string' && value.trim()) names.push(value.trim());
+  };
+
+  if (Array.isArray(meta.attachments)) {
+    for (const item of meta.attachments) {
+      if (typeof item === 'string') push(item);
+      else if (item && typeof item === 'object') {
+        const row = item as Record<string, unknown>;
+        push(row.filename);
+        push(row.name);
+        push(row.originalName);
+      }
+    }
   }
-  const metaStatus = meta.status;
-  if (typeof metaStatus === 'string' && metaStatus.trim()) return metaStatus.trim().toLowerCase();
-  return null;
+  if (names.length) return [...new Set(names)];
+
+  push(meta.documentName);
+  if (meta.hasLetterPdf === true) {
+    const template =
+      typeof meta.templateName === 'string'
+        ? meta.templateName.trim()
+        : typeof meta.documentName === 'string'
+          ? meta.documentName.trim()
+          : '';
+    if (template) {
+      return [template.toLowerCase().endsWith('.pdf') ? template : `${template}.pdf`];
+    }
+    return ['Letter PDF'];
+  }
+
+  return [];
+}
+
+function deliveryMetaFromOutboundMetadata(metadata: unknown): PaymentMailLogDeliveryMeta | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const tracking = (metadata as Record<string, unknown>).tracking;
+  if (!tracking || typeof tracking !== 'object' || Array.isArray(tracking)) return null;
+  const t = tracking as Record<string, unknown>;
+  const delivery: PaymentMailLogDeliveryMeta = {
+    status: typeof t.status === 'string' ? t.status : undefined,
+    sentAt: typeof t.sentAt === 'string' ? t.sentAt : undefined,
+    deliveredAt: typeof t.deliveredAt === 'string' ? t.deliveredAt : undefined,
+    openedAt: typeof t.openedAt === 'string' ? t.openedAt : undefined,
+    clickedAt: typeof t.clickedAt === 'string' ? t.clickedAt : undefined,
+    bouncedAt: typeof t.bouncedAt === 'string' ? t.bouncedAt : undefined,
+    openCount: typeof t.openCount === 'number' ? t.openCount : undefined,
+    clickCount: typeof t.clickCount === 'number' ? t.clickCount : undefined,
+    bounceReason: typeof t.bounceReason === 'string' ? t.bounceReason : undefined,
+    lastEvent: typeof t.lastEvent === 'string' ? t.lastEvent : undefined,
+    lastEventAt: typeof t.lastEventAt === 'string' ? t.lastEventAt : undefined,
+    lastClickedUrl: typeof t.lastClickedUrl === 'string' ? t.lastClickedUrl : undefined,
+  };
+  return delivery.sentAt || delivery.deliveredAt || delivery.status ? delivery : null;
+}
+
+function deliveryTimelineRank(delivery: PaymentMailLogDeliveryMeta): number {
+  if (delivery.clickedAt) return 4;
+  if (delivery.openedAt || (delivery.openCount ?? 0) > 0) return 3;
+  if (delivery.deliveredAt) return 2;
+  if (delivery.sentAt) return 1;
+  return 0;
+}
+
+function mergeDeliveryMeta(
+  activityDelivery: PaymentMailLogDeliveryMeta | null,
+  outboundDelivery: PaymentMailLogDeliveryMeta | null,
+): PaymentMailLogDeliveryMeta | null {
+  if (!activityDelivery) return outboundDelivery;
+  if (!outboundDelivery) return activityDelivery;
+  const preferred =
+    deliveryTimelineRank(outboundDelivery) >= deliveryTimelineRank(activityDelivery)
+      ? outboundDelivery
+      : activityDelivery;
+  return {
+    ...activityDelivery,
+    ...outboundDelivery,
+    ...preferred,
+  };
+}
+
+function deliveryMetaFromActivityMetadata(metadata: unknown): {
+  status: string | null;
+  delivery: PaymentMailLogDeliveryMeta | null;
+  attachments: string[];
+} {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return { status: null, delivery: null, attachments: [] };
+  }
+  const meta = metadata as Record<string, unknown>;
+  const deliveryRaw = meta.delivery;
+  let delivery: PaymentMailLogDeliveryMeta | null = null;
+  let status: string | null = null;
+
+  if (deliveryRaw && typeof deliveryRaw === 'object' && !Array.isArray(deliveryRaw)) {
+    delivery = { ...(deliveryRaw as PaymentMailLogDeliveryMeta) };
+    status = statusFromDeliveryTimeline(delivery);
+  }
+
+  if (!status) {
+    const metaStatus = meta.status;
+    if (typeof metaStatus === 'string' && metaStatus.trim()) {
+      status = metaStatus.trim().toLowerCase();
+    }
+  }
+
+  if (delivery && status) {
+    delivery = { ...delivery, status };
+  }
+
+  return {
+    status,
+    delivery,
+    attachments: extractAttachmentNamesFromMetadata(meta),
+  };
 }
 
 export async function enrichPaymentMailLogsForApi(logs: PaymentMailLog[]) {
@@ -98,21 +248,59 @@ export async function enrichPaymentMailLogsForApi(logs: PaymentMailLog[]) {
     select: { metadata: true },
   });
 
-  const deliveryByPaymentLogId = new Map<string, string>();
+  const enrichmentByPaymentLogId = new Map<
+    string,
+    { status: string | null; delivery: PaymentMailLogDeliveryMeta | null; attachments: string[] }
+  >();
+  const outboundIdByPaymentLogId = new Map<string, string>();
+
   for (const row of activityLogs) {
     const meta = row.metadata;
     if (!meta || typeof meta !== 'object' || Array.isArray(meta)) continue;
-    const paymentMailLogId = (meta as Record<string, unknown>).paymentMailLogId;
-    if (typeof paymentMailLogId !== 'string' || deliveryByPaymentLogId.has(paymentMailLogId)) {
+    const metaObj = meta as Record<string, unknown>;
+    const paymentMailLogId = metaObj.paymentMailLogId;
+    if (typeof paymentMailLogId !== 'string' || enrichmentByPaymentLogId.has(paymentMailLogId)) {
       continue;
     }
-    const deliveryStatus = deliveryStatusFromActivityMetadata(meta);
-    if (deliveryStatus) deliveryByPaymentLogId.set(paymentMailLogId, deliveryStatus);
+    enrichmentByPaymentLogId.set(paymentMailLogId, deliveryMetaFromActivityMetadata(meta));
+    const outboundCommunicationId = metaObj.outboundCommunicationId;
+    if (typeof outboundCommunicationId === 'string' && outboundCommunicationId.trim()) {
+      outboundIdByPaymentLogId.set(paymentMailLogId, outboundCommunicationId.trim());
+    }
   }
 
-  return logs.map((log) =>
-    formatPaymentMailLogApiRow(log, deliveryByPaymentLogId.get(log.id) ?? null),
-  );
+  const outboundIds = [...new Set(outboundIdByPaymentLogId.values())];
+  const trackingByOutboundId = new Map<string, PaymentMailLogDeliveryMeta | null>();
+  if (outboundIds.length) {
+    const outboundRows = await prisma.outbound_communications.findMany({
+      where: { id: { in: outboundIds } },
+      select: { id: true, metadata: true },
+    });
+    for (const outbound of outboundRows) {
+      trackingByOutboundId.set(
+        outbound.id,
+        deliveryMetaFromOutboundMetadata(outbound.metadata),
+      );
+    }
+  }
+
+  return logs.map((log) => {
+    const enrichment = enrichmentByPaymentLogId.get(log.id);
+    const outboundId = outboundIdByPaymentLogId.get(log.id);
+    const outboundDelivery = outboundId
+      ? trackingByOutboundId.get(outboundId) ?? null
+      : null;
+    const delivery = mergeDeliveryMeta(enrichment?.delivery ?? null, outboundDelivery);
+    const deliveryStatus = delivery
+      ? statusFromDeliveryTimeline(delivery)
+      : enrichment?.status ?? null;
+    const attachments = enrichment?.attachments?.length ? enrichment.attachments : [];
+    return formatPaymentMailLogApiRow(log, {
+      deliveryStatus,
+      delivery,
+      attachments,
+    });
+  });
 }
 
 export async function insertPaymentMailLogRecord(
@@ -209,7 +397,7 @@ export async function assertApplicationMailLogAccess(applicationId: string, user
   }
 
   const role = (user?.role ?? '').toString().trim().toUpperCase().replace(/-/g, '_');
-  const isElevated = ['ADMIN', 'SUPER_ADMIN', 'UNDERWRITER', 'FINAL_UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'OPERATIONS'].includes(
+  const isElevated = ['ADMIN', 'SUPER_ADMIN', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'OPERATIONS'].includes(
     role,
   );
   const isAgent = role === 'AGENT';
@@ -312,55 +500,4 @@ export async function listPaymentMailLogs(applicationId: string, user: Authentic
   });
 
   return { forbidden: false, notFound: false, logs };
-}
-
-export interface UpdatePaymentMailLogInput {
-  status?: 'queued' | 'sent' | 'failed';
-}
-
-/**
- * Update an existing payment mail log row for an application (status only — the
- * model has no tracking/attachment columns). Enforces the same access rules as
- * create/list and verifies the log belongs to the given application.
- */
-export async function updatePaymentMailLog(
-  applicationId: string,
-  user: AuthenticatedUser | null,
-  logId: string,
-  input: UpdatePaymentMailLogInput,
-) {
-  const access = await assertApplicationMailLogAccess(applicationId, user);
-  if (!access.application) {
-    return { forbidden: false, notFound: true, log: null };
-  }
-  if (access.forbidden) {
-    return { forbidden: true, notFound: false, log: null };
-  }
-
-  const existing = await prisma.paymentMailLog.findFirst({
-    where: { id: logId, applicationId: access.application.id },
-  });
-  if (!existing) {
-    return { forbidden: false, notFound: true, log: null };
-  }
-
-  const data: { status?: PaymentMailLogStatus } = {};
-  if (input.status !== undefined) {
-    const prismaStatus = toPrismaMailLogStatus(input.status);
-    if (!prismaStatus) {
-      return { forbidden: false, notFound: false, badRequest: true as const, log: null };
-    }
-    data.status = prismaStatus;
-  }
-
-  if (Object.keys(data).length === 0) {
-    return { forbidden: false, notFound: false, log: existing };
-  }
-
-  const log = await prisma.paymentMailLog.update({
-    where: { id: existing.id },
-    data,
-  });
-
-  return { forbidden: false, notFound: false, log };
 }

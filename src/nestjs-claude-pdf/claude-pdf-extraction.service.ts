@@ -110,8 +110,9 @@ export class ClaudePdfExtractionService {
       .toLowerCase() === "true";
   }
 
-  getRuntimeDebugConfig(): { model: string; disableVisionFallback: boolean } {
+  getRuntimeDebugConfig(): { provider: string; model: string; disableVisionFallback: boolean } {
     return {
+      provider: 'claude',
       model: this.cfg.get<string>("CLAUDE_PDF_MODEL") ?? "claude-sonnet-4-6",
       disableVisionFallback: this.disableVisionFallback,
     };

@@ -1,4 +1,6 @@
-import type { Prisma, Application, Role } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import type { Prisma as PrismaTypes, Application, Role } from '@prisma/client';
+import axios from 'axios';
 import fs from 'fs/promises';
 import path from 'path';
 import prisma from '../config/prismaClient';
@@ -7,7 +9,10 @@ import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
 import { extractPdfPlainTextForParsing } from './pdfIngestionService';
 import { normalizeOcrTextForParsing } from './ocrFieldExtraction';
 import { logExtractedBusinessDataCsv } from './csvConverter';
-import { generateNextDealId } from '../utils/generateNextDealId';
+import { scheduleApplicationStageNotification } from './applicationStageNotificationService';
+import { allocateNextDealId, withAllocatedDealId } from './nextDealIdService';
+import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
+import { gmailAutoCreateMessageNote } from './pdfFileDedupeService';
 
 export type UserRole = Role;
 
@@ -16,14 +21,25 @@ export interface AuthenticatedUser {
     role: UserRole | string;
 }
 
+/** JWT user on `req.user` (shared across controllers). */
+export function getAuthenticatedUserFromRequest(req: {
+    user?: { id?: string; role?: string } | null;
+}): AuthenticatedUser | null {
+    const user = req.user;
+    if (!user?.id) return null;
+    return {
+        id: String(user.id),
+        role: String(user.role ?? ''),
+    };
+}
 
 function normalizeRole(role: string | UserRole | null | undefined): UserRole | null {
     if (!role) return null;
     const normalized = String(role).trim().toUpperCase().replace(/-/g, '_');
     const valid: UserRole[] = [
         'AGENT',
+        'SCRUBBING',
         'UNDERWRITER',
-        'FINAL_UNDERWRITER',
         'ACCOUNTANT',
         'ACCOUNTS',
         'ADMIN',
@@ -34,21 +50,134 @@ function normalizeRole(role: string | UserRole | null | undefined): UserRole | n
     return (valid as string[]).includes(normalized) ? (normalized as UserRole) : null;
 }
 
-/** List/detail queries use the same filters for every CRM role (no per-agent or per-queue hiding). */
+/** Agents only see applications they referred or created. */
+export function buildAgentApplicationVisibilityWhere(
+    userId: string,
+): PrismaTypes.ApplicationWhereInput {
+    return {
+        OR: [{ referringAgentId: userId }, { createdById: userId }],
+    };
+}
+
+/** SQL fragment for stats queries (`Application` aliased as `a` by default). */
+export function buildAgentApplicationVisibilitySql(
+    userId: string,
+    applicationTableAlias = 'a',
+): Prisma.Sql {
+    const prefix = applicationTableAlias ? `${applicationTableAlias}.` : '';
+    return Prisma.sql`(${Prisma.raw(`${prefix}"referringAgentId"`)} = ${userId} OR ${Prisma.raw(`${prefix}"createdById"`)} = ${userId})`;
+}
+
+/** Underwriter list/count visibility — mirrors GET /applications underwriter scoping. */
+export function buildUnderwriterApplicationVisibilityWhere(
+    userId: string,
+): PrismaTypes.ApplicationWhereInput {
+    return {
+        AND: [
+            {
+                OR: [
+                    {
+                        NOT: {
+                            currentQueue: {
+                                equals: 'Final Approval',
+                                mode: 'insensitive',
+                            },
+                        },
+                    },
+                    { assignedUnderwriterId: userId },
+                    {
+                        AND: [
+                            { assignedUnderwriterId: null },
+                            { approvedByUnderwriterId: userId },
+                        ],
+                    },
+                ],
+            },
+            {
+                OR: [
+                    { assignedUnderwriterId: null },
+                    { assignedUnderwriterId: userId },
+                ],
+            },
+        ],
+    };
+}
+
+/** Scope list queries: agents see only their deals; underwriters see assigned / final-approval rows. */
 export function mergeApplicationVisibilityWhere(
-    base: Prisma.ApplicationWhereInput,
-    _user: AuthenticatedUser | null | undefined
-): Prisma.ApplicationWhereInput {
+    base: PrismaTypes.ApplicationWhereInput,
+    user: AuthenticatedUser | null | undefined
+): PrismaTypes.ApplicationWhereInput {
+    if (!user?.id) {
+        return base;
+    }
+
+    const role = normalizeRole(user.role);
+    const existingAnd = base.AND
+        ? Array.isArray(base.AND)
+            ? base.AND
+            : [base.AND]
+        : [];
+
+    if (role === 'AGENT') {
+        return {
+            ...base,
+            AND: [...existingAnd, buildAgentApplicationVisibilityWhere(user.id)],
+        };
+    }
+
+    if (role === 'UNDERWRITER') {
+        return {
+            ...base,
+            AND: [...existingAnd, buildUnderwriterApplicationVisibilityWhere(user.id)],
+        };
+    }
+
     return base;
 }
 
-/** Any authenticated user with a known CRM role may open an application (matches full list visibility). */
+const isFinalApprovalQueue = (queue: string | null | undefined): boolean =>
+    String(queue ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '') === 'finalapproval';
+
+/** Detail access: agents only on own deals; other CRM roles unchanged. */
 export function canUserAccessApplication(
-    _application: Pick<Application, 'referringAgentId' | 'createdById'>,
+    application: Pick<
+        Application,
+        | 'referringAgentId'
+        | 'createdById'
+        | 'currentQueue'
+        | 'approvedByUnderwriterId'
+        | 'assignedUnderwriterId'
+    > & { assignedUnderwriterId?: string | null },
     user: AuthenticatedUser | null | undefined
 ): boolean {
     if (!user) return false;
-    return normalizeRole(user.role) != null;
+    const role = normalizeRole(user.role);
+    if (!role) return false;
+    if (role === 'UNDERWRITER') {
+        // A deal assigned to a specific Underwriter is private to them.
+        if (
+            application.assignedUnderwriterId &&
+            application.assignedUnderwriterId !== user.id
+        ) {
+            return false;
+        }
+        if (isFinalApprovalQueue(application.currentQueue)) {
+            const assignedId = String(application.assignedUnderwriterId ?? '').trim();
+            if (assignedId) {
+                return assignedId === user.id;
+            }
+            return application.approvedByUnderwriterId === user.id;
+        }
+    }
+    if (role !== 'AGENT') return true;
+    return (
+        application.referringAgentId === user.id ||
+        application.createdById === user.id
+    );
 }
 
 /** Application type that may include relation fields when include is used */
@@ -76,7 +205,47 @@ export async function getApplicationForUser(
         return { application: null, forbidden: true };
     }
 
+    const role = normalizeRole(user?.role);
+    const deletedAt = (application as { deletedAt?: Date | null }).deletedAt;
+    if (
+        deletedAt &&
+        role !== 'SUPER_ADMIN' &&
+        role !== 'OPERATIONS'
+    ) {
+        return { application: null, forbidden: false };
+    }
+
     return { application, forbidden: false };
+}
+
+const APPLICATION_UUID_REGEX =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Map route `:id` to a Prisma unique key (numeric `applicationId` or UUID `id`). */
+export function resolveApplicationWhere(
+    idParam: string,
+): Prisma.ApplicationWhereUniqueInput | null {
+    const ref = String(idParam ?? '').trim();
+    if (!ref) return null;
+    if (/^\d+$/.test(ref)) {
+        const numericId = Number(ref);
+        return Number.isFinite(numericId) ? { applicationId: numericId } : null;
+    }
+    if (!APPLICATION_UUID_REGEX.test(ref)) return null;
+    return { id: ref };
+}
+
+/** Resolve application by UUID or numeric `applicationId` with agent visibility enforced. */
+export async function getApplicationForUserByRef(
+    applicationRef: string,
+    user: AuthenticatedUser | null | undefined,
+    include?: PrismaTypes.ApplicationInclude,
+): Promise<{ application: ApplicationWithRelations | null; forbidden: boolean }> {
+    const where = resolveApplicationWhere(applicationRef);
+    if (!where) {
+        return { application: null, forbidden: false };
+    }
+    return getApplicationForUser(where, user, include);
 }
 
 /* =========================================================================
@@ -169,6 +338,8 @@ export interface CreatePdfApplicationOptions {
     isoId?: string | null;
     /** Original filename for the stored ApplicationFile (e.g. Gmail attachment name). */
     originalFileName?: string | null;
+    /** Gmail message id for durable auto-create dedupe (`gmail-msg:` note). */
+    gmailMessageId?: string | null;
     /**
      * When provided (e.g. OCR + `parseBusinessData` already ran in the controller),
      * skips PDF text extraction and parsing inside this helper.
@@ -213,8 +384,8 @@ export function assertReadyToCreateNewClientFromPdf(parsedData: unknown, clientR
  * but decoupled from Express (Request/Response) so it can be reused by
  * the Gmail auto-import flow or any other caller.
  */
-const PDF_EMAIL_AUTO_CREATE_QUEUE = 'Underwriter';
-/** Route PDF-created applications directly to underwriter review queue. */
+const PDF_EMAIL_AUTO_CREATE_QUEUE = 'Scrubbing';
+/** Route PDF-created applications directly to scrubbing review queue. */
 const PDF_EMAIL_AUTO_CREATE_STATE = 'IN_PROGRESS';
 
 const applicationWithFilesInclude = {
@@ -252,6 +423,8 @@ export async function createClientAndApplicationFromPDFBuffer(
     }
     const agentCreationQueue = PDF_EMAIL_AUTO_CREATE_QUEUE;
     const agentCreationState = PDF_EMAIL_AUTO_CREATE_STATE;
+    const gmailMessageId = String(options?.gmailMessageId || '').trim();
+    const gmailNote = gmailMessageId ? gmailAutoCreateMessageNote(gmailMessageId) : '';
 
     let parsedData: any;
     if (options?.preParsedData && typeof options.preParsedData === 'object') {
@@ -326,26 +499,27 @@ export async function createClientAndApplicationFromPDFBuffer(
             where: { id: clientRecord.id },
         });
 
-        const nextDealIdExisting = await generateNextDealId();
-
         // Client already exists → create application only
-        const createdApplication = await prisma.application.create({
-            data: {
-                priority: 'High',
-                type: 'New',
-                salesRepresentativeId: userId,
-                referringAgentId: userId,
-                clientId: clientRecord.id,
-                isoId: isoId || null,
-                commissionPercentage: commissionPercentageFromIso,
-                loanAmount: loanAmountNum != null && !isNaN(loanAmountNum) ? loanAmountNum : null,
-                createdById: userId,
-                currentQueue: agentCreationQueue,
-                currentState: agentCreationState,
-                dealId: nextDealIdExisting,
-            },
-            include: applicationWithFilesInclude,
-        });
+        const createdApplication = await withAllocatedDealId((dealId, tx) =>
+            tx.application.create({
+                data: applicationCreateUncheckedData({
+                    priority: 'High',
+                    type: 'New',
+                    salesRepresentativeId: userId,
+                    referringAgentId: userId,
+                    clientId: clientRecord.id,
+                    isoId: isoId || null,
+                    commissionPercentage: commissionPercentageFromIso,
+                    loanAmount: loanAmountNum != null && !isNaN(loanAmountNum) ? loanAmountNum : null,
+                    createdById: userId,
+                    currentQueue: agentCreationQueue,
+                    currentState: agentCreationState,
+                    note: gmailNote || undefined,
+                    dealId,
+                }),
+                include: applicationWithFilesInclude,
+            }),
+        );
 
         if (Buffer.isBuffer(pdfBuffer)) {
             await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, storedPdfName);
@@ -362,6 +536,12 @@ export async function createClientAndApplicationFromPDFBuffer(
             ),
         );
 
+        scheduleApplicationStageNotification({
+            application: applicationWithFiles as any,
+            transitionAction: 'CREATED',
+            actorId: userId,
+        });
+
         return {
             client: clientRecord,
             application: applicationWithFiles,
@@ -373,6 +553,8 @@ export async function createClientAndApplicationFromPDFBuffer(
 
     // Client does not exist → create client + application atomically
     const result = await prisma.$transaction(async (tx) => {
+        const dealId = await allocateNextDealId(tx);
+
         const businessNameFallback =
             String(business.business_name || '').trim() ||
             String(business.dba_name || '').trim() ||
@@ -418,10 +600,8 @@ export async function createClientAndApplicationFromPDFBuffer(
             },
         });
 
-        const nextDealIdNewClient = await generateNextDealId(tx);
-
         const newApplication = await tx.application.create({
-            data: {
+            data: applicationCreateUncheckedData({
                 priority: 'High',
                 type: 'New',
                 salesRepresentativeId: userId,
@@ -433,8 +613,9 @@ export async function createClientAndApplicationFromPDFBuffer(
                 createdById: userId,
                 currentQueue: agentCreationQueue,
                 currentState: agentCreationState,
-                dealId: nextDealIdNewClient,
-            },
+                note: gmailNote || undefined,
+                dealId,
+            }),
             include: applicationWithFilesInclude,
         });
 
@@ -456,6 +637,12 @@ export async function createClientAndApplicationFromPDFBuffer(
         ),
     );
 
+    scheduleApplicationStageNotification({
+        application: applicationWithFiles as any,
+        transitionAction: 'CREATED',
+        actorId: userId,
+    });
+
     return {
         client: result.newClient,
         application: applicationWithFiles,
@@ -463,11 +650,297 @@ export async function createClientAndApplicationFromPDFBuffer(
     };
 }
 
+/** Placeholder owner names when Gmail subject fallback creates a client without PDF extraction. */
+export const GMAIL_SUBJECT_FALLBACK_OWNER_FIRST = 'none';
+export const GMAIL_SUBJECT_FALLBACK_OWNER_LAST = 'none';
+
+export interface CreateGmailSubjectFallbackOptions {
+    isoId?: string | null;
+    gmailMessageId?: string | null;
+}
+
+/**
+ * Creates a Client + Application using only the merchant name parsed from the email subject.
+ * Used when PDF extraction cannot supply enough data for the normal auto-create path.
+ */
+export async function createApplicationFromGmailSubjectFallback(
+    businessName: string,
+    userId: string,
+    options?: CreateGmailSubjectFallbackOptions,
+): Promise<PdfApplicationResult> {
+    const trimmedBusinessName = String(businessName || '').trim();
+    if (!trimmedBusinessName) {
+        throw new Error('Business name is required for Gmail subject fallback');
+    }
+
+    const isoId = options?.isoId ? String(options.isoId).trim() : null;
+    let commissionPercentageFromIso = 0;
+    if (isoId) {
+        const isoRecord = await prisma.iso.findUnique({
+            where: { id: isoId },
+            select: { commissionPercentage: true },
+        });
+        if (isoRecord) {
+            commissionPercentageFromIso = Number(isoRecord.commissionPercentage ?? 0);
+        }
+    }
+
+    const gmailMessageId = String(options?.gmailMessageId || '').trim();
+    const notes = gmailMessageId
+        ? `Auto-created from Gmail subject (PDF extraction incomplete). MessageId: ${gmailMessageId}`
+        : 'Auto-created from Gmail subject (PDF extraction incomplete).';
+
+    const result = await prisma.$transaction(async (tx) => {
+        const dealId = await allocateNextDealId(tx);
+
+        const newClient = await tx.client.create({
+            data: {
+                businessName: trimmedBusinessName,
+                ownerFirstName: GMAIL_SUBJECT_FALLBACK_OWNER_FIRST,
+                ownerLastName: GMAIL_SUBJECT_FALLBACK_OWNER_LAST,
+                notes,
+                createdById: userId,
+            },
+        });
+
+        const newApplication = await tx.application.create({
+            data: applicationCreateUncheckedData({
+                priority: 'High',
+                type: 'New',
+                salesRepresentativeId: userId,
+                referringAgentId: userId,
+                clientId: newClient.id,
+                isoId: isoId || null,
+                commissionPercentage: commissionPercentageFromIso,
+                createdById: userId,
+                currentQueue: PDF_EMAIL_AUTO_CREATE_QUEUE,
+                currentState: PDF_EMAIL_AUTO_CREATE_STATE,
+                note: gmailMessageId ? gmailAutoCreateMessageNote(gmailMessageId) : '',
+                dealId,
+            }),
+            include: applicationWithFilesInclude,
+        });
+
+        return { newClient, newApplication };
+    }, { maxWait: 20_000, timeout: 120_000 });
+
+    const applicationWithFiles =
+        (await refetchApplicationWithFiles(result.newApplication.id)) || result.newApplication;
+
+    console.log(
+        '[createApplicationFromGmailSubjectFallback] Created from subject:',
+        JSON.stringify(
+            {
+                businessName: trimmedBusinessName,
+                clientId: result.newClient.id,
+                applicationId: applicationWithFiles.id,
+            },
+            null,
+            2,
+        ),
+    );
+
+    scheduleApplicationStageNotification({
+        application: applicationWithFiles as any,
+        transitionAction: 'CREATED',
+        actorId: userId,
+    });
+
+    return {
+        client: result.newClient,
+        application: applicationWithFiles,
+        existingClient: false,
+    };
+}
+
+function pdfExtractString(value: unknown): string {
+    return value != null ? String(value).trim() : '';
+}
+
+async function downloadPdfBufferFromUrl(url: string): Promise<Buffer> {
+    const response = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 120_000,
+        maxContentLength: 50 * 1024 * 1024,
+        maxBodyLength: 50 * 1024 * 1024,
+    });
+    return Buffer.from(response.data);
+}
+
+/**
+ * Runs Claude/Document AI extraction on a stored application PDF and merges
+ * business + owner fields into the linked client (and loan amount on the application).
+ */
+export async function applyPdfExtractToApplicationFromStoredFile(
+    applicationId: string,
+    fileId: string,
+): Promise<{ client: any; application: any; parsedData: unknown }> {
+    const file = await prisma.applicationFile.findFirst({
+        where: { id: fileId, applicationId },
+    });
+    if (!file?.url) {
+        throw new Error('Application file not found');
+    }
+
+    const fileName = String(file.originalName || '').trim() || 'document.pdf';
+    const mime = String(file.mimeType || '').toLowerCase();
+    const isPdf =
+        mime === 'application/pdf' ||
+        fileName.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+        throw new Error('Only PDF files can be used to fill application details');
+    }
+
+    const application = await prisma.application.findUnique({
+        where: { id: applicationId },
+        include: { client: true },
+    });
+    if (!application?.client) {
+        throw new Error('Application or client not found');
+    }
+
+    const pdfBuffer = await downloadPdfBufferFromUrl(file.url);
+    const syntheticText = await extractPdfPlainTextForParsing(pdfBuffer, fileName);
+    const parsedData = parseBusinessData(normalizeOcrTextForParsing(syntheticText));
+
+    if (!parsedData || typeof parsedData !== 'object') {
+        throw new Error('Failed to extract structured data from PDF');
+    }
+
+    logExtractedBusinessDataCsv(parsedData, {
+        tag: '[fillFromPdf]',
+        fileName,
+    });
+
+    const business: Record<string, unknown> = (parsedData as { business?: Record<string, unknown> }).business || {};
+    const owner: Record<string, unknown> = (parsedData as { owner?: Record<string, unknown> }).owner || {};
+    const client = application.client;
+
+    const ownerSsnNorm = normalizeSsn(
+        pdfExtractString(owner.owner_ssn || owner.ownerSsn || owner.ssn) || null,
+    );
+
+    const requestedAmountRaw =
+        business.business_requested_amount || business.requested_amount || null;
+    const loanAmountNum = parseNumericAmount(requestedAmountRaw as string | number | null | undefined);
+
+    const grossAnnualRaw = business.business_monthly_revenue;
+    const annualRevenue = parseNumericAmount(grossAnnualRaw as string | number | null | undefined);
+    const monthlyRevenue =
+        annualRevenue != null ? Math.round((annualRevenue / 12) * 100) / 100 : null;
+
+    const patch: Prisma.ClientUpdateInput = {};
+
+    const businessName =
+        pdfExtractString(business.business_name) || pdfExtractString(business.dba_name);
+    if (businessName) patch.businessName = businessName;
+
+    const assignString = (key: keyof Prisma.ClientUpdateInput, value: unknown) => {
+        const v = pdfExtractString(value);
+        if (v) (patch as Record<string, unknown>)[key as string] = v;
+    };
+
+    assignString('businessEmail', business.business_email);
+    assignString('businessNumber', business.phone_number);
+    assignString('businessWebsite', business.business_website);
+    assignString('businessIncorporationState', business.business_incorporation_state || business.business_state);
+    assignString('businessEntityType', business.business_type_of_entity);
+    assignString('businessEinNumber', business.business_ein_number);
+    assignString('businessAddress1', business.business_address1);
+    assignString('businessAddress2', business.business_address2);
+    assignString('businessCity', business.business_city);
+    assignString('businessState', business.business_state);
+    assignString('businessZipCode', business.business_zip_code);
+
+    const incorporationDate = parseDateForClientFields(
+        pdfExtractString(business.business_incorporation_date) || null,
+    );
+    if (incorporationDate) patch.businessIncorporationDate = incorporationDate;
+    if (annualRevenue != null) patch.businessAnnualRevenue = annualRevenue;
+    if (monthlyRevenue != null) patch.businessMonthlyRevenue = monthlyRevenue;
+
+    const ownerFirst = pdfExtractString(owner.owner_first_name);
+    const ownerLast = pdfExtractString(owner.owner_last_name);
+    if (ownerFirst) patch.ownerFirstName = ownerFirst;
+    if (ownerLast) patch.ownerLastName = ownerLast;
+
+    assignString('ownerMiddleName', owner.owner_middle_name);
+    assignString('ownerEmail', owner.owner_email);
+    assignString('ownerMobileNumber', owner.owner_mobile_number);
+    assignString('ownerAddress1', owner.owner_address1);
+    assignString('ownerCity', owner.owner_city);
+    assignString('ownerState', owner.owner_state);
+    assignString('ownerZipCode', owner.owner_zip_code);
+
+    const ownerDob = parseDateForClientFields(pdfExtractString(owner.owner_date_of_birth) || null);
+    if (ownerDob) patch.ownerDateOfBirth = ownerDob;
+    if (ownerSsnNorm) patch.ownerSsn = ownerSsnNorm;
+
+    const fico = pdfExtractString(owner.owner_fico_score);
+    if (fico && !Number.isNaN(Number(fico))) patch.ownerFicoScore = Number(fico);
+
+    const ownershipPct = pdfExtractString(owner.owner_ownership_percentage);
+    if (ownershipPct && !Number.isNaN(Number(ownershipPct))) {
+        patch.ownerOwnershipPercentage = Number(ownershipPct);
+    }
+
+    if (Object.keys(patch).length === 0 && loanAmountNum == null) {
+        throw new Error(
+            'PDF extraction did not return enough business or owner fields to update this application',
+        );
+    }
+
+    const updatedClient =
+        Object.keys(patch).length > 0
+            ? await prisma.client.update({
+                  where: { id: client.id },
+                  data: patch,
+              })
+            : client;
+
+    const applicationPatch: Prisma.ApplicationUpdateInput = {};
+    if (loanAmountNum != null && !Number.isNaN(loanAmountNum)) {
+        applicationPatch.loanAmount = loanAmountNum;
+    }
+
+    const updatedApplication = await prisma.application.update({
+        where: { id: applicationId },
+        data: applicationPatch,
+        include: applicationWithFilesInclude,
+    });
+
+    console.log(
+        '[applyPdfExtractToApplicationFromStoredFile] Updated application from PDF:',
+        JSON.stringify(
+            {
+                applicationId,
+                fileId,
+                fileName,
+                clientId: updatedClient.id,
+                fieldsUpdated: Object.keys(patch),
+                loanAmount: loanAmountNum,
+            },
+            null,
+            2,
+        ),
+    );
+
+    return {
+        client: updatedClient,
+        application: updatedApplication,
+        parsedData,
+    };
+}
+
 const applicationService = {
     mergeApplicationVisibilityWhere,
     canUserAccessApplication,
     getApplicationForUser,
+    getApplicationForUserByRef,
+    resolveApplicationWhere,
     createClientAndApplicationFromPDFBuffer,
+    createApplicationFromGmailSubjectFallback,
+    applyPdfExtractToApplicationFromStoredFile,
 };
 
 export default applicationService;

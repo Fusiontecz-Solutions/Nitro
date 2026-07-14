@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import { tryRecordApplicationRouteActivity } from '../services/applicationSubActivityLog';
 import { recordGenericAudit } from '../services/systemActivityLogService';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -55,17 +56,21 @@ export function activityLogger(req: Request, res: Response, next: NextFunction):
     if (!req.user) return;
     if (res.statusCode >= 400) return;
 
-    const action = deriveAction(method);
-    const entity = deriveEntity(pathOnly);
-    const description = `${action} ${entity} via ${method} ${pathOnly}`;
-
-    void recordGenericAudit(req, {
-      action,
-      entity,
-      description,
-    }).catch((err: any) => {
-      console.error('[activityLogger] failed to record audit:', err);
-    });
+    void tryRecordApplicationRouteActivity(req, res.statusCode)
+      .then(() => {
+        if (req.__activityLogged) return;
+        const action = deriveAction(method);
+        const entity = deriveEntity(pathOnly);
+        const description = `${action} ${entity} via ${method} ${pathOnly}`;
+        return recordGenericAudit(req, {
+          action,
+          entity,
+          description,
+        });
+      })
+      .catch((err: any) => {
+        console.error('[activityLogger] failed to record audit:', err);
+      });
   });
 
   next();

@@ -2,9 +2,39 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import {
-  APPLICATION_USER_ATTRIBUTION_ERROR,
-  resolveApplicationAttributedUserId,
-} from '../middleware/authMiddleware';
+  getApplicationForUserByRef,
+  getAuthenticatedUserFromRequest,
+} from '../services/applicationService';
+
+const applicationAccessDeniedMessage =
+  'Forbidden: you do not have access to this application';
+
+async function requireApplicationAccessByRef(
+  req: Request,
+  res: Response,
+  applicationRef: string,
+) {
+  const authUser = getAuthenticatedUserFromRequest(req);
+  const { application, forbidden } = await getApplicationForUserByRef(applicationRef, authUser);
+  if (forbidden) {
+    res.status(403).json({ success: false, message: applicationAccessDeniedMessage });
+    return null;
+  }
+  if (!application) {
+    res.status(404).json({ success: false, message: 'Application not found' });
+    return null;
+  }
+  return application;
+}
+
+function isAgentRole(req: Request): boolean {
+  return (
+    String((req as any).user?.role || '')
+      .trim()
+      .toUpperCase()
+      .replace(/-/g, '_') === 'AGENT'
+  );
+}
 
 const mapNoteToApi = (note: any) => {
   if (!note) return note;
@@ -71,39 +101,16 @@ class NoteController {
       }
 
       const applicationStr = String(application);
-      let appRecord = null;
-
-      if (/^\d+$/.test(applicationStr)) {
-        // numeric applicationId
-        appRecord = await prisma.application.findUnique({
-          where: { applicationId: Number(applicationStr) },
-        });
-      } else {
-        // UUID id
-        appRecord = await prisma.application.findUnique({
-          where: { id: applicationStr },
-        });
-      }
-
+      const appRecord = await requireApplicationAccessByRef(req, res, applicationStr);
       if (!appRecord) {
-        return res.status(404).json({
-          success: false,
-          message: 'Application not found',
-        });
+        return;
       }
 
-      if (!req.user) {
+      const createdBy = (req as any).user?.id;
+      if (!createdBy) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
-        });
-      }
-
-      const createdById = await resolveApplicationAttributedUserId(req, appRecord);
-      if (!createdById) {
-        return res.status(400).json({
-          success: false,
-          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -111,7 +118,7 @@ class NoteController {
         data: {
           content: content.trim(),
           applicationId: appRecord.id,
-          createdById,
+          createdById: createdBy,
         },
         include: {
           createdBy: {
@@ -144,28 +151,20 @@ class NoteController {
     try {
       const { application } = req.query;
 
+      if (isAgentRole(req) && !application) {
+        return res.status(200).json({
+          success: true,
+          data: [],
+        });
+      }
+
       const where: any = {};
 
       if (application) {
         const applicationStr = String(application);
-        let appRecord = null;
-
-        if (/^\d+$/.test(applicationStr)) {
-          appRecord = await prisma.application.findUnique({
-            where: { applicationId: Number(applicationStr) },
-          });
-        } else {
-          appRecord = await prisma.application.findUnique({
-            where: { id: applicationStr },
-          });
-        }
-
+        const appRecord = await requireApplicationAccessByRef(req, res, applicationStr);
         if (!appRecord) {
-          // original controller: returns empty list if app not found
-          return res.status(200).json({
-            success: true,
-            data: [],
-          });
+          return;
         }
 
         where.applicationId = appRecord.id;
@@ -210,6 +209,11 @@ class NoteController {
           success: false,
           message: 'Note not found',
         });
+      }
+
+      const appRecord = await requireApplicationAccessByRef(req, res, note.applicationId);
+      if (!appRecord) {
+        return;
       }
 
       await prisma.note.delete({ where: { id } });

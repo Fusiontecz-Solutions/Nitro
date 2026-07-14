@@ -16,11 +16,11 @@ export type ApplicationStatsPayload = {
     underwriting: ApplicationStatsBucket;
     /** Agent queue and/or workflow state Pending (same scope as list visibility). */
     workflowPending: ApplicationStatsBucket;
-    /** Underwriter queue and/or workflow state In Progress (same scope as list visibility). */
+    /** Scrubbing queue and/or workflow state In Progress (same scope as list visibility). */
     workflowInProgress: ApplicationStatsBucket;
     /** Distinct apps in stats scope (each row once — avoids summing overlapping bucket predicates). */
     totalDealsPicked: ApplicationStatsBucket;
-    /** Apps whose `currentQueue` matches the viewer’s primary workflow queue (Agent / Underwriter / Final Underwriter). */
+    /** Apps whose `currentQueue` matches the viewer’s primary workflow queue (Agent / Scrubbing / Underwriter). */
     roleQueueAssigned: ApplicationStatsBucket;
 };
 
@@ -35,8 +35,8 @@ function normalizeRoleKey(role: string | null | undefined): string {
 export function primaryWorkflowQueueForRole(roleRaw: string | null | undefined): string | null {
     const r = normalizeRoleKey(roleRaw);
     if (r === 'AGENT') return 'Agent';
+    if (r === 'SCRUBBING') return 'Scrubbing';
     if (r === 'UNDERWRITER') return 'Underwriter';
-    if (r === 'FINAL_UNDERWRITER') return 'Final Underwriter';
     return null;
 }
 
@@ -77,9 +77,9 @@ const pendingPredicate = Prisma.sql`(
     'contracted',
     'review',
     'underwriting',
-    'underwriter',
+    'scrubbing',
     'finalreview',
-    'finalunderwriter',
+    'underwriter',
     'final',
     'fundingcall',
     'disbursement',
@@ -93,56 +93,84 @@ const inProcessPredicate = Prisma.sql`(${queueNorm}) IN (
   'agent',
   'review',
   'finalreview',
-  'finalunderwriter'
+  'underwriter'
 )`;
 
-const underwritingPredicate = Prisma.sql`(${queueNorm}) IN ('underwriting', 'underwriter')`;
+const underwritingPredicate = Prisma.sql`(${queueNorm}) IN ('underwriting', 'scrubbing')`;
 
-/** Deal workflow: Agent queue ↔ Pending; Underwriter queue ↔ In Progress (matches API `currentState`). */
+/** Deal workflow: Agent queue ↔ Pending; Scrubbing queue ↔ In Progress (matches API `currentState`). */
 const workflowPendingPredicate = Prisma.sql`((${queueNorm}) = 'agent' OR (${stateNorm}) = 'PENDING')`;
-const workflowInProgressPredicate = Prisma.sql`((${queueNorm}) = 'underwriter' OR (${stateNorm}) = 'IN_PROGRESS')`;
+const workflowInProgressPredicate = Prisma.sql`((${queueNorm}) = 'scrubbing' OR (${stateNorm}) = 'IN_PROGRESS')`;
 
-/** Matches `underwriterClaim` list scope (`currentQueue` = Underwriter literal). */
-const uwInboxQueueNorms = Prisma.sql`(${queueNorm}) = 'underwriter'`;
+/** Matches `underwriterClaim` list scope for Scrubbing or Underwriter queue. */
+const uwInboxQueueNorms = (stage: 'scrubbing' | 'underwriter') =>
+    stage === 'underwriter'
+        ? Prisma.sql`(${queueNorm}) = 'underwriter'`
+        : Prisma.sql`(${queueNorm}) = 'scrubbing'`;
 
 /**
- * When UNDERWRITER stats are scoped by `underwriterClaim`, Agent-centric workflow predicates are wrong:
- * `(queue)=underwriter` matches the entire pool so "In Progress" equals all rows.
- * Pending / In Progress cards instead split **Underwriter-queue** rows by claim row + backlog vs active workflow state.
+ * When SCRUBBING / UNDERWRITER stats are scoped by `underwriterClaim`, Agent-centric workflow predicates are wrong:
+ * queue-scoped rows split by claim vs backlog vs active workflow state.
  */
+export type UnderwriterClaimScope = 'unclaimed' | 'claimed' | 'mine';
+
+const scrubbingQueueNotSql = Prisma.sql`LOWER(TRIM(COALESCE(a."currentQueue", ''))) <> 'scrubbing'`;
+
 function buildUwInboxWorkflowBucketPredicatesSql(
-    claim: 'unclaimed' | 'mine',
+    claim: UnderwriterClaimScope,
     viewerId: string,
+    stage: 'scrubbing' | 'underwriter' = 'scrubbing',
 ): { pendingSql: Prisma.Sql; inProgressSql: Prisma.Sql } {
     const claimSql =
         claim === 'unclaimed'
-            ? Prisma.sql`("claimedByUnderwriterId" IS NULL)`
-            : Prisma.sql`("claimedByUnderwriterId" = ${viewerId})`;
+            ? stage === 'underwriter'
+                ? Prisma.sql`("assignedUnderwriterId" IS NULL)`
+                : Prisma.sql`("claimedByUnderwriterId" IS NULL)`
+            : stage === 'underwriter'
+              ? Prisma.sql`("assignedUnderwriterId" = ${viewerId})`
+              : Prisma.sql`("claimedByUnderwriterId" = ${viewerId})`;
     /** Backlog paperwork (not actively IN_PROGRESS yet). Matches list drill-down buckets. */
     const backlogStates = Prisma.sql`(${stateNorm}) IN ('SUBMITTED', 'PENDING')`;
     const activeStates = Prisma.sql`(${stateNorm}) IN ('IN_PROGRESS')`;
+    const queueNorms = uwInboxQueueNorms(stage);
     return {
-        pendingSql: Prisma.sql`(${uwInboxQueueNorms}) AND (${claimSql}) AND (${backlogStates})`,
-        inProgressSql: Prisma.sql`(${uwInboxQueueNorms}) AND (${claimSql}) AND (${activeStates})`,
+        pendingSql: Prisma.sql`(${queueNorms}) AND (${claimSql}) AND (${backlogStates})`,
+        inProgressSql: Prisma.sql`(${queueNorms}) AND (${claimSql}) AND (${activeStates})`,
     };
 }
 
-/** Optional scope for UNDERWRITER “Queue” vs “My deals” dashboards (matches list `underwriterClaim`). */
+/** Optional scope for SCRUBBING Queue / Claimed / My deals dashboards (matches list `underwriterClaim`). */
 export function buildUnderwriterStatsClaimSql(
     roleRaw: string | null | undefined,
-    underwriterClaim: 'unclaimed' | 'mine' | null | undefined,
+    underwriterClaim: UnderwriterClaimScope | null | undefined,
     viewerId: string | null | undefined,
 ): Prisma.Sql {
     const r = normalizeRoleKey(roleRaw);
+    if (
+        (underwriterClaim === 'unclaimed' ||
+            underwriterClaim === 'claimed' ||
+            underwriterClaim === 'mine') &&
+        r === 'SCRUBBING' &&
+        viewerId
+    ) {
+        if (underwriterClaim === 'unclaimed') {
+            return Prisma.sql`(a."currentQueue" = 'Scrubbing' AND a."claimedByUnderwriterId" IS NULL)`;
+        }
+        if (underwriterClaim === 'claimed') {
+            return Prisma.sql`(a."currentQueue" = 'Scrubbing' AND a."claimedByUnderwriterId" = ${viewerId})`;
+        }
+        // My deals: scrubbed by this user and advanced past Scrubbing (any downstream stage).
+        return Prisma.sql`(a."claimedByUnderwriterId" = ${viewerId} AND ${scrubbingQueueNotSql})`;
+    }
     if (
         (underwriterClaim === 'unclaimed' || underwriterClaim === 'mine') &&
         r === 'UNDERWRITER' &&
         viewerId
     ) {
         if (underwriterClaim === 'unclaimed') {
-            return Prisma.sql`(a."currentQueue" = 'Underwriter' AND a."claimedByUnderwriterId" IS NULL)`;
+            return Prisma.sql`(a."currentQueue" = 'Underwriter' AND a."assignedUnderwriterId" IS NULL)`;
         }
-        return Prisma.sql`(a."currentQueue" = 'Underwriter' AND a."claimedByUnderwriterId" = ${viewerId})`;
+        return Prisma.sql`(a."currentQueue" = 'Underwriter' AND a."assignedUnderwriterId" = ${viewerId})`;
     }
     return Prisma.sql`TRUE`;
 }
@@ -184,7 +212,40 @@ export const applicationDealAmountSelectSql = Prisma.sql`
   ) AS "dealAmount",
   a."currentQueue" AS "currentQueue",
   a."currentState" AS "currentState",
-  a."claimedByUnderwriterId" AS "claimedByUnderwriterId"
+  a."claimedByUnderwriterId" AS "claimedByUnderwriterId",
+  a."assignedUnderwriterId" AS "assignedUnderwriterId"
+`;
+
+/**
+ * Approved/offer amount for stat cards — the underwritten offer, never the requested `loanAmount`.
+ * Mirrors the FE `resolveApplicationOfferAmount` precedence: a non-declined OfferDecision offer,
+ * then the latest terms offer `approvedAmount`, then the locked-in `Contract.approvedAmount`.
+ * Requires a `LEFT JOIN LATERAL (...) tof` exposing `tof."approvedAmount"` (latest terms offer).
+ */
+export const applicationOfferAmountSelectSql = Prisma.sql`
+  COALESCE(
+    CASE
+      WHEN LOWER(COALESCE(od."decision", '')) = 'declined' THEN NULL
+      ELSE od."offer"::double precision
+    END,
+    tof."approvedAmount",
+    ct."approvedAmount"
+  ) AS "dealAmount",
+  a."currentQueue" AS "currentQueue",
+  a."currentState" AS "currentState",
+  a."claimedByUnderwriterId" AS "claimedByUnderwriterId",
+  a."assignedUnderwriterId" AS "assignedUnderwriterId"
+`;
+
+/** Latest terms offer per application, joined as `tof` for offer-amount aggregation. */
+export const latestTermsOfferLateralJoinSql = Prisma.sql`
+  LEFT JOIN LATERAL (
+    SELECT t."approvedAmount"
+    FROM "TermsOffer" t
+    WHERE t."applicationId" = a.id
+    ORDER BY t."createdAt" DESC
+    LIMIT 1
+  ) tof ON TRUE
 `;
 
 type StatsRow = {
@@ -220,7 +281,7 @@ export async function aggregateApplicationStats(params: {
     role: string | null | undefined;
     startDate: Date | null;
     endDate: Date | null;
-    underwriterClaim?: 'unclaimed' | 'mine' | null;
+    underwriterClaim?: UnderwriterClaimScope | null;
 }): Promise<ApplicationStatsPayload> {
     const whereScopedBase = buildStatsWhereSql(params.role, params.startDate, params.endDate, 'a');
     const uwClaimPred = buildUnderwriterStatsClaimSql(
@@ -228,7 +289,7 @@ export async function aggregateApplicationStats(params: {
         params.underwriterClaim,
         params.authUser?.id ?? null,
     );
-    const whereScoped = Prisma.sql`(${whereScopedBase}) AND (${uwClaimPred})`;
+    const whereScoped = Prisma.sql`(${whereScopedBase}) AND (${uwClaimPred}) AND a."deletedAt" IS NULL`;
     const whereWorkflow = whereScoped;
     const assignedQueueLabel = primaryWorkflowQueueForRole(params.role);
     const assignedCountExpr =
@@ -244,28 +305,37 @@ export async function aggregateApplicationStats(params: {
     const uwViewerId = params.authUser?.id;
     let uwWf: { pendingSql: Prisma.Sql; inProgressSql: Prisma.Sql } | null = null;
     if (
+        normalizeRoleKey(params.role) === 'SCRUBBING' &&
+        uwViewerId &&
+        (uwTab === 'unclaimed' || uwTab === 'claimed')
+    ) {
+        uwWf = buildUwInboxWorkflowBucketPredicatesSql(uwTab, uwViewerId, 'scrubbing');
+    }
+    if (
         normalizeRoleKey(params.role) === 'UNDERWRITER' &&
         uwViewerId &&
         (uwTab === 'unclaimed' || uwTab === 'mine')
     ) {
-        uwWf = buildUwInboxWorkflowBucketPredicatesSql(uwTab, uwViewerId);
+        uwWf = buildUwInboxWorkflowBucketPredicatesSql(uwTab, uwViewerId, 'underwriter');
     }
     const wfPendingPred = uwWf ? uwWf.pendingSql : workflowPendingPredicate;
     const wfIpPred = uwWf ? uwWf.inProgressSql : workflowInProgressPredicate;
 
     const query = Prisma.sql`
     WITH scoped AS (
-      SELECT ${applicationDealAmountSelectSql}
+      SELECT ${applicationOfferAmountSelectSql}
       FROM "Application" a
       LEFT JOIN "OfferDecision" od ON od."applicationId" = a.id
       LEFT JOIN "Contract" ct ON ct."applicationId" = a.id
+      ${latestTermsOfferLateralJoinSql}
       WHERE ${whereScoped}
     ),
     workflow_base AS (
-      SELECT ${applicationDealAmountSelectSql}
+      SELECT ${applicationOfferAmountSelectSql}
       FROM "Application" a
       LEFT JOIN "OfferDecision" od ON od."applicationId" = a.id
       LEFT JOIN "Contract" ct ON ct."applicationId" = a.id
+      ${latestTermsOfferLateralJoinSql}
       WHERE ${whereWorkflow}
     )
     SELECT

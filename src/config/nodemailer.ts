@@ -5,6 +5,27 @@ import { resolveEmailBrandDisplayName } from '../constants/emailBrand';
 const sendgridApiKey = process.env.SENDGRID_API_KEY?.trim();
 const useSendgrid = Boolean(sendgridApiKey);
 
+/**
+ * SendGrid open tracking for tracked mail (default ON). Set SENDGRID_TRACK_OPEN_PIXEL=false to disable.
+ */
+export function isSendGridOpenPixelTrackingEnabled(): boolean {
+    return String(process.env.SENDGRID_TRACK_OPEN_PIXEL ?? 'true')
+        .trim()
+        .toLowerCase() !== 'false';
+}
+
+/** Link click tracking — on by default for tracked mail. */
+export function isSendGridClickTrackingEnabled(): boolean {
+    return String(process.env.SENDGRID_TRACK_CLICKS ?? 'true')
+        .trim()
+        .toLowerCase() !== 'false';
+}
+
+/** @deprecated Use isSendGridOpenPixelTrackingEnabled / isSendGridClickTrackingEnabled */
+export function isSendGridEngagementTrackingEnabled(): boolean {
+    return isSendGridOpenPixelTrackingEnabled() || isSendGridClickTrackingEnabled();
+}
+
 /** True when `SENDGRID_API_KEY` is set (payment letters require this). */
 export function isSendGridConfigured(): boolean {
     return Boolean(sendgridApiKey);
@@ -22,7 +43,6 @@ export function isOutboundSmtpConfigured(): boolean {
 function getMailFromDisplayName(): string {
     return resolveEmailBrandDisplayName();
 }
-
 /** Strip optional `"Name"` wrapper and extract the bare email from a From value. */
 function extractEmailAddress(raw: string): string {
     const trimmed = raw.trim();
@@ -124,6 +144,10 @@ interface SendMailOptions {
     cc?: string | string[];
     bcc?: string | string[];
     replyTo?: string;
+    /** RFC 2822 `In-Reply-To` for email threading. */
+    inReplyTo?: string;
+    /** RFC 2822 `References` for email threading. */
+    references?: string;
     attachments?: Array<{
         filename?: string | false;
         content?: Buffer | string;
@@ -134,15 +158,14 @@ interface SendMailOptions {
     }>;
     /**
      * Correlation id echoed back by the SendGrid Event Webhook as the custom
-     * arg `ocid`. Pass the OutboundCommunication id here so delivery / open /
-     * click / bounce events can be matched back to the originating mail-log row.
-     * Setting this also turns on open + click tracking for the message unless
-     * explicitly disabled.
+     * arg `ocid`. Pass the OutboundCommunication id here so delivery / bounce
+     * events can be matched back to the originating mail-log row.
+     * Delivery, open, and click tracking are enabled for tracked mail.
      */
     trackingId?: string;
-    /** Override open tracking (defaults to ON when `trackingId` is set). */
+    /** Override open tracking (default ON when `trackingId` is set). */
     enableOpenTracking?: boolean;
-    /** Override click tracking (defaults to ON when `trackingId` is set). */
+    /** Override link click tracking (default ON when `trackingId` is set). */
     enableClickTracking?: boolean;
     /** Optional SendGrid categories for analytics/filtering. */
     categories?: string[];
@@ -153,8 +176,8 @@ interface SendMailOptions {
  *
  * - `unique_args.ocid` is surfaced on every Event Webhook record so we can map
  *   an event back to its OutboundCommunication row.
- * - `filters.opentrack` / `filters.clicktrack` enable per-message engagement
- *   tracking (pixel + link rewriting) independent of account-wide settings.
+ * - `filters.opentrack` / `filters.clicktrack` enable per-message open/click
+ *   tracking independent of account-wide settings.
  */
 function buildSendGridSmtpApiHeader(opts: {
     trackingId?: string;
@@ -164,8 +187,11 @@ function buildSendGridSmtpApiHeader(opts: {
 }): string | undefined {
     const trackingId = opts.trackingId?.trim();
     const wantsTracking = Boolean(trackingId);
-    const openTracking = opts.enableOpenTracking ?? wantsTracking;
-    const clickTracking = opts.enableClickTracking ?? wantsTracking;
+    const openTracking =
+        opts.enableOpenTracking ??
+        (wantsTracking && isSendGridOpenPixelTrackingEnabled());
+    const clickTracking =
+        opts.enableClickTracking ?? (wantsTracking && isSendGridClickTrackingEnabled());
     const categories = (opts.categories ?? []).filter(Boolean);
 
     if (!trackingId && !openTracking && !clickTracking && categories.length === 0) {
@@ -206,6 +232,21 @@ function normalizeRecipients(to: string | string[]): Array<{ email: string }> {
         .map((entry) => String(entry || '').trim())
         .filter(Boolean)
         .map((email) => ({ email }));
+}
+
+function listRecipientEmails(value?: string | string[]): string[] {
+    if (!value) return [];
+    const list = Array.isArray(value) ? value : [value];
+    return list.map((entry) => String(entry || '').trim()).filter(Boolean);
+}
+
+/** SendGrid HTTP API is used for tracked mail; multi-To / CC / BCC are more reliable via SMTP relay. */
+function shouldUseSendGridHttpApi(options: SendMailOptions): boolean {
+    if (!useSendgrid || !options.trackingId?.trim()) return false;
+    const hasCc = listRecipientEmails(options.cc).length > 0;
+    const hasBcc = listRecipientEmails(options.bcc).length > 0;
+    const toCount = listRecipientEmails(options.to).length;
+    return !hasCc && !hasBcc && toCount <= 1;
 }
 
 function toSendGridApiAttachments(
@@ -256,6 +297,15 @@ function toSendGridApiAttachments(
  * Send via SendGrid Mail Send HTTP API (v3). Unlike SMTP + X-SMTPAPI, `custom_args`
  * reliably appear on Event Webhook payloads as top-level `ocid`.
  */
+function buildThreadingHeaders(options: Pick<SendMailOptions, 'inReplyTo' | 'references'>): Record<string, string> | undefined {
+    const headers: Record<string, string> = {};
+    const inReplyTo = String(options.inReplyTo || '').trim();
+    const references = String(options.references || '').trim();
+    if (inReplyTo) headers['In-Reply-To'] = inReplyTo;
+    if (references) headers.References = references;
+    return Object.keys(headers).length ? headers : undefined;
+}
+
 async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMailResult> {
     if (!sendgridApiKey) {
         throw new Error('SendGrid API key is not configured');
@@ -274,18 +324,25 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
         enableOpenTracking,
         enableClickTracking,
         categories,
+        inReplyTo,
+        references,
     } = options;
 
+    const threadingHeaders = buildThreadingHeaders({ inReplyTo, references });
     const fromAddr = buildMailFrom(from);
     const wantsTracking = Boolean(trackingId?.trim());
-    const openTracking = enableOpenTracking ?? wantsTracking;
-    const clickTracking = enableClickTracking ?? wantsTracking;
+    const openTracking =
+        enableOpenTracking ?? (wantsTracking && isSendGridOpenPixelTrackingEnabled());
+    const clickTracking =
+        enableClickTracking ?? (wantsTracking && isSendGridClickTrackingEnabled());
 
     const personalization: Record<string, unknown> = {
         to: normalizeRecipients(to),
     };
-    if (cc) personalization.cc = normalizeRecipients(cc);
-    if (bcc) personalization.bcc = normalizeRecipients(bcc);
+    const ccRecipients = normalizeRecipients(listRecipientEmails(cc));
+    const bccRecipients = normalizeRecipients(listRecipientEmails(bcc));
+    if (ccRecipients.length) personalization.cc = ccRecipients;
+    if (bccRecipients.length) personalization.bcc = bccRecipients;
     if (trackingId?.trim()) {
         personalization.custom_args = { ocid: trackingId.trim() };
     }
@@ -298,6 +355,7 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
     };
 
     if (replyTo) payload.reply_to = { email: extractEmailAddress(String(replyTo)) };
+    if (threadingHeaders) payload.headers = threadingHeaders;
     if (categories?.length) payload.categories = categories;
 
     const apiAttachments = toSendGridApiAttachments(attachments);
@@ -325,6 +383,14 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
 
     if (!response.ok) {
         const errorBody = await response.text();
+        if (
+            response.status === 401 &&
+            /maximum credits exceeded/i.test(errorBody)
+        ) {
+            throw new Error(
+                'SendGrid email credits exceeded. Add credits or upgrade your SendGrid plan, then try again.',
+            );
+        }
         throw new Error(`SendGrid API send failed (${response.status}): ${errorBody}`);
     }
 
@@ -365,10 +431,15 @@ const sendMail = async (
             enableOpenTracking,
             enableClickTracking,
             categories,
+            inReplyTo,
+            references,
         } = options;
 
+        const threadingHeaders = buildThreadingHeaders({ inReplyTo, references });
+
         // Tracked mail uses the HTTP API so `custom_args.ocid` is present on webhooks.
-        if (useSendgrid && trackingId?.trim()) {
+        // When CC/BCC are present, prefer SMTP relay — CC delivery is unreliable on HTTP API.
+        if (shouldUseSendGridHttpApi(options)) {
             return sendViaSendGridHttpApi(options);
         }
 
@@ -390,7 +461,14 @@ const sendMail = async (
             bcc,
             replyTo,
             ...(attachments?.length ? { attachments } : {}),
-            ...(smtpApiHeader ? { headers: { 'X-SMTPAPI': smtpApiHeader } } : {}),
+            ...(smtpApiHeader || threadingHeaders
+                ? {
+                      headers: {
+                          ...(smtpApiHeader ? { 'X-SMTPAPI': smtpApiHeader } : {}),
+                          ...(threadingHeaders ?? {}),
+                      },
+                  }
+                : {}),
         };
 
         const response = await transporter.sendMail(mailOptions);
@@ -401,22 +479,21 @@ const sendMail = async (
     }
 };
 
-/** Send mail via SendGrid SMTP only (never Gmail OAuth or Gmail SMTP). */
-export async function sendSendGridMail(options: SendMailOptions) {
-    if (!sendgridApiKey) {
-        throw new Error(
-            'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
-        );
-    }
+function resolveSendGridFromAddress(from?: string): string | undefined {
+    return (
+        from ||
+        process.env.SENDGRID_FROM_EMAIL?.trim() ||
+        process.env.SENDGRID_AUTH_USER?.trim()
+    );
+}
 
+/** Deliver one SendGrid message (no CC/BCC/multi-To split). */
+async function deliverSendGridMailOnce(options: SendMailOptions): Promise<SendMailResult> {
     // Tracked sends use the HTTP API so `custom_args.ocid` is present on webhooks.
-    if (options.trackingId?.trim()) {
+    if (shouldUseSendGridHttpApi(options)) {
         return sendViaSendGridHttpApi({
             ...options,
-            from:
-                options.from ||
-                process.env.SENDGRID_FROM_EMAIL?.trim() ||
-                process.env.SENDGRID_AUTH_USER?.trim(),
+            from: resolveSendGridFromAddress(options.from),
         });
     }
 
@@ -434,7 +511,10 @@ export async function sendSendGridMail(options: SendMailOptions) {
         enableOpenTracking,
         enableClickTracking,
         categories,
+        inReplyTo,
+        references,
     } = options;
+    const threadingHeaders = buildThreadingHeaders({ inReplyTo, references });
     const smtpApiHeader = buildSendGridSmtpApiHeader({
         trackingId,
         enableOpenTracking,
@@ -443,11 +523,7 @@ export async function sendSendGridMail(options: SendMailOptions) {
     });
 
     const mailOptions = {
-        from: buildMailFrom(
-            from ||
-                process.env.SENDGRID_FROM_EMAIL?.trim() ||
-                process.env.SENDGRID_AUTH_USER?.trim(),
-        ),
+        from: buildMailFrom(resolveSendGridFromAddress(from)),
         to,
         subject,
         html,
@@ -455,10 +531,70 @@ export async function sendSendGridMail(options: SendMailOptions) {
         bcc,
         replyTo,
         ...(attachments?.length ? { attachments } : {}),
-        ...(smtpApiHeader ? { headers: { 'X-SMTPAPI': smtpApiHeader } } : {}),
+        ...(smtpApiHeader || threadingHeaders
+            ? {
+                  headers: {
+                      ...(smtpApiHeader ? { 'X-SMTPAPI': smtpApiHeader } : {}),
+                      ...(threadingHeaders ?? {}),
+                  },
+              }
+            : {}),
     };
-    const result = await transporter.sendMail(mailOptions);
-    return result;
+    return transporter.sendMail(mailOptions) as Promise<SendMailResult>;
+}
+
+/**
+ * When CC/BCC/extra To would force SMTP relay, webhook `ocid` matching is unreliable.
+ * Send the primary recipient via the HTTP API with tracking; deliver copies separately.
+ */
+function shouldSplitTrackedSendGridDelivery(options: SendMailOptions): boolean {
+    const trackingId = options.trackingId?.trim();
+    if (!trackingId) return false;
+    const toCount = listRecipientEmails(options.to).length;
+    const hasCc = listRecipientEmails(options.cc).length > 0;
+    const hasBcc = listRecipientEmails(options.bcc).length > 0;
+    return toCount > 1 || hasCc || hasBcc;
+}
+
+/** Send mail via SendGrid SMTP only (never Gmail OAuth or Gmail SMTP). */
+export async function sendSendGridMail(options: SendMailOptions): Promise<SendMailResult> {
+    if (!sendgridApiKey) {
+        throw new Error(
+            'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
+        );
+    }
+
+    if (shouldSplitTrackedSendGridDelivery(options)) {
+        const toList = listRecipientEmails(options.to);
+        const ccList = listRecipientEmails(options.cc);
+        const bccList = listRecipientEmails(options.bcc);
+        const [primaryTo, ...extraTo] = toList;
+        if (!primaryTo) {
+            throw new Error('At least one recipient (to) is required');
+        }
+
+        const primaryResult = await deliverSendGridMailOnce({
+            ...options,
+            to: primaryTo,
+            cc: undefined,
+            bcc: undefined,
+        });
+
+        const copyRecipients = [...extraTo, ...ccList, ...bccList];
+        for (const recipient of copyRecipients) {
+            const { trackingId: _trackingId, ...copyOptions } = options;
+            await deliverSendGridMailOnce({
+                ...copyOptions,
+                to: recipient,
+                cc: undefined,
+                bcc: undefined,
+            });
+        }
+
+        return primaryResult;
+    }
+
+    return deliverSendGridMailOnce(options);
 }
 
 export default sendMail;

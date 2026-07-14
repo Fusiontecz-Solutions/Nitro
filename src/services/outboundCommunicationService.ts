@@ -61,7 +61,7 @@ export async function createOutboundCommunication(input: CreateOutboundCommunica
     applicationId: applicationId ?? undefined,
   });
 
-  return prisma.outboundCommunication.create({
+  return prisma.outbound_communications.create({
     data: {
       ...(id ? { id } : {}),
       applicationId: applicationId ?? null,
@@ -81,11 +81,11 @@ export async function createOutboundCommunication(input: CreateOutboundCommunica
 }
 
 export async function getOutboundCommunicationById(id: string) {
-  return prisma.outboundCommunication.findUnique({
+  return prisma.outbound_communications.findUnique({
     where: { id },
     include: {
-      createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
-      application: { select: { id: true, applicationId: true, dealDisplayName: true } },
+      User: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+      Application: { select: { id: true, applicationId: true, dealDisplayName: true } },
     },
   });
 }
@@ -102,23 +102,21 @@ export function markActivityLogged(req: Request): void {
   req.__activityLogged = true;
 }
 
-/** Persist SendGrid message id on an outbound row for webhook fallback matching. */
+/** Persist SendGrid `x-message-id` on the outbound row for webhook fallback matching. */
 export async function storeSgMessageIdOnOutbound(
   outboundId: string,
   sgMessageId: string,
 ): Promise<void> {
-  const existing = await prisma.outboundCommunication.findUnique({
+  const existing = await prisma.outbound_communications.findUnique({
     where: { id: outboundId },
     select: { metadata: true },
   });
-  const mergedMeta = {
-    ...(existing?.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+  const prior =
+    existing?.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
       ? (existing.metadata as Record<string, unknown>)
-      : {}),
-    sgMessageId,
-  };
-  await prisma.outboundCommunication.update({
+      : {};
+  await prisma.outbound_communications.update({
     where: { id: outboundId },
-    data: { metadata: mergedMeta as object },
+    data: { metadata: { ...prior, sgMessageId } as object },
   });
 }

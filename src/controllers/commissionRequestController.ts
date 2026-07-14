@@ -2,7 +2,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import sendMail from '../config/nodemailer';
-import { areApplicationNotificationEmailsDisabled } from '../services/emailService';
 import {
   aggregateFundedDeals,
   emptyFundedDealsSummary,
@@ -419,6 +418,7 @@ class CommissionRequestController {
             title: 'New Commission Request',
             message: notificationMessage,
             type: 'commission_request',
+            category: 'others',
             applicationId: application.id,
             createdById: agentId,
           };
@@ -436,7 +436,7 @@ class CommissionRequestController {
 
           // Send email notifications (fire-and-forget)
           const adminEmails = admins.map((a) => a.email).filter(Boolean);
-          if (adminEmails.length > 0 && !areApplicationNotificationEmailsDisabled()) {
+          if (adminEmails.length > 0) {
             const subject = 'New Commission Request Submitted';
             const body = `
               <h2>New Commission Request</h2>
@@ -856,13 +856,14 @@ class CommissionRequestController {
                     : 'Commission Request Updated',
               message: fullMessage,
               type: 'commission_request_update',
+              category: 'others',
               recipientId: agentId,
               applicationId: app?.id,
               createdById: String(user.id),
             },
           });
 
-          if (agentEmail && !areApplicationNotificationEmailsDisabled()) {
+          if (agentEmail) {
             const subject =
               updated.status === 'Approved'
                 ? 'Your Commission Request Has Been Approved'
@@ -1054,6 +1055,7 @@ class CommissionRequestController {
               title: 'Commission Request Deleted',
               message,
               type: 'commission_request_delete',
+              category: 'others',
               recipientId: agentId,
               applicationId: app?.id,
               createdById: String(user.id),
@@ -1061,7 +1063,7 @@ class CommissionRequestController {
           });
         }
 
-        if (agentEmail && !areApplicationNotificationEmailsDisabled()) {
+        if (agentEmail) {
           const subject = 'Your Commission Request Has Been Deleted';
           const body = `
             <h2>Hello ${agentName},</h2>

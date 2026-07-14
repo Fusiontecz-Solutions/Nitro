@@ -1,9 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import {
-  APPLICATION_USER_ATTRIBUTION_ERROR,
-  resolveApplicationAttributedUserId,
-} from '../middleware/authMiddleware';
+import { resolveApplicationAttributedUserId } from '../middleware/authMiddleware';
 
 const resolveApplicationByAnyId = async (application: any) => {
   const applicationStr = String(application);
@@ -347,18 +344,18 @@ class BankAnalysisController {
         });
       }
 
-      if (!req.user) {
+      // Resolve a tenant User.id safe for the required `fk_bank_analysis_user`
+      // foreign key. Regular JWT users attribute to themselves; Super Admin
+      // proxy requests have no tenant User row, so fall back to the
+      // application's creator or sales representative.
+      const createdBy = await resolveApplicationAttributedUserId(req, {
+        createdById: applicationRecord.createdById,
+        salesRepresentativeId: applicationRecord.salesRepresentativeId,
+      });
+      if (!createdBy) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
-        });
-      }
-
-      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
-      if (!createdById) {
-        return res.status(400).json({
-          success: false,
-          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -367,7 +364,7 @@ class BankAnalysisController {
           applicationId: applicationRecord.id,
           bankName: bankName ? String(bankName).trim() : null,
           accountNumber: accountNumber ? String(accountNumber).trim() : '',
-          createdById,
+          createdById: createdBy,
         },
         include: {
           BankAnalysisRow: true,

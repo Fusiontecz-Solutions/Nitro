@@ -94,16 +94,27 @@ export async function findBoldSignTemplatePdfUrlForLayout(
       ],
     },
     orderBy: { createdAt: 'desc' },
-    select: { pdfUrl: true, layoutKey: true, type: true },
+    select: { pdfUrl: true, layoutKey: true, type: true, templateId: true },
   });
 
-  const ranked = [...rows].sort(
+  // Never treat funder-scoped uploads (`funder_<uuid>_…`) as the platform PDF.
+  const platformRows = rows.filter((row) => {
+    const key = String(row.layoutKey || row.templateId || '').trim().toLowerCase();
+    return !key.startsWith('funder_');
+  });
+
+  const ranked = [...platformRows].sort(
     (a, b) => layoutKeyMatchScore(layoutKey, b) - layoutKeyMatchScore(layoutKey, a),
   );
 
   for (const row of ranked) {
     const url = String(row.pdfUrl || '').trim();
     if (isValidRemotePdfUrl(url)) return url;
+  }
+
+  // Standalone ACH reuses the same Cloudinary PDF / row as `ach_authorization`.
+  if (layoutKey === DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone) {
+    return findBoldSignTemplatePdfUrlForLayout(DOCUMENT_LAYOUT_KEYS.achAuthorization);
   }
   return null;
 }

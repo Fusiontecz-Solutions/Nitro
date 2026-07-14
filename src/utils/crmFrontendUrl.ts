@@ -116,6 +116,13 @@ function pickExplicitFrontendUrlEnv(): string | undefined {
  * Base URL for Decision Logic email links (`/decision-logic?token=...`).
  * Prefer a dedicated public origin so invitees never receive `localhost` when the API runs in dev/staging.
  */
+/** Public application-approval portal — no CRM login required (`/public/application/approval/:token`). */
+export function buildPublicApprovalPortalUrl(baseUrl: string, token: string): string {
+  const origin = String(baseUrl || '').trim().replace(/\/$/, '');
+  const secret = String(token || '').trim();
+  return `${origin}/public/application/approval/${secret}`;
+}
+
 export function resolveDecisionLogicInvitationBaseUrl(): string {
   const pick = (raw: string | undefined): string | undefined => {
     const t = String(raw || '').trim();

@@ -1,6 +1,6 @@
 import cron, { validate as validateCronExpression } from 'node-cron';
 import prisma from '../config/prismaClient';
-import oAuth2Client from '../config/gmail';
+import { getAccessTokenForRefreshToken } from '../config/gmail';
 import { autoCreateApplicationsFromEmails } from '../services/gmail.service';
 
 /** Default matches historical behavior (every minute). Override with `GMAIL_PDF_INBOX_CRON` (validated). */
@@ -50,9 +50,7 @@ async function runGmailPdfInboxSweep(): Promise<void> {
       const refreshToken = String(user.googleRefreshToken || '').trim();
       if (!refreshToken) continue;
       try {
-        oAuth2Client.setCredentials({ refresh_token: refreshToken });
-        const accessTokenResponse = await oAuth2Client.getAccessToken();
-        const accessToken = accessTokenResponse?.token;
+        const accessToken = await getAccessTokenForRefreshToken(refreshToken, user.id);
         if (!accessToken) continue;
         const created = await autoCreateApplicationsFromEmails(accessToken, user.id);
         if (created.length > 0) {

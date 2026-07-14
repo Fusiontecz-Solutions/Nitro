@@ -1,4 +1,8 @@
 import prisma from '../config/prismaClient';
+import {
+  isSendGridClickTrackingEnabled,
+  isSendGridOpenPixelTrackingEnabled,
+} from '../config/nodemailer';
 
 /**
  * SendGrid Event Webhook integration
@@ -115,7 +119,7 @@ async function resolveOutboundIdFromEvent(event: SendGridEvent): Promise<string 
   if (!sgRaw) return null;
 
   const sgBase = normalizeSgMessageId(sgRaw);
-  const candidates = await prisma.outboundCommunication.findMany({
+  const candidates = await prisma.outbound_communications.findMany({
     where: {
       channel: { in: ['EMAIL', 'TEMPLATE'] },
       createdAt: { gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) },
@@ -204,11 +208,34 @@ function readTrackingMeta(metadata: unknown): TrackingMeta {
 
 const MAX_PROCESSED_EVENT_IDS = 100;
 
+/**
+ * Canonical Mail Log status from the engagement timeline.
+ * Progression: sent → delivered → opened → clicked (failures override).
+ */
+export function resolveMailLogDisplayStatus(meta: TrackingMeta): DeliveryStatus {
+  if (meta.spamAt || meta.status === 'spam') return 'spam';
+  if (meta.bouncedAt || meta.status === 'bounced') return 'bounced';
+  if (meta.status === 'dropped') return 'dropped';
+  if (meta.status === 'failed') return 'failed';
+  if (meta.status === 'deferred' && !meta.deliveredAt) return 'deferred';
+
+  if (meta.clickedAt) return 'clicked';
+  if (meta.openedAt || meta.openCount > 0) return 'opened';
+  if (meta.deliveredAt) return 'delivered';
+  if (meta.sentAt) return 'sent';
+  return meta.status;
+}
+
 /** Apply a single event onto an accumulating tracking snapshot. Returns false when ignored (duplicate). */
 function applyEvent(meta: TrackingMeta, event: SendGridEvent): boolean {
   const rawEvent = String(event.event ?? '').trim();
   const status = mapEventToStatus(rawEvent);
   if (!status) return false;
+
+  const isOpen = status === 'opened';
+  const isClick = status === 'clicked';
+  if (isOpen && !isSendGridOpenPixelTrackingEnabled()) return false;
+  if (isClick && !isSendGridClickTrackingEnabled()) return false;
 
   const eventId = typeof event.sg_event_id === 'string' ? event.sg_event_id : '';
   if (eventId && meta.processedEventIds.includes(eventId)) {
@@ -232,10 +259,17 @@ function applyEvent(meta: TrackingMeta, event: SendGridEvent): boolean {
     case 'opened':
       meta.openCount += 1;
       meta.openedAt = meta.openedAt ?? at;
+      // Inbox delivery is implied when the recipient opens the message.
+      meta.deliveredAt = meta.deliveredAt ?? at;
       break;
     case 'clicked':
       meta.clickCount += 1;
       meta.clickedAt = meta.clickedAt ?? at;
+      if (!meta.openedAt) {
+        meta.openedAt = at;
+        meta.openCount = Math.max(meta.openCount, 1);
+      }
+      meta.deliveredAt = meta.deliveredAt ?? at;
       if (typeof event.url === 'string') meta.lastClickedUrl = event.url;
       break;
     case 'bounced':
@@ -257,6 +291,10 @@ function applyEvent(meta: TrackingMeta, event: SendGridEvent): boolean {
     meta.statusRank = rank;
   }
 
+  // Always derive badge status from the full timeline (sent → delivered → opened → clicked).
+  meta.status = resolveMailLogDisplayStatus(meta);
+  meta.statusRank = STATUS_RANK[meta.status] ?? meta.statusRank;
+
   if (eventId) {
     meta.processedEventIds.push(eventId);
     if (meta.processedEventIds.length > MAX_PROCESSED_EVENT_IDS) {
@@ -267,9 +305,10 @@ function applyEvent(meta: TrackingMeta, event: SendGridEvent): boolean {
 }
 
 function trackingMetaToPlain(meta: TrackingMeta): Record<string, unknown> {
+  const displayStatus = resolveMailLogDisplayStatus(meta);
   return {
-    status: meta.status,
-    statusRank: meta.statusRank,
+    status: displayStatus,
+    statusRank: STATUS_RANK[displayStatus] ?? meta.statusRank,
     lastEvent: meta.lastEvent,
     lastEventAt: meta.lastEventAt,
     sentAt: meta.sentAt,
@@ -292,15 +331,35 @@ function trackingMetaToPlain(meta: TrackingMeta): Record<string, unknown> {
  * fan the latest status out to its linked deal activity-log entry.
  */
 async function applyEventsToOutbound(ocid: string, events: SendGridEvent[]): Promise<boolean> {
-  const outbound = await prisma.outboundCommunication.findUnique({ where: { id: ocid } });
+  const outbound = await prisma.outbound_communications.findUnique({ where: { id: ocid } });
   if (!outbound) {
     console.warn('[sendgridWebhook] outbound row not found for ocid:', ocid);
     return false;
   }
 
+  const EVENT_PRIORITY: Record<string, number> = {
+    processed: 10,
+    queued: 10,
+    deferred: 20,
+    delivered: 30,
+    open: 40,
+    opened: 40,
+    click: 50,
+    clicked: 50,
+    bounce: 90,
+    blocked: 90,
+    dropped: 90,
+    spamreport: 95,
+  };
+  const sorted = [...events].sort(
+    (a, b) =>
+      (EVENT_PRIORITY[String(a.event ?? '').toLowerCase()] ?? 0) -
+      (EVENT_PRIORITY[String(b.event ?? '').toLowerCase()] ?? 0),
+  );
+
   const meta = readTrackingMeta(outbound.metadata);
   let changed = false;
-  for (const event of events) {
+  for (const event of sorted) {
     if (applyEvent(meta, event)) {
       changed = true;
     }
@@ -314,10 +373,10 @@ async function applyEventsToOutbound(ocid: string, events: SendGridEvent[]): Pro
     tracking: trackingMetaToPlain(meta),
   });
 
-  await prisma.outboundCommunication.update({
+  await prisma.outbound_communications.update({
     where: { id: ocid },
     data: {
-      status: meta.status,
+      status: resolveMailLogDisplayStatus(meta),
       metadata: mergedMetadata as object,
     },
   });
@@ -333,7 +392,7 @@ async function applyEventsToOutbound(ocid: string, events: SendGridEvent[]): Pro
  */
 async function propagateToActivityLog(ocid: string, meta: TrackingMeta): Promise<void> {
   try {
-    const log = await prisma.applicationActivityLog.findFirst({
+    let log = await prisma.applicationActivityLog.findFirst({
       where: {
         metadata: {
           path: ['outboundCommunicationId'],
@@ -342,16 +401,60 @@ async function propagateToActivityLog(ocid: string, meta: TrackingMeta): Promise
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    if (!log) {
+      const outbound = await prisma.outbound_communications.findUnique({
+        where: { id: ocid },
+        select: { applicationId: true, createdAt: true, metadata: true },
+      });
+      if (outbound?.applicationId) {
+        const recent = await prisma.applicationActivityLog.findMany({
+          where: {
+            applicationId: outbound.applicationId,
+            createdAt: { gte: new Date(outbound.createdAt.getTime() - 60_000) },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        });
+        log =
+          recent.find((row) => {
+            const m = asObject(row.metadata);
+            return m.outboundCommunicationId === ocid;
+          }) ?? null;
+      }
+
+      if (!log && outbound) {
+        const outboundMeta = asObject(outbound.metadata);
+        const paymentMailLogId =
+          typeof outboundMeta.paymentMailLogId === 'string'
+            ? outboundMeta.paymentMailLogId.trim()
+            : '';
+        if (paymentMailLogId) {
+          log = await prisma.applicationActivityLog.findFirst({
+            where: {
+              metadata: {
+                path: ['paymentMailLogId'],
+                equals: paymentMailLogId,
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+        }
+      }
+    }
+
     if (!log) {
       console.warn('[sendgridWebhook] activity log not found for ocid:', ocid);
       return;
     }
 
+    const displayStatus = resolveMailLogDisplayStatus(meta);
     const mergedMetadata = pruneUndefined({
       ...asObject(log.metadata),
-      status: meta.status,
+      status: displayStatus,
       delivery: {
-        status: meta.status,
+        status: displayStatus,
+        sentAt: meta.sentAt,
         deliveredAt: meta.deliveredAt,
         openedAt: meta.openedAt,
         clickedAt: meta.clickedAt,
@@ -361,6 +464,7 @@ async function propagateToActivityLog(ocid: string, meta: TrackingMeta): Promise
         bounceReason: meta.bounceReason,
         lastEvent: meta.lastEvent,
         lastEventAt: meta.lastEventAt,
+        lastClickedUrl: meta.lastClickedUrl,
       },
     });
 
@@ -368,7 +472,6 @@ async function propagateToActivityLog(ocid: string, meta: TrackingMeta): Promise
       where: { id: log.id },
       data: { metadata: mergedMetadata as object },
     });
-
   } catch (err) {
     console.error('[sendgridWebhook] activity-log propagation failed:', { ocid, err });
   }
@@ -392,9 +495,21 @@ export async function processSendGridEvents(
   }
 
   const grouped = new Map<string, SendGridEvent[]>();
+  const needsFallback: SendGridEvent[] = [];
   let unmatched = 0;
 
   for (const event of events) {
+    const ocid = resolveOcid(event);
+    if (ocid) {
+      const bucket = grouped.get(ocid);
+      if (bucket) bucket.push(event);
+      else grouped.set(ocid, [event]);
+    } else {
+      needsFallback.push(event);
+    }
+  }
+
+  for (const event of needsFallback) {
     const outboundId = await resolveOutboundIdFromEvent(event);
     if (!outboundId) {
       unmatched += 1;

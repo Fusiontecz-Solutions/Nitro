@@ -1,12 +1,11 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import {
-  APPLICATION_USER_ATTRIBUTION_ERROR,
   resolveApplicationAttributedUserId,
-  resolveTenantUserId,
+  APPLICATION_USER_ATTRIBUTION_ERROR,
 } from '../middleware/authMiddleware';
-import { decryptSensitiveField, encryptField } from '../utils/fieldEncryption';
 import { syncBankDetailToContractPrefill } from '../services/bankDetailContractSync';
+import { decryptSensitiveField, encryptField, mapBankDetailRecordForApi } from '../utils/fieldEncryption';
 
 const mapBankDetailToApi = (detail: any) => {
   if (!detail) return detail;
@@ -47,19 +46,53 @@ const mapBankDetailToApi = (detail: any) => {
       email: createdBy.email,
     } as any);
 
+  const decrypted = mapBankDetailRecordForApi({
+    accountNumber,
+    routingNumber,
+  });
+
   return {
     ...rest,
     _id: id,
     id,
     bankName,
-    accountNumber: decryptSensitiveField(accountNumber) ?? '',
-    routingNumber: decryptSensitiveField(routingNumber) ?? null,
+    accountNumber: decrypted.accountNumber,
+    routingNumber: decrypted.routingNumber,
     application: mappedApplication ?? applicationId,
     createdBy: mappedCreatedBy ?? createdById,
     createdAt,
     updatedAt,
   };
 };
+
+function plainBankFromRequest(body: {
+  bankName?: unknown;
+  accountNumber?: unknown;
+  routingNumber?: unknown;
+}) {
+  return {
+    bankName: body.bankName !== undefined ? String(body.bankName).trim() : '',
+    accountNumber: body.accountNumber !== undefined ? String(body.accountNumber).trim() : '',
+    routingNumber:
+      body.routingNumber !== undefined
+        ? body.routingNumber
+          ? String(body.routingNumber).trim()
+          : null
+        : null,
+  };
+}
+
+async function syncAfterBankSave(
+  applicationId: string,
+  plainBank: ReturnType<typeof plainBankFromRequest>,
+  bankDetailId: string,
+) {
+  try {
+    await syncBankDetailToContractPrefill(applicationId, plainBank, { bankDetailId });
+  } catch (err) {
+    console.error('syncBankDetailToContractPrefill failed:', err);
+  }
+}
 
 const resolveApplicationByAnyId = async (application: any) => {
   const applicationStr = String(application);
@@ -98,29 +131,26 @@ class BankDetailController {
         });
       }
 
-      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
-      if (!createdById) {
+      const createdBy = await resolveApplicationAttributedUserId(req, {
+        createdById: applicationRecord.createdById,
+        salesRepresentativeId: applicationRecord.salesRepresentativeId,
+      });
+      if (!createdBy) {
         return res.status(400).json({
           success: false,
           message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
-      const routingTrimmed = routingNumber != null ? String(routingNumber).trim() : '';
-      if (!routingTrimmed) {
-        return res.status(400).json({
-          success: false,
-          message: 'routingNumber is required for contract generation',
-        });
-      }
+      const plainBank = plainBankFromRequest({ bankName, accountNumber, routingNumber });
 
       const bankDetail = await prisma.bankDetail.create({
         data: {
-          bankName: bankName ? String(bankName).trim() : '',
-          accountNumber: encryptField(accountNumber),
-          routingNumber: encryptField(routingTrimmed),
+          bankName: plainBank.bankName,
+          accountNumber: encryptField(plainBank.accountNumber),
+          routingNumber: plainBank.routingNumber ? encryptField(String(plainBank.routingNumber)) : null,
           applicationId: applicationRecord.id,
-          createdById,
+          createdById: createdBy,
         } as any,
         include: {
           application: {
@@ -139,27 +169,23 @@ class BankDetailController {
         },
       });
 
-      const mapped = mapBankDetailToApi(bankDetail);
-      await syncBankDetailToContractPrefill(
-        applicationRecord.id,
-        {
-          bankName: mapped.bankName || '',
-          accountNumber: String(mapped.accountNumber || ''),
-          routingNumber: mapped.routingNumber ? String(mapped.routingNumber) : null,
-        },
-        { bankDetailId: mapped.id },
-      );
+      await syncAfterBankSave(applicationRecord.id, plainBank, bankDetail.id);
 
       return res.status(201).json({
         success: true,
         message: 'Bank detail created successfully',
-        data: mapped,
+        data: mapBankDetailToApi(bankDetail),
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Create bank detail error:', error);
-      return res.status(500).json({
+      const message =
+        error?.message?.includes('FIELD_ENCRYPTION_KEY') ||
+        error?.message?.includes('re-enter')
+          ? error.message
+          : 'Internal server error';
+      return res.status(error?.message?.includes('re-enter') ? 400 : 500).json({
         success: false,
-        message: 'Internal server error',
+        message,
       });
     }
   }
@@ -191,8 +217,11 @@ class BankDetailController {
         });
       }
 
-      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
-      if (!createdById) {
+      const createdBy = await resolveApplicationAttributedUserId(req, {
+        createdById: applicationRecord.createdById,
+        salesRepresentativeId: applicationRecord.salesRepresentativeId,
+      });
+      if (!createdBy) {
         return res.status(400).json({
           success: false,
           message: APPLICATION_USER_ATTRIBUTION_ERROR,
@@ -216,7 +245,7 @@ class BankDetailController {
             data: {
               ...data,
               applicationId: applicationRecord.id,
-              createdById,
+              createdById: createdBy,
             },
             include: {
               application: {
@@ -236,6 +265,19 @@ class BankDetailController {
           })
         )
       );
+
+      const latest = createdBanks[createdBanks.length - 1];
+      if (latest) {
+        await syncAfterBankSave(
+          applicationRecord.id,
+          {
+            bankName: String(latest.bankName ?? ''),
+            accountNumber: decryptSensitiveField(latest.accountNumber) ?? '',
+            routingNumber: decryptSensitiveField(latest.routingNumber) ?? null,
+          },
+          latest.id,
+        );
+      }
 
       return res.status(201).json({
         success: true,
@@ -360,7 +402,8 @@ class BankDetailController {
       const { id } = req.params;
       const { bankName, accountNumber, routingNumber, application } = req.body;
 
-      if (!req.user) {
+      const currentUserId = (req as any).user?.id as string | undefined;
+      if (!currentUserId) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
@@ -373,33 +416,6 @@ class BankDetailController {
           success: false,
           message: 'Bank detail not found',
         });
-      }
-
-      // Tenant CRM users must complete OTP verification; Super Admin proxy is trusted.
-      if (!req.isSuperAdminProxy) {
-        const currentUserId = resolveTenantUserId(req);
-        if (!currentUserId) {
-          return res.status(401).json({
-            success: false,
-            message: 'User authentication required',
-          });
-        }
-
-        const isBankEditApproved = await prisma.verificationToken.findFirst({
-          where: {
-            userId: currentUserId,
-            tokenType: 'BANK_EDIT_VERIFIED',
-            expiresAt: { gt: new Date() },
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-
-        if (!isBankEditApproved) {
-          return res.status(403).json({
-            success: false,
-            message: 'OTP verification required to edit bank details',
-          });
-        }
       }
 
       const data: any = {};
@@ -445,32 +461,38 @@ class BankDetailController {
         },
       });
 
-      const mapped = mapBankDetailToApi(updatedBankDetail);
-      const appIdForSync =
-        (updatedBankDetail as { applicationId?: string }).applicationId ??
-        existing.applicationId;
-      if (appIdForSync) {
-        await syncBankDetailToContractPrefill(
-          String(appIdForSync),
-          {
-            bankName: mapped.bankName || '',
-            accountNumber: String(mapped.accountNumber || ''),
-            routingNumber: mapped.routingNumber ? String(mapped.routingNumber) : null,
-          },
-          { bankDetailId: mapped.id },
-        );
-      }
+      const applicationIdForSync = String(updatedBankDetail.applicationId ?? existing.applicationId);
+      const plainForSync = {
+        bankName:
+          bankName !== undefined ? String(bankName).trim() : String(updatedBankDetail.bankName ?? ''),
+        accountNumber:
+          accountNumber !== undefined
+            ? String(accountNumber).trim()
+            : (decryptSensitiveField(existing.accountNumber) ?? ''),
+        routingNumber:
+          routingNumber !== undefined
+            ? routingNumber
+              ? String(routingNumber).trim()
+              : null
+            : (decryptSensitiveField(existing.routingNumber) ?? null),
+      };
+      await syncAfterBankSave(applicationIdForSync, plainForSync, updatedBankDetail.id);
 
       return res.status(200).json({
         success: true,
         message: 'Bank detail updated successfully',
-        data: mapped,
+        data: mapBankDetailToApi(updatedBankDetail),
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Update bank detail error:', error);
-      return res.status(500).json({
+      const message =
+        error?.message?.includes('FIELD_ENCRYPTION_KEY') ||
+        error?.message?.includes('re-enter')
+          ? error.message
+          : 'Internal server error';
+      return res.status(error?.message?.includes('re-enter') ? 400 : 500).json({
         success: false,
-        message: 'Internal server error',
+        message,
       });
     }
   }
@@ -506,4 +528,3 @@ class BankDetailController {
 
 const bankDetailController = new BankDetailController();
 export default bankDetailController;
-

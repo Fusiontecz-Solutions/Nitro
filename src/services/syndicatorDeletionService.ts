@@ -1,11 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
-
-/** Auth/session rows that FK to User without DB cascade — must be removed before deleting the user. */
-async function deleteUserAuthTokens(tx: Prisma.TransactionClient, userId: string): Promise<void> {
-  await tx.accessToken.deleteMany({ where: { userId } });
-  await tx.verificationToken.deleteMany({ where: { userId } });
-}
+import { deleteUserInTransaction } from './userDeletionService';
 
 /**
  * Clears FK join data that would block deleting a Syndicator row (implicit application M-N,
@@ -36,37 +31,35 @@ export async function detachSyndicatorGraph(
 
 /** Delete syndication profile; if linked to a CRM user, deletes that user (DB cascades Syndicator away). */
 export async function deleteSyndicatorCascadeUser(syndicatorId: number): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const synd = await tx.syndicator.findUnique({
-      where: { id: syndicatorId },
-      select: { id: true, userId: true },
-    });
-    if (!synd) {
-      const err = new Error('Syndicator not found') as Error & { statusCode?: number };
-      err.statusCode = 404;
-      throw err;
-    }
-    await detachSyndicatorGraph(tx, syndicatorId);
-    if (synd.userId) {
-      await deleteUserAuthTokens(tx, synd.userId);
-      await tx.user.delete({ where: { id: synd.userId } });
-    } else {
-      await tx.syndicator.delete({ where: { id: syndicatorId } });
-    }
-  });
+  await prisma.$transaction(
+    async (tx) => {
+      const synd = await tx.syndicator.findUnique({
+        where: { id: syndicatorId },
+        select: { id: true, userId: true },
+      });
+      if (!synd) {
+        const err = new Error('Syndicator not found') as Error & { statusCode?: number };
+        err.statusCode = 404;
+        throw err;
+      }
+      await detachSyndicatorGraph(tx, syndicatorId);
+      if (synd.userId) {
+        await deleteUserInTransaction(tx, synd.userId);
+      } else {
+        await tx.syndicator.delete({ where: { id: syndicatorId } });
+      }
+    },
+    {
+      // Deleting a linked user runs ~40 sequential detach queries, which can
+      // exceed Prisma's default 5s interactive transaction limit.
+      maxWait: 10000,
+      timeout: 30000,
+    },
+  );
 }
 
 /** Deletes a CRM user after clearing any linked syndicator subgraph (same cleanup as syndicator-first delete). */
-export async function deleteUserAndLinkedSyndicator(userId: string): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const synd = await tx.syndicator.findUnique({
-      where: { userId },
-      select: { id: true },
-    });
-    if (synd) {
-      await detachSyndicatorGraph(tx, synd.id);
-    }
-    await deleteUserAuthTokens(tx, userId);
-    await tx.user.delete({ where: { id: userId } });
-  });
+export async function deleteUserAndLinkedSyndicator(userId: string, actingUserId?: string): Promise<void> {
+  const { deleteUserCompletely } = await import('./userDeletionService');
+  await deleteUserCompletely(userId, actingUserId);
 }

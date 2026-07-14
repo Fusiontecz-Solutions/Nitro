@@ -1,4 +1,8 @@
 import type { Prisma } from '@prisma/client';
+import {
+  normalizeStoredWorkflowQueue,
+  normalizeStoredWorkflowState,
+} from '../workflowQueueStorage';
 
 /**
  * Scalars on `Application` that belong in `application.create` data but may be missing from
@@ -9,6 +13,7 @@ type ApplicationCreateScalarExtensions = {
   commissionAmount?: number | null;
   dealDisplayName?: string | null;
   dealId?: string | null;
+  organization?: string | null;
 };
 
 type ApplicationUncheckedCreateBase = Omit<
@@ -28,5 +33,15 @@ export type ApplicationUncheckedCreateData = ApplicationUncheckedCreateBase &
 export function applicationCreateUncheckedData(
   data: ApplicationUncheckedCreateData,
 ): Prisma.ApplicationUncheckedCreateInput {
-  return data as Prisma.ApplicationUncheckedCreateInput;
+  const normalized = { ...data };
+  if (normalized.currentQueue != null) {
+    normalized.currentQueue =
+      normalizeStoredWorkflowQueue(normalized.currentQueue) ?? normalized.currentQueue;
+  }
+  if (normalized.currentState != null) {
+    normalized.currentState =
+      normalizeStoredWorkflowState(normalized.currentState, normalized.currentQueue) ??
+      normalized.currentState;
+  }
+  return normalized as Prisma.ApplicationUncheckedCreateInput;
 }

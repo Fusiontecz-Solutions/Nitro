@@ -1,18 +1,14 @@
 import prisma from '../config/prismaClient';
-import { randomUUID } from 'crypto';
-import { sendApplicationApprovalEmail } from './emailService';
-import { buildIsoApprovalEmailPackage } from './applicationApprovalEmailRenderService';
-import { recordCommunicationAudit } from './systemActivityLogService';
-import { storeSgMessageIdOnOutbound } from './outboundCommunicationService';
-import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
-import { resolveIsoApprovalPortalUrl } from './isoApprovalPortalUrlService';
-import { emitToUser } from '../socket';
+import { sendApplicationApprovalEmail, sendOperationsIsoApprovalAlertEmail } from './emailService';
 import {
-    APPLICATION_QUEUE_CONTRACT_PENDING,
-    APPLICATION_STATE_CONTRACT_PENDING,
-} from './contractApplicationWorkflowSync';
+    buildPublicApprovalPortalUrl,
+    resolveCrmFrontendBaseUrl,
+} from '../utils/crmFrontendUrl';
+import { createPublicPortalToken } from './publicPortalTokenService';
+import { emitToUser } from '../socket';
+import { deriveCategory, deriveActionUrl } from './notificationCategory';
 // Type-only to avoid a runtime cycle (applicationApprovalService -> queue -> worker -> here).
-import type { ApprovalSideEffectPayload } from './applicationApprovalService';
+import type { ApprovalSideEffectPayload } from './business/applicationApprovalService';
 
 /* ============================================================================
  * Application approval side-effects
@@ -36,8 +32,8 @@ const CRM_INTERNAL_NOTIFY_ROLES = [
     'ADMIN',
     'SUPER_ADMIN',
     'OPERATIONS',
+    'SCRUBBING',
     'UNDERWRITER',
-    'FINAL_UNDERWRITER',
     'ACCOUNTANT',
     'ACCOUNTS',
 ] as const;
@@ -59,47 +55,6 @@ const dedupeById = (rows: RecipientUser[]): RecipientUser[] => {
     }
     return out;
 };
-
-const normalizeStageToken = (value: unknown): string =>
-    String(value ?? '')
-        .trim()
-        .toLowerCase()
-        .replace(/[\s_-]+/g, '');
-
-const ISO_APPROVAL_NOTIFICATION_TITLE_PREFIX = 'ISO approved application #';
-
-/** Roles that own contract generation after an ISO approval. */
-const ISO_CONTRACT_NOTIFY_ROLES = ['OPERATIONS', 'ADMIN', 'SUPER_ADMIN'] as const;
-
-async function findIsoContractNotifyRecipients(): Promise<RecipientUser[]> {
-    const users = await prisma.user.findMany({
-        where: {
-            role: { in: [...ISO_CONTRACT_NOTIFY_ROLES] },
-            isActive: true,
-        },
-        select: { id: true, email: true, firstName: true, lastName: true, role: true },
-    });
-
-    return users.map((u) => ({
-        id: String(u.id),
-        email: u.email ? String(u.email) : null,
-        name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
-    }));
-}
-
-function isContractPendingStage(
-    queue: string | null | undefined,
-    state: string | null | undefined
-): boolean {
-    const queueToken = normalizeStageToken(queue);
-    const stateToken = normalizeStageToken(state);
-    return (
-        queueToken === normalizeStageToken(APPLICATION_QUEUE_CONTRACT_PENDING) ||
-        stateToken === normalizeStageToken(APPLICATION_STATE_CONTRACT_PENDING) ||
-        queueToken === 'contractpending' ||
-        stateToken === 'contractpending'
-    );
-}
 
 /**
  * Notification include shape matching {@link mapNotificationToApi} in the
@@ -163,6 +118,18 @@ const toApiNotification = (notification: any) => {
                 : undefined,
         isRead: notification.isRead,
         readAt: notification.readAt,
+        category: notification.category ?? deriveCategory(notification.type, application),
+        bucket: notification.bucket ?? 'inbox',
+        importance: notification.importance ?? 'normal',
+        snoozedUntil: notification.snoozedUntil ?? null,
+        isArchived: notification.isArchived ?? false,
+        actionUrl:
+            notification.actionUrl ??
+            deriveActionUrl({
+                type: notification.type,
+                applicationNumber: application?.applicationId,
+                applicationUuid: notification.applicationId ?? application?.id,
+            }),
         createdBy: createdBy
             ? {
                   _id: createdBy.id,
@@ -202,39 +169,18 @@ async function createAndPushNotifications(
         applicationId: string;
         createdById: string | null;
     },
-    meta: RealtimeMeta = {},
-    options: { skipIfTitleExists?: boolean } = {}
+    meta: RealtimeMeta = {}
 ): Promise<void> {
     if (!recipients.length) return;
 
-    let recipientsToCreate = recipients;
-    if (options.skipIfTitleExists) {
-        const existing = await prisma.notification.findMany({
-            where: {
-                applicationId: base.applicationId,
-                title: base.title,
-                recipientId: { in: recipients.map((r) => r.id) },
-            },
-            select: { recipientId: true },
-        });
-        const alreadyNotified = new Set(existing.map((row) => String(row.recipientId)));
-        recipientsToCreate = recipients.filter((r) => !alreadyNotified.has(r.id));
-        if (!recipientsToCreate.length) {
-            console.log('[approvalSideEffects] notifications already exist — skipping duplicate fan-out:', {
-                applicationId: base.applicationId,
-                title: base.title,
-            });
-            return;
-        }
-    }
-
     const created = await Promise.allSettled(
-        recipientsToCreate.map((r) =>
+        recipients.map((r) =>
             prisma.notification.create({
                 data: {
                     title: base.title,
                     message: base.message,
                     type: base.type,
+                    category: deriveCategory(base.type),
                     recipientId: r.id,
                     applicationId: base.applicationId,
                     createdById: base.createdById,
@@ -246,7 +192,7 @@ async function createAndPushNotifications(
 
     for (let i = 0; i < created.length; i += 1) {
         const result = created[i];
-        const recipient = recipientsToCreate[i];
+        const recipient = recipients[i];
         if (result.status === 'rejected') {
             console.error('[approvalSideEffects] notification create failed:', {
                 recipientId: recipient?.id,
@@ -259,11 +205,6 @@ async function createAndPushNotifications(
         emitToUser(recipient.id, 'notification:new', {
             notification: apiPayload,
             meta,
-        });
-        console.log('[approvalSideEffects] notification pushed:', {
-            recipientId: recipient.id,
-            notificationId: apiPayload.id,
-            title: base.title,
         });
     }
 }
@@ -289,37 +230,23 @@ export async function processApplicationApprovalSideEffects(
         return;
     }
 
-    /*
-     * Idempotency guard: only fan out while the deal is still at (or just past)
-     * the approval transition. ISO approvals land on "Contract Pending"; internal
-     * approvals on "Approved". If a webhook retries after the deal already moved
-     * deep into the contract workflow we still proceed (notifications were the
-     * point), but if it was rolled back to a pre-approval stage we skip.
-     */
-    const APPROVAL_STAGE_TOKENS = new Set<string>([
-        'approved',
-        'completed',
-        'contractpending',
-        'contractgenerated',
-        'contractsent',
-        'contractout',
-        'contractsout',
-        'contractcancelled',
-        'contractsigned',
-        'signedcontracts',
-        'fundingcall',
-        'disbursment',
-        'disbursement',
-        'funded',
-        'final',
-    ]);
+    const normalizeStageToken = (value: string | null | undefined): string =>
+        String(value ?? '')
+            .trim()
+            .toLowerCase()
+            .replace(/[\s_-]+/g, '');
+
     const currentQueueToken = normalizeStageToken(application.currentQueue);
     const currentStateToken = normalizeStageToken(application.currentState);
-    if (
-        !APPROVAL_STAGE_TOKENS.has(currentQueueToken) &&
-        !APPROVAL_STAGE_TOKENS.has(currentStateToken)
-    ) {
-        console.warn('[approvalSideEffects] application no longer at approval stage — skipping fan-out:', {
+    const isApprovedStage =
+        currentQueueToken === 'approved' ||
+        currentStateToken === 'approved' ||
+        currentQueueToken === 'isoapproved' ||
+        currentStateToken === 'isoapproved' ||
+        currentQueueToken === 'contractpending' ||
+        currentStateToken === 'contractpending';
+    if (!isApprovedStage) {
+        console.warn('[approvalSideEffects] application no longer Approved — skipping fan-out:', {
             applicationId,
             currentQueue: application.currentQueue,
             currentState: application.currentState,
@@ -335,39 +262,31 @@ export async function processApplicationApprovalSideEffects(
     const clientName = businessName || ownerName || 'Client';
     const actorType = String(payload.actorType ?? '').trim().toUpperCase();
     const isIsoActor = actorType === 'ISO';
-    const movedToContractPending =
-        isContractPendingStage(application.currentQueue, application.currentState) ||
-        isContractPendingStage(payload.targetQueue, payload.targetState);
-    const shouldNotifyContractGenerationTeam = isIsoActor || movedToContractPending;
+    const isoApproverName = String(payload.actorName ?? '').trim() || String(iso?.name ?? '').trim() || 'ISO';
     const applicationNumber =
         application.applicationId != null && String(application.applicationId).trim() !== ''
             ? String(application.applicationId)
             : applicationId;
 
-    console.log('[approvalSideEffects] fan-out context:', {
-        applicationId,
-        applicationNumber,
-        actorType,
-        isIsoActor,
-        movedToContractPending,
-        shouldNotifyContractGenerationTeam,
-        currentQueue: application.currentQueue,
-        currentState: application.currentState,
-    });
-
     /* ----------------------------- Notifications ----------------------------- */
     try {
-        const contractNotifyRecipients = await findIsoContractNotifyRecipients();
+        const internalUsers = await prisma.user.findMany({
+            where: {
+                role: { in: CRM_INTERNAL_NOTIFY_ROLES as unknown as any },
+                isActive: true,
+            },
+            select: { id: true, email: true, firstName: true, lastName: true, role: true },
+        });
 
-        const nonOperationsInternalRecipients: RecipientUser[] = (
-            await prisma.user.findMany({
-                where: {
-                    role: { in: CRM_INTERNAL_NOTIFY_ROLES as unknown as any },
-                    isActive: true,
-                },
-                select: { id: true, email: true, firstName: true, lastName: true, role: true },
-            })
-        )
+        const operationsRecipients: RecipientUser[] = internalUsers
+            .filter((u) => String(u.role || '').toUpperCase() === 'OPERATIONS')
+            .map((u) => ({
+                id: String(u.id),
+                email: u.email ? String(u.email) : null,
+                name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+            }));
+
+        const nonOperationsInternalRecipients: RecipientUser[] = internalUsers
             .filter((u) => String(u.role || '').toUpperCase() !== 'OPERATIONS')
             .map((u) => ({
                 id: String(u.id),
@@ -388,50 +307,32 @@ export async function processApplicationApprovalSideEffects(
             }));
 
         /*
-         * ISO / Contract-Pending branch: notify Operations + Admin + Super Admin
-         * so they can generate the contract. Triggered when the actor is ISO OR
-         * the deal landed on the Contract Pending stage (belt-and-suspenders).
+         * ISO-approved branch: ONLY notify Operations users.
+         *   - No fan-out to Underwriter / Scrubbing / Admin / Accountant.
+         *   - No fan-out to referring agent / sales rep / createdBy.
+         * This is the strict requirement when an ISO performs the approval action.
          */
-        if (shouldNotifyContractGenerationTeam) {
-            const operationNotifications = dedupeById(contractNotifyRecipients).filter(
+        if (isIsoActor) {
+            const operationNotifications = dedupeById(operationsRecipients).filter(
                 (r) => r.id !== payload.actorId
             );
 
-            console.log('[approvalSideEffects] contract-generation notify targets:', {
-                applicationId,
-                recipientCount: operationNotifications.length,
-                recipientIds: operationNotifications.map((r) => r.id),
-            });
-
             if (operationNotifications.length > 0) {
-                const title = `${ISO_APPROVAL_NOTIFICATION_TITLE_PREFIX}${applicationNumber}`;
-                const message = `Deal moved to the Contract Pending stage. Now you can proceed to generate contract.`;
-                const baseUrl = resolveCrmFrontendBaseUrl() || '';
-                const actionUrl = baseUrl
-                    ? `${baseUrl.replace(/\/$/, '')}/application-details/${applicationNumber}`
-                    : `/application-details/${applicationNumber}`;
-
                 await createAndPushNotifications(
                     operationNotifications,
                     {
-                        title,
-                        message,
+                        title: `ISO approved application #${applicationNumber}`,
+                        message: `ISO approved application #${applicationNumber}. Now you can proceed to generate contract.`,
                         type: 'application_update',
                         applicationId: application.id,
                         createdById: payload.actorId,
                     },
-                    { realtimeKind: 'iso_approval_for_operations', actionUrl },
-                    { skipIfTitleExists: true }
+                    { realtimeKind: 'iso_approval_for_operations' }
                 );
-            } else {
-                console.warn('[approvalSideEffects] no Operations/Admin/Super Admin recipients to notify:', {
-                    applicationId,
-                    activeContractNotifyUsers: contractNotifyRecipients.length,
-                });
             }
         } else {
             /*
-             * Non-ISO actor (Final Underwriter / Admin / etc. approving manually):
+             * Non-ISO actor (Underwriter / Admin / etc. approving manually):
              * keep the existing broader fan-out so other internal staff and the
              * deal’s direct contacts still see the approval.
              */
@@ -473,111 +374,123 @@ export async function processApplicationApprovalSideEffects(
     /* -------------------------------- Email ---------------------------------- */
     try {
         const baseUrl = resolveCrmFrontendBaseUrl() || '';
-        const viewApplicationUrl = baseUrl
-            ? `${baseUrl.replace(/\/$/, '')}/applications/${applicationNumber}`
-            : undefined;
 
-        const calculateApprovalUrl = await resolveIsoApprovalPortalUrl(application.id, {
-            expiresInDays: 90,
-        });
+        let publicApprovalUrl: string | undefined;
+        try {
+            const token = await createPublicPortalToken(application.id, { expiresInDays: 90 });
+            if (token && baseUrl) {
+                publicApprovalUrl = buildPublicApprovalPortalUrl(baseUrl, token);
+            }
+        } catch (tokenErr) {
+            console.error('[approvalSideEffects] portal token generation failed:', tokenErr);
+        }
+
+        const viewApplicationUrl = publicApprovalUrl;
+        const calculateApprovalUrl = publicApprovalUrl;
 
         const isoEmail = String(iso?.email ?? '').trim();
         const isoName = String(iso?.name ?? '').trim();
-        const isoRecipientName = isoName || isoEmail;
-        const companyName = businessName || clientName;
 
         /*
-         * Email: only the linked ISO mailbox receives the branded approval template.
-         * No step/workflow mail to agent, underwriter, final underwriter, operations, or admin.
-         * (Manual "Send approval email" from the CRM uses the same ISO-only templates.)
+         * When an ISO performs the approval, we do NOT send the regular approval
+         * template to anyone (no ISO mailbox, no referring agent, no FUW/UW).
+         * Operations are the sole recipients via the dedicated alert email below.
          */
-        if (isoEmail && calculateApprovalUrl) {
-            const emailPackage = buildIsoApprovalEmailPackage({
-                resend: false,
-                clientName: isoRecipientName,
-                companyName,
-                isoApprovalUrl: calculateApprovalUrl,
-            });
-
-            if (!emailPackage) {
-                console.warn(
-                    '[approvalSideEffects] skipped ISO approval email — portal URL could not be embedded',
-                    applicationNumber,
-                );
-            } else {
-            const { subject: emailSubject, html: emailHtml } = emailPackage;
-            const approvalTrackingId = randomUUID();
-
-            try {
-                const actorRole = String(payload.actorRole ?? '').trim();
-                const roleLabel = actorRole ? actorRole.toUpperCase().replace(/_/g, ' ') : 'System';
-                const actorName = String(payload.actorName ?? '').trim();
-
-                await recordCommunicationAudit(null, {
-                    outboundCommunicationId: approvalTrackingId,
-                    applicationId: application.id,
-                    channel: 'EMAIL',
-                    recipientType: 'ISO',
-                    recipient: isoEmail,
-                    subject: emailSubject,
-                    body: emailHtml,
-                    templateName: 'Application approved (ISO)',
-                    actionType: 'APPROVED',
-                    user: payload.actorId
-                        ? {
-                              id: payload.actorId,
-                              role: String(payload.actorRole ?? 'USER'),
-                          }
-                        : null,
-                    currentStatus: `${application.currentQueue} / ${application.currentState}`,
-                    actionDescription:
-                        `${roleLabel} ${actorName}`.trim() + ' sent approval email to the linked ISO.',
-                    metadata: {
-                        emailSentTo: [isoEmail],
-                        sentToLinkedIsoOnly: true,
-                        resend: false,
-                        template: 'approval',
-                        status: 'sent',
-                        hasHtmlPdf: true,
-                        automatedSideEffect: true,
-                    },
+        if (!isIsoActor) {
+            const recipients: { to: string; clientName: string }[] = [];
+            if (isoEmail) {
+                recipients.push({
+                    to: isoEmail,
+                    clientName: isoName || isoEmail,
                 });
-            } catch (logError) {
-                console.error('[approvalSideEffects] failed to create mail audit log:', logError);
             }
 
-            const result = await sendApplicationApprovalEmail({
-                to: isoEmail,
-                clientName: isoRecipientName,
-                companyName,
-                calculateApprovalUrl,
-                html: emailHtml,
-                subject: emailSubject,
-                trackingId: approvalTrackingId,
-            });
-            if (result.sent && result.sgMessageId) {
-                try {
-                    await storeSgMessageIdOnOutbound(approvalTrackingId, result.sgMessageId);
-                } catch (metaErr) {
-                    console.error('[approvalSideEffects] failed to store sgMessageId:', metaErr);
-                }
-            } else if (!result.sent) {
+            // Internal email confirmation to referring agent (when configured separately from ISO).
+            const refAgentEmail = String((application as any).referringAgent?.email ?? '').trim();
+            if (refAgentEmail && refAgentEmail.toLowerCase() !== isoEmail.toLowerCase()) {
+                recipients.push({
+                    to: refAgentEmail,
+                    clientName:
+                        `${(application as any).referringAgent?.firstName ?? ''} ${
+                            (application as any).referringAgent?.lastName ?? ''
+                        }`.trim() || refAgentEmail,
+                });
+            }
+
+            if (recipients.length === 0) {
                 console.warn(
-                    '[approvalSideEffects] ISO approval email was not delivered for application',
+                    '[approvalSideEffects] no approval template recipients for non-ISO actor on application',
                     applicationNumber
                 );
+            } else {
+                const results = await Promise.allSettled(
+                    recipients.map((r) =>
+                        sendApplicationApprovalEmail({
+                            to: r.to,
+                            clientName: r.clientName,
+                            companyName: businessName || clientName,
+                            viewApplicationUrl,
+                            calculateApprovalUrl,
+                        })
+                    )
+                );
+
+                const failures = results.filter((r) => r.status === 'rejected');
+                if (failures.length > 0) {
+                    console.error(
+                        '[approvalSideEffects] one or more approval confirmation emails failed:',
+                        failures
+                    );
+                }
             }
+        }
+
+        if (isIsoActor) {
+            const operationsUsers = await prisma.user.findMany({
+                where: {
+                    role: 'OPERATIONS',
+                    isActive: true,
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    firstName: true,
+                    lastName: true,
+                },
+            });
+
+            const operationEmailRecipients = dedupeById(
+                operationsUsers.map((u) => ({
+                    id: String(u.id),
+                    email: u.email ? String(u.email) : null,
+                    name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+                }))
+            ).filter((r) => r.id !== payload.actorId && Boolean(r.email));
+
+            if (operationEmailRecipients.length > 0) {
+                const operationEmailResults = await Promise.allSettled(
+                    operationEmailRecipients.map((recipient) =>
+                        sendOperationsIsoApprovalAlertEmail({
+                            to: String(recipient.email),
+                            operationsName: recipient.name,
+                            isoName: isoApproverName,
+                            applicationNumber,
+                            clientName,
+                            viewApplicationUrl,
+                        })
+                    )
+                );
+
+                const operationEmailFailures = operationEmailResults.filter(
+                    (result) => result.status === 'rejected'
+                );
+                if (operationEmailFailures.length > 0) {
+                    console.error(
+                        '[approvalSideEffects] one or more operations ISO-approval alert emails failed:',
+                        operationEmailFailures
+                    );
+                }
             }
-        } else if (isoEmail) {
-            console.warn(
-                '[approvalSideEffects] skipped ISO approval email — could not resolve public portal URL',
-                applicationNumber,
-            );
-        } else {
-            console.warn(
-                '[approvalSideEffects] skipped ISO approval email — no linked ISO email on application',
-                applicationNumber
-            );
         }
     } catch (emailErr) {
         console.error('[approvalSideEffects] email fan-out failed:', emailErr);

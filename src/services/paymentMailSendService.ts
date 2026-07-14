@@ -11,8 +11,11 @@ import {
   markPaymentMailLogFailed,
 } from './paymentMailLogService';
 import { recordCommunicationAudit } from './systemActivityLogService';
-import { inferRecipientTypeFromCategory } from './outboundCommunicationService';
-import { buildHtmlPdfMailAttachment } from './emailHtmlPdfAttachment.service';
+import {
+  inferRecipientTypeFromCategory,
+  storeSgMessageIdOnOutbound,
+} from './outboundCommunicationService';
+import { isPayoffOrZeroBalanceLetterTemplate } from '../utils/payoffOrZeroBalanceLetter';
 
 export interface SendPaymentTemplateMailInput {
   to: string;
@@ -25,6 +28,9 @@ export interface SendPaymentTemplateMailInput {
   dealKey: string;
   templateName: string;
   category: string;
+  /** Ignored unless {@link templateName} is a Payoff or Zero Balance letter. */
+  attachLetterPdf?: boolean;
+  letterPdfFilename?: string;
 }
 
 export type SendPaymentTemplateMailResult =
@@ -34,21 +40,6 @@ export type SendPaymentTemplateMailResult =
 function authUserFromRequest(req: Request): AuthenticatedUser | null {
   if (!req.user?.id) return null;
   return { id: req.user.id, role: req.user.role } as AuthenticatedUser;
-}
-
-async function storeSgMessageIdOnOutbound(outboundId: string, sgMessageId: string): Promise<void> {
-  const existing = await prisma.outboundCommunication.findUnique({
-    where: { id: outboundId },
-    select: { metadata: true },
-  });
-  const prior =
-    existing?.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
-      ? (existing.metadata as Record<string, unknown>)
-      : {};
-  await prisma.outboundCommunication.update({
-    where: { id: outboundId },
-    data: { metadata: { ...prior, sgMessageId } as object },
-  });
 }
 
 /**
@@ -73,6 +64,37 @@ export async function sendTrackedPaymentTemplateMail(
   const trackingId = randomUUID();
   let paymentLog: PaymentMailLog | null = null;
 
+  const attachmentNames: string[] = [];
+  let mailAttachments: Array<{
+    filename: string;
+    content: Buffer;
+    contentType: string;
+    contentDisposition?: 'attachment' | 'inline';
+  }> = [];
+
+  const shouldAttachPdf = isPayoffOrZeroBalanceLetterTemplate(input.templateName);
+
+  if (shouldAttachPdf) {
+    const { renderLetterHtmlToPdfBuffer, sanitizeLetterPdfFilename } = await import(
+      './pdf/letterHtmlToPdf.service'
+    );
+    const rawPdfName =
+      typeof input.letterPdfFilename === 'string' && input.letterPdfFilename.trim()
+        ? input.letterPdfFilename.trim()
+        : `${input.templateName || input.subject || 'letter'}`.trim().slice(0, 120) || 'letter';
+    const letterPdfName = sanitizeLetterPdfFilename(rawPdfName);
+    const letterPdfBuffer = await renderLetterHtmlToPdfBuffer(input.body);
+    mailAttachments = [
+      {
+        filename: letterPdfName,
+        content: letterPdfBuffer,
+        contentType: 'application/pdf',
+        contentDisposition: 'attachment',
+      },
+    ];
+    attachmentNames.push(letterPdfName);
+  }
+
   try {
     paymentLog = await insertPaymentMailLogRecord(
       access.application.id,
@@ -88,10 +110,6 @@ export async function sendTrackedPaymentTemplateMail(
       },
       req,
     );
-
-    const pdfFilenameBase =
-      input.templateName?.trim() || input.subject?.trim() || input.category || 'letter';
-    const pdfAttachment = await buildHtmlPdfMailAttachment(input.body, pdfFilenameBase);
 
     const summary = `Sent ${input.category} "${input.templateName}" to ${input.to}`;
     await recordCommunicationAudit(req, {
@@ -111,8 +129,14 @@ export async function sendTrackedPaymentTemplateMail(
         dealKey: input.dealKey,
         categoryLabel: input.category,
         recipient: input.to,
+        paymentMailLogId: paymentLog.id,
         status: 'sent',
-        hasHtmlPdf: Boolean(pdfAttachment),
+        hasLetterPdf: shouldAttachPdf,
+        attachments: attachmentNames.length ? attachmentNames : undefined,
+        delivery: {
+          status: 'sent',
+          sentAt: new Date().toISOString(),
+        },
       },
     });
 
@@ -126,7 +150,7 @@ export async function sendTrackedPaymentTemplateMail(
       from: getSendGridMailFrom(),
       trackingId,
       categories: ['payment-template'],
-      attachments: pdfAttachment ? [pdfAttachment] : undefined,
+      ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
     });
 
     const sgMessageId =
@@ -140,7 +164,9 @@ export async function sendTrackedPaymentTemplateMail(
 
     return {
       ok: true,
-      paymentMailLog: formatPaymentMailLogApiRow(paymentLog),
+      paymentMailLog: formatPaymentMailLogApiRow(paymentLog, {
+        attachments: attachmentNames.length ? attachmentNames : undefined,
+      }),
       sgMessageId,
     };
   } catch (err) {

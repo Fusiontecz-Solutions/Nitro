@@ -1,11 +1,12 @@
 import express from 'express';
 import bankAnalysisController from '../controllers/bankAnalysisController';
 import { authenticateToken } from '../middleware/authMiddleware';
+import { forbidRoles } from '../middleware/forbidRoles';
 
 const router = express.Router();
 
 // All bank analysis routes require authentication
-router.use(authenticateToken);
+router.use(authenticateToken, forbidRoles('AGENT'));
 
 // Get all bank analyses for a specific application
 router.get('/', bankAnalysisController.getByApplication.bind(bankAnalysisController));

@@ -48,7 +48,8 @@ class ContractController {
       return res.status(201).json({ success: true, message: 'Contract created successfully', data });
     } catch (error: any) {
       console.error('Create contract error:', error);
-      return res.status(500).json({ success: false, message: error?.message || 'Internal server error' });
+      const statusCode = Number(error?.statusCode) || 500;
+      return res.status(statusCode).json({ success: false, message: error?.message || 'Internal server error' });
     }
   }
 

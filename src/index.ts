@@ -13,10 +13,9 @@ import { initializeSocketIO } from './socket/index';
 import { testRedisConnection } from './config/redis';
 import { startCollectionPaymentUploadWorker } from './workers/collectionPaymentUploadWorker';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
-import { getDefaultMailFrom, isSendGridConfigured } from './config/nodemailer';
-
 import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
 import { activityLogger } from './middleware/activityLogger';
+import { getDefaultMailFrom, isSendGridConfigured } from './config/nodemailer';
 
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err);
@@ -39,15 +38,16 @@ app.use(
   })
 );
 // Middleware
-// Keep the raw request bytes around so the SendGrid Event Webhook signature
-// (computed over timestamp + raw body) can be verified before trusting events.
+// Capture the raw request body so webhook signature verification (e.g. SendGrid
+// "Signed Event Webhook" ECDSA check) can hash the exact bytes SendGrid signed.
+// Without this, req.rawBody is undefined and signed webhooks are rejected.
 app.use(
   express.json({
     limit: '50mb',
     verify: (req, _res, buf) => {
       (req as Request & { rawBody?: Buffer }).rawBody = buf;
     },
-  }),
+  })
 );
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -80,24 +80,26 @@ app.use((req, res, next) => {
 });
 
 cloudinaryConnect();
-console.log('Starting CRM Email Bot...');
 console.log(
-    `[mail] Outbound sender: ${getDefaultMailFrom()} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
+  `[mail] Outbound sender: ${getDefaultMailFrom()} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
 );
 const sendgridWebhookBase = process.env.SENDGRID_WEBHOOK_URL?.trim().replace(/\/$/, '');
 if (sendgridWebhookBase) {
-    console.log(`[mail] SendGrid event webhook (configure in SendGrid dashboard): ${sendgridWebhookBase}/sendgrid/webhook`);
+  console.log(`[mail] SendGrid event webhook (configure in SendGrid dashboard): ${sendgridWebhookBase}/sendgrid/webhook`);
 }
+console.log('Starting CRM Email Bot...');
 startCronJob();
 startSuperAdminPlatformCronJob();
-// Test Redis connection
-testRedisConnection().catch(console.error);
+// Test Redis connection, then start workers only when Redis is reachable.
+void testRedisConnection()
+  .catch(console.error)
+  .finally(() => {
+    startCollectionPaymentUploadWorker();
+    startApplicationApprovalWorker();
+  });
 
-// Socket.IO must be ready before background workers emit real-time events.
+// Initialize Socket.IO
 initializeSocketIO(httpServer);
-
-startCollectionPaymentUploadWorker();
-startApplicationApprovalWorker();
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {

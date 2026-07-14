@@ -1,7 +1,32 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { isGmailAutoCreateMessageHandled } from './gmailAutoCreateProcessedStore';
 
 const DEDUPE_DAYS_DEFAULT = 7;
+
+/** Stored on `Application.note` when Gmail subject fallback auto-creates a deal. */
+export const GMAIL_AUTO_CREATE_MSG_NOTE_PREFIX = 'gmail-msg:';
+
+export function gmailAutoCreateMessageNote(gmailMessageId: string): string {
+    return `${GMAIL_AUTO_CREATE_MSG_NOTE_PREFIX}${String(gmailMessageId || '').trim()}`;
+}
+
+/** Parse Gmail API message id stored on `Application.note` (`gmail-msg:…`). */
+export function parseGmailMessageIdFromApplicationNote(note: unknown): string | null {
+    const raw = String(note ?? '').trim();
+    if (!raw) return null;
+    const exact = raw.match(/^\s*gmail-msg:([a-zA-Z0-9_-]+)\s*$/i);
+    if (exact?.[1]) return exact[1];
+    const embedded = raw.match(/gmail-msg:([a-zA-Z0-9_-]+)/i);
+    return embedded?.[1] ?? null;
+}
+
+/** Parse Gmail API message id from client notes when subject fallback stored `MessageId: …`. */
+export function parseGmailMessageIdFromClientNotes(notes: unknown): string | null {
+    const raw = String(notes ?? '');
+    const match = raw.match(/MessageId:\s*([a-zA-Z0-9_-]+)/i);
+    return match?.[1]?.trim() || null;
+}
 
 export function readPdfFileDedupeDays(): number {
     const raw = Number(process.env.GMAIL_AUTO_CREATE_DEDUPE_DAYS ?? DEDUPE_DAYS_DEFAULT);
@@ -13,6 +38,14 @@ export type PdfFileSignature = {
     originalName: string;
     size: number | null;
 };
+
+/** Case-insensitive PDF filename match (Gmail MIME size often differs from Cloudinary bytes). */
+function pdfFileNameWhere(fileName: string): Prisma.ApplicationFileWhereInput {
+    const trimmed = String(fileName || '').trim();
+    return {
+        originalName: { equals: trimmed, mode: 'insensitive' },
+    };
+}
 
 /** Primary PDF attachment stored on the application (Gmail auto-create / upload). */
 export function pickPrimaryPdfFile(
@@ -33,8 +66,123 @@ export function pickPrimaryPdfFile(
 }
 
 /**
- * Other applications with the same PDF filename (+ size when known) from the same creator,
- * within ±dedupeDays of `referenceCreatedAt`. After the window, returns empty (completely new).
+ * Gmail auto-create guard: same PDF filename from the same creator within the last N days.
+ * Filename-only — declared Gmail size and stored Cloudinary bytes often differ.
+ */
+export async function hasRecentDuplicatePdfForCreator(params: {
+    createdById: string;
+    fileName: string;
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const since = new Date(Date.now() - dedupeDays * 24 * 60 * 60 * 1000);
+    const fileName = String(params.fileName || '').trim();
+    if (!fileName || !params.createdById) return false;
+
+    const existing = await prisma.applicationFile.findFirst({
+        where: {
+            ...pdfFileNameWhere(fileName),
+            application: {
+                createdById: params.createdById,
+                createdAt: { gte: since },
+            },
+        },
+        select: { id: true, applicationId: true },
+        orderBy: { uploadedAt: 'desc' },
+    });
+    return !!existing;
+}
+
+/** True if any of the given PDF filenames already exist on a recent app from this creator. */
+export async function hasRecentDuplicatePdfFilenamesForCreator(params: {
+    createdById: string;
+    fileNames: string[];
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const names = Array.from(
+        new Set(
+            (params.fileNames || [])
+                .map((n) => String(n || '').trim())
+                .filter(Boolean),
+        ),
+    );
+    for (const fileName of names) {
+        const dup = await hasRecentDuplicatePdfForCreator({
+            createdById: params.createdById,
+            fileName,
+            dedupeDays: params.dedupeDays,
+        });
+        if (dup) return true;
+    }
+    return false;
+}
+
+/**
+ * Gmail subject-fallback guard: same INBOX message must not create two applications
+ * (e.g. cron re-run while email still unread).
+ */
+export async function hasRecentApplicationForGmailMessage(params: {
+    createdById: string;
+    gmailMessageId: string;
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const gmailMessageId = String(params.gmailMessageId || '').trim();
+    if (!gmailMessageId || !params.createdById) return false;
+
+    if (await isGmailAutoCreateMessageHandled(params.createdById, gmailMessageId)) {
+        return true;
+    }
+
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const since = new Date(Date.now() - dedupeDays * 24 * 60 * 60 * 1000);
+    const noteMarker = gmailAutoCreateMessageNote(gmailMessageId);
+
+    const existing = await prisma.application.findFirst({
+        where: {
+            createdById: params.createdById,
+            createdAt: { gte: since },
+            note: { contains: noteMarker },
+        },
+        select: { id: true },
+    });
+    return !!existing;
+}
+
+/**
+ * Subject-fallback guard: same merchant + ISO from same creator within the dedupe window.
+ * Targets placeholder-owner (`none`/`none`) clients created when PDF extraction failed.
+ */
+export async function hasRecentSubjectFallbackMerchantApplication(params: {
+    createdById: string;
+    businessName: string;
+    isoId?: string | null;
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const businessName = String(params.businessName || '').trim();
+    if (!businessName || !params.createdById) return false;
+
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const since = new Date(Date.now() - dedupeDays * 24 * 60 * 60 * 1000);
+
+    const existing = await prisma.application.findFirst({
+        where: {
+            createdById: params.createdById,
+            createdAt: { gte: since },
+            ...(params.isoId ? { isoId: params.isoId } : {}),
+            client: {
+                businessName: { equals: businessName, mode: 'insensitive' },
+                ownerFirstName: { equals: 'none', mode: 'insensitive' },
+                ownerLastName: { equals: 'none', mode: 'insensitive' },
+            },
+        },
+        select: { id: true },
+    });
+    return !!existing;
+}
+
+/**
+ * Other applications with the same PDF filename from the same creator,
+ * within ±dedupeDays of `referenceCreatedAt`.
  */
 export async function findSamePdfFileApplications(params: {
     excludeApplicationId: string;
@@ -49,17 +197,44 @@ export async function findSamePdfFileApplications(params: {
     const windowStart = new Date(refTime - deltaMs);
     const windowEnd = new Date(refTime + deltaMs);
 
-    const fileWhere: Prisma.ApplicationFileWhereInput = {
-        originalName: params.file.originalName,
-        ...(params.file.size != null && params.file.size > 0 ? { size: params.file.size } : {}),
-    };
-
     return prisma.application.findMany({
         where: {
             id: { not: params.excludeApplicationId },
             createdById: params.createdById,
             createdAt: { gte: windowStart, lte: windowEnd },
-            files: { some: fileWhere },
+            files: { some: pdfFileNameWhere(params.file.originalName) },
+        },
+        include: {
+            client: true,
+            createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+            files: { select: { originalName: true, size: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+    });
+}
+
+/**
+ * Older applications with the same PDF filename (outside the recent dedupe window).
+ * Shown in the dupes panel when a re-submission after the window is treated as a new deal.
+ */
+export async function findHistoricalSamePdfFileApplications(params: {
+    excludeApplicationId: string;
+    createdById: string;
+    file: PdfFileSignature;
+    referenceCreatedAt: Date;
+    dedupeDays?: number;
+}) {
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const windowStart = new Date(
+        params.referenceCreatedAt.getTime() - dedupeDays * 24 * 60 * 60 * 1000,
+    );
+
+    return prisma.application.findMany({
+        where: {
+            id: { not: params.excludeApplicationId },
+            createdById: params.createdById,
+            createdAt: { lt: windowStart },
+            files: { some: pdfFileNameWhere(params.file.originalName) },
         },
         include: {
             client: true,

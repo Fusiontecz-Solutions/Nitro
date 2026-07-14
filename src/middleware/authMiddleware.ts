@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/prismaClient';
+import { withDbRetry, isRetryableDbError } from '../utils/dbRetry';
 
 // Extend Express Request type to include user
 declare global {
@@ -55,20 +56,13 @@ export type ApplicationAttributionContext = {
 export const APPLICATION_USER_ATTRIBUTION_ERROR =
     'Could not attribute this action to a tenant user. Ensure the application has a valid creator or sales representative.';
 
-/**
- * Resolves a tenant User.id for required application FKs (BankDetail, BankAnalysis, Note, etc.).
- * Regular users are attributed to themselves when their id exists in User.
- * Super Admin proxy calls have no tenant User row — fall back to the application's
- * creator or sales representative (same pattern as contract creation).
- */
-export async function resolveApplicationAttributedUserId(
-    req: Request,
+const resolveApplicationAttributedUserIdFromActorId = async (
+    actorUserId: string | null | undefined,
     application: ApplicationAttributionContext,
-): Promise<string | null> {
-    const tenantUserId = resolveTenantUserId(req);
-    if (tenantUserId) {
+): Promise<string | null> => {
+    if (actorUserId) {
         const actor = await prisma.user.findUnique({
-            where: { id: tenantUserId },
+            where: { id: actorUserId },
             select: { id: true },
         });
         if (actor) return actor.id;
@@ -88,6 +82,27 @@ export async function resolveApplicationAttributedUserId(
     }
 
     return null;
+};
+
+/**
+ * Resolves a tenant User.id for required application FKs (BankDetail, BankAnalysis, Note, etc.).
+ * Regular users are attributed to themselves when their id exists in User.
+ * Super Admin proxy calls have no tenant User row — fall back to the application's
+ * creator or sales representative (same pattern as contract creation).
+ */
+export async function resolveApplicationAttributedUserId(
+    req: Request,
+    application: ApplicationAttributionContext,
+): Promise<string | null> {
+    return resolveApplicationAttributedUserIdFromActorId(resolveTenantUserId(req), application);
+}
+
+/** Same attribution rules as above, but accepts a raw actor id (e.g. from AuthenticatedUser). */
+export async function resolveApplicationAttributedUserIdForActor(
+    actorUserId: string | null | undefined,
+    application: ApplicationAttributionContext,
+): Promise<string | null> {
+    return resolveApplicationAttributedUserIdFromActorId(actorUserId, application);
 }
 
 /** @deprecated Use resolveApplicationAttributedUserId */
@@ -213,12 +228,16 @@ export const authenticateToken = async (
         };
 
         // Check if token exists in AccessToken table and is not expired
-        const accessToken = await prisma.accessToken.findFirst({
-            where: {
-                token,
-                userId: decoded.id,
-            },
-        });
+        const accessToken = await withDbRetry(
+            () =>
+                prisma.accessToken.findFirst({
+                    where: {
+                        token,
+                        userId: decoded.id,
+                    },
+                }),
+            { label: 'authenticateToken lookup' },
+        );
 
         if (!accessToken) {
             return res.status(401).json({
@@ -230,7 +249,10 @@ export const authenticateToken = async (
         // Check if token is expired
         if (accessToken.expiresAt < new Date()) {
             // Optionally delete expired token
-            await prisma.accessToken.deleteMany({ where: { token } });
+            await withDbRetry(
+                () => prisma.accessToken.deleteMany({ where: { token } }),
+                { label: 'authenticateToken delete expired' },
+            );
             return res.status(401).json({
                 success: false,
                 message: 'Token has expired',
@@ -258,6 +280,13 @@ export const authenticateToken = async (
             return res.status(401).json({
                 success: false,
                 message: 'Token has expired',
+            });
+        }
+        if (isRetryableDbError(error)) {
+            console.error('Authentication error (database unavailable):', error);
+            return res.status(503).json({
+                success: false,
+                message: 'Database temporarily unavailable. Please try again.',
             });
         }
         console.error('Authentication error:', error);

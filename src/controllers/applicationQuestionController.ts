@@ -1,10 +1,6 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import {
-  APPLICATION_USER_ATTRIBUTION_ERROR,
-  resolveApplicationAttributedUserId,
-} from '../middleware/authMiddleware';
 
 const mapApplicationQuestionResponseToApi = (resp: any) => {
   if (!resp) return resp;
@@ -121,18 +117,11 @@ class ApplicationQuestionController {
         });
       }
 
-      if (!req.user) {
+      const updatedBy = (req as any).user?.id;
+      if (!updatedBy) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
-        });
-      }
-
-      const updatedById = await resolveApplicationAttributedUserId(req, appRecord);
-      if (!updatedById) {
-        return res.status(400).json({
-          success: false,
-          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -152,13 +141,13 @@ class ApplicationQuestionController {
           questionText: String(questionText).trim(),
           answer,
           reason: answer === 'YES' ? String(reason).trim() : '',
-          updatedById,
+          updatedById: updatedBy,
         },
         update: {
           questionText: String(questionText).trim(),
           answer,
           reason: answer === 'YES' ? String(reason).trim() : '',
-          updatedById,
+          updatedById: updatedBy,
           updatedAt: now,
         },
         include: {

@@ -1,8 +1,8 @@
-import { Worker } from 'bullmq';
+import { Worker, type ConnectionOptions } from 'bullmq';
+import Redis from 'ioredis';
 import {
     APPLICATION_APPROVAL_QUEUE_NAME,
     type ApplicationApprovalJobData,
-    type ApplicationApprovalJobName,
     isApplicationApprovalQueueEnabled,
 } from '../queues/applicationApprovalQueue';
 import { processApplicationApprovalSideEffects } from '../services/applicationApprovalSideEffects';
@@ -19,17 +19,15 @@ import { processApplicationApprovalSideEffects } from '../services/applicationAp
  * fine.
  * ==========================================================================*/
 
-let workerInstance:
-    | Worker<ApplicationApprovalJobData, void, ApplicationApprovalJobName>
-    | null = null;
+let workerInstance: Worker<ApplicationApprovalJobData> | null = null;
 
-const getRedisConnectionOptions = () => ({
-    url: String(process.env.REDIS_URL || '').trim(),
-    maxRetriesPerRequest: null as null,
-    retryStrategy(times: number) {
-        return Math.min(times * 200, 2_000);
-    },
-});
+const createRedisConnection = (): ConnectionOptions =>
+    new Redis(String(process.env.REDIS_URL || '').trim(), {
+        maxRetriesPerRequest: null,
+        retryStrategy(times) {
+            return Math.min(times * 200, 2_000);
+        },
+    }) as ConnectionOptions;
 
 const resolveConcurrency = (): number => {
     const raw = Number(process.env.APPROVAL_WORKER_CONCURRENCY);
@@ -48,16 +46,16 @@ export const startApplicationApprovalWorker = (): void => {
     if (workerInstance) return;
 
     try {
-        workerInstance = new Worker<ApplicationApprovalJobData, void, ApplicationApprovalJobName>(
+        workerInstance = new Worker<ApplicationApprovalJobData>(
             APPLICATION_APPROVAL_QUEUE_NAME,
             async (job) => {
                 await processApplicationApprovalSideEffects(job.data);
             },
             {
-                connection: getRedisConnectionOptions(),
+                connection: createRedisConnection(),
                 concurrency: resolveConcurrency(),
             }
-        );
+        ) as Worker<ApplicationApprovalJobData>;
 
         workerInstance.on('failed', (job, err) => {
             console.error('[applicationApprovalWorker] job failed:', {

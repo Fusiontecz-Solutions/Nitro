@@ -6,12 +6,13 @@ import {
 } from './applicationService';
 import {
     buildOperationsStatusFilterWhere,
-    contractGeneratedStrictMatchWhere,
-    contractSentStrictMatchWhere,
-    signedContractsStrictMatchWhere,
+    excludeSoftDeletedWhere,
+    normalizeOperationsStatusKey,
     resolveOperationsListFilterMode,
     type OperationsStatusFilterMode,
 } from './operationsStatusFilter';
+import { aggregateQueueMetricsByCurrentQueue } from './operationsDashboardQueueMetricsService';
+import { reconcileStaleContractReinitiationFlags } from './contractReinitiationService';
 
 function buildRoleDefaultWhere(authUser: AuthenticatedUser | null): Prisma.ApplicationWhereInput {
     if (!authUser) {
@@ -26,6 +27,24 @@ function combineWhere(
 ): Prisma.ApplicationWhereInput {
     if (!extra) return base;
     return { AND: [base, extra] };
+}
+
+async function countApplicationsForPipelineStage(
+    authUser: AuthenticatedUser | null,
+    operationsStatus: string,
+): Promise<number> {
+    const visibilityBase = mergeApplicationVisibilityWhere(
+        authUser ? {} : { id: '00000000-0000-0000-0000-000000000000' },
+        authUser,
+    );
+    const mode = resolveOperationsListFilterMode(authUser?.role ?? null);
+    const stageWhere = buildOperationsStatusFilterWhere(operationsStatus, mode);
+    const canonical = normalizeOperationsStatusKey(operationsStatus);
+    const excludeDeleted =
+        canonical === 'Recently_Deleted' ? undefined : excludeSoftDeletedWhere();
+    return prisma.application.count({
+        where: combineWhere(combineWhere(visibilityBase, stageWhere), excludeDeleted),
+    });
 }
 
 function viewerMode(authUser: AuthenticatedUser | null): OperationsStatusFilterMode {
@@ -45,8 +64,6 @@ export type OperationsDashboardSummaryPayload = {
         totalCases: number;
         contractPending: number;
         contractGenerated: number;
-        contractSent: number;
-        /** @deprecated Use `contractSent` — kept for older clients. */
         contractsOut: number;
         signedContracts: number;
         fundingCall: number;
@@ -55,9 +72,6 @@ export type OperationsDashboardSummaryPayload = {
     };
     summaryAmounts: {
         contractPending: number;
-        contractGenerated: number;
-        contractSent: number;
-        /** @deprecated Use `contractSent` — kept for older clients. */
         contractsOut: number;
         signedContracts: number;
         fundingCall: number;
@@ -65,6 +79,7 @@ export type OperationsDashboardSummaryPayload = {
         funded: number;
     };
     caseStageCounts: Record<string, number>;
+    caseStageAmounts: Record<string, number>;
     /** How pipeline filters were applied (for debugging / future UI). */
     operationsMetricsMode: OperationsStatusFilterMode;
 };
@@ -86,125 +101,115 @@ export type OperationsDashboardRecentCasePayload = Array<{
 }>;
 
 /**
- * Parallel counts for the operations dashboard.
- * - OPERATIONS: most summary cards use `currentState` only; **contract generated** uses
- *   `contractGeneratedStrictMatchWhere`; **contract sent** uses `contractSentStrictMatchWhere`;
- *   **contract signed** uses `signedContractsStrictMatchWhere`.
- * - SUPER_ADMIN: pipeline cards and chart use `currentQueue` only.
+ * Operations dashboard totals: counts and funded amounts grouped by `Application.currentQueue`.
+ * Amounts use `Position.fundedAmount` (sum per application), with `loanAmount` fallback.
  */
 export async function aggregateOperationsDashboardSummary(
     authUser: AuthenticatedUser | null,
 ): Promise<OperationsDashboardSummaryPayload> {
-    const roleBase = buildRoleDefaultWhere(authUser);
-    const visibilityBase = mergeApplicationVisibilityWhere(roleBase, authUser);
     const mode = viewerMode(authUser);
-
-    const summaryMode: OperationsStatusFilterMode =
-        mode === 'queue' ? 'queue' : mode === 'state' ? 'state' : 'legacy';
-    const chartMode: OperationsStatusFilterMode =
-        mode === 'queue' ? 'queue' : 'legacy';
-
-    const filter = (raw: string, m: OperationsStatusFilterMode) =>
-        buildOperationsStatusFilterWhere(raw, m);
-
-    const sq = (raw: string) => combineWhere(visibilityBase, filter(raw, summaryMode));
-    const cq = (raw: string) => combineWhere(visibilityBase, filter(raw, chartMode));
-
-    const countQueries = [
-        prisma.application.count({ where: visibilityBase }),
-        prisma.application.count({ where: sq('Contract_Pending') }),
-        prisma.application.count({
-            where: combineWhere(visibilityBase, contractGeneratedStrictMatchWhere()),
-        }),
-        prisma.application.count({
-            where: combineWhere(visibilityBase, contractSentStrictMatchWhere()),
-        }),
-        prisma.application.count({
-            where: combineWhere(visibilityBase, signedContractsStrictMatchWhere()),
-        }),
-        prisma.application.count({ where: sq('Funding Call') }),
-        prisma.application.count({ where: sq('Disbursment') }),
-        prisma.application.count({ where: sq('Funded') }),
-        prisma.application.count({ where: cq('Agent') }),
-        prisma.application.count({ where: cq('Underwriter') }),
-        prisma.application.count({ where: cq('Final Underwriter') }),
-        prisma.application.count({ where: cq('Contracted') }),
-        prisma.application.count({ where: cq('Final') }),
-        prisma.application.count({ where: cq('Funding Call') }),
-    ];
-
-    const sumLoanAmount = (where: Prisma.ApplicationWhereInput) =>
-        prisma.application.aggregate({
-            where,
-            _sum: { loanAmount: true },
-        });
-
-    const amountQueries = [
-        sumLoanAmount(sq('Contract_Pending')),
-        sumLoanAmount(combineWhere(visibilityBase, contractGeneratedStrictMatchWhere())),
-        sumLoanAmount(combineWhere(visibilityBase, contractSentStrictMatchWhere())),
-        sumLoanAmount(combineWhere(visibilityBase, signedContractsStrictMatchWhere())),
-        sumLoanAmount(sq('Funding Call')),
-        sumLoanAmount(sq('Disbursment')),
-        sumLoanAmount(sq('Funded')),
-    ];
+    try {
+        await reconcileStaleContractReinitiationFlags();
+    } catch (reconcileErr) {
+        console.error('[operationsDashboard] reconcile stale reinitiation flags failed:', reconcileErr);
+    }
+    const queueMetrics = await aggregateQueueMetricsByCurrentQueue(authUser);
+    const { counts, amounts, totalCases } = queueMetrics;
 
     const [
-        totalCases,
-        contractPending,
-        contractGenerated,
-        contractSent,
-        signedContracts,
-        fundingCall,
-        disbursment,
-        funded,
-        agentCases,
-        underwriterCases,
-        finalUnderwriterCases,
-        contractedStageCases,
-        finalCases,
-        fundingCallStageCases,
-    ] = await Promise.all(countQueries);
+        agentCount,
+        scrubbingCount,
+        underwriterCount,
+        approvedByUwCount,
+        approvalSentCount,
+        approvedByIsoCount,
+        finalApprovalCount,
+        finalCount,
+        reinitiateContractCount,
+        contractPendingCount,
+        contractSentCount,
+        signedContractCount,
+        onHoldCount,
+        recentlyDeletedCount,
+    ] = await Promise.all([
+        countApplicationsForPipelineStage(authUser, 'Agent'),
+        countApplicationsForPipelineStage(authUser, 'Scrubbing'),
+        countApplicationsForPipelineStage(authUser, 'Underwriter'),
+        countApplicationsForPipelineStage(authUser, 'Approved_By_UW'),
+        countApplicationsForPipelineStage(authUser, 'Approval_Sent'),
+        countApplicationsForPipelineStage(authUser, 'Approved_By_ISO'),
+        countApplicationsForPipelineStage(authUser, 'Final_Approval'),
+        countApplicationsForPipelineStage(authUser, 'Final'),
+        countApplicationsForPipelineStage(authUser, 'Reinitiate_Contract'),
+        countApplicationsForPipelineStage(authUser, 'Contract_Pending'),
+        countApplicationsForPipelineStage(authUser, 'Contract_Sent'),
+        countApplicationsForPipelineStage(authUser, 'Contract_Signed'),
+        countApplicationsForPipelineStage(authUser, 'On_Hold'),
+        countApplicationsForPipelineStage(authUser, 'Recently_Deleted'),
+    ]);
 
-    const [
-        contractPendingAmountAgg,
-        contractGeneratedAmountAgg,
-        contractSentAmountAgg,
-        signedContractsAmountAgg,
-        fundingCallAmountAgg,
-        disbursmentAmountAgg,
-        fundedAmountAgg,
-    ] = await Promise.all(amountQueries);
+    // Use the same strict pipeline matchers as GET /applications?operationsStatus=…
+    // so sidebar badges match the filtered list (queue-only metrics can over-count).
+    const contractPending = contractPendingCount;
+    const contractsOut = contractSentCount;
+    const signedContracts = signedContractCount;
+    const fundingCall = counts['Funding Call'];
+    const disbursment = counts.Disbursment;
+    const funded = counts.Funded;
 
     return {
         summaryCounts: {
             totalCases,
             contractPending,
-            contractGenerated,
-            contractSent,
-            contractsOut: contractSent,
+            contractGenerated: 0,
+            contractsOut,
             signedContracts,
             fundingCall,
             disbursment,
             funded,
         },
         summaryAmounts: {
-            contractPending: Number(contractPendingAmountAgg._sum.loanAmount ?? 0),
-            contractGenerated: Number(contractGeneratedAmountAgg._sum.loanAmount ?? 0),
-            contractSent: Number(contractSentAmountAgg._sum.loanAmount ?? 0),
-            contractsOut: Number(contractSentAmountAgg._sum.loanAmount ?? 0),
-            signedContracts: Number(signedContractsAmountAgg._sum.loanAmount ?? 0),
-            fundingCall: Number(fundingCallAmountAgg._sum.loanAmount ?? 0),
-            disbursment: Number(disbursmentAmountAgg._sum.loanAmount ?? 0),
-            funded: Number(fundedAmountAgg._sum.loanAmount ?? 0),
+            contractPending: amounts.Contract_Pending,
+            contractsOut: amounts.Contract_Sent,
+            signedContracts: amounts.Contract_Signed,
+            fundingCall: amounts['Funding Call'],
+            disbursment: amounts.Disbursment,
+            funded: amounts.Funded,
         },
         caseStageCounts: {
-            Agent: agentCases,
-            Underwriter: underwriterCases,
-            'Final Underwriter': finalUnderwriterCases,
-            Contracted: contractedStageCases,
-            Final: finalCases,
-            'Funding Call': fundingCallStageCases,
+            Agent: agentCount,
+            Scrubbing: scrubbingCount,
+            'Underwriter': underwriterCount,
+            Approved_By_UW: approvedByUwCount,
+            Approval_Sent: approvalSentCount,
+            Approved_By_ISO: approvedByIsoCount,
+            Final_Approval: finalApprovalCount,
+            Contracted: signedContracts,
+            'Contract_Pending': contractPending,
+            Contract_Sent: contractsOut,
+            Contract_Signed: signedContracts,
+            Reinitiate_Contract: reinitiateContractCount,
+            Final: finalCount,
+            'Funding Call': fundingCall,
+            On_Hold: onHoldCount,
+            Disbursment: disbursment,
+            Funded: funded,
+            Declined: counts.Declined,
+            Recently_Deleted: recentlyDeletedCount,
+        },
+        caseStageAmounts: {
+            Agent: amounts.Agent,
+            Scrubbing: amounts.Scrubbing,
+            'Underwriter': amounts['Underwriter'],
+            Contracted: amounts.Contract_Signed,
+            'Contract_Pending': amounts.Contract_Pending,
+            Contract_Sent: amounts.Contract_Sent,
+            Contract_Signed: amounts.Contract_Signed,
+            Final: amounts.Final,
+            'Funding Call': amounts['Funding Call'],
+            Disbursment: amounts.Disbursment,
+            Funded: amounts.Funded,
+            Declined: amounts.Declined,
         },
         operationsMetricsMode: mode,
     };
@@ -234,7 +239,10 @@ export async function listOperationsDashboardRecentCases(
         : isOperations
           ? buildOperationsStatusFilterWhere('Contract_Signed', filterMode)
           : buildOperationsStatusFilterWhere('Contracted', filterMode);
-    const where = combineWhere(visibilityBase, recentDealsWhere);
+    const where = combineWhere(
+        combineWhere(visibilityBase, recentDealsWhere),
+        excludeSoftDeletedWhere(),
+    );
     const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 500) : 200;
 
     const rows = await prisma.application.findMany({

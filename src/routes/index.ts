@@ -26,10 +26,13 @@ import notificationRoutes from './notificationRoutes';
 import chatRoutes from './chatRoutes';
 import { connectGoogle, googleCallback } from './gmailRoutes';
 import commissionRequestRoutes from './commissionRequestRoutes';
-import oAuth2Client from '../config/gmail';
-import prisma from '../config/prismaClient';
+import {
+    findUserForGmailAccess,
+    getGoogleRefreshTokenForUser,
+    mintGmailAccessToken,
+} from '../services/googleToken.service';
+import { authenticateToken } from '../middleware/authMiddleware';
 import gmailServiceRoutes from './gmailServiceRoutes';
-import mailRoutes from './mailRoutes';
 import docusignRoutes from '../services/docusign/docusign.routes';
 import boldsignRoutes from '../services/boldsign/boldsign.routes';
 import automatedBankStatementRoutes from '../services/automatedBankStatement/automatedBankStatement.route';
@@ -37,9 +40,12 @@ import teamChatRoutes from '../team_chat/chat.routes';
 import contractRoutes from './contractRoutes';
 import collectionPaymentRoutes from './collectionPaymentRoutes';
 import isoRoutes from './isoRoutes';
+import backgroundCheckRoutes from './backgroundCheckRoutes';
 import paymentTemplateRoutes from './paymentTemplateRoutes';
 import isoDashboardRoutes from './isoRoutes';
 import decisionLogicRoutes from './decisionLogicRoutes';
+import datamerchRoutes from './datamerchRoutes';
+import opencorporatesRoutes from './opencorporatesRoutes';
 import claudePdfExtractRoutes from './claudePdfExtractRoutes';
 import syndicatorRoutes from './syndicatorRoutes';
 import applicationSyndicatorRoutes from './applicationSyndicatorRoutes';
@@ -48,6 +54,9 @@ import avochatoMessagingRoutes from './avochatoMessagingRoutes';
 import superAdminPlatformRoutes from './superAdminPlatformRoutes';
 import activityLogRoutes from './activityLogRoutes';
 import sendgridWebhookRoutes from './sendgridWebhookRoutes';
+import mailRoutes from './mailRoutes';
+import integrationSettingsRoutes from './integrationSettingsRoutes';
+import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
 
 router.use('/auth', authRoutes);
 router.use('/roles', roleRoutes);
@@ -75,7 +84,6 @@ router.get('/google/connect', connectGoogle);
 router.use('/commission-requests', commissionRequestRoutes);
 router.get('/google/callback', googleCallback);
 router.use('/gmail', gmailServiceRoutes);
-router.use('/mail', mailRoutes);
 router.use('/docusign', docusignRoutes);
 router.use('/boldsign', boldsignRoutes);
 router.use('/funding-calls', fundingCallRoutes);
@@ -85,9 +93,12 @@ router.use('/team-chat', teamChatRoutes);
 router.use('/contract', contractRoutes);
 router.use('/collection-payments', collectionPaymentRoutes);
 router.use('/iso', isoRoutes);
+router.use('/background-checks', backgroundCheckRoutes);
 router.use('/payment-templates', paymentTemplateRoutes);
 router.use('/iso', isoDashboardRoutes);
 router.use('/decision-logic', decisionLogicRoutes);
+router.use('/datamerch', datamerchRoutes);
+router.use('/opencorporates', opencorporatesRoutes);
 router.use('/pdf-extraction', claudePdfExtractRoutes);
 router.use('/syndicators', syndicatorRoutes);
 router.use('/application-syndicators', applicationSyndicatorRoutes);
@@ -95,8 +106,10 @@ router.use('/avochato-voice', avochatoVoiceRoutes);
 router.use('/avochato-messaging', avochatoMessagingRoutes);
 router.use('/super-admin-platform', superAdminPlatformRoutes);
 router.use('/activity-logs', activityLogRoutes);
-// SendGrid Event Webhook (public, no JWT) — POST {SENDGRID_WEBHOOK_URL}/sendgrid/webhook
 router.use('/sendgrid', sendgridWebhookRoutes);
+router.use('/mail', mailRoutes);
+router.use('/integration-settings', integrationSettingsRoutes);
+router.use('/background-check-report', backgroundCheckReportRoutes);
 
 // router.get('/google/test', async (req, res) => {
 //   try {
@@ -188,39 +201,17 @@ router.use('/sendgrid', sendgridWebhookRoutes);
 //   }
 // });
 
-router.get('/google/test', async (req, res) => {
+router.get('/google/test', authenticateToken, async (req, res) => {
   try {
-    // Prefer authenticated user if present; otherwise allow explicit lookup via query
-    const authUserId = (req as any).user?.id as string | undefined;
-    const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
-    const email = typeof req.query.email === 'string' ? req.query.email : undefined;
-    console.log("authUserId", authUserId)
-    console.log("userId", userId)
-    console.log("email", email)
-
-    if (!authUserId && !userId && !email) {
-      return res.status(400).json({
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
         success: false,
-        message: 'Provide ?userId=<uuid> or ?email=<registered-email>, or be authenticated',
+        message: 'Unauthorized',
       });
     }
 
-    const user = authUserId
-      ? await prisma.user.findUnique({
-        where: { id: authUserId },
-        select: { id: true, email: true, googleRefreshToken: true },
-      })
-      : userId
-        ? await prisma.user.findUnique({
-          where: { id: userId },
-          select: { id: true, email: true, googleRefreshToken: true },
-        })
-        : await prisma.user.findFirst({
-          where: email
-            ? { email: { equals: email.toLowerCase(), mode: 'insensitive' } }
-            : undefined,
-          select: { id: true, email: true, googleRefreshToken: true },
-        });
+    const user = await findUserForGmailAccess({ authUserId: userId });
 
     if (!user) {
       return res.status(404).json({
@@ -229,28 +220,29 @@ router.get('/google/test', async (req, res) => {
       });
     }
 
-    if (!user.googleRefreshToken) {
+    const refreshToken = getGoogleRefreshTokenForUser(user);
+    if (!refreshToken) {
       return res.status(400).json({
         success: false,
-        message: 'googleRefreshToken is missing for this user',
+        message:
+          'Gmail is not connected for this user. Connect Google from the Gmail page.',
       });
     }
 
-    oAuth2Client.setCredentials({
-      refresh_token: user.googleRefreshToken,
-    });
-
-    const accessTokenResponse = await oAuth2Client.getAccessToken();
+    const accessToken = await mintGmailAccessToken(refreshToken);
 
     return res.json({
       success: true,
-      accessToken: accessTokenResponse?.token,
+      accessToken,
+      email: user.email,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Token error:', error);
+    const message =
+      error instanceof Error ? error.message : 'Failed to generate access token';
     return res.status(500).json({
       success: false,
-      message: 'Failed to generate access token',
+      message,
     });
   }
 });

@@ -8,12 +8,6 @@ import {
 } from '@prisma/client';
 import * as XLSX from 'xlsx';
 import prisma from '../config/prismaClient';
-import { resolveOptionalTenantUserId } from '../middleware/authMiddleware';
-import {
-  aggregateDebitPaymentSummary,
-  countDealsWithDebitPayments,
-  type DebitSummaryDateQuery,
-} from '../services/collectionPaymentDebitSummary';
 import {
   applyStrictTransactionFiltering,
   computeDealCollectionsView,
@@ -43,6 +37,8 @@ import {
   parseTransactionStatusValue,
 } from '../utils/achReturnCodeFromDescription';
 import { getPreviewSheetDescription } from '../utils/previewSheetDebitCredit';
+import { computeCreditDebitTrend } from '../services/paymentDashboardCreditDebitTrend';
+import { mergeApplicationWhereWithOrganization, buildOrganizationListFilterWhere } from '../utils/deriveOrganizationFromDealId';
 
 const STATUS_MAP_TO_DB: Record<string, CollectionPaymentStatus | undefined> = {
   paid: CollectionPaymentStatus.PAID,
@@ -842,7 +838,7 @@ function pruneExpiredFailedTxSummaryCache() {
 async function aggregateFailedTransactionsPortfolioSummary(
   cohortApps: FailedTxCohortApp[],
   dateQuery: FailedTxDateQuery,
-  _paymentCache?: Map<string, FailedTxPaymentRow[]>,
+  paymentCache?: Map<string, FailedTxPaymentRow[]>,
 ): Promise<{
   totalAmount: number;
   totalCount: number;
@@ -851,20 +847,238 @@ async function aggregateFailedTransactionsPortfolioSummary(
   totalCountDisplay: string;
   dealCountDisplay: string;
 }> {
-  const applicationIds = cohortApps.map((app) => app.id);
-  const debitDateQuery = dateQuery as DebitSummaryDateQuery;
-  const [debitSummary, dealCount] = await Promise.all([
-    aggregateDebitPaymentSummary({ applicationIds, dateQuery: debitDateQuery }),
-    countDealsWithDebitPayments({ applicationIds, dateQuery: debitDateQuery }),
+  const cache = paymentCache ?? new Map<string, FailedTxPaymentRow[]>();
+  const bundles = await collectAllFailedTxBundlesParallel(cohortApps, dateQuery, cache);
+  return summarizeFailedTxBundles(bundles);
+}
+
+type FailedTxSummaryShape = {
+  totalAmount: number;
+  totalCount: number;
+  dealCount: number;
+  totalAmountDisplay: string;
+  totalCountDisplay: string;
+  dealCountDisplay: string;
+};
+
+/**
+ * Inclusive date window (OR across processedDate / Date / scheduledDate) for the raw-DEBIT
+ * summary aggregate. Mirrors {@link buildFailedTxPaymentsPrefilter} but also covers a
+ * year-only (`kind: 'y'`) filter.
+ */
+function buildAllDebitSummaryDateWhere(
+  dateQuery: FailedTxDateQuery,
+): Prisma.CollectionPaymentWhereInput | undefined {
+  if (dateQuery.kind === 'none') return undefined;
+  if (dateQuery.kind === 'y') {
+    const from = new Date(Date.UTC(dateQuery.year, 0, 1));
+    const to = new Date(Date.UTC(dateQuery.year, 11, 31, 23, 59, 59, 999));
+    return {
+      OR: [
+        { processedDate: { gte: from, lte: to } },
+        { Date: { gte: from, lte: to } },
+        { scheduledDate: { gte: from, lte: to } },
+      ],
+    };
+  }
+  return buildFailedTxPaymentsPrefilter(dateQuery);
+}
+
+/**
+ * `status = DEBIT` filter for the Failed Transactions summary cards — same definition as the
+ * dashboard "Failed payment" KPI (all deals, no funded restriction, no strict pairing), plus the
+ * optional date window and search (deal id / business name).
+ */
+function buildAllDebitSummaryWhere(
+  searchRaw: string,
+  dateQuery: FailedTxDateQuery,
+  organizationParam = '',
+): Prisma.CollectionPaymentWhereInput {
+  const and: Prisma.CollectionPaymentWhereInput[] = [
+    { status: CollectionPaymentStatus.DEBIT },
+  ];
+
+  const org = organizationParam.trim();
+  if (org) {
+    and.push({ Application: buildOrganizationListFilterWhere(org) });
+  }
+
+  const dateWhere = buildAllDebitSummaryDateWhere(dateQuery);
+  if (dateWhere) and.push(dateWhere);
+
+  if (searchRaw.length > 0) {
+    const token = normalizeDealIdToken(searchRaw);
+    const appOr: Prisma.ApplicationWhereInput[] = [
+      { dealId: { contains: searchRaw, mode: 'insensitive' } },
+      { note: { contains: `[DEAL_ID:${searchRaw}]`, mode: 'insensitive' } },
+      { client: { businessName: { contains: searchRaw, mode: 'insensitive' } } },
+    ];
+    if (token.length > 0) {
+      appOr.push({ dealId: { contains: token, mode: 'insensitive' } });
+      appOr.push({ note: { contains: `[DEAL_ID:${token}]`, mode: 'insensitive' } });
+    }
+    and.push({
+      OR: [
+        { dealId: { contains: searchRaw, mode: 'insensitive' } },
+        ...(token.length > 0
+          ? [{ dealId: { contains: token, mode: 'insensitive' } } as const]
+          : []),
+        { Application: { OR: appOr } },
+      ],
+    });
+  }
+
+  return { AND: and };
+}
+
+/**
+ * Single source of truth for the Failed Transactions summary cards. Computes total |amount|,
+ * transaction count, and affected-deal count directly from `CollectionPayment` rows with
+ * `status = DEBIT` — identical to the dashboard "Failed payment" KPI so the two never disagree.
+ */
+async function aggregateAllDebitSummary(
+  searchRaw: string,
+  dateQuery: FailedTxDateQuery,
+  organizationParam = '',
+): Promise<FailedTxSummaryShape> {
+  const where = buildAllDebitSummaryWhere(searchRaw, dateQuery, organizationParam);
+  const [agg, dealGroups] = await Promise.all([
+    prisma.collectionPayment.aggregate({
+      where,
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    prisma.collectionPayment.groupBy({ by: ['applicationId'], where }),
   ]);
-  const summaryTotal = debitSummary.totalAmount;
+
+  const totalAmount = Number(Math.abs(toNum(agg._sum.amount)).toFixed(2));
+  const totalCount = Number(agg._count?._all ?? 0) || 0;
+  const dealCount = dealGroups.filter((g) => g.applicationId != null).length;
+
   return {
-    totalAmount: summaryTotal,
-    totalCount: debitSummary.totalCount,
+    totalAmount,
+    totalCount,
     dealCount,
-    totalAmountDisplay: formatFailedSummaryMoney(summaryTotal),
-    totalCountDisplay: debitSummary.totalCount.toLocaleString('en-US'),
+    totalAmountDisplay: formatFailedSummaryMoney(totalAmount),
+    totalCountDisplay: totalCount.toLocaleString('en-US'),
     dealCountDisplay: dealCount.toLocaleString('en-US'),
+  };
+}
+
+async function loadFailedTxAppsByIds(
+  appIds: string[],
+): Promise<Map<string, FailedTxCohortApp>> {
+  if (!appIds.length) return new Map();
+  const apps = (await prisma.application.findMany({
+    where: { id: { in: appIds } },
+    select: {
+      id: true,
+      applicationId: true,
+      dealId: true,
+      note: true,
+      client: { select: { businessName: true } },
+    },
+  })) as FailedTxCohortApp[];
+  return new Map(apps.map((a) => [a.id, a]));
+}
+
+function failedTxRowTimestamp(row: FailedTxRow): number {
+  const v = row.processedDate ?? row.paymentDate ?? row.scheduledDate;
+  if (!v) return -Infinity;
+  const ms = new Date(v).getTime();
+  return Number.isFinite(ms) ? ms : -Infinity;
+}
+
+function bundleLatestFailedTxTimestamp(bundle: FailedTxDealBundle): number {
+  let best = -Infinity;
+  for (const tx of bundle.failedRows) {
+    const ms = failedTxRowTimestamp(tx);
+    if (ms > best) best = ms;
+  }
+  return best;
+}
+
+/** Group raw `status = DEBIT` rows by application for the failed-transactions table. */
+function buildFailedTxBundlesFromDebitPayments(
+  payments: FailedTxPaymentRow[],
+  appsById: Map<string, FailedTxCohortApp>,
+): FailedTxDealBundle[] {
+  const byAppId = new Map<string, FailedTxPaymentRow[]>();
+  for (const payment of payments) {
+    const appId = payment.applicationId;
+    if (!appId) continue;
+    const list = byAppId.get(appId) ?? [];
+    list.push(payment);
+    byAppId.set(appId, list);
+  }
+
+  const bundles: FailedTxDealBundle[] = [];
+  for (const [appId, rows] of byAppId) {
+    const app =
+      appsById.get(appId) ??
+      ({
+        id: appId,
+        applicationId: null,
+        dealId: rows[0]?.dealId ?? null,
+        note: null,
+        client: null,
+      } satisfies FailedTxCohortApp);
+
+    let dealFailedAmount = 0;
+    const failedRows: FailedTxRow[] = [];
+    for (const payment of rows) {
+      const row = mapPrismaPaymentToFailedTxRow(payment);
+      failedRows.push(row);
+      dealFailedAmount += row.amount;
+    }
+    failedRows.sort((a, b) => {
+      const da = `${b.processedDate ?? b.paymentDate ?? b.scheduledDate ?? ''}`.localeCompare(
+        `${a.processedDate ?? a.paymentDate ?? a.scheduledDate ?? ''}`,
+      );
+      if (da !== 0) return da;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    });
+    bundles.push({
+      app,
+      failedRows,
+      failedAmount: Number(dealFailedAmount.toFixed(2)),
+    });
+  }
+
+  bundles.sort((a, b) => bundleLatestFailedTxTimestamp(b) - bundleLatestFailedTxTimestamp(a));
+  return bundles;
+}
+
+/**
+ * Paginate failed-transaction deals from every `CollectionPayment` with `status = DEBIT`
+ * (same scope as the dashboard Failed Payment KPI).
+ */
+async function paginateAllDebitFailedTransactions(
+  searchRaw: string,
+  dateQuery: FailedTxDateQuery,
+  page: number,
+  pageSize: number,
+): Promise<{ pageBundles: FailedTxDealBundle[]; totalDeals: number }> {
+  const where = buildAllDebitSummaryWhere(searchRaw, dateQuery);
+  const payments = await prisma.collectionPayment.findMany({
+    where,
+    select: FAILED_TX_PAYMENT_SELECT,
+    orderBy: [
+      { processedDate: 'desc' },
+      { Date: 'desc' },
+      { scheduledDate: 'desc' },
+      { createdAt: 'desc' },
+    ],
+  });
+
+  const appIds = [...new Set(payments.map((p) => p.applicationId).filter(Boolean))] as string[];
+  const appsById = await loadFailedTxAppsByIds(appIds);
+  const bundles = buildFailedTxBundlesFromDebitPayments(payments, appsById);
+
+  const skip = Math.max(0, (page - 1) * pageSize);
+  return {
+    pageBundles: bundles.slice(skip, skip + pageSize),
+    totalDeals: bundles.length,
   };
 }
 
@@ -1386,7 +1600,7 @@ class CollectionPaymentController {
               ? CollectionPaymentSource.MANUAL
               : CollectionPaymentSource.SYSTEM,
           paymentNumber: (lastPayment?.paymentNumber ?? 0) + 1,
-          createdById: await resolveOptionalTenantUserId(req),
+          createdById: (req as any)?.user?.id ?? null,
         },
       });
 
@@ -1659,7 +1873,7 @@ class CollectionPaymentController {
           queueJobId,
           fileName: file.originalname || safeOriginal,
           filePath: `BUFFER_ONLY:${queueJobId}-${safeOriginal}`,
-          createdById: await resolveOptionalTenantUserId(req),
+          createdById: (req as any)?.user?.id ?? null,
           status: 'PROCESSING',
         },
       });
@@ -2135,50 +2349,16 @@ class CollectionPaymentController {
         req.query.includeSummary === '1' || req.query.includeSummary === 'true';
 
       const dateQuery = parseFailedTransactionsDateQuery(req);
-      if (!buildFailedTxCohortApplicationWhere(searchRaw)) {
-        return res
-          .status(500)
-          .json({ success: false, message: 'Funded cohort scope unavailable' });
-      }
 
-      const cohortApps = await loadFailedTxCohortApps(searchRaw);
-
-      if (!cohortApps.length) {
-        const emptySummary = {
-          totalAmount: 0,
-          totalCount: 0,
-          dealCount: 0,
-          totalAmountDisplay: formatFailedSummaryMoney(0),
-          totalCountDisplay: '0',
-          dealCountDisplay: '0',
-        };
-        return res.status(200).json({
-          success: true,
-          data: [],
-          summary: includeSummary ? emptySummary : null,
-          pagination: {
-            page: 1,
-            pageSize,
-            total: 0,
-            totalPages: 0,
-            hasNextPage: false,
-            hasPreviousPage: false,
-          },
-        });
-      }
-
-      const paymentCache = new Map<string, FailedTxPaymentRow[]>();
-
-      const [{ pageBundles, hasNextPage }, summary] = await Promise.all([
-        paginateFailedTxDeals(cohortApps, dateQuery, page, pageSize, paymentCache),
+      const [{ pageBundles, totalDeals }, summary] = await Promise.all([
+        paginateAllDebitFailedTransactions(searchRaw, dateQuery, page, pageSize),
         includeSummary
-          ? collectAllFailedTxBundlesParallel(cohortApps, dateQuery, paymentCache).then(
-              summarizeFailedTxBundles,
-            )
+          ? aggregateAllDebitSummary(searchRaw, dateQuery)
           : Promise.resolve(null),
       ]);
 
       const data = await serializeFailedTxDealBundlesWithEconomics(pageBundles);
+      const totalPages = totalDeals > 0 ? Math.ceil(totalDeals / pageSize) : 0;
 
       return res.status(200).json({
         success: true,
@@ -2187,9 +2367,9 @@ class CollectionPaymentController {
         pagination: {
           page,
           pageSize,
-          total: null,
-          totalPages: null,
-          hasNextPage,
+          total: totalDeals,
+          totalPages,
+          hasNextPage: page < totalPages,
           hasPreviousPage: page > 1,
         },
       });
@@ -2215,36 +2395,9 @@ class CollectionPaymentController {
       const searchRaw =
         typeof req.query.search === 'string' ? req.query.search.trim() : '';
       const dateQuery = parseFailedTransactionsDateQuery(req);
-      const applicationFilter = buildFailedTxCohortApplicationWhere(searchRaw);
-      if (!applicationFilter) {
-        return res
-          .status(500)
-          .json({ success: false, message: 'Funded cohort scope unavailable' });
-      }
 
-      const cohortApps = await loadFailedTxCohortApps(searchRaw);
-
-      let payload: FailedTxSummaryPayload;
-
-      if (!cohortApps.length) {
-        payload = {
-          success: true,
-          summary: {
-            totalAmount: 0,
-            totalCount: 0,
-            dealCount: 0,
-            totalAmountDisplay: formatFailedSummaryMoney(0),
-            totalCountDisplay: '0',
-            dealCountDisplay: '0',
-          },
-        };
-      } else {
-        const summary = await aggregateFailedTransactionsPortfolioSummary(
-          cohortApps,
-          dateQuery,
-        );
-        payload = { success: true, summary };
-      }
+      const summary = await aggregateAllDebitSummary(searchRaw, dateQuery);
+      const payload: FailedTxSummaryPayload = { success: true, summary };
 
       failedTxSummaryCache.set(cacheKey, { storedAt: Date.now(), payload });
       return res.status(200).json(payload);
@@ -2254,7 +2407,6 @@ class CollectionPaymentController {
     }
   }
 
-  /** KPI cards + portfolio chart only (cached). Use with paginated deals fetch in parallel. */
   async financialOverviewSummary(req: Request, res: Response) {
     try {
       const { buildPaymentFinancialOverviewSummary } = await import(
@@ -2262,6 +2414,7 @@ class CollectionPaymentController {
       );
       const chartYear = Number(req.query.chartYear);
       const chartMonthRaw = req.query.chartMonth;
+      const organization = String(req.query.organization ?? '').trim() || undefined;
       const data = await buildPaymentFinancialOverviewSummary(
         Number.isFinite(chartYear) ? chartYear : undefined,
         chartMonthRaw === 'all'
@@ -2269,6 +2422,7 @@ class CollectionPaymentController {
           : chartMonthRaw != null && String(chartMonthRaw).trim() !== ''
             ? Number(chartMonthRaw)
             : undefined,
+        organization,
       );
       return res.status(200).json({ success: true, data });
     } catch (error) {
@@ -2277,69 +2431,300 @@ class CollectionPaymentController {
     }
   }
 
-  async financialOverview(req: Request, res: Response) {
+  /**
+   * Debit vs credit trend for the payment dashboard chart — scoped by view/year/month.
+   * Loads only collection rows in the relevant date window (not the full portfolio).
+   */
+  async creditDebitTrend(req: Request, res: Response) {
     try {
-      const { buildPaymentFinancialOverview } = await import(
-        '../services/paymentFinancialOverviewService'
-      );
-      const page = Number(req.query.page) || 1;
-      const limit = Number(req.query.limit) || 10;
-      const search = typeof req.query.search === 'string' ? req.query.search : '';
-      const sortBy = typeof req.query.sortBy === 'string' ? req.query.sortBy : 'createdAt';
-      const sortOrder =
-        req.query.sortOrder === 'asc' || req.query.sortOrder === 'desc'
-          ? req.query.sortOrder
-          : 'desc';
-      const chartYear = Number(req.query.chartYear);
-      const chartMonthRaw = req.query.chartMonth;
-
-      const data = await buildPaymentFinancialOverview({
-        page,
-        limit,
-        search,
-        sortBy,
-        sortOrder,
-        chartYear: Number.isFinite(chartYear) ? chartYear : undefined,
-        chartMonth:
-          chartMonthRaw === 'all'
-            ? 'all'
-            : chartMonthRaw != null && String(chartMonthRaw).trim() !== ''
-              ? Number(chartMonthRaw)
-              : undefined,
+      const result = await computeCreditDebitTrend(req.query as Record<string, unknown>);
+      if (!result) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid query: view (monthly|weekly|monthlyInYear|yearly), year, optional month (0-11 or all)',
+        });
+      }
+      return res.status(200).json({
+        success: true,
+        data: {
+          points: result.points,
+          yearOptions: result.yearOptions,
+        },
       });
-
-      return res.status(200).json({ success: true, data });
     } catch (error) {
-      console.error('Collection payment financial overview error:', error);
+      console.error('Credit/debit trend error:', error);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }
 
   async dashboard(req: Request, res: Response) {
     try {
-      const { loadPortfolioDashboardContext, aggregatePaymentPortfolioDashboard } = await import(
-        '../services/paymentPortfolioDashboardService'
+      const organizationParam = String(req.query.organization ?? '').trim();
+      const now = new Date();
+      const todayStart = startOfDay(now);
+      const todayEnd = endOfDay(now);
+      const next7End = endOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7));
+      /** Same cohort as Payment History `/applications?statsBucket=funded` (queue-led only — see `applicationStatsBucketWhere`). */
+      const fundedDashboardWhereRaw = buildApplicationStatsBucketWhere('funded');
+      if (!fundedDashboardWhereRaw) {
+        return res.status(500).json({ success: false, message: 'Dashboard funded scope unavailable' });
+      }
+      const fundedDashboardWhere = mergeApplicationWhereWithOrganization(
+        fundedDashboardWhereRaw,
+        organizationParam,
       );
-      const ctx = await loadPortfolioDashboardContext();
-      const data = await aggregatePaymentPortfolioDashboard(ctx);
-      return res.status(200).json({ success: true, data });
+      const disbursementApps = await prisma.application.findMany({
+        where: fundedDashboardWhere,
+        select: {
+          id: true,
+          applicationId: true,
+          updatedAt: true,
+          loanAmount: true,
+          dealId: true,
+          commissionAmount: true,
+          termsOffers: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              approvedAmount: true,
+              factorRate: true,
+              paybackAmount: true,
+              commissionAmount: true,
+            },
+          },
+          OfferDecision: {
+            select: {
+              offer: true,
+              decision: true,
+              rate: true,
+              fees: true,
+              totalRemit: true,
+              refinanceAmount: true,
+            },
+          },
+        },
+      });
+
+      /** Σ(`OfferDecision.offer` × `OfferDecision.rate`) for funded queue or Funded state — Total Payback card. */
+      const appsForPaybackPortfolioTotal = await prisma.application.findMany({
+        where: mergeApplicationWhereWithOrganization(
+          buildFundedApplicationWhereForPaybackTotals(),
+          organizationParam,
+        ),
+        select: {
+          id: true,
+          dealId: true,
+          OfferDecision: {
+            select: {
+              offer: true,
+              decision: true,
+              rate: true,
+            },
+          },
+        },
+      });
+      const totalPayback = sumTotalPaybackOfferTimesRateFromOfferDecisionRows(appsForPaybackPortfolioTotal);
+
+      const appIds = disbursementApps.map((app) => app.id);
+      const failedPaymentSummary = await aggregateAllDebitSummary(
+        '',
+        { kind: 'none' },
+        organizationParam,
+      );
+      /** Due-today / next-7 only — avoids loading the full payment history for KPI cards. */
+      const duesPayments = appIds.length
+        ? await prisma.collectionPayment.findMany({
+            where: {
+              applicationId: { in: appIds },
+              OR: [
+                { status: CollectionPaymentStatus.DUE_TODAY },
+                { status: { in: Array.from(OPEN_DUE_STATUSES) } },
+              ],
+            },
+            select: {
+              id: true,
+              applicationId: true,
+              dealId: true,
+              amount: true,
+              status: true,
+              scheduledDate: true,
+            },
+          })
+        : [];
+
+      const dealIdByApplicationIdDashboard = new Map(
+        disbursementApps.map((a) => [a.id, a.dealId]),
+      );
+      const paymentsForDueCards = duesPayments.filter((p) =>
+        paymentBelongsToApplicationDeal(p, dealIdByApplicationIdDashboard.get(p.applicationId)),
+      );
+
+      let dueToday = 0;
+      let dueNext7Days = 0;
+      let totalDues = 0;
+      let recovered = 0;
+      let defaults = 0;
+
+      for (const payment of paymentsForDueCards) {
+        const amount = toNum(payment.amount);
+        const date = payment.scheduledDate ? new Date(payment.scheduledDate) : null;
+        const status = payment.status;
+
+        // Due today follows schedule semantics first (status-based),
+        // and falls back to date only for still-open statuses.
+        if (status === CollectionPaymentStatus.DUE_TODAY) {
+          dueToday += amount;
+        } else if (
+          OPEN_DUE_STATUSES.has(status) &&
+          date &&
+          date >= todayStart &&
+          date <= todayEnd
+        ) {
+          dueToday += amount;
+        }
+
+        // Next 7 days includes only open scheduled items and excludes today's dues.
+        if (OPEN_DUE_STATUSES.has(status) && date && date > todayEnd && date <= next7End) {
+          dueNext7Days += amount;
+        }
+
+        if (!EXCLUDED_FROM_TOTAL_DUES.has(status)) {
+          // Keep for legacy cards if needed; overridden below with financials-based total.
+          totalDues += amount;
+        }
+
+        if (RECOVERED_STATUSES.has(status)) {
+          // Keep for legacy cards if needed; overridden below with financials-based total.
+          recovered += amount;
+        }
+      }
+
+      // Recovered Amount + Total Dues: single source of truth as funded list/embed — sum per-deal from DB (`getBalancesForApplicationIds`).
+      const dealFinancialRows =
+        appIds.length > 0 ? await getBalancesForApplicationIds(prisma, appIds) : [];
+      const dealFinancialByAppId = new Map(
+        dealFinancialRows.map((r) => [r.applicationId, r]),
+      );
+      recovered = dealFinancialRows.reduce(
+        (sum, row) =>
+          sum +
+          repaidTowardPaybackExcludingSurplus(
+            row.grossRepaidDealEconomics,
+            row.paybackAmount,
+          ),
+        0,
+      );
+      /** Same “payback remaining” as `Transactions.tsx` (gross repaid economics, not strict pairing balance). */
+      totalDues = dealFinancialRows.reduce(
+        (sum, row) =>
+          sum +
+          Math.max(
+            balanceDueLikeTransactionsPage(row.paybackAmount, row.grossRepaidDealEconomics),
+            0,
+          ),
+        0,
+      );
+      defaults = failedPaymentSummary.totalAmount;
+      const failedPaymentDebitCount = failedPaymentSummary.totalCount;
+      const failedPaymentDebitTotal = failedPaymentSummary.totalAmount;
+
+      // Portfolio: funded + net funding; Above Principal = Σ signed gaps = Σ(positive) − Σ(|negative|) (same as Payment History StatCard).
+      let fundedPortfolioTotal = 0;
+      let netFundingPortfolioTotal = 0;
+      let abovePrincipalPositiveSum = 0;
+      let abovePrincipalNegativeMagSum = 0;
+      let dealsWithPositiveGap = 0;
+      let dealsWithNegativeGap = 0;
+      let dealsWithZeroGap = 0;
+      const zeroGapDealsPayload: Array<{ dealId: string; gapAmount: number }> = [];
+      const GAP_CLASSIFY_EPS = 1e-6;
+      for (const app of disbursementApps) {
+        const advanceNum = Math.max(getApprovedOfferAmountForDealBalance(app), 0);
+        const od = app.OfferDecision ?? null;
+        const feesAmount = feesForOfferDecision(od);
+        const refinanceAmount = toNum(od?.refinanceAmount);
+        const latestTermsOffer = app.termsOffers?.[0];
+        const commissionOnDeal =
+          parseMoney(app.commissionAmount) ?? parseMoney(latestTermsOffer?.commissionAmount) ?? 0;
+
+        const netFundingNum = Math.max(
+          0,
+          advanceNum - feesAmount - refinanceAmount,
+        );
+        const alreadyNetNum = alreadyNetDealEconomics(
+          advanceNum,
+          feesAmount,
+          commissionOnDeal,
+        );
+
+        const bal = dealFinancialByAppId.get(app.id);
+        const grossRepaid = bal?.grossRepaidDealEconomics ?? 0;
+        const paybackAmt = bal?.paybackAmount ?? 0;
+        const repaidCapped = repaidTowardPaybackExcludingSurplus(grossRepaid, paybackAmt);
+        const gap = signedAbovePrincipalGap(repaidCapped, alreadyNetNum);
+        if (gap > GAP_CLASSIFY_EPS) {
+          abovePrincipalPositiveSum += gap;
+          dealsWithPositiveGap += 1;
+        } else if (gap < -GAP_CLASSIFY_EPS) {
+          abovePrincipalNegativeMagSum += -gap;
+          dealsWithNegativeGap += 1;
+        } else {
+          dealsWithZeroGap += 1;
+          const dealLabel = String(app.dealId ?? '').trim();
+          zeroGapDealsPayload.push({
+            dealId: dealLabel.length > 0 ? dealLabel : String(app.applicationId),
+            gapAmount: Number(gap.toFixed(2)),
+          });
+        }
+
+        fundedPortfolioTotal += advanceNum;
+        netFundingPortfolioTotal += netFundingNum;
+      }
+      const abovePrincipalNet =
+        abovePrincipalPositiveSum - abovePrincipalNegativeMagSum;
+
+      const collectionEfficiency = totalDues > 0 ? Number(((recovered / totalDues) * 100).toFixed(1)) : 0;
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          cards: {
+            dueToday: Number(dueToday.toFixed(2)),
+            dueNext7Days: Number(dueNext7Days.toFixed(2)),
+            totalDues: Number(totalDues.toFixed(2)),
+            totalPayback: Number(totalPayback.toFixed(2)),
+            recovered: Number(recovered.toFixed(2)),
+            defaults: Number(defaults.toFixed(2)),
+            // Failed Payment KPI: total |amount| + count of CollectionPayment rows with status = DEBIT.
+            failedPayment: {
+              totalAmount: Number(failedPaymentDebitTotal.toFixed(2)),
+              count: failedPaymentDebitCount,
+            },
+            totalDeals: disbursementApps.length,
+            activeDeals: disbursementApps.length,
+            collectionEfficiency,
+            fundedTotal: Number(fundedPortfolioTotal.toFixed(2)),
+            netFundingTotal: Number(netFundingPortfolioTotal.toFixed(2)),
+            abovePrincipalTotal: Number(abovePrincipalNet.toFixed(2)),
+            abovePrincipalPositiveSum: Number(abovePrincipalPositiveSum.toFixed(2)),
+            abovePrincipalNegativeSum: Number(abovePrincipalNegativeMagSum.toFixed(2)),
+            dealsWithPositiveGap,
+            dealsWithNegativeGap,
+            dealsWithZeroGap,
+            zeroGapDeals: zeroGapDealsPayload,
+          },
+          moneyFlow: {
+            monthly: [],
+            weekly: [],
+            yearly: [],
+          },
+        },
+      });
     } catch (error) {
       console.error('Collection payment dashboard error:', error);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }
-}
-
-/** Portfolio failed-payment KPI — count + sum of CollectionPayment rows with status = DEBIT. */
-export async function loadPortfolioFailedPaymentSummaryForOverview(): Promise<{
-  totalAmount: number;
-  failedTxnCount: number;
-}> {
-  const summary = await aggregateDebitPaymentSummary();
-  return {
-    totalAmount: summary.totalAmount,
-    failedTxnCount: summary.totalCount,
-  };
 }
 
 const collectionPaymentController = new CollectionPaymentController();

@@ -265,9 +265,19 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
     if (!templateId?.trim()) {
       return res.status(400).json({ message: 'templateId is required' });
     }
+    const funderName =
+      typeof req.query.funderName === 'string' ? req.query.funderName.trim() : undefined;
+    const funderProfileId =
+      typeof req.query.funderProfileId === 'string'
+        ? req.query.funderProfileId.trim()
+        : undefined;
+    const state =
+      typeof req.query.state === 'string' ? req.query.state.trim() : undefined;
+
     const pdfBuffer = await docusignService.downloadTemplatePdf(
       userId,
       String(templateId).trim(),
+      { funderName, funderProfileId, state },
     );
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(

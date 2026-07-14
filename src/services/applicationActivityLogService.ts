@@ -1,8 +1,9 @@
 import type { Role } from '@prisma/client';
 import type { Request } from 'express';
 import prisma from '../config/prismaClient';
-import type { AuthenticatedUser } from './applicationService';
+import { resolveAuditLogUserId } from '../middleware/authMiddleware';
 import { markActivityLogged } from './outboundCommunicationService';
+import type { AuthenticatedUser } from './applicationService';
 
 // Local TypeScript representation of allowed activity action types.
 // This mirrors the values used in the Prisma enum.
@@ -21,34 +22,44 @@ export type ApplicationActivityActionType =
   | 'APPLICATION_REJECTED'
   | 'PAYMENT_MAIL_SENT'
   | 'PAYMENT_MAIL_FAILED'
-  | 'PAYMENT_MAIL_QUEUED';
+  | 'PAYMENT_MAIL_QUEUED'
+  | 'CONTRACT_SIGNING_STATUS'
+  | 'CONTRACT_REINITIATION_REQUIRED'
+  | 'CONTRACT_REINITIATED'
+  | 'CONTRACT_GENERATED'
+  | 'CONTRACT_DRAFT_CREATED'
+  | 'CONTRACT_ENVELOPE_SENT';
 
 export interface CreateApplicationActivityLogInput {
   applicationId: string | null;
   user: AuthenticatedUser | null;
-  req?: Request | null;
   actionType: ApplicationActivityActionType;
   actionDescription: string;
   previousStatus?: string | null;
   currentStatus?: string | null;
+  /** Optional originating request, used by callers to enrich context. */
+  req?: Request | null;
   metadata?: Record<string, unknown>;
 }
 
 export async function createApplicationActivityLog(input: CreateApplicationActivityLogInput) {
-  const { applicationId, user, req, actionType, actionDescription, previousStatus, currentStatus, metadata } = input;
+  const { applicationId, user, actionType, actionDescription, previousStatus, currentStatus, metadata, req } = input;
 
-  const userId = user?.id ?? null;
+  const userId = await resolveAuditLogUserId(req, {
+    user,
+    applicationId: applicationId ?? undefined,
+  });
   const normalizedRole = (user?.role ?? null) as Role | string | null;
   const roleValue =
     typeof normalizedRole === 'string' 
       ? (normalizedRole.trim().toUpperCase().replace(/-/g, '_') as Role)
       : (normalizedRole as Role | null);
 
-  const log = await prisma.applicationActivityLog.create({
+  return prisma.applicationActivityLog.create({
     data: {
       applicationId,
       userId,
-      userRole: roleValue && ['AGENT', 'UNDERWRITER', 'FINAL_UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'ADMIN', 'SUPER_ADMIN'].includes(roleValue)
+      userRole: roleValue && ['AGENT', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'ADMIN', 'SUPER_ADMIN'].includes(roleValue)
         ? (roleValue as Role)
         : null,
       actionType,
@@ -57,10 +68,10 @@ export async function createApplicationActivityLog(input: CreateApplicationActiv
       currentStatus,
       metadata: metadata ? (metadata as any) : undefined,
     },
+  }).then((log) => {
+    if (req) markActivityLogged(req);
+    return log;
   });
-
-  if (req) markActivityLogged(req);
-  return log;
 }
 
 export async function getApplicationActivityLogsForUser(applicationId: string, user: AuthenticatedUser | null) {
@@ -80,7 +91,7 @@ export async function getApplicationActivityLogsForUser(applicationId: string, u
 
   // Basic access check: elevated roles see everything; agents see only owned applications
   const role = (user?.role ?? '').toString().trim().toUpperCase().replace(/-/g, '_');
-  const isElevated = ['ADMIN', 'SUPER_ADMIN', 'UNDERWRITER', 'FINAL_UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS'].includes(role);
+  const isElevated = ['ADMIN', 'SUPER_ADMIN', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS'].includes(role);
   const isAgent = role === 'AGENT';
 
   if (!user || (!isElevated && !(isAgent && (application.referringAgentId === user.id || application.createdById === user.id)))) {

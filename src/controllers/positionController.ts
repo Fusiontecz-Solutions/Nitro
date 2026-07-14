@@ -1,7 +1,6 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import { resolveApplicationAttributedUserId } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 
@@ -130,7 +129,7 @@ class PositionController {
         });
       }
 
-      // Accept application as UUID or numeric applicationId so Underwriter-created positions link correctly
+      // Accept application as UUID or numeric applicationId so Scrubbing-created positions link correctly
       const applicationExists = await this.resolveApplicationByAnyId(String(application));
       if (!applicationExists) {
         return res.status(404).json({
@@ -170,7 +169,7 @@ class PositionController {
         });
       }
 
-      const createdById = await resolveApplicationAttributedUserId(req, applicationExists);
+      const createdBy = (req as any).user?.id || null;
 
       const newPosition = await prisma.position.create({
         data: {
@@ -187,7 +186,7 @@ class PositionController {
           closeDate: closeDateObj,
           notes: notes || '',
           applicationId: applicationExists.id,
-          createdById: createdById ?? null,
+          createdById: createdBy,
           status: status != null ? String(status).trim() || null : null,
           loanAmount: optNum(loanAmount),
           paymentTerm: optInt(paymentTerm),
@@ -216,7 +215,7 @@ class PositionController {
     }
   }
 
-  // Resolve application by UUID (id) or numeric applicationId — role-independent; returns same application for Agent and Underwriter
+  // Resolve application by UUID (id) or numeric applicationId — role-independent; returns same application for Agent and Scrubbing
   private async resolveApplicationByAnyId(applicationParam: string): Promise<{ id: string } | null> {
     const s = String(applicationParam).trim();
     if (!s) return null;

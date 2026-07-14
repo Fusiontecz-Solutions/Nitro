@@ -9,6 +9,10 @@ export function getRedisClient(): Redis | null {
   return redisClient;
 }
 
+export function isRedisAvailable(): boolean {
+  return redisClient !== null;
+}
+
 /**
  * Connect to Redis when REDIS_URL is set. Logs success/failure; does not crash the app.
  */

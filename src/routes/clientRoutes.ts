@@ -1,7 +1,10 @@
 import express from 'express';
 import clientController from '../controllers/clientController';
+import { authenticateToken } from '../middleware/authMiddleware';
 
 const router = express.Router();
+
+router.use(authenticateToken);
 
 // Create a new client
 router.post('/', clientController.create.bind(clientController));

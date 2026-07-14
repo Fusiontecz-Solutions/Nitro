@@ -1,6 +1,5 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import { resolveOptionalTenantUserId } from '../middleware/authMiddleware';
 import { PaymentTemplateType } from '@prisma/client';
 
 const VALID_CATEGORIES = new Set<PaymentTemplateType>([
@@ -58,7 +57,7 @@ class PaymentTemplateController {
   async create(req: Request, res: Response) {
     try {
       const { name, category, variables, body, status } = req.body ?? {};
-      const createdById = await resolveOptionalTenantUserId(req);
+      const createdById = (req as any).user?.id ?? null;
 
       if (!String(name ?? '').trim() || !String(body ?? '').trim()) {
         return res.status(400).json({
