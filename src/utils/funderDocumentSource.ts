@@ -1,4 +1,3 @@
-import { isAllianceFunderProfile } from './funderProfileResolver';
 import { isTexasFundingGroupFunderProfile } from "./funderProfileResolver";
 
 export const FUNDER_DOCUMENTS_SOURCES = ["platform", "own", "shared"] as const;

@@ -3906,56 +3906,17 @@ export class DocusignService {
       );
     }
 
+    const { client, accountId } = await this.getAuthContext(userId);
+    const listRes = await client.get(
       `/v2.1/accounts/${accountId}/templates/${resolvedRef}/documents`,
     );
-    if (isDocumentLayoutKey(ref) || isFunderContractLayoutKey(ref)) {
-      const { loadSupplementalLayoutPackage, loadMainContractLayoutPackage } =
-        await import('./utils/platform-layout-envelope');
+    const docs = listRes.data?.templateDocuments || listRes.data?.documents || [];
+    const docId = docs[0]?.documentId || '1';
+    const res = await client.get(
       `/v2.1/accounts/${accountId}/templates/${resolvedRef}/documents/${docId}`,
-        funderName: options?.funderName,
-        funderProfileId: options?.funderProfileId,
-        contractState: options?.contractState,
-      };
-      let resolvedRef = ref;
-      if (
-        ref === DOCUMENT_LAYOUT_KEYS.contract ||
-        ref === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract
-      ) {
-        resolvedRef = await resolveMainContractLayoutKeyForSend({
-          mainContractLayoutKey: ref,
-          funderName: options?.funderName,
-          funderProfileId: options?.funderProfileId,
-          state: options?.contractState,
-        });
-      }
-      const isMainContract =
-        resolvedRef === DOCUMENT_LAYOUT_KEYS.contract ||
-        resolvedRef === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract ||
-        isFunderContractLayoutKey(resolvedRef);
-      const layout = isMainContract
-        ? await loadMainContractLayoutPackage(resolvedRef, options?.contractState)
-        : await loadSupplementalLayoutPackage(ref, funderContext);
-      return Buffer.from(layout.documentBase64, 'base64');
-    }
-
-    const row = await prisma.boldSignTemplate.findFirst({
-      where: { OR: [{ id: ref }, { templateId: ref }, { layoutKey: ref }] },
-      select: { pdfUrl: true, name: true },
-    });
-    const pdfUrl = String(row?.pdfUrl || '').trim();
-    if (pdfUrl.startsWith('http://') || pdfUrl.startsWith('https://')) {
-      const res = await fetch(pdfUrl);
-      if (!res.ok) {
-        throw new BadRequestException(
-          `Failed to download template PDF for "${row?.name || ref}" (${res.status}).`,
-        );
-      }
-      return Buffer.from(await res.arrayBuffer());
-    }
-
-    throw new BadRequestException(
-      `Unknown document "${ref}". Use a layout key (e.g. flex_addendum) or a CRM document row id with a Cloudinary pdfUrl.`,
+      { responseType: 'arraybuffer' },
     );
+    return Buffer.from(res.data);
   }
 
   /**

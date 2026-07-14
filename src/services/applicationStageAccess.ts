@@ -1,9 +1,9 @@
-/**
+﻿/**
  * Stage-aware role access for applications (server side).
  *
  * Mirrors `FE/src/lib/applicationStageAccess.ts` so a workflow role (Agent /
  * Scrubbing / Underwriter) can SEE deals that have advanced past their
- * stage but cannot mutate them — they appear as preview only.
+ * stage but cannot mutate them ΓÇö they appear as preview only.
  *
  * Non-workflow roles (Operations, Admin, Super Admin, Accountant, etc.) are
  * never locked out by stage and bypass the preview guard entirely.
@@ -55,7 +55,7 @@ const AGENT_STAGE_TOKENS = new Set([
 
 const UNDERWRITER_STAGE_TOKENS = new Set(['scrubbing', 'underwriting']);
 
-const UNDERWRITER_STAGE_TOKENS = new Set([
+const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
     'underwriter',
     'finalreview',
 ]);
@@ -106,10 +106,10 @@ function resolveStageKey(
     const stateToken = normalizeToken(currentState);
 
     // Queue drives stage. FU keeps queue "Underwriter" with state "Approved" after
+    // sending approval mail (and while resending after ISO comments) ΓÇö still FU-owned.
     if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return 'POST_FINAL';
     if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'UNDERWRITER';
     if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'SCRUBBING';
-    if (SCRUBBING_STAGE_TOKENS.has(queueToken)) return 'SCRUBBING';
     if (AGENT_STAGE_TOKENS.has(queueToken)) return 'AGENT';
 
     if (POST_FINAL_STAGE_TOKENS.has(stateToken)) return 'POST_FINAL';
@@ -153,7 +153,7 @@ export function getApplicationStageAccess(
         canEdit: false,
         isPreview: true,
         nextStageLabel: nextLabel,
-        reason: `This deal has moved to ${nextLabel} — preview only for your role.`,
+        reason: `This deal has moved to ${nextLabel} ΓÇö preview only for your role.`,
     };
 }
 

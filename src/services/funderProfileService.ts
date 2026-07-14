@@ -1,4 +1,4 @@
-import type { UploadedFile } from 'express-fileupload';
+﻿import type { UploadedFile } from 'express-fileupload';
 import { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import uploadService from './uploadService';
@@ -16,12 +16,15 @@ import {
   type FunderSupplementalLayoutType,
 } from '../utils/funderContractLayout';
 import { isDocumentLayoutKey } from './docusign/platform-document-registry';
-import { resolveFunderOrganizationFromName } from '../utils/funderDealIdTokens';
 import {
   inferDefaultFunderDocumentsSource,
   normalizeFunderDocumentsSource,
-  resolveDocumentsLayoutFunderId,
-  canManageFunderDocuments,
+  resolveAddendumDocumentsLayoutFunderId,
+  resolveDisclosureDocumentsLayoutFunderId,
+  resolveAddendumDocumentsSource,
+  resolveDisclosureDocumentsSource,
+  canManageFunderAddendums,
+  canManageFunderDisclosures,
 } from '../utils/funderDocumentSource';
 import {
   funderStateListIncludes,
@@ -66,17 +69,11 @@ export type FunderProfileInput = {
   isActive?: boolean;
   documentsSource?: string | null;
   sharedDocumentsFunderId?: string | null;
-  defaultCcEmail?: string | null;
   addendumDocumentsSource?: string | null;
   disclosureDocumentsSource?: string | null;
   sharedAddendumFunderId?: string | null;
   sharedDisclosureFunderId?: string | null;
 };
-
-import {
-  funderStateListIncludes,
-  normalizeContractStateToken,
-} from '../utils/usStateMatch';
 
 function normalizeStateToken(state?: string | null): string {
   return normalizeContractStateToken(state);
@@ -137,15 +134,6 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
     ),
     sharedDocumentsFunderId:
       row.sharedDocumentsFunderId != null ? String(row.sharedDocumentsFunderId) : null,
-    defaultCcEmail: row.defaultCcEmail != null ? String(row.defaultCcEmail) : null,
-    addendumDocumentsSource:
-      row.addendumDocumentsSource != null ? String(row.addendumDocumentsSource) : null,
-    disclosureDocumentsSource:
-      row.disclosureDocumentsSource != null ? String(row.disclosureDocumentsSource) : null,
-    sharedAddendumFunderId:
-      row.sharedAddendumFunderId != null ? String(row.sharedAddendumFunderId) : null,
-    sharedDisclosureFunderId:
-      row.sharedDisclosureFunderId != null ? String(row.sharedDisclosureFunderId) : null,
     sharedDocumentsFunderName:
       row.sharedDocumentsFunderName != null ? String(row.sharedDocumentsFunderName) : null,
     addendumDocumentsSource: normalizeFunderDocumentsSource(
@@ -332,7 +320,6 @@ async function enrichFunderProfilesWithSharedNames<
   const ownerIds = [
     ...new Set(
       profiles
-        .map((p) => p.sharedDocumentsFunderId)
         .flatMap((p) => [
           p.sharedDocumentsFunderId,
           p.sharedAddendumFunderId,
@@ -384,16 +371,13 @@ export function assertCanManageFunderAddendums(profile: SerializedFunderProfile)
   if (canManageFunderAddendums(profile)) return;
   if (resolveAddendumDocumentsSource(profile) === 'platform') {
     throw new Error(
-      'This funder uses platform addendums (same as Woodmere Financial). Switch addendum source to “This funder only” to upload.',
+      'This funder uses platform addendums (same as Woodmere Financial). Switch addendum source to ΓÇ£This funder onlyΓÇ¥ to upload.',
     );
   }
-  const ownerName = profile.sharedDocumentsFunderName;
   const ownerName = profile.sharedAddendumFunderName || profile.sharedDocumentsFunderName;
   if (ownerName) {
-    throw new Error(`Upload PDFs on "${ownerName}" — this funder shares their documents.`);
-    throw new Error(`Upload addendums on "${ownerName}" — this funder shares their addendums.`);
+    throw new Error(`Upload addendums on "${ownerName}" ΓÇö this funder shares their addendums.`);
   }
-  throw new Error('This funder does not manage its own addendum/disclosure uploads.');
   throw new Error('This funder does not manage its own addendum uploads.');
 }
 
@@ -401,13 +385,13 @@ export function assertCanManageFunderDisclosures(profile: SerializedFunderProfil
   if (canManageFunderDisclosures(profile)) return;
   if (resolveDisclosureDocumentsSource(profile) === 'platform') {
     throw new Error(
-      'This funder uses platform disclosures (same as Woodmere Financial). Switch disclosure source to “This funder only” to upload.',
+      'This funder uses platform disclosures (same as Woodmere Financial). Switch disclosure source to ΓÇ£This funder onlyΓÇ¥ to upload.',
     );
   }
   const ownerName = profile.sharedDisclosureFunderName || profile.sharedDocumentsFunderName;
   if (ownerName) {
     throw new Error(
-      `Upload disclosures on "${ownerName}" — this funder shares their disclosures.`,
+      `Upload disclosures on "${ownerName}" ΓÇö this funder shares their disclosures.`,
     );
   }
   throw new Error('This funder does not manage its own disclosure uploads.');
@@ -573,8 +557,6 @@ export async function uploadFunderSupplementalPdf(
 ) {
   const profile = await getFunderProfileById(funderId);
   if (!profile) throw new Error('Funder not found.');
-  assertCanManageFunderDocuments(profile);
-  const layoutFunderId = resolveDocumentsLayoutFunderId(profile) || funderId;
   assertCanManageFunderAddendums(profile);
   const layoutFunderId = resolveAddendumDocumentsLayoutFunderId(profile) || funderId;
 
@@ -614,10 +596,8 @@ export async function uploadFunderDisclosurePdf(
 ) {
   const profile = await getFunderProfileById(funderId);
   if (!profile) throw new Error('Funder not found.');
-  assertCanManageFunderDocuments(profile);
   assertCanManageFunderDisclosures(profile);
 
-  const layoutFunderId = resolveDocumentsLayoutFunderId(profile) || funderId;
   const layoutFunderId = resolveDisclosureDocumentsLayoutFunderId(profile) || funderId;
   const mimetype = String(file.mimetype || '').toLowerCase();
   if (mimetype !== 'application/pdf') {
@@ -682,25 +662,26 @@ export async function listFunderDocumentTemplates(funderId: string): Promise<Fun
   const profile = await getFunderProfileById(funderId);
   if (!profile) throw new Error('Funder not found.');
 
-  const layoutFunderId = resolveDocumentsLayoutFunderId(profile);
-  if (!layoutFunderId) return [];
+  const addendumFunderId = resolveAddendumDocumentsLayoutFunderId(profile);
+  const disclosureFunderId = resolveDisclosureDocumentsLayoutFunderId(profile);
+  const ids = [...new Set([addendumFunderId, disclosureFunderId].filter(Boolean))] as string[];
+  if (!ids.length) return [];
 
-  const id = String(layoutFunderId || '').trim();
-  if (!id) return [];
+  const orClauses = ids.flatMap((id) => {
+    const prefix = `funder_${id}_`;
+    return [
+      { layoutKey: { startsWith: prefix } },
+      { templateId: { startsWith: prefix } },
+    ];
+  });
 
-  const prefix = `funder_${id}_`;
-  const contractKey = funderContractLayoutKey(id);
+  const contractKeys = ids.map((id) => funderContractLayoutKey(id));
   const rows = await prisma.boldSignTemplate.findMany({
     where: {
       AND: [
-        {
-          OR: [
-            { layoutKey: { startsWith: prefix } },
-            { templateId: { startsWith: prefix } },
-          ],
-        },
-        { NOT: { layoutKey: contractKey } },
-        { NOT: { templateId: contractKey } },
+        { OR: orClauses },
+        { NOT: { layoutKey: { in: contractKeys } } },
+        { NOT: { templateId: { in: contractKeys } } },
       ],
     },
     orderBy: [{ type: 'asc' }, { state: 'asc' }, { frequency: 'asc' }, { name: 'asc' }],
@@ -711,21 +692,40 @@ export async function listFunderDocumentTemplates(funderId: string): Promise<Fun
       state: true,
       frequency: true,
       layoutKey: true,
+      templateId: true,
       pdfUrl: true,
       createdAt: true,
     },
   });
 
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    state: row.state,
-    frequency: row.frequency,
-    layoutKey: row.layoutKey,
-    pdfUrl: row.pdfUrl,
-    createdAt: row.createdAt,
-  }));
+  const isDisclosureType = (type: string) =>
+    String(type || '')
+      .trim()
+      .toLowerCase() === 'disclosure';
+
+  return rows
+    .filter((row) => {
+      const key = String(row.layoutKey || row.templateId || '')
+        .trim()
+        .toLowerCase();
+      const disclosure = isDisclosureType(row.type) || key.includes('disclosure');
+      if (disclosure) {
+        if (!disclosureFunderId) return false;
+        return key.startsWith(`funder_${disclosureFunderId}_`.toLowerCase());
+      }
+      if (!addendumFunderId) return false;
+      return key.startsWith(`funder_${addendumFunderId}_`.toLowerCase());
+    })
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      state: row.state,
+      frequency: row.frequency,
+      layoutKey: row.layoutKey,
+      pdfUrl: row.pdfUrl,
+      createdAt: row.createdAt,
+    }));
 }
 
 export async function uploadFunderNamedAddendumPdf(
@@ -737,9 +737,9 @@ export async function uploadFunderNamedAddendumPdf(
 ) {
   const profile = await getFunderProfileById(funderId);
   if (!profile) throw new Error('Funder not found.');
-  assertCanManageFunderDocuments(profile);
+  assertCanManageFunderAddendums(profile);
 
-  const layoutFunderId = resolveDocumentsLayoutFunderId(profile) || funderId;
+  const layoutFunderId = resolveAddendumDocumentsLayoutFunderId(profile) || funderId;
 
   const mimetype = String(file.mimetype || '').toLowerCase();
   if (mimetype !== 'application/pdf') {
@@ -808,13 +808,27 @@ export async function deleteFunderDocumentTemplate(funderId: string, templateId:
 
   const profile = await getFunderProfileById(fid);
   if (!profile) throw new Error('Funder not found.');
-  assertCanManageFunderDocuments(profile);
 
   const row = await prisma.boldSignTemplate.findUnique({ where: { id: tid } });
   if (!row) throw new Error('Document template not found.');
 
   const layoutKey = String(row.layoutKey || row.templateId || '').trim();
-  const layoutFunderId = resolveDocumentsLayoutFunderId(profile) || fid;
+  const keyLower = layoutKey.toLowerCase();
+  const isDisclosure =
+    String(row.type || '')
+      .trim()
+      .toLowerCase() === 'disclosure' || keyLower.includes('disclosure');
+
+  if (isDisclosure) {
+    assertCanManageFunderDisclosures(profile);
+  } else {
+    assertCanManageFunderAddendums(profile);
+  }
+
+  const layoutFunderId =
+    (isDisclosure
+      ? resolveDisclosureDocumentsLayoutFunderId(profile)
+      : resolveAddendumDocumentsLayoutFunderId(profile)) || fid;
   if (
     !isFunderOwnedLayoutKey(layoutKey, layoutFunderId) ||
     layoutKey === funderContractLayoutKey(fid)
@@ -842,6 +856,7 @@ export async function createFunderProfile(input: FunderProfileInput) {
       legalName: input.legalName ? String(input.legalName).trim() : null,
       contactEmail: input.contactEmail ? String(input.contactEmail).trim() : null,
       contactPhone: input.contactPhone ? String(input.contactPhone).trim() : null,
+      defaultCcEmail: input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null,
       addressLine1: input.addressLine1 ? String(input.addressLine1).trim() : null,
       addressCity: input.addressCity ? String(input.addressCity).trim() : null,
       addressState: input.addressState ? String(input.addressState).trim() : null,
@@ -850,21 +865,34 @@ export async function createFunderProfile(input: FunderProfileInput) {
       sortOrder: Number.isFinite(input.sortOrder) ? Number(input.sortOrder) : 0,
       isActive: input.isActive !== false,
       documentsSource: normalizeFunderDocumentsSource(
-        input.documentsSource ?? inferDefaultFunderDocumentsSource(input),
+        input.addendumDocumentsSource ??
+          input.documentsSource ??
+          inferDefaultFunderDocumentsSource(input),
       ),
       sharedDocumentsFunderId:
-        input.sharedDocumentsFunderId ? String(input.sharedDocumentsFunderId).trim() : null,
-      defaultCcEmail: input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null,
-      addendumDocumentsSource: input.addendumDocumentsSource
-        ? normalizeFunderDocumentsSource(input.addendumDocumentsSource)
-        : null,
-      disclosureDocumentsSource: input.disclosureDocumentsSource
-        ? normalizeFunderDocumentsSource(input.disclosureDocumentsSource)
-        : null,
-      sharedAddendumFunderId:
-        input.sharedAddendumFunderId ? String(input.sharedAddendumFunderId).trim() : null,
-      sharedDisclosureFunderId:
-        input.sharedDisclosureFunderId ? String(input.sharedDisclosureFunderId).trim() : null,
+        input.sharedAddendumFunderId || input.sharedDocumentsFunderId
+          ? String(input.sharedAddendumFunderId || input.sharedDocumentsFunderId).trim()
+          : null,
+      addendumDocumentsSource: normalizeFunderDocumentsSource(
+        input.addendumDocumentsSource ??
+          input.documentsSource ??
+          inferDefaultFunderDocumentsSource(input),
+      ),
+      disclosureDocumentsSource: normalizeFunderDocumentsSource(
+        input.disclosureDocumentsSource ??
+          input.documentsSource ??
+          inferDefaultFunderDocumentsSource(input),
+      ),
+      sharedAddendumFunderId: input.sharedAddendumFunderId
+        ? String(input.sharedAddendumFunderId).trim()
+        : input.sharedDocumentsFunderId
+          ? String(input.sharedDocumentsFunderId).trim()
+          : null,
+      sharedDisclosureFunderId: input.sharedDisclosureFunderId
+        ? String(input.sharedDisclosureFunderId).trim()
+        : input.sharedDocumentsFunderId
+          ? String(input.sharedDocumentsFunderId).trim()
+          : null,
     },
     include: { docusignAccountProfile: { select: { id: true, name: true } } },
   });
@@ -915,6 +943,9 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
   if (input.contactPhone !== undefined) {
     data.contactPhone = input.contactPhone ? String(input.contactPhone).trim() : null;
   }
+  if (input.defaultCcEmail !== undefined) {
+    data.defaultCcEmail = input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null;
+  }
   if (input.addressLine1 !== undefined) {
     data.addressLine1 = input.addressLine1 ? String(input.addressLine1).trim() : null;
   }
@@ -941,21 +972,19 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
       ? String(input.sharedDocumentsFunderId).trim()
       : null;
   }
-  if (input.defaultCcEmail !== undefined) {
-    data.defaultCcEmail = input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null;
-  }
   if (input.addendumDocumentsSource !== undefined) {
-    data.addendumDocumentsSource = input.addendumDocumentsSource
-      ? normalizeFunderDocumentsSource(input.addendumDocumentsSource)
-      : null;
+    const src = normalizeFunderDocumentsSource(input.addendumDocumentsSource);
+    data.addendumDocumentsSource = src;
+    // Keep legacy column aligned with addendum source for older readers.
+    data.documentsSource = src;
   }
   if (input.disclosureDocumentsSource !== undefined) {
-    data.disclosureDocumentsSource = input.disclosureDocumentsSource
-      ? normalizeFunderDocumentsSource(input.disclosureDocumentsSource)
-      : null;
+    data.disclosureDocumentsSource = normalizeFunderDocumentsSource(
+      input.disclosureDocumentsSource,
+    );
   }
   if (input.sharedAddendumFunderId !== undefined) {
-    data.sharedAddendumFunderId = input.sharedAddendumFunderId
+    const sharedId = input.sharedAddendumFunderId
       ? String(input.sharedAddendumFunderId).trim()
       : null;
     data.sharedAddendumFunderId = sharedId;

@@ -1,10 +1,10 @@
-import { randomBytes } from 'crypto';
+﻿import { randomBytes } from 'crypto';
 import { existsSync } from 'fs';
 import puppeteer, { type Browser, type Page } from 'puppeteer';
 
 const LOG_PREFIX = '[letter-html-pdf]';
 
-/** Puppeteer `setContent` timeout (ms) — letters may load many external images. */
+/** Puppeteer `setContent` timeout (ms) ΓÇö letters may load many external images. */
 const SET_CONTENT_TIMEOUT_MS = Number(process.env.LETTER_PDF_SET_CONTENT_TIMEOUT_MS ?? '45000');
 
 /** Max time to wait for `<img>` decode after `load` (ms). */
@@ -19,7 +19,7 @@ const LETTER_PDF_PAGE_WIDTH_MM = (() => {
     return Number.isFinite(n) && n > 0 ? n : 210;
 })();
 /**
- * Letter PDF height (mm) — taller than A4 (297mm) so one page fits the HTML letter
+ * Letter PDF height (mm) ΓÇö taller than A4 (297mm) so one page fits the HTML letter
  * (footer + watermark) without a blank second page. Override with LETTER_PDF_PAGE_HEIGHT_MM.
  */
 const LETTER_PDF_PAGE_HEIGHT_MM = (() => {
@@ -27,7 +27,7 @@ const LETTER_PDF_PAGE_HEIGHT_MM = (() => {
     return Number.isFinite(n) && n > 0 ? n : 340;
 })();
 
-/** Minimum PDF page height (mm) — avoids zero-height sheets on empty markup. */
+/** Minimum PDF page height (mm) ΓÇö avoids zero-height sheets on empty markup. */
 const LETTER_PDF_MIN_HEIGHT_MM = 20;
 
 /** Max single-page PDF height (mm). Very long letters may be clipped if exceeded. */
@@ -35,48 +35,6 @@ const LETTER_PDF_MAX_HEIGHT_MM = (() => {
     const n = Number(process.env.LETTER_PDF_MAX_HEIGHT_MM ?? '1500');
     return Number.isFinite(n) && n > 0 ? n : 1500;
 })();
-  right: '0.35in',
-  bottom: '0.4in',
-  left: '0.35in',
-} as const;
-
-const COMPLIANCE_PDF_PRINT_STYLE = `<style id="compliance-pdf-print-inject">
-  @page {
-    size: letter;
-    margin: 0.35in 0.35in 0.4in 0.35in;
-    background: #ffffff;
-  }
-  html, body {
-    margin: 0 !important;
-    padding: 0 !important;
-    width: 100%;
-    background: #ffffff !important;
-    overflow-x: hidden;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-    color-adjust: exact !important;
-  }
-  *, *::before, *::after {
-    box-sizing: border-box;
-  }
-  .compliance-pdf-root {
-    width: 100%;
-    background: #ffffff;
-  }
-  table {
-    border-collapse: collapse;
-    max-width: 100%;
-  }
-  td, th {
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-    word-break: break-word;
-  }
-  img {
-    max-width: 100%;
-    height: auto;
-  }
-</style>`;
 
 /** Standard A4 (matches typical contract PDF pages). */
 const A4_PAGE_WIDTH_MM = 210;
@@ -110,8 +68,8 @@ function extractBodyInnerHtml(html: string): string {
 }
 
 /**
- * Letter fragment or body inner HTML → full HTML document with print/PDF-only styles.
- * Chromium PDF uses this shell so the page is entirely white with no “browser grey” frame.
+ * Letter fragment or body inner HTML ΓåÆ full HTML document with print/PDF-only styles.
+ * Chromium PDF uses this shell so the page is entirely white with no ΓÇ£browser greyΓÇ¥ frame.
  */
 function buildLetterPdfDocument(innerHtml: string): string {
     return `<!DOCTYPE html>
@@ -135,7 +93,7 @@ function buildLetterPdfDocument(innerHtml: string): string {
     margin: 0 !important;
     padding: 0 !important;
     width: 100%;
-    /* Content-height only — avoid 100vh/100% stacking past one A4 and spawning a blank page */
+    /* Content-height only ΓÇö avoid 100vh/100% stacking past one A4 and spawning a blank page */
     height: auto !important;
     min-height: 0 !important;
     background: #ffffff !important;
@@ -190,7 +148,7 @@ function buildLetterPdfDocument(innerHtml: string): string {
     width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
-    /* Email templates use min-height:1123px for “one page” preview; that + row heights
+    /* Email templates use min-height:1123px for ΓÇ£one pageΓÇ¥ preview; that + row heights
        often exceeds A4 by a few px in Chromium PDF and creates an empty second page. */
     min-height: auto !important;
     height: auto !important;
@@ -307,7 +265,7 @@ async function resolveLetterPdfExecutablePaths(): Promise<Array<string | undefin
     const bundled = await puppeteer.executablePath();
     if (bundled) candidates.push(bundled);
   } catch {
-    // Bundled Chromium unavailable — try other candidates.
+    // Bundled Chromium unavailable ΓÇö try other candidates.
   }
 
   const seen = new Set<string>();
@@ -416,18 +374,14 @@ async function waitForNextPaint(page: Page): Promise<void> {
 
 async function measureContentHeightPx(page: Page): Promise<number> {
     return page.evaluate(() => {
-        type Measurable = {
-                querySelector: (sel: string) => {
-                    getBoundingClientRect: () => { height: number };
-            scrollHeight: number;
-            offsetHeight?: number;
-                body: { scrollHeight: number };
-                documentElement: { scrollHeight: number };
         const g = globalThis as unknown as {
             document: {
-                documentElement: Measurable;
-                body: Measurable | null;
-                querySelector: (sel: string) => Measurable | null;
+                querySelector: (sel: string) => {
+                    getBoundingClientRect: () => { height: number };
+                    scrollHeight: number;
+                } | null;
+                body: { scrollHeight: number };
+                documentElement: { scrollHeight: number };
             };
         };
         const stage = g.document.querySelector('.letter-pdf-stage');
@@ -436,17 +390,6 @@ async function measureContentHeightPx(page: Page): Promise<number> {
         if (!el) {
             return Math.ceil(
                 Math.max(g.document.body.scrollHeight, g.document.documentElement.scrollHeight),
-        const rootRect = root?.getBoundingClientRect?.();
-        // Do not use clientHeight — that is the viewport (Letter tall) and pads short
-        // content with blank space / stretches tall PDFs incorrectly.
-                rootRect?.width ?? 0,
-                root?.scrollWidth ?? 0,
-                body?.scrollWidth ?? 0,
-                body?.offsetWidth ?? 0,
-                doc?.scrollWidth ?? 0,
-            ),
-                rootRect?.height ?? 0,
-                root?.scrollHeight ?? 0,
             );
         }
         const rect = el.getBoundingClientRect();
@@ -458,22 +401,6 @@ async function applyDynamicPageSize(page: Page, widthMm: number, heightMm: numbe
     await page.addStyleTag({
         content: `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; background: #ffffff; }`,
     });
-}
-
-async function renderComplianceReportPdf(page: Page): Promise<Buffer> {
-    const pdfUint8 = await page.pdf({
-        format: 'letter',
-        printBackground: true,
-        preferCSSPageSize: true,
-        margin: { ...COMPLIANCE_PDF_MARGIN },
-        omitBackground: false,
-        tagged: false,
-    });
-    const buf = Buffer.from(pdfUint8);
-    if (!buf.length) {
-        throw new Error('Puppeteer returned an empty PDF buffer');
-    }
-    return buf;
 }
 
 /**
@@ -520,8 +447,8 @@ async function scaleLetterToFitOnePageIfNeeded(page: Page): Promise<void> {
 
 /**
  * Renders CRM letter / rich HTML email body to a single-page PDF buffer.
- * Page size: {@link LETTER_PDF_PAGE_WIDTH_MM} × {@link LETTER_PDF_PAGE_HEIGHT_MM} mm
- * (default 210×340 — A4 width, extra height so letters fit on one page).
+ * Page size: {@link LETTER_PDF_PAGE_WIDTH_MM} ├ù {@link LETTER_PDF_PAGE_HEIGHT_MM} mm
+ * (default 210├ù340 ΓÇö A4 width, extra height so letters fit on one page).
  */
 export async function renderLetterHtmlToPdfBuffer(htmlBody: string): Promise<Buffer> {
     if (!htmlBody || !String(htmlBody).trim()) {
@@ -535,7 +462,7 @@ export async function renderLetterHtmlToPdfBuffer(htmlBody: string): Promise<Buf
 
         const page = await browser.newPage();
 
-        // “Screen” paint path keeps template colors/gradients closer to the email preview.
+        // ΓÇ£ScreenΓÇ¥ paint path keeps template colors/gradients closer to the email preview.
         await page.emulateMediaType('screen');
 
         // Tall viewport so layout is not clipped before we measure content height.
@@ -595,7 +522,7 @@ export async function renderLetterHtmlToPdfBuffer(htmlBody: string): Promise<Buf
 }
 
 /**
- * Renders HTML to a fixed A4 PDF (210×297 mm) — same page size as standard contract pages.
+ * Renders HTML to a fixed A4 PDF (210├ù297 mm) ΓÇö same page size as standard contract pages.
  * Unlike {@link renderLetterHtmlToPdfBuffer}, page height is not shrunk to content.
  */
 export async function renderHtmlToA4PdfBuffer(htmlBody: string): Promise<Buffer> {
@@ -609,11 +536,10 @@ export async function renderHtmlToA4PdfBuffer(htmlBody: string): Promise<Buffer>
         browser = await launchLetterPdfBrowser();
         const page = await browser.newPage();
         await page.emulateMediaType('print');
-        await page.emulateMediaType(kind === 'compliance-report' ? 'print' : 'screen');
         await page.setViewport({
             width: mmToCssPx(A4_PAGE_WIDTH_MM),
             height: mmToCssPx(A4_PAGE_HEIGHT_MM),
-            deviceScaleFactor: kind === 'compliance-report' ? 1 : 2,
+            deviceScaleFactor: 2,
         });
 
         const documentHtml = wrapHtmlForA4Pdf(htmlBody);

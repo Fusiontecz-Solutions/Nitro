@@ -57,7 +57,6 @@ import sendgridWebhookRoutes from './sendgridWebhookRoutes';
 import mailRoutes from './mailRoutes';
 import integrationSettingsRoutes from './integrationSettingsRoutes';
 import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
-import datamerchRoutes from './datamerchRoutes';
 
 router.use('/auth', authRoutes);
 router.use('/roles', roleRoutes);

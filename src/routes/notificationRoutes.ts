@@ -27,6 +27,9 @@ router.get('/document-requests/:applicationId', notificationController.getDocume
 
 // Bulk triage update (multi-select). Must precede '/:id/...' so 'bulk' isn't read as an id.
 router.patch('/bulk', notificationController.bulkUpdate.bind(notificationController));
+
+// Remove a specific document request
+router.delete(
     '/document-requests/:applicationId/:documentId',
     notificationController.removeDocumentRequest.bind(notificationController),
 );

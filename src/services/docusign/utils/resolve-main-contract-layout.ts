@@ -1,10 +1,9 @@
-import prisma from '../../../config/prismaClient';
-import {
+﻿import {
   DOCUMENT_LAYOUT_KEYS,
   type DocumentLayoutKey,
 } from '../layouts/document-layout.registry';
 import { isDocumentLayoutKey } from '../platform-document-registry';
-import { getFunderProfileByName } from '../../funderProfileService';
+import { resolveFunderProfile, isPersistedFunderProfileId } from '../../funderProfileService';
 import {
   funderContractLayoutKey,
   isFunderContractLayoutKey,
@@ -17,6 +16,9 @@ import {
 import { isTexasContractState as isTexasState } from '../../../utils/usStateMatch';
 
 export const TEXAS_FUNDING_GROUP_FUNDER_LABEL = 'TEXAS FUNDING GROUP';
+
+/** @deprecated Legacy Alliance Bridge label — prefer Texas Funding Group. */
+export const ALLIANCE_BRIDGE_FUNDER_LABEL = 'ALLIANCE BRIDGE CAPITAL';
 
 export function isTexasContractState(state?: string | null): boolean {
   return isTexasState(state);
@@ -31,6 +33,21 @@ export function isTexasFundingGroupFunder(funderName?: string | null): boolean {
   return (
     normalized === 'texas funding group' ||
     normalized.includes('texas funding group')
+  );
+}
+
+/** Legacy Alliance Bridge name matcher (kept for CC / prefill call sites). */
+export function isAllianceBridgeFunder(funderName?: string | null): boolean {
+  const normalized = String(funderName ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!normalized) return false;
+  return (
+    normalized === 'alliance bridge capital' ||
+    normalized === 'alliance bridge' ||
+    normalized.includes('alliance bridge') ||
+    normalized.includes('alliance capital')
   );
 }
 
@@ -66,7 +83,7 @@ export function resolveMainContractLayoutKey(
 }
 
 /**
- * Authoritative layout key for DocuSign send — prefers the funder profile in DB
+ * Authoritative layout key for DocuSign send ΓÇö prefers the funder profile in DB
  * so a generic "contract" key cannot pull another funder's PDF.
  */
 export async function resolveMainContractLayoutKeyForSend(options: {

@@ -1,4 +1,4 @@
-import prisma from '../../config/prismaClient';
+﻿import prisma from '../../config/prismaClient';
 import {
   DOCUMENT_LAYOUT_KEYS,
   getDocumentLayout,
@@ -81,7 +81,7 @@ function isValidRemotePdfUrl(url: string): boolean {
 
 /**
  * Resolve pdfUrl by exact layoutKey / templateId only.
- * Never match by BoldSignTemplate.type — multiple funders share type "contract"
+ * Never match by BoldSignTemplate.type ΓÇö multiple funders share type "contract"
  * and fuzzy matching can return the wrong funder's PDF (legal/compliance risk).
  */
 export async function findBoldSignTemplatePdfUrlByExactLayoutKey(
@@ -95,25 +95,21 @@ export async function findBoldSignTemplatePdfUrlByExactLayoutKey(
       OR: [{ layoutKey: key }, { templateId: key }],
     },
     orderBy: { createdAt: 'desc' },
-    select: { pdfUrl: true, layoutKey: true, type: true, templateId: true },
+    select: { pdfUrl: true },
   });
 
-  // Never treat funder-scoped uploads (`funder_<uuid>_…`) as the platform PDF.
-  const platformRows = rows.filter((row) => {
-    const key = String(row.layoutKey || row.templateId || '').trim().toLowerCase();
-    return !key.startsWith('funder_');
-  });
-
-  const ranked = [...platformRows].sort(
+  const url = String(row?.pdfUrl || '').trim();
+  return isValidRemotePdfUrl(url) ? url : null;
+}
 
 /** Resolve Cloudinary (or other HTTPS) pdfUrl from BoldSignTemplate for a platform layout key. */
 export async function findBoldSignTemplatePdfUrlForLayout(
   layoutKey: DocumentLayoutKey,
-  }
+): Promise<string | null> {
+  const exact = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
+  if (exact) return exact;
 
-  // Standalone ACH reuses the same Cloudinary PDF / row as `ach_authorization`.
-  if (layoutKey === DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone) {
-    return findBoldSignTemplatePdfUrlForLayout(DOCUMENT_LAYOUT_KEYS.achAuthorization);
+  for (const alias of PDF_URL_ALIASES[layoutKey] ?? []) {
     const aliased = await findBoldSignTemplatePdfUrlByExactLayoutKey(alias);
     if (aliased) return aliased;
   }
@@ -159,7 +155,7 @@ export async function resolvePlatformDocumentPdfUrl(
 
 /**
  * Load platform document PDF bytes.
- * Priority: uploaded BoldSignTemplate.pdfUrl → sibling layout upload → default DocuSign template PDF.
+ * Priority: uploaded BoldSignTemplate.pdfUrl ΓåÆ sibling layout upload ΓåÆ default DocuSign template PDF.
  * Uploaded PDFs always win; DocuSign defaults are only used when nothing is uploaded.
  */
 export async function loadPlatformDocumentPdfBase64(

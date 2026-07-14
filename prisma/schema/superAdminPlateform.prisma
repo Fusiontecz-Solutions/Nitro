@@ -35,5 +35,5 @@ model SuperAdminPlateform {
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
-  @@map("superAdminPlateform")
+  @@map("SuperAdminPlateform")
 }

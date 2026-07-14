@@ -8,6 +8,7 @@ import {
 } from '../services/funderProfileService';
 import prisma from '../config/prismaClient';
 import {
+  isAllianceBridgeFunder,
   isTexasContractState,
   isTexasFundingGroupFunder,
 } from '../services/docusign/utils/resolve-main-contract-layout';
@@ -21,6 +22,29 @@ function normalizeFunderToken(value?: string | null): string {
   return String(value ?? '')
     .trim()
     .toLowerCase();
+}
+
+/** Legacy Alliance Bridge profile matcher (kept for contract CC defaults). */
+export function isAllianceFunderProfile(profile: {
+  name?: string | null;
+  displayName?: string | null;
+  mainContractLayoutKey?: string | null;
+  organization?: string | null;
+  legalName?: string | null;
+  contactEmail?: string | null;
+}): boolean {
+  return (
+    isAllianceBridgeFunder(profile.name) ||
+    isAllianceBridgeFunder(profile.displayName) ||
+    isAllianceBridgeFunder(profile.organization) ||
+    isAllianceBridgeFunder(profile.legalName) ||
+    String(profile.name ?? '').toLowerCase().includes('alliance capital') ||
+    String(profile.displayName ?? '').toLowerCase().includes('alliance capital') ||
+    String(profile.contactEmail ?? '')
+      .toLowerCase()
+      .includes('@alliancebridgecapital.com') ||
+    String(profile.mainContractLayoutKey || '').trim() === 'alliance_bridge_contract'
+  );
 }
 
 export function isWoodmereFunderProfile(profile: {
