@@ -727,7 +727,8 @@ function resolvePlacementSignerIndex(
   counts: LayoutPartyCounts,
   layoutKey?: string,
 ): number {
-  // All prefill + date fields → merchant #1 (blue). Owner 2 only gets initials.
+  // Prefill + date fields → merchant #1. Owner 2 only gets initials/signatures.
+  // Do not reuse the same tabLabel on multiple pages (DocuSign groups them → green).
   if (placement.type === 'text' || placement.type === 'date') {
     return resolvePrimarySignerIndex(signers);
   }
@@ -1042,7 +1043,8 @@ function toTextTab(
       ...(optionalTab ? { optional: 'true' } : { required: 'true', optional: 'false' }),
       ...(lockTab ? { locked: 'true' } : {}),
       ...(placement.bold ? { bold: 'true' } : {}),
-      // All text/date tabs are assigned to signer 1 only — owner 2 signs initials/signatures only.
+      // Prefill hangs on signer 1; Owner 2 uses initials/signatures only. Keep tabLabels unique
+      // across pages so DocuSign does not auto-group them (same label → green sync group).
       shared: 'false',
       width,
       ...(placement.height ? { height: placement.height } : {}),

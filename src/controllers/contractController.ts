@@ -754,17 +754,17 @@ class ContractController {
         ownershipPercentage,
       } = req.body;
 
-      if (!contractId || !firstName || !lastName) {
+      if (!contractId || !firstName) {
         return res.status(400).json({
           success: false,
-          message: 'contractId, firstName and lastName are required',
+          message: 'contractId and firstName are required',
         });
       }
 
       const data = await contractService.createContractOwner({
         contractId: Number(contractId),
-        firstName,
-        lastName,
+        firstName: String(firstName).trim(),
+        lastName: String(lastName ?? '').trim(),
         email,
         phone,
         address,
