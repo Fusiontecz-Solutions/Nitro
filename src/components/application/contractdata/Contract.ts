@@ -88,6 +88,7 @@ export interface BuildContractPrefillFieldsArgs {
     authorizationClientBankRouting?: string;
     authorizationClientBankAccount?: string;
     authorizationClientName?: string;
+    authorizationClientSignerName?: string;
     authorizationClientNamePrint?: string;
     authorizationClientTaxId?: string;
     authorizationClientDate?: string;
@@ -115,6 +116,7 @@ export interface BuildContractPrefillFieldsArgs {
      * These are separate from `achAuthorizationAccountHolderName/Date` but map to their own BoldSign ids.
      */
     achAuthorizationConcentAccountHolderName?: string;
+    achAuthorizationConcentAccountHolderName2?: string;
     achAuthorizationConcentAccountHolderDate?: string;
 
     achAuthorizationBankPortalWebsite?: string;
@@ -212,7 +214,7 @@ const FIELD_IDS = {
     /** DocuSign: `net_to_merchant`; BoldSign template tabs often use `NetFundProvided`. */
     netToMerchant: ["net_to_merchant", "NetFundProvided"],
 
-    clientName: ["client_name"],
+    clientName: ["client_name", "addendum_client_name"],
     owner1GuarantorName: ["owner1_guarantor_name"],
     owner2GuarantorName: ["owner2_guarantor_name"],
     merchant2Name: ["merchant2_name"],
@@ -255,6 +257,7 @@ const FIELD_IDS = {
     authorizationClientBankRouting: ["authorization_client_bank_routing"],
     authorizationClientBankAccount: ["authorization_client_bank_account"],
     authorizationClientName: ["authorization_client_name"],
+    authorizationClientSignerName: ["authorization_client_signer_name"],
     authorizationClientNamePrint: ["authorization_client_name_print"],
     authorizationClientTaxId: ["authorization_client_tax_id"],
     authorizationClientDate: ["authorization_client_date"],
@@ -279,6 +282,7 @@ const FIELD_IDS = {
     achAuthorizationAccountHolderDate: ["ach_authorization_account_holder_date"],
 
     achAuthorizationConcentAccountHolderName: ["ach_authorization_concent_account_holder_name"],
+    achAuthorizationConcentAccountHolderName2: ["ach_authorization_concent_account_holder_name_2"],
     achAuthorizationConcentAccountHolderDate: ["ach_authorization_concent_account_holder_date"],
 
     achAuthorizationBankPortalWebsite: ["ach_authorization_bank_portal_website"],
@@ -507,6 +511,7 @@ export const buildContractPrefillFields = ({
     authorizationClientBankRouting = "",
     authorizationClientBankAccount = "",
     authorizationClientName = "",
+    authorizationClientSignerName = "",
     authorizationClientNamePrint = "",
     authorizationClientTaxId = "",
     authorizationClientDate = "",
@@ -529,6 +534,7 @@ export const buildContractPrefillFields = ({
     achAuthorizationAccountHolderDate = "",
 
     achAuthorizationConcentAccountHolderName = "",
+    achAuthorizationConcentAccountHolderName2 = "",
     achAuthorizationConcentAccountHolderDate = "",
     achAuthorizationBankPortalWebsite = "",
     achAuthorizationUsername = "",
@@ -602,8 +608,11 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.guarantorEmail, "Guarantor Email", guarantorEmail),
         ...mapIds(FIELD_IDS.guarantorPhone, "Guarantor Phone", guarantorPhone),
         ...mapIds(FIELD_IDS.clientPhone, "Client Phone", clientPhone),
-        // Entity type is already set on the BoldSign template; skip prefill to avoid overwriting contract defaults.
-        // ...mapIds(FIELD_IDS.entityType, "Entity Type", normalizeEntityTypeForBoldSignDropdown(entityType)),
+        ...mapIds(
+            FIELD_IDS.entityType,
+            "Entity Type",
+            String(entityType ?? "").trim(),
+        ),
         ...mapIds(FIELD_IDS.federalTaxIdEin, "Federal Tax ID EIN", federalTaxIdEin),
         ...mapIds(FIELD_IDS.agreementDate, "Agreement Date", agreementDate),
         ...mapIds(FIELD_IDS.purchasePrice, "Purchase Price", purchasePrice),
@@ -656,6 +665,11 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.authorizationClientBankRouting, "Authorization Client Bank Routing", authorizationClientBankRouting),
         ...mapIds(FIELD_IDS.authorizationClientBankAccount, "Authorization Client Bank Account", authorizationClientBankAccount),
         ...mapIds(FIELD_IDS.authorizationClientName, "Authorization Client Name", authorizationClientName),
+        ...mapIds(
+            FIELD_IDS.authorizationClientSignerName,
+            "Authorization Client Signer Name",
+            authorizationClientSignerName,
+        ),
         ...mapIds(FIELD_IDS.authorizationClientNamePrint, "Authorization Client Name Print", authorizationClientNamePrint),
         ...mapIds(FIELD_IDS.authorizationClientTaxId, "Authorization Client Tax ID", authorizationClientTaxId),
         ...mapIds(FIELD_IDS.authorizationClientDate, "Authorization Client Date", authorizationClientDate),
@@ -696,6 +710,11 @@ export const buildContractPrefillFields = ({
             FIELD_IDS.achAuthorizationConcentAccountHolderName,
             "ACH Concent Account Holder Name",
             achAuthorizationConcentAccountHolderName,
+        ),
+        ...mapIds(
+            FIELD_IDS.achAuthorizationConcentAccountHolderName2,
+            "ACH Concent Account Holder Name (page 15)",
+            achAuthorizationConcentAccountHolderName2,
         ),
         ...mapIds(
             FIELD_IDS.achAuthorizationConcentAccountHolderDate,
@@ -1928,7 +1947,8 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     authorization_client_bank_name: "Bank name",
     authorization_client_bank_routing: "Routing number",
     authorization_client_bank_account: "Account number",
-    authorization_client_name: "Signer name",
+    authorization_client_name: "Business name",
+    authorization_client_signer_name: "Signer name",
     authorization_client_name_print: "Printed name",
     authorization_client_tax_id: "Tax ID / EIN",
     authorization_client_date: "Date",
@@ -1949,7 +1969,8 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     ach_authorization_account_holder_bank_transaction_fee: "Transaction fee",
     ach_authorization_account_holder_bank_number_of_transactions: "NO. of transaction",
     ach_authorization_account_holder_date: "Date",
-    ach_authorization_concent_account_holder_name: "Name",
+    ach_authorization_concent_account_holder_name: "Business name",
+    ach_authorization_concent_account_holder_name_2: "Business name (page 15)",
     ach_authorization_concent_account_holder_date: "Date",
     guarantor_address: "Street",
     guarantor_address_city: "City",
@@ -2074,7 +2095,10 @@ function coerceNumericPrefillMoneyStrings(obj: Partial<BuildContractPrefillField
 }
 
 function ownerFullName(first?: unknown, last?: unknown): string {
-    return `${str(first)} ${str(last)}`.trim();
+    const f = str(first);
+    const l = str(last);
+    if (f && l && f.toLowerCase() === l.toLowerCase()) return f;
+    return `${f} ${l}`.trim();
 }
 
 /**
@@ -2155,6 +2179,7 @@ export const CONTRACT_PREFILL_COLUMN_SYNC_KEYS = [
     "authorizationApplication",
     "authorizationClientDate",
     "authorizationClientName",
+    "authorizationClientSignerName",
     "authorizationClientNamePrint",
     "authorizationClientTaxId",
     "authorizationClientBankName",
@@ -2585,6 +2610,8 @@ export const AUTHORIZATION_BUSINESS_NAME_PREFILL_KEYS = [
     "authorizationClientName",
     "authorizationClientNamePrint",
     "achAuthorizationAccountHolderName",
+    "achAuthorizationConcentAccountHolderName",
+    "achAuthorizationConcentAccountHolderName2",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
 /** RPA person-name tabs (owner/signer), not merchant legal name. */
@@ -2592,7 +2619,7 @@ export const CLIENT_PERSON_NAME_PREFILL_KEYS = [
     "clientName",
     "appendixClientName",
     "guarantyClientName",
-    "achAuthorizationConcentAccountHolderName",
+    "authorizationClientSignerName",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
 /** Signer 1 / Owner 1 / Guarantor 1 / Client 1 / Merchant 1 — same person on every line. */
@@ -2606,7 +2633,7 @@ export const PRIMARY_PARTY_NAME_SYNC_CAMEL_KEYS = [
     "securityGuarantor",
     "exhibitOwnerName",
     "appendixClientName",
-    "achAuthorizationConcentAccountHolderName",
+    "authorizationClientSignerName",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
 export const CANONICAL_BUSINESS_ADDRESS_STREET_KEYS = [
@@ -2714,7 +2741,7 @@ export function resolveContractBusinessLegalNameForPrefill(
     );
 }
 
-/** Owner / signer name for client_name, appendix_client_name, guaranty_client_name, ACH consent holder (not business legal name). */
+/** Owner / signer name for client_name, appendix_client_name, guaranty_client_name, authorization signer line (not business legal name). */
 export function resolveContractClientPersonNameForPrefill(
     partial: Partial<BuildContractPrefillFieldsArgs> | Record<string, unknown>,
     application?: unknown,
@@ -2857,13 +2884,16 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         authorizationClientBankRouting: str(row.authorizationClientBankRouting),
         authorizationClientBankAccount: str(row.authorizationClientBankAccount),
         authorizationClientName: resolveContractBusinessLegalNameForPrefill(row),
+        authorizationClientSignerName:
+            str(row.customerName) || str(row.authorizationClientSignerName),
         authorizationClientNamePrint: resolveContractBusinessLegalNameForPrefill(row),
         authorizationClientTaxId: str(row.authorizationClientTaxId),
         authorizationClientDate: authorizationDate,
         authorizedBusinessPhone: str(row.authorizedBusinessPhone),
         owner1GuarantorName: str(row.owner1GuarantorName),
 
-        achAuthorizationConcentAccountHolderName: str(row.customerName) || str(row.achAuthorizationConcentAccountHolderName),
+        achAuthorizationConcentAccountHolderName: resolveContractBusinessLegalNameForPrefill(row),
+        achAuthorizationConcentAccountHolderName2: resolveContractBusinessLegalNameForPrefill(row),
         achAuthorizationConcentAccountHolderDate: prefillIsoDate(
             row.achAuthorizationConcentAccountHolderDate,
         ) || str(row.achAuthorizationConcentAccountHolderDate),
@@ -2937,9 +2967,11 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         guarantyOwner1DriverLicense: String(r.ownerDriverLicense || ""),
         authorizationApplication: businessLegalName || customerName,
         authorizationClientName: businessLegalName,
+        authorizationClientSignerName: customerName,
         authorizationClientNamePrint: businessLegalName,
         achAuthorizationAccountHolderName: businessLegalName,
-        achAuthorizationConcentAccountHolderName: customerName,
+        achAuthorizationConcentAccountHolderName: businessLegalName,
+        achAuthorizationConcentAccountHolderName2: businessLegalName,
     };
 }
 
@@ -3081,9 +3113,8 @@ export function resolveBalanceTransferMerchantContext(
         str(overrides.legalName) ||
         str(app.legalName) ||
         linkedBusinessName ||
-        str(c.clientName) ||
-        str(overrides.clientName) ||
-        str(app.clientName);
+        str(c.securityBusinessName) ||
+        str(overrides.securityBusinessName);
 
     const clientDba =
         str(c.doingBusinessAs) ||
@@ -3111,7 +3142,8 @@ export function resolveBalanceTransferMerchantContext(
         clientNameBy ||
         recipientFallback;
 
-    const clientLegalName = businessName || clientName || recipientFallback;
+    /** Legal/business name only — do not fall back to owner/person names. */
+    const clientLegalName = businessName;
 
     const contractLine = [
         str(c.businessAddress) || str(overrides.businessAddress),
@@ -3284,9 +3316,10 @@ function resolveCanonicalOwner2Name(
     const signerRoles = signerRows?.length
         ? buildDocuSignRolesFromEditorRows(signerRows)
         : [];
+    /** Manage Signers Owner 2 / 2nd email wins over stale CRM `owners[1]` (e.g. wrong prior client). */
     return (
-        ownerFullName(rec?.owners?.[1]?.firstName, rec?.owners?.[1]?.lastName) ||
         resolveSecondOwnerSignerName(signerRoles, ownerCount, rec?.owners ?? null) ||
+        ownerFullName(rec?.owners?.[1]?.firstName, rec?.owners?.[1]?.lastName) ||
         str(partial.owner2GuarantorName) ||
         str(partial.guarantyOwner2Name) ||
         str(partial.merchant2Name) ||

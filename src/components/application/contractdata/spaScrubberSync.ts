@@ -1,5 +1,9 @@
-import { axiosPut } from "@/redux/axios";
-import { getPositions, updatePosition } from "@/redux/actions/positionActions";
+import { axiosPost, axiosPut } from "@/redux/axios";
+import {
+    createPosition,
+    getPositions,
+    updatePosition,
+} from "@/redux/actions/positionActions";
 import type { AppDispatch } from "@/redux/store";
 import type {
     SpaBankMonthContribution,
@@ -102,11 +106,10 @@ function applyRevenueEditsToBanks(
     return next;
 }
 
-async function saveBankRecord(bank: SpaBankApiRecord): Promise<void> {
-    const bankId = String(bank._id ?? bank.id ?? "").trim();
-    if (!bankId) return;
-
-    const rowsPayload = (bank.rows ?? [])
+function buildBankRowsPayload(
+    rows: Array<Record<string, unknown>> | undefined,
+): Array<Record<string, unknown>> {
+    return (rows ?? [])
         .map((row) => {
             const monthLabel = String(row.monthLabel ?? row.month ?? "").trim();
             const totalCredit = parseAmount(row.totalCredit);
@@ -138,12 +141,21 @@ async function saveBankRecord(bank: SpaBankApiRecord): Promise<void> {
                 avgDailyBlc: parseAmount(row.avgDailyBlc),
             };
         })
-        .filter(Boolean);
+        .filter(Boolean) as Array<Record<string, unknown>>;
+}
+
+async function saveBankRecord(bank: SpaBankApiRecord): Promise<void> {
+    const bankId = String(bank._id ?? bank.id ?? "").trim();
+    if (!bankId) return;
 
     await axiosPut(`/bank-analysis/${bankId}`, {
         accountNumber: bank.accountNumber ?? "",
-        rows: rowsPayload,
+        rows: buildBankRowsPayload(bank.rows),
     });
+}
+
+function todayIsoDate(): string {
+    return new Date().toISOString().slice(0, 10);
 }
 
 export function notifySpaScrubberSynced(applicationUuid: string): void {
@@ -170,13 +182,23 @@ export async function persistSpaEditsToScrubber(args: {
     const initialPaymentMap = new Map(
         args.initialPayments.map((row) => [paymentRowKey(row), row.amount]),
     );
-    const positionUpdates: Array<{ id: string; monthlyMcaPmts: number }> = [];
+    const positionUpdates: Array<{ id: string; ach: number }> = [];
+    let createRepaymentAmount: number | null = null;
+
     for (const row of args.currentPayments) {
-        if (row.source !== "position" || !row.positionId) continue;
         const key = paymentRowKey(row);
         const before = initialPaymentMap.get(key) ?? 0;
         if (amountsEqual(before, row.amount)) continue;
-        positionUpdates.push({ id: row.positionId, monthlyMcaPmts: row.amount });
+
+        if (row.source === "position" && row.positionId) {
+            positionUpdates.push({ id: row.positionId, ach: row.amount });
+            continue;
+        }
+
+        // Empty scrubber: user entered a total repayment in SPA — create a position.
+        if (row.source === "positions_total" && row.amount > 0) {
+            createRepaymentAmount = row.amount;
+        }
     }
 
     const initialRevenueMap = new Map(
@@ -197,30 +219,118 @@ export async function persistSpaEditsToScrubber(args: {
         });
     }
 
-    if (!positionUpdates.length && !revenueEdits.length) return;
+    if (
+        !positionUpdates.length &&
+        createRepaymentAmount == null &&
+        !revenueEdits.length
+    ) {
+        return;
+    }
 
     for (const update of positionUpdates) {
         await args
             .dispatch(
                 updatePosition({
                     id: update.id,
-                    data: { monthlyMcaPmts: update.monthlyMcaPmts },
+                    data: { ach: String(update.ach) },
                 }),
             )
             .unwrap();
     }
 
-    if (revenueEdits.length > 0 && args.banks.length > 0) {
-        const banksToSave = applyRevenueEditsToBanks(args.banks, revenueEdits);
-        const changedBankIds = new Set(
-            revenueEdits.flatMap((edit) =>
-                (edit.bankContributions ?? []).map((c) => c.bankBackendId),
-            ),
+    if (createRepaymentAmount != null) {
+        const fundingDate = todayIsoDate();
+        // Backend treats 0 as missing for required numeric fields (!fundedAmount).
+        const fundedAmount = createRepaymentAmount;
+        const paybackAmount = Number((createRepaymentAmount * 1.49).toFixed(2));
+        await args
+            .dispatch(
+                createPosition({
+                    position: "Position 1",
+                    factorRate: "1.49",
+                    ach: String(createRepaymentAmount),
+                    percentOfGross: "1",
+                    funder: "SPA Calculator",
+                    paybackAmount,
+                    fundingDate,
+                    activeStatus: true,
+                    fundedAmount,
+                    frequency: "Daily",
+                    closeDate: fundingDate,
+                    application: appKey,
+                    status: "ACTIVE",
+                }),
+            )
+            .unwrap();
+    }
+
+    if (revenueEdits.length > 0) {
+        const editsWithContributions = revenueEdits.filter(
+            (edit) => (edit.bankContributions ?? []).length > 0,
         );
-        for (const bank of banksToSave) {
-            const bankId = String(bank._id ?? bank.id ?? "").trim();
-            if (!bankId || !changedBankIds.has(bankId)) continue;
-            await saveBankRecord(bank);
+        const editsWithoutContributions = revenueEdits.filter(
+            (edit) => !(edit.bankContributions ?? []).length,
+        );
+
+        if (editsWithContributions.length > 0 && args.banks.length > 0) {
+            const banksToSave = applyRevenueEditsToBanks(
+                args.banks,
+                editsWithContributions,
+            );
+            const changedBankIds = new Set(
+                editsWithContributions.flatMap((edit) =>
+                    (edit.bankContributions ?? []).map((c) => c.bankBackendId),
+                ),
+            );
+            for (const bank of banksToSave) {
+                const bankId = String(bank._id ?? bank.id ?? "").trim();
+                if (!bankId || !changedBankIds.has(bankId)) continue;
+                await saveBankRecord(bank);
+            }
+        }
+
+        // No bank contributions (empty scrubber or seeded months): create / append bank rows.
+        if (editsWithoutContributions.length > 0) {
+            const existingBank = args.banks[0];
+            const existingBankId = String(
+                existingBank?._id ?? existingBank?.id ?? "",
+            ).trim();
+            const mergedRows = new Map<string, Record<string, unknown>>();
+
+            for (const row of existingBank?.rows ?? []) {
+                const monthLabel = String(row.monthLabel ?? row.month ?? "").trim();
+                if (monthLabel) mergedRows.set(monthLabel, { ...row });
+            }
+            for (const edit of editsWithoutContributions) {
+                const prev = mergedRows.get(edit.month) ?? {
+                    monthLabel: edit.month,
+                };
+                mergedRows.set(edit.month, {
+                    ...prev,
+                    monthLabel: edit.month,
+                    totalCredit: edit.netCredit,
+                    loanTransfer: parseAmount(prev.loanTransfer),
+                    deposit: parseAmount(prev.deposit),
+                    other: parseAmount(prev.other),
+                    nsfNegDays: parseAmount(prev.nsfNegDays),
+                    lowBlcDays: parseAmount(prev.lowBlcDays),
+                    avgDailyBlc: parseAmount(prev.avgDailyBlc),
+                });
+            }
+
+            const rowsPayload = buildBankRowsPayload([...mergedRows.values()]);
+            if (existingBankId) {
+                await axiosPut(`/bank-analysis/${existingBankId}`, {
+                    accountNumber: existingBank?.accountNumber ?? "",
+                    rows: rowsPayload,
+                });
+            } else {
+                await axiosPost("/bank-analysis", {
+                    application: appKey,
+                    accountNumber: existingBank?.accountNumber ?? "",
+                    rows: rowsPayload,
+                });
+            }
         }
     }
 

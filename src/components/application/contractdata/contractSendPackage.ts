@@ -87,11 +87,8 @@ export function buildPackageEnvelopeEmailSubject(
     if (selection.includeMainContract) {
         return buildContractEnvelopeEmailSubject(business, offerAmount, lender);
     }
-    const labels: string[] = [];
-    if (selection.includeAddendum) labels.push("Addendum");
-    if (selection.includeDisclosure) labels.push("Disclosure");
-    const docLabel = labels.join(" & ") || "Documents";
-    return `${lender} : ${business} - ${docLabel}`;
+    // Addendum / disclosure-only: same Funder: Business $Amount pattern.
+    return buildContractEnvelopeEmailSubject(business, offerAmount, lender);
 }
 
 export function buildPackageEnvelopeEmailMessage(

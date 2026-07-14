@@ -13,6 +13,7 @@ export const ACH_COORDINATE_MANIFEST_TEXT_TAB_LABELS = [
     "authorization_client_bank_routing",
     "authorization_client_bank_account",
     "authorization_client_name",
+    "authorization_client_signer_name",
     "authorization_client_name_print",
     "authorization_client_tax_id",
     "authorized_business_phone",
@@ -40,6 +41,7 @@ export type AchCoordinateTextTabLabel =
 type AchFormEditFieldKey = keyof Pick<
     BuildContractPrefillFieldsArgs,
     | "authorizationClientName"
+    | "authorizationClientSignerName"
     | "authorizationClientBankName"
     | "authorizationClientBankRouting"
     | "authorizationClientBankAccount"
@@ -92,6 +94,11 @@ export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
         key: "authorizationClientName",
         label: "Seller's name",
         tabLabel: "authorization_client_name",
+    },
+    {
+        key: "authorizationClientSignerName",
+        label: "Seller's name (signature)",
+        tabLabel: "authorization_client_signer_name",
     },
     {
         key: "authorizationClientNamePrint",
@@ -186,7 +193,7 @@ export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
     },
     {
         key: "achAuthorizationConcentAccountHolderName",
-        label: "Name / title of account holder",
+        label: "Business name",
         tabLabel: "ach_authorization_concent_account_holder_name",
     },
 ];

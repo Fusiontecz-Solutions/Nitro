@@ -116,6 +116,7 @@ import {
 } from "./contractdata/contractSendHistory";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
 import {
+    buildAchFormEnvelopeEmailSubject,
     buildPackageEnvelopeEmailMessage,
     buildPackageEnvelopeEmailSubject,
     type ContractSendPackageSelection,
@@ -2071,8 +2072,8 @@ export default function ContractTab({
                 : null) ??
             (resolvedFunderForCc ? findFunder(resolvedFunderForCc) : null);
         const envelopeFunderLabel =
+            String(resolvedFunderForCc || "").trim() ||
             formatFunderSelectLabel(funderProfileForSend ?? undefined) ||
-            resolvedFunderForCc ||
             DOCUSIGN_EMAIL_LENDER_NAME;
         const funderDefaultCcEmail =
             String(funderProfileForSend?.defaultCcEmail ?? "").trim() || null;
@@ -2225,7 +2226,11 @@ export default function ContractTab({
                 resolveBalanceTransferMerchantContext(latestContract, applicationData)
                     .businessName.trim() || docuSignClientName;
             const docuSignEmailSubject = standaloneAchOnly
-                ? `ACH Authorization — ${docuSignClientName}`
+                ? buildAchFormEnvelopeEmailSubject(
+                      docuSignBusinessName,
+                      approvedAmount,
+                      envelopeFunderLabel,
+                  )
                 : sendPackageSelection
                   ? buildPackageEnvelopeEmailSubject(
                         docuSignBusinessName,
@@ -2290,12 +2295,12 @@ export default function ContractTab({
             );
 
             const secondOwnerName =
-                resolveOwnerRowFullName(secondOwnerFromDb) ||
                 secondOwnerNameBeforeCollapse ||
                 String(
                     roles.find((r) => /owner\s*2/i.test(String(r.signerRole || "")))?.signerName ||
                         "",
-                ).trim();
+                ).trim() ||
+                resolveOwnerRowFullName(secondOwnerFromDb);
             prefillFieldsPayload = applySecondOwnerNameToPrefillFields(prefillFieldsPayload, {
                 ownerCount,
                 secondOwnerName,
@@ -2380,12 +2385,12 @@ export default function ContractTab({
                 prefillFieldsPayload = applySecondOwnerNameToPrefillFields(prefillFieldsPayload, {
                     ownerCount,
                     secondOwnerName:
-                        resolveOwnerRowFullName(secondOwnerFromDb) ||
                         secondOwnerNameBeforeCollapse ||
                         String(
                             roles.find((r) => /owner\s*2/i.test(String(r.signerRole || "")))
                                 ?.signerName || "",
-                        ).trim(),
+                        ).trim() ||
+                        resolveOwnerRowFullName(secondOwnerFromDb),
                     secondOwnerSs: String(
                         secondOwnerFromDb?.ssnNumber || secondOwnerFromDb?.ssn || "",
                     ).trim(),
@@ -2909,6 +2914,13 @@ export default function ContractTab({
                     ? window.location.href
                     : "https://www.docusign.com";
             const signerEmail = getPrimaryRecipientEmail().trim();
+            const funderName = String(
+                (fetchedContract as { funderName?: unknown } | null)?.funderName ?? "",
+            ).trim();
+            const contractState = String(
+                (fetchedContract as { state?: unknown } | null)?.state ?? "",
+            ).trim();
+            const contractIdNum = Number(selectedContractId);
             try {
                 const res = await axiosPost("/docusign/sender-view", {
                     envelopeId,
@@ -2916,6 +2928,11 @@ export default function ContractTab({
                     ccEmails: [...new Set(ccForSync.map((e) => e.trim()).filter(Boolean))],
                     ...(rolesOverride?.length ? { roles: rolesOverride } : {}),
                     ...(applicationUuid ? { applicationId: String(applicationUuid) } : {}),
+                    ...(Number.isFinite(contractIdNum) && contractIdNum > 0
+                        ? { contractId: contractIdNum }
+                        : {}),
+                    ...(funderName ? { funderName } : {}),
+                    ...(contractState ? { contractState } : {}),
                     ...(signerEmail
                         ? {
                               signerEmail,
@@ -2936,7 +2953,7 @@ export default function ContractTab({
                 return { url: null, error: apiMessage || null };
             }
         },
-        [applicationUuid, applicationData],
+        [applicationUuid, applicationData, fetchedContract, selectedContractId],
     );
 
     const fetchDocuSignSenderViewUrlWithRetry = useCallback(

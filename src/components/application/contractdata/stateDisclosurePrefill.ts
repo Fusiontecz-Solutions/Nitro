@@ -1,9 +1,9 @@
 import type { ContractPrefillField } from "./Contract";
 import {
     getApplicationClientPrefillArgs,
-    getApplicationPrimaryRecipientName,
     resolveAppendixUnderwritingFeesDollars,
     resolveBalanceTransferMerchantContext,
+    resolveContractBusinessLegalNameForPrefill,
 } from "./Contract";
 import { buildDailyCaliforniaContractPrefillFields } from "./daily_california";
 import { buildCaliforniaDisclosurePage3Amounts, resolveCaliforniaEstimatedTermDays } from "./california_disclosure";
@@ -70,7 +70,7 @@ export interface StateDisclosureContext {
     estimatedNumberOfPayments?: string;
     /** Prepayment description / amount text. */
     prepayment?: string;
-    /** Recipient (legal client / business) name. */
+    /** Merchant business / legal name (never owner person name). */
     recipientName?: string;
     /** Funder / provider legal name on the disclosure. */
     funderName?: string;
@@ -672,17 +672,15 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
 
     const appPrefill = getApplicationClientPrefillArgs(args.application);
     const merchant = resolveBalanceTransferMerchantContext(contract, args.application);
+    /** Disclosures always show merchant business/legal name — never owner/customer person name. */
     const customerName =
+        resolveContractBusinessLegalNameForPrefill(contract, args.application) ||
         merchant.businessName ||
         merchant.clientLegalName ||
         str(contract.legalName) ||
         str(contract.clientLegalName) ||
         str((contract as Record<string, unknown>).client_legal_name) ||
-        str(appPrefill.legalName) ||
-        str(contract.customerName) ||
-        getApplicationPrimaryRecipientName(args.application) ||
-        str(contract.clientName) ||
-        str(appPrefill.clientName);
+        str(appPrefill.legalName);
 
     const businessAddressLine = [
         str(contract.businessAddress),
