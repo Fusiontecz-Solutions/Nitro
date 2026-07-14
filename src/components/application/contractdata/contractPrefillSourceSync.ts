@@ -213,7 +213,8 @@ export function buildClientUpdateFromPrefill(
         if (o2Name) {
             const { firstName, lastName } = splitPersonName(o2Name);
             if (firstName) owners[1]!.firstName = firstName;
-            if (lastName) owners[1]!.lastName = lastName;
+            // Always write lastName so a single-token signer clears a stale prior last name.
+            owners[1]!.lastName = lastName;
         }
         if (o2Ssn) owners[1]!.ssn = o2Ssn;
     }

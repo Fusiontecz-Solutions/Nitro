@@ -91,7 +91,10 @@ export function getTemplateRoleEmailFromRow(row: Record<string, unknown>): strin
     );
 }
 
-import { OWNER2_NAME_SYNC_CAMEL_KEYS } from "./contractPartyCounts";
+import {
+    OWNER2_NAME_SYNC_CAMEL_KEYS,
+    clearParty2PrefillPartial,
+} from "./contractPartyCounts";
 import {
     DOCUSIGN_DEFAULT_SIGNER_ROLE,
     DOCUSIGN_PRIMARY_SIGNER_ROLE,
@@ -162,17 +165,25 @@ export function applyOwner2PrefillKeysFromSignerRows(
     record: Record<string, unknown>,
     signerRows: ContractSignerOverrideRow[],
 ): Record<string, unknown> {
-    const secondRow = findSecondOwnerSignerRow(signerRows);
-    if (!secondRow) return record;
-    const secondName = String(secondRow.name || "").trim();
-    if (!secondName) return record;
     const out = { ...record };
+    const secondRow = findSecondOwnerSignerRow(signerRows);
+    const secondName = String(secondRow?.name || "").trim();
+    const hasSecondSigner =
+        Boolean(secondRow && String(secondRow.email || "").trim()) ||
+        signerRows.filter((r) => String(r.email || "").trim()).length >= 2;
+
+    if (!hasSecondSigner || !secondName) {
+        // Drop stale Owner 2 names when Manage Signers has only one person.
+        clearParty2PrefillPartial(out, 1);
+        return out;
+    }
     for (const key of OWNER2_NAME_SYNC_CAMEL_KEYS) {
         out[key] = secondName;
     }
     return out;
 }
 
+/** Split display name for CRM owner rows — never duplicate a single token into first+last. */
 export function splitSignerDisplayName(name: string): {
     firstName: string;
     lastName: string;
@@ -182,7 +193,7 @@ export function splitSignerDisplayName(name: string): {
         .split(/\s+/)
         .filter(Boolean);
     if (parts.length === 0) return { firstName: "", lastName: "" };
-    if (parts.length === 1) return { firstName: parts[0]!, lastName: parts[0]! };
+    if (parts.length === 1) return { firstName: parts[0]!, lastName: "" };
     return { firstName: parts[0]!, lastName: parts.slice(1).join(" ") };
 }
 

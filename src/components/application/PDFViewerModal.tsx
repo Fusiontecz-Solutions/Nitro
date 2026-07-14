@@ -86,12 +86,12 @@ import {
     updateEPO,
     createContractOwner,
     updateContractOwner,
+    deleteContractOwner,
     createContractGuarantor,
     updateContractGuarantor,
     // deleteACH,
     // deleteEPO,
     // deleteAddendum,
-    // deleteContractOwner,
     // deleteContractGuarantor,
     deleteUploadedContractDocument,
     getBoldSignTemplates,
@@ -8506,6 +8506,30 @@ const PDFViewerModal = ({
                                                                                         rows,
                                                                                     ),
                                                                             });
+                                                                        const ownersRes =
+                                                                            await dispatch(
+                                                                                getAllContractOwners({
+                                                                                    contractId: cid,
+                                                                                }),
+                                                                            ).unwrap();
+                                                                        const dbOwners =
+                                                                            Array.isArray(
+                                                                                (
+                                                                                    ownersRes as {
+                                                                                        data?: unknown;
+                                                                                    }
+                                                                                )?.data,
+                                                                            )
+                                                                                ? ((
+                                                                                      ownersRes as {
+                                                                                          data: unknown[];
+                                                                                      }
+                                                                                  )
+                                                                                      .data as Record<
+                                                                                      string,
+                                                                                      unknown
+                                                                                  >[])
+                                                                                : [];
                                                                         if (ownerCountSaved >= 2) {
                                                                             const secondSigner =
                                                                                 findSecondOwnerSignerRow(
@@ -8524,37 +8548,7 @@ const PDFViewerModal = ({
                                                                                         secondSigner.email ||
                                                                                             "",
                                                                                     ).trim();
-                                                                                if (
-                                                                                    firstName &&
-                                                                                    lastName
-                                                                                ) {
-                                                                                    const ownersRes =
-                                                                                        await dispatch(
-                                                                                            getAllContractOwners(
-                                                                                                {
-                                                                                                    contractId:
-                                                                                                        cid,
-                                                                                                },
-                                                                                            ),
-                                                                                        ).unwrap();
-                                                                                    const dbOwners =
-                                                                                        Array.isArray(
-                                                                                            (
-                                                                                                ownersRes as {
-                                                                                                    data?: unknown;
-                                                                                                }
-                                                                                            )?.data,
-                                                                                        )
-                                                                                            ? ((
-                                                                                                  ownersRes as {
-                                                                                                      data: unknown[];
-                                                                                                  }
-                                                                                              )
-                                                                                                  .data as Record<
-                                                                                                  string,
-                                                                                                  unknown
-                                                                                              >[])
-                                                                                            : [];
+                                                                                if (firstName) {
                                                                                     if (
                                                                                         dbOwners.length <
                                                                                         2
@@ -8589,6 +8583,7 @@ const PDFViewerModal = ({
                                                                                                         id: secondId,
                                                                                                         data: {
                                                                                                             firstName,
+                                                                                                            // Clear duplicated single-token lastName (e.g. Prafull/Prafull).
                                                                                                             lastName,
                                                                                                             email:
                                                                                                                 secondEmail ||
@@ -8599,17 +8594,41 @@ const PDFViewerModal = ({
                                                                                             ).unwrap();
                                                                                         }
                                                                                     }
+                                                                                }
+                                                                            }
+                                                                        } else if (
+                                                                            dbOwners.length >= 2
+                                                                        ) {
+                                                                            // Removed Signer 2 — delete stale CRM owner row so Stephanie/etc. cannot return.
+                                                                            for (
+                                                                                let i =
+                                                                                    dbOwners.length -
+                                                                                    1;
+                                                                                i >= 1;
+                                                                                i--
+                                                                            ) {
+                                                                                const oid = Number(
+                                                                                    dbOwners[i]
+                                                                                        ?.id,
+                                                                                );
+                                                                                if (
+                                                                                    Number.isFinite(
+                                                                                        oid,
+                                                                                    )
+                                                                                ) {
                                                                                     await dispatch(
-                                                                                        getAllContractOwners(
-                                                                                            {
-                                                                                                contractId:
-                                                                                                    cid,
-                                                                                            },
+                                                                                        deleteContractOwner(
+                                                                                            oid,
                                                                                         ),
-                                                                                    );
+                                                                                    ).unwrap();
                                                                                 }
                                                                             }
                                                                         }
+                                                                        await dispatch(
+                                                                            getAllContractOwners({
+                                                                                contractId: cid,
+                                                                            }),
+                                                                        );
                                                                     }
                                                                     toast.success(
                                                                         hadDraft

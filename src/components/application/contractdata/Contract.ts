@@ -2059,7 +2059,10 @@ function coerceNumericPrefillMoneyStrings(obj: Partial<BuildContractPrefillField
 }
 
 function ownerFullName(first?: unknown, last?: unknown): string {
-    return `${str(first)} ${str(last)}`.trim();
+    const f = str(first);
+    const l = str(last);
+    if (f && l && f.toLowerCase() === l.toLowerCase()) return f;
+    return `${f} ${l}`.trim();
 }
 
 /**

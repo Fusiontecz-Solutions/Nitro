@@ -68,9 +68,6 @@ export function resolveActiveOwnerCount(options: {
 }): number {
     const roles = options.signerRoles || [];
     const fromDb = countOwnersWithEmail(options.owners);
-    const fromRoles = countOwnersFromSignerRoles(roles);
-    const fromContractSignerRows =
-        countDistinctContractSignersWithEmail(roles) >= 2 ? 2 : 0;
 
     const hasExplicitSecondSlot = roles.some((r) => {
         const label = signerRoleLabel(r);
@@ -79,41 +76,15 @@ export function resolveActiveOwnerCount(options: {
             String(r.signerEmail || "").trim()
         );
     });
+    const distinctSignerEmails = countDistinctContractSignersWithEmail(roles);
 
-    const clientEmail = roles
-        .find((r) => isClientRoleName(signerRoleLabel(r)))
-        ?.signerEmail?.trim()
-        .toLowerCase();
+    // Saved Manage Signers list wins over stale CRM owners[1] after remove/replace.
+    if (roles.length > 0) {
+        if (hasExplicitSecondSlot || distinctSignerEmails >= 2) return 2;
+        return 1;
+    }
 
-    const distinctNonClientPartyEmails = new Set(
-        roles
-            .filter((r) => {
-                const email = String(r.signerEmail || "").trim().toLowerCase();
-                if (!email) return false;
-                if (clientEmail && email === clientEmail) return false;
-                const label = signerRoleLabel(r);
-                return (
-                    isOwnerRoleName(label) ||
-                    isGuarantorRoleName(label) ||
-                    /owner\s*2|guarantor\s*2/i.test(label)
-                );
-            })
-            .map((r) => String(r.signerEmail).trim().toLowerCase()),
-    );
-    const fromDistinctPartySigners =
-        distinctNonClientPartyEmails.size >= 2 ? 2 : distinctNonClientPartyEmails.size;
-
-    return Math.min(
-        2,
-        Math.max(
-            1,
-            fromDb,
-            fromRoles,
-            fromContractSignerRows,
-            hasExplicitSecondSlot ? 2 : 0,
-            fromDistinctPartySigners,
-        ),
-    );
+    return Math.min(2, Math.max(1, fromDb));
 }
 
 /** Active guarantor count (0–2) from CRM guarantors and/or saved contract signers. */
@@ -275,7 +246,11 @@ export function resolveOwnerRowFullName(
     row: Record<string, unknown> | null | undefined,
 ): string {
     if (!row) return "";
-    return `${String(row.firstName || row.ownerFirstName || "").trim()} ${String(row.lastName || row.ownerLastName || "").trim()}`.trim();
+    const first = String(row.firstName || row.ownerFirstName || "").trim();
+    const last = String(row.lastName || row.ownerLastName || "").trim();
+    // Avoid "Prafull Prafull" from single-token names previously mirrored into first+last.
+    if (first && last && first.toLowerCase() === last.toLowerCase()) return first;
+    return `${first} ${last}`.trim();
 }
 
 /** Merchant / owner 1 / guarantor 1 share the same identity on all primary-party lines. */
@@ -335,8 +310,10 @@ export function resolveSecondOwnerSignerName(
     const fromRole = String(fromExplicit?.signerName || "").trim();
     if (fromRole) return fromRole;
 
-    const secondFromDb = ownerRows?.[1] as { firstName?: string; lastName?: string } | undefined;
-    return `${String(secondFromDb?.firstName || "").trim()} ${String(secondFromDb?.lastName || "").trim()}`.trim();
+    // Prefer Manage Signers only when roles were provided; do not revive a removed signer from DB.
+    if (roles.length > 0) return "";
+
+    return resolveOwnerRowFullName(ownerRows?.[1] as Record<string, unknown> | undefined);
 }
 
 /** Fill owner-2 / guarantor-2 / merchant-2 lines from the 2nd contract signer. */
