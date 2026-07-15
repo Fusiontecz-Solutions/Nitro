@@ -109,8 +109,8 @@ function resolveLayoutFunderIdForSource(
     if (source === "shared") {
       return resolveSharedFunderIdForKind(profile, kind) || profile.id;
     }
-    // Texas Funding Group never uses platform addendum/disclosure rows.
-    if (source === "platform") return profile.id;
+    // Honor "Platform defaults" — use Woodmere platform disclosure/addendum rows.
+    if (source === "platform") return null;
     return profile.id;
   }
   if (source === "platform") return null;

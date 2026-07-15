@@ -129,7 +129,11 @@ export function convertDocuSignTemplateExport(
         const t = raw as Record<string, unknown>;
         const tabType = normalizeTabType(String(t.tabType || ''), tabKey);
         const label = String(t.tabLabel || t.name || '').trim();
-        const optional = t.optional === 'true' || t.required === 'false';
+        const optional =
+          t.optional === 'true' ||
+          t.required === 'false' ||
+          /optional/i.test(String(t.tabType || '')) ||
+          /optional/i.test(tabKey);
         const pageNumber = String(t.pageNumber || '1');
         const x = String(t.xPosition ?? '');
         const y = String(t.yPosition ?? '');
@@ -221,20 +225,33 @@ export function convertDocuSignTemplateExport(
   };
 }
 
-/** Optional sign slots route to Owner 2 when `ownerCount >= 2`. Text stays on signer 1 (prefill only). */
+/** Optional sign slots + Owner 2 print/date fields route when `ownerCount >= 2`. */
 function applyDiscoverStyleOwnerRouting(
   placements: DocumentLayoutPlacement[],
 ): DocumentLayoutPlacement[] {
   return placements.map((placement) => {
-    const isOwner2Signature =
-      placement.type === 'signature' && placement.optional === true;
+    const label = String(
+      placement.sourceTabLabel || placement.variable || placement.slot || '',
+    )
+      .trim()
+      .toLowerCase();
 
-    if (!isOwner2Signature) {
+    const isOwner2Signature =
+      (placement.type === 'signature' || placement.type === 'initial') &&
+      (placement.optional === true ||
+        /seller_2_sign|guarantor2_sign|owner2_sign|seller_2|guarantor_2/.test(label));
+    const isOwner2PrintOrDate =
+      /seller_2_name|seller_2_sign|discover_owner2|agreement_date_owner2|guarantor2|owner2|owner_2/.test(
+        label,
+      );
+
+    if (!isOwner2Signature && !isOwner2PrintOrDate) {
       return placement;
     }
 
     return {
       ...placement,
+      optional: placement.type === 'signature' || placement.type === 'initial' ? true : placement.optional,
       signerParty: 'secondary',
       when: 'owners >= 2',
     };

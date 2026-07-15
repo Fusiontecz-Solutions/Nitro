@@ -1,9 +1,12 @@
 import type { DocumentLayout, DocumentLayoutPlacement } from './convert-docusign-template-export';
 
-/** CRM storage prefix — PDF tab labels on each layout stay unchanged. */
+/** CRM storage prefix — PDF tab labels on each layout stay unchanged for value lookup. */
 export const LAYOUT_CRM_PREFIX: Record<string, string> = {
   flex_addendum: 'flex_addendum_',
   balance_transfer: 'balance_transfer_',
+  ach_authorization: 'ach_form_',
+  ach_authorization_standalone: 'ach_form_',
+  ach_authorization_texas: 'ach_form_texas_',
 };
 
 /** When CRM key differs from `{prefix}{pdfVariable}`. */
@@ -28,12 +31,29 @@ export function resolveCanonicalSupplementalLayoutKey(layoutKey: string): string
   if (!k) return null;
   if (k === 'flex_addendum' || k.endsWith('_flex_addendum')) return 'flex_addendum';
   if (k === 'balance_transfer' || k.endsWith('_balance_transfer')) return 'balance_transfer';
+  if (
+    k === 'ach_authorization' ||
+    k === 'ach_authorization_standalone' ||
+    k.endsWith('_ach_authorization') ||
+    (k.includes('_ach_') && !k.includes('texas'))
+  ) {
+    return 'ach_authorization';
+  }
+  if (k === 'ach_authorization_texas' || k.endsWith('_ach_authorization_texas')) {
+    return 'ach_authorization_texas';
+  }
   return null;
 }
 
 export function isMainContractLayoutKey(layoutKey: string): boolean {
   const k = String(layoutKey || '').trim();
-  if (k === 'contract' || k === 'alliance_bridge_contract') return true;
+  if (
+    k === 'contract' ||
+    k === 'alliance_bridge_contract' ||
+    k === 'texas_funding_group_contract'
+  ) {
+    return true;
+  }
   if (!k.startsWith('funder_')) return false;
   return !/_flex_addendum|_balance_transfer|_ach_|_disclosure|_addendum_/.test(k);
 }
@@ -89,6 +109,20 @@ export function buildScopedValuesForLayout(
     if (prefix) {
       const crmKey = resolveCrmKeyForLayoutVariable(canonicalKey, pdfVar);
       let val = String(globalValues[crmKey] ?? '').trim();
+      // Prefer document-scoped CRM key; fall back to shared PDF variable for first send.
+      if (!val) val = String(globalValues[pdfVar] ?? '').trim();
+      if (
+        !val &&
+        (placement.type === 'date' ||
+          /^(agreement_date|signature_date)/i.test(pdfVar))
+      ) {
+        val =
+          String(globalValues.agreement_date ?? '').trim() ||
+          String(globalValues.signature_date ?? '').trim() ||
+          String(globalValues.Signature_date ?? '').trim() ||
+          String(globalValues.disclosure_date ?? '').trim() ||
+          String(globalValues.addendum_date ?? '').trim();
+      }
       if (
         !val &&
         canonicalKey === 'flex_addendum' &&
@@ -123,14 +157,38 @@ export function buildScopedValuesForLayout(
   return out;
 }
 
-/** Unique DocuSign tab label for supplemental layouts (avoids shared-tab sync with contract). */
+/**
+ * Unique DocuSign tab label for supplemental layouts (avoids shared-tab sync with contract).
+ * Prefer CRM-scoped id so editing one document's tab never rewrites another document.
+ */
 export function resolveSupplementalEnvelopeTabLabel(
   layoutKey: string,
   placement: DocumentLayoutPlacement,
   pdfVariable: string,
 ): string | null {
-  const canonical = resolveCanonicalSupplementalLayoutKey(layoutKey);
-  if (!canonical || !LAYOUT_CRM_PREFIX[canonical]) return null;
+  const layout = String(layoutKey || '').trim();
+  if (isMainContractLayoutKey(layout)) {
+    // Main contract: keep explicit source labels, but uniquify footer clone.
+    const src = String(placement.sourceTabLabel || '').trim();
+    if (src) return src;
+    return null;
+  }
+
+  if (isStateDisclosureTextPlacement(placement)) {
+    const unique = String(placement.sourceTabLabel || '').trim();
+    if (unique) return `disclosure_${unique}`;
+    const pdfVar = String(pdfVariable || '').trim();
+    return pdfVar ? `disclosure_${pdfVar}` : null;
+  }
+
+  const canonical = resolveCanonicalSupplementalLayoutKey(layout);
+  if (!canonical || !LAYOUT_CRM_PREFIX[canonical]) {
+    const pdfVar = String(pdfVariable || '').trim();
+    if (!pdfVar) return null;
+    // State disclosures / other supplementals without a CRM prefix still need unique labels.
+    const token = layout.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'doc';
+    return `${token}_${pdfVar}`;
+  }
   const pdfVar = String(pdfVariable || '').trim();
   if (!pdfVar) return null;
   return resolveCrmKeyForLayoutVariable(canonical, pdfVar);

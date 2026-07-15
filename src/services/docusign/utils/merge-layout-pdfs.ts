@@ -85,3 +85,44 @@ export async function appendPdfBuffersToBase64(
 
   return Buffer.from(await mainDoc.save()).toString('base64');
 }
+
+/**
+ * Extract 1-based page numbers from a PDF into a new PDF (base64).
+ * Used for Texas ACH form — pages 11–12 of the Texas Funding Group contract.
+ */
+export async function extractPdfPagesAsBase64(
+  sourceBase64: string,
+  pageNumbers1Based: number[],
+): Promise<string> {
+  const base64 = String(sourceBase64 || '').trim();
+  if (!base64) {
+    throw new Error('Source PDF base64 is required to extract pages.');
+  }
+  const pages = pageNumbers1Based
+    .map((n) => Math.floor(Number(n)))
+    .filter((n) => Number.isFinite(n) && n >= 1);
+  if (!pages.length) {
+    throw new Error('At least one page number is required to extract.');
+  }
+
+  const { PDFDocument } = await import('pdf-lib');
+  const src = await PDFDocument.load(Buffer.from(base64, 'base64'));
+  const pageCount = src.getPageCount();
+  const indices: number[] = [];
+  for (const page of pages) {
+    if (page > pageCount) {
+      throw new Error(
+        `Cannot extract page ${page}: source PDF only has ${pageCount} page(s).`,
+      );
+    }
+    indices.push(page - 1);
+  }
+
+  const out = await PDFDocument.create();
+  const copied = await out.copyPages(src, indices);
+  for (const page of copied) {
+    out.addPage(page);
+  }
+  return Buffer.from(await out.save()).toString('base64');
+}
+

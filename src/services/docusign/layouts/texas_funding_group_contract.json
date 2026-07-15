@@ -50,7 +50,7 @@
       {"tabLabel": "guaranty_guarantor2_name", "pageNumber": "10", "xPosition": "437", "yPosition": "670", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "guaranty_guarantor2_ss", "pageNumber": "10", "xPosition": "344", "yPosition": "684", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
 
-      {"tabLabel": "client_legal_name", "pageNumber": "11", "xPosition": "260", "yPosition": "89", "tabType": "text", "width": "170", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
+      {"tabLabel": "client_legal_name", "pageNumber": "11", "xPosition": "286", "yPosition": "86", "tabType": "text", "width": "170", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "ach_authorization_account_holder_bank_name", "pageNumber": "11", "xPosition": "130", "yPosition": "155", "tabType": "text", "width": "170", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "ach_authorization_account_holder_bank_branch_city", "pageNumber": "11", "xPosition": "432", "yPosition": "151", "tabType": "text", "width": "70", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "ach_authorization_account_holder_bank_state", "pageNumber": "11", "xPosition": "507", "yPosition": "152", "tabType": "text", "width": "35", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
@@ -60,10 +60,10 @@
       {"tabLabel": "ach_authorization_account_holder_bank_account_number", "pageNumber": "11", "xPosition": "422", "yPosition": "188", "tabType": "text", "width": "120", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "frequency", "pageNumber": "11", "xPosition": "81", "yPosition": "325", "tabType": "text", "width": "60", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "remittance", "pageNumber": "11", "xPosition": "273", "yPosition": "325", "tabType": "text", "width": "90", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
-      {"tabLabel": "client_legal_name", "pageNumber": "11", "xPosition": "101", "yPosition": "548", "tabType": "text", "width": "220", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
+      {"tabLabel": "client_legal_name_p11_footer", "pageNumber": "11", "xPosition": "101", "yPosition": "548", "tabType": "text", "width": "220", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "federal_tax_id_EIN", "pageNumber": "11", "xPosition": "438", "yPosition": "547", "tabType": "text", "width": "100", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
-      {"tabLabel": "seller_1_name", "pageNumber": "11", "xPosition": "114", "yPosition": "599", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
-      {"tabLabel": "seller_2_name", "pageNumber": "11", "xPosition": "370", "yPosition": "599", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
+      {"tabLabel": "seller_1_name", "pageNumber": "11", "xPosition": "115", "yPosition": "602", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
+      {"tabLabel": "seller_2_name", "pageNumber": "11", "xPosition": "373", "yPosition": "602", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "discover_owner2_title", "pageNumber": "11", "xPosition": "397", "yPosition": "615", "tabType": "text", "width": "120", "height": "19", "required": "false", "locked": "false", "fontSize": "size9"},
 
       {"tabLabel": "ach_authorization_account_holder_bank_name", "pageNumber": "12", "xPosition": "160", "yPosition": "286", "tabType": "text", "width": "200", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
@@ -90,13 +90,13 @@
     "signHereTabs": [
       {"tabLabel": "exhibit_owner_sign_p13", "pageNumber": "13", "xPosition": "447", "yPosition": "670", "tabType": "signhere", "name": "SignHere"},
       {"tabLabel": "seller_1_sign_p6", "pageNumber": "6", "xPosition": "111", "yPosition": "357", "tabType": "signhere", "name": "SignHere"},
-      {"tabLabel": "seller_2_sign_p6", "pageNumber": "6", "xPosition": "380", "yPosition": "357", "tabType": "signhereoptional", "name": "SignHereOptional"},
+      {"tabLabel": "seller_2_sign_p6", "pageNumber": "6", "xPosition": "380", "yPosition": "357", "tabType": "signhereoptional", "name": "SignHereOptional", "optional": "true", "required": "false"},
       {"tabLabel": "guaranty_guarantor1_sign_p6", "pageNumber": "6", "xPosition": "124", "yPosition": "519", "tabType": "signhere", "name": "SignHere"},
-      {"tabLabel": "guaranty_guarantor2_sign_p6", "pageNumber": "6", "xPosition": "387", "yPosition": "519", "tabType": "signhereoptional", "name": "SignHereOptional"},
+      {"tabLabel": "guaranty_guarantor2_sign_p6", "pageNumber": "6", "xPosition": "387", "yPosition": "519", "tabType": "signhereoptional", "name": "SignHereOptional", "optional": "true", "required": "false"},
       {"tabLabel": "guaranty_guarantor1_sign_p10", "pageNumber": "10", "xPosition": "120", "yPosition": "632", "tabType": "signhere", "name": "SignHere"},
-      {"tabLabel": "guaranty_guarantor2_sign_p10", "pageNumber": "10", "xPosition": "383", "yPosition": "638", "tabType": "signhereoptional", "name": "SignHereOptional"},
+      {"tabLabel": "guaranty_guarantor2_sign_p10", "pageNumber": "10", "xPosition": "383", "yPosition": "638", "tabType": "signhereoptional", "name": "SignHereOptional", "optional": "true", "required": "false"},
       {"tabLabel": "client_legal_name_sign_p11", "pageNumber": "11", "xPosition": "106", "yPosition": "565", "tabType": "signhere", "name": "SignHere"},
-      {"tabLabel": "seller_2_sign_p11", "pageNumber": "11", "xPosition": "368", "yPosition": "564", "tabType": "signhereoptional", "name": "SignHereOptional"}
+      {"tabLabel": "seller_2_sign_p11", "pageNumber": "11", "xPosition": "368", "yPosition": "564", "tabType": "signhereoptional", "name": "SignHereOptional", "optional": "true", "required": "false"}
     ],
     "initialHereTabs": [],
     "dateSignedTabs": [
@@ -106,8 +106,8 @@
       {"tabLabel": "agreement_date_guarantor2_p6", "pageNumber": "6", "xPosition": "347", "yPosition": "593", "tabType": "datesigned", "width": "0", "height": "0", "fontSize": "size9", "name": "DateSigned"},
       {"tabLabel": "agreement_date_guarantor1_p10", "pageNumber": "10", "xPosition": "91", "yPosition": "707", "tabType": "datesigned", "width": "0", "height": "0", "fontSize": "size9", "name": "DateSigned"},
       {"tabLabel": "agreement_date_guarantor2_p10", "pageNumber": "10", "xPosition": "345", "yPosition": "707", "tabType": "datesigned", "width": "0", "height": "0", "fontSize": "size9", "name": "DateSigned"},
-      {"tabLabel": "agreement_date_owner1_p11", "pageNumber": "11", "xPosition": "92", "yPosition": "633", "tabType": "datesigned", "width": "0", "height": "0", "fontSize": "size9", "name": "DateSigned"},
-      {"tabLabel": "agreement_date_owner2_p11", "pageNumber": "11", "xPosition": "347", "yPosition": "633", "tabType": "datesigned", "width": "0", "height": "0", "fontSize": "size9", "name": "DateSigned"}
+      {"tabLabel": "agreement_date_owner1_p11", "pageNumber": "11", "xPosition": "89", "yPosition": "635", "tabType": "datesigned", "width": "0", "height": "0", "fontSize": "size9", "name": "DateSigned"},
+      {"tabLabel": "agreement_date_owner2_p11", "pageNumber": "11", "xPosition": "349", "yPosition": "636", "tabType": "datesigned", "width": "0", "height": "0", "fontSize": "size9", "name": "DateSigned"}
     ]
   }
 }

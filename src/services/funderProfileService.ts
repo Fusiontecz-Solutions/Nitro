@@ -371,12 +371,12 @@ export function assertCanManageFunderAddendums(profile: SerializedFunderProfile)
   if (canManageFunderAddendums(profile)) return;
   if (resolveAddendumDocumentsSource(profile) === 'platform') {
     throw new Error(
-      'This funder uses platform addendums (same as Woodmere Financial). Switch addendum source to ΓÇ£This funder onlyΓÇ¥ to upload.',
+      'This funder uses platform addendums (same as Woodmere Financial). Switch addendum source to "This funder only" and save, then upload.',
     );
   }
   const ownerName = profile.sharedAddendumFunderName || profile.sharedDocumentsFunderName;
   if (ownerName) {
-    throw new Error(`Upload addendums on "${ownerName}" ΓÇö this funder shares their addendums.`);
+    throw new Error(`Upload addendums on "${ownerName}" — this funder shares their addendums.`);
   }
   throw new Error('This funder does not manage its own addendum uploads.');
 }
@@ -385,13 +385,13 @@ export function assertCanManageFunderDisclosures(profile: SerializedFunderProfil
   if (canManageFunderDisclosures(profile)) return;
   if (resolveDisclosureDocumentsSource(profile) === 'platform') {
     throw new Error(
-      'This funder uses platform disclosures (same as Woodmere Financial). Switch disclosure source to ΓÇ£This funder onlyΓÇ¥ to upload.',
+      'This funder uses platform disclosures (same as Woodmere Financial). Switch disclosure source to "This funder only" and save, then upload.',
     );
   }
   const ownerName = profile.sharedDisclosureFunderName || profile.sharedDocumentsFunderName;
   if (ownerName) {
     throw new Error(
-      `Upload disclosures on "${ownerName}" ΓÇö this funder shares their disclosures.`,
+      `Upload disclosures on "${ownerName}" — this funder shares their disclosures.`,
     );
   }
   throw new Error('This funder does not manage its own disclosure uploads.');
@@ -752,7 +752,7 @@ export async function uploadFunderNamedAddendumPdf(
   const coordsKey = String(coordinateLayoutKey || '').trim();
   if (!coordsKey || !isDocumentLayoutKey(coordsKey)) {
     throw new Error(
-      'Select a valid coordinate layout (Flex Addendum, Balance Transfer, or ACH Authorization).',
+      'Select a valid coordinate layout (Flex Addendum, Balance Transfer, ACH Authorization, or Texas ACH).',
     );
   }
 

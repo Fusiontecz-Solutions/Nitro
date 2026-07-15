@@ -16,6 +16,11 @@ import {
 import { embedArialBoldPdfFont, embedArialPdfFont } from './embed-arial-pdf-font';
 import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
 import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
+import {
+  buildScopedValuesForLayout,
+  isMainContractLayoutKey,
+  resolveSupplementalEnvelopeTabLabel,
+} from './layout-prefill-scope';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
 
@@ -99,9 +104,48 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   signature_date: ['agreement_date', 'addendum_date', 'Signature_date', 'disclosure_date'],
   Signature_date: ['signature_date', 'agreement_date', 'addendum_date', 'disclosure_date'],
   disclosure_date: ['agreement_date', 'addendum_date', 'signature_date'],
+  /** Texas ACH / page-11 owner date labels — prefill from shared agreement date. */
+  agreement_date_owner1_p11: [
+    'agreement_date',
+    'signature_date',
+    'disclosure_date',
+    'addendum_date',
+  ],
+  agreement_date_owner2_p11: [
+    'agreement_date',
+    'signature_date',
+    'disclosure_date',
+    'addendum_date',
+  ],
+  agreement_date_owner1_p6: [
+    'agreement_date',
+    'signature_date',
+    'disclosure_date',
+    'addendum_date',
+  ],
+  agreement_date_owner2_p6: [
+    'agreement_date',
+    'signature_date',
+    'disclosure_date',
+    'addendum_date',
+  ],
   date_by_which_amount_mustbe_received: ['prepayment_received_by_date'],
   funder_name: ['disclosure_funder_name'],
-  client_legal_name: ['business_legal_name', 'merchant_legal_name'],
+  client_legal_name: ['business_legal_name', 'merchant_legal_name', 'client_legal_name_p11_footer'],
+  client_legal_name_p11_footer: ['client_legal_name', 'business_legal_name', 'merchant_legal_name'],
+  seller_1_name: [
+    'owner1_guarantor_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'client_name',
+    'owner_name',
+  ],
+  seller_2_name: [
+    'owner2_guarantor_name',
+    'guaranty_owner2_name',
+    'guaranty_guarantor2_name',
+    'merchant2_name',
+  ],
   business_name_2: [
     'owner2_guarantor_name',
     'guaranty_owner2_name',
@@ -350,6 +394,7 @@ const PARTY2_NAME_KEYS = [
   'appendix_merchant2_name',
   'addendum_dated_principal_owner2_name',
   'business_name_2',
+  'seller_2_name',
 ] as const;
 
 const PARTY2_NAME_PRIORITY = [
@@ -360,6 +405,7 @@ const PARTY2_NAME_PRIORITY = [
   'appendix_merchant2_name',
   'addendum_dated_principal_owner2_name',
   'business_name_2',
+  'seller_2_name',
 ] as const;
 
 const PARTY1_NAME_KEYS = [
@@ -370,6 +416,7 @@ const PARTY1_NAME_KEYS = [
   'guaranty_guarantor1_name',
   'guaranty_client_name',
   'security_guarantor',
+  'seller_1_name',
 ] as const;
 
 const PARTY1_NAME_PRIORITY = [
@@ -380,6 +427,7 @@ const PARTY1_NAME_PRIORITY = [
   'security_guarantor',
   'client_name',
   'addendum_client_name',
+  'seller_1_name',
 ] as const;
 
 const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss'] as const;
@@ -500,6 +548,8 @@ function shouldIncludeEmptyTextPlacement(
   placement: DocumentLayoutPlacement,
   layoutKey?: string,
 ): boolean {
+  // DateSigned / date tabs must be present even when CRM has no value (DocuSign stamps on sign).
+  if (placement.type === 'date') return true;
   if (placement.type !== 'text') return false;
   if (isSignerEditableTextPlacement(layoutKey, placement)) return true;
   if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
@@ -575,7 +625,7 @@ function stripParty2ValueKeys(out: Record<string, string>): void {
   for (const key of Object.keys(out)) {
     const norm = key.toLowerCase();
     if (
-      /owner2|owner_2|guarantor2|guarantor_2|merchant2|merchant_2|appendix_merchant2|business_name_2/.test(
+      /seller_2|discover_owner2|agreement_date_owner2|owner2|owner_2|guarantor2|guarantor_2|merchant2|merchant_2|appendix_merchant2|business_name_2/.test(
         norm,
       )
     ) {
@@ -599,6 +649,18 @@ function expandPrefillValues(
   } else {
     stripParty2ValueKeys(out);
   }
+
+  const todayUs = new Date().toLocaleDateString('en-US');
+  const agreementDate =
+    String(out.agreement_date || '').trim() ||
+    String(out.signature_date || '').trim() ||
+    String(out.Signature_date || '').trim() ||
+    String(out.disclosure_date || '').trim() ||
+    String(out.addendum_date || '').trim() ||
+    todayUs;
+  if (!String(out.agreement_date || '').trim()) out.agreement_date = agreementDate;
+  if (!String(out.signature_date || '').trim()) out.signature_date = agreementDate;
+
   for (const [canonical, aliases] of Object.entries(PREFILL_VALUE_ALIASES)) {
     const v = String(out[canonical] || '').trim();
     if (!v) continue;
@@ -606,6 +668,28 @@ function expandPrefillValues(
       if (!String(out[alias] || '').trim()) out[alias] = v;
     }
   }
+
+  // Seed owner date labels (and Texas ACH CRM-scoped ids) so supplemental layouts can resolve.
+  const owner1DateKeys = [
+    'agreement_date_owner1_p11',
+    'agreement_date_owner1_p6',
+    'ach_form_texas_agreement_date_owner1_p11',
+    'ach_form_signature_date',
+  ];
+  const owner2DateKeys = [
+    'agreement_date_owner2_p11',
+    'agreement_date_owner2_p6',
+    'ach_form_texas_agreement_date_owner2_p11',
+  ];
+  for (const dateKey of owner1DateKeys) {
+    if (!String(out[dateKey] || '').trim()) out[dateKey] = agreementDate;
+  }
+  if (ownerCount === undefined || ownerCount >= 2) {
+    for (const dateKey of owner2DateKeys) {
+      if (!String(out[dateKey] || '').trim()) out[dateKey] = agreementDate;
+    }
+  }
+
   return out;
 }
 
@@ -727,9 +811,15 @@ function resolvePlacementSignerIndex(
   counts: LayoutPartyCounts,
   layoutKey?: string,
 ): number {
-  // Prefill + date fields → merchant #1. Owner 2 only gets initials/signatures.
+  // Prefill text → merchant #1. DateSigned for Owner 2 routes to secondary when present.
   // Do not reuse the same tabLabel on multiple pages (DocuSign groups them → green).
-  if (placement.type === 'text' || placement.type === 'date') {
+  if (placement.type === 'text') {
+    return resolvePrimarySignerIndex(signers);
+  }
+  if (placement.type === 'date') {
+    if (isSecondaryParty(placement.signerParty) && counts.ownerCount >= 2) {
+      return resolveSecondarySignerIndex(signers);
+    }
     return resolvePrimarySignerIndex(signers);
   }
 
@@ -982,10 +1072,22 @@ function placementAllowed(
   }
 
   const variable = String(placement.variable || '').trim().toLowerCase();
-  if (variable) {
-    if (/owner2|owner_2/.test(variable) && counts.ownerCount < 2) return false;
-    if (/guarantor2|guarantor_2/.test(variable) && counts.ownerCount < 2) return false;
-    if (/merchant2|merchant_2|appendix_merchant2|business_name_2/.test(variable) && counts.ownerCount < 2) {
+  const label = String(
+    placement.sourceTabLabel || placement.slot || placement.variable || '',
+  )
+    .trim()
+    .toLowerCase();
+  if (variable || label) {
+    const owner2Token = `${variable} ${label}`;
+    if (
+      /seller_2|discover_owner2|agreement_date_owner2|owner2|owner_2|guarantor2|guarantor_2/.test(
+        owner2Token,
+      ) &&
+      counts.ownerCount < 2
+    ) {
+      return false;
+    }
+    if (/merchant2|merchant_2|appendix_merchant2|business_name_2/.test(owner2Token) && counts.ownerCount < 2) {
       return false;
     }
   }
@@ -1018,7 +1120,13 @@ function toTextTab(
     String(placement.sourceTabLabel || '').trim() ||
     variable ||
     placement.slot;
+  const scopedTabLabel = resolveSupplementalEnvelopeTabLabel(
+    layoutKey || '',
+    placement,
+    variable,
+  );
   const tabLabel =
+    scopedTabLabel ||
     String(placement.sourceTabLabel || '').trim() ||
     displayLabel ||
     `${variable || 'text'}_${placement.id}`;
@@ -1044,7 +1152,7 @@ function toTextTab(
       ...(lockTab ? { locked: 'true' } : {}),
       ...(placement.bold ? { bold: 'true' } : {}),
       // Prefill hangs on signer 1; Owner 2 uses initials/signatures only. Keep tabLabels unique
-      // across pages so DocuSign does not auto-group them (same label → green sync group).
+      // across documents so DocuSign does not auto-group them (same label → green sync group).
       shared: 'false',
       width,
       ...(placement.height ? { height: placement.height } : {}),
@@ -1065,14 +1173,20 @@ export async function renderFlattenedLayoutPdf(
   const boldFont = await embedArialBoldPdfFont(pdfDoc);
   const pages = pdfDoc.getPages();
   const expanded = expandPrefillValues(values, counts.ownerCount);
+  const scopedExpanded = buildScopedValuesForLayout(layout, expanded);
 
   for (const placement of layout.placements) {
     if (placement.type !== 'text' && placement.type !== 'date') continue;
-    if (!placementAllowed(placement, counts, expanded, layout.key)) continue;
+    if (!placementAllowed(placement, counts, scopedExpanded, layout.key)) continue;
     if (isWoodmereContractFillAtSigningPlacement(layout.key, placement)) continue;
     // Keep client_phone as a live DocuSign tab (required + writable), never burn into PDF.
     if (isRequiredSignerEditablePlacement(placement)) continue;
-    const text = resolveTextPlacementValue(placement.variable || '', expanded, placement, layout.key);
+    const text = resolveTextPlacementValue(
+      placement.variable || '',
+      scopedExpanded,
+      placement,
+      layout.key,
+    );
     if (!text) continue;
 
     const pageIndex = Math.max(0, parseInt(String(placement.pageNumber || '1'), 10) - 1);
@@ -1133,8 +1247,13 @@ function toSignTab(
   envelopeDocumentId: string,
   layoutKey?: string,
 ): DocuSignTab {
+  const baseLabel = placement.slot || `${placement.type}_${placement.id}`;
+  const scoped =
+    layoutKey && !isMainContractLayoutKey(layoutKey)
+      ? `${String(layoutKey).replace(/[^a-zA-Z0-9]+/g, '_')}_${baseLabel}`
+      : baseLabel;
   return {
-    tabLabel: placement.slot || `${placement.type}_${placement.id}`,
+    tabLabel: scoped,
     documentId: envelopeDocumentId,
     pageNumber: placement.pageNumber,
     xPosition: placement.x,
@@ -1181,6 +1300,7 @@ export function buildRecipientTabsByRoleForLayout(
   counts: LayoutPartyCounts,
 ): Map<string, SignerTabBuckets> {
   const signerTabs = new Map<number, SignerTabBuckets>();
+  const scopedValues = buildScopedValuesForLayout(layout, values);
 
   const ensureSigner = (signerIndex: number) => {
     if (!signerTabs.has(signerIndex)) {
@@ -1190,7 +1310,7 @@ export function buildRecipientTabsByRoleForLayout(
   };
 
   for (const placement of layout.placements) {
-    if (!placementAllowed(placement, counts, values, layout.key)) continue;
+    if (!placementAllowed(placement, counts, scopedValues, layout.key)) continue;
 
     const signerIndex = resolvePlacementSignerIndex(placement, signers, counts, layout.key);
 
@@ -1198,7 +1318,12 @@ export function buildRecipientTabsByRoleForLayout(
 
     if (placement.type === 'text' || placement.type === 'date') {
       const variable = placement.variable || '';
-      const value = resolveTextPlacementValue(variable, values, placement, layout.key);
+      const value = resolveTextPlacementValue(
+        variable,
+        scopedValues,
+        placement,
+        layout.key,
+      );
       if (!value && !shouldIncludeEmptyTextPlacement(placement, layout.key)) continue;
       const tab = toTextTab(placement, value, envelopeDocumentId, false, layout.key);
       if (placement.type === 'date') bucket.dateTabs.push(tab);
@@ -1309,9 +1434,10 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   for (const layout of expandedLayouts) {
     const envelopeDocId = layoutKeyToEnvelopeDocId.get(layout.key) || '1';
     const pageOffset = pageOffsetByLayoutKey.get(layout.key) ?? 0;
+    const scopedValues = buildScopedValuesForLayout(layout, values);
 
     for (const placement of layout.placements) {
-      if (!placementAllowed(placement, counts, values, layout.key)) continue;
+      if (!placementAllowed(placement, counts, scopedValues, layout.key)) continue;
 
       const signerIndex = resolvePlacementSignerIndex(
         placement,
@@ -1331,7 +1457,12 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
           continue;
         }
         const variable = placement.variable || '';
-        const value = resolveTextPlacementValue(variable, values, placement, layout.key);
+        const value = resolveTextPlacementValue(
+          variable,
+          scopedValues,
+          placement,
+          layout.key,
+        );
         if (!value && !shouldIncludeEmptyTextPlacement(placement, layout.key)) continue;
         const tab = toTextTab(tabPlacement, value, envelopeDocId, options.lockDataTabs, layout.key);
         if (placement.type === 'date') bucket.dateTabs.push(tab);

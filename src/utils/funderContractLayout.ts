@@ -5,6 +5,7 @@ export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [
   'flex_addendum',
   'balance_transfer',
   'ach_authorization',
+  'ach_authorization_texas',
 ] as const;
 
 export type FunderSupplementalLayoutType = (typeof FUNDER_SUPPLEMENTAL_LAYOUT_TYPES)[number];
@@ -22,10 +23,11 @@ export function funderSupplementalLayoutKey(
   return `funder_${id}_${type}`;
 }
 
-/** Standalone ACH uses the same stored PDF/coords as ach_authorization. */
+/** Standalone ACH uses the same stored PDF/coords as ach_authorization (except Texas). */
 export function resolveFunderSupplementalStorageType(layoutKey: string): string {
   const key = String(layoutKey || '').trim();
   if (key === 'ach_authorization_standalone') return 'ach_authorization';
+  if (key === 'ach_authorization_texas') return 'ach_authorization_texas';
   return key;
 }
 

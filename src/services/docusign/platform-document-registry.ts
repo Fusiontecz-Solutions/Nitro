@@ -1,4 +1,6 @@
 ﻿import prisma from '../../config/prismaClient';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   DOCUMENT_LAYOUT_KEYS,
   getDocumentLayout,
@@ -47,6 +49,11 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
     layoutKey: DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone,
     name: 'Woodmere Financial ACH Authorization (standalone)',
     type: 'ach_authorization',
+  },
+  [DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas,
+    name: 'Texas ACH Authorization (contract pages 11–12)',
+    type: 'ach_authorization_texas',
   },
 };
 
@@ -154,14 +161,77 @@ export async function resolvePlatformDocumentPdfUrl(
 }
 
 /**
+ * Bundled Texas ACH blank PDF (`TEXAS FUNDING GROUP- BLANK FILLABLE ACH.pdf`).
+ * Used when no funder/platform Cloudinary upload exists for `ach_authorization_texas`.
+ */
+function loadBundledTexasAchPdfBase64(): string | null {
+  const candidates = [
+    path.join(__dirname, 'layouts', 'assets', 'ach_authorization_texas.pdf'),
+    path.join(
+      process.cwd(),
+      'src',
+      'services',
+      'docusign',
+      'layouts',
+      'assets',
+      'ach_authorization_texas.pdf',
+    ),
+    path.join(
+      process.cwd(),
+      'dist',
+      'services',
+      'docusign',
+      'layouts',
+      'assets',
+      'ach_authorization_texas.pdf',
+    ),
+  ];
+  for (const filePath of candidates) {
+    try {
+      if (fs.existsSync(filePath)) {
+        return fs.readFileSync(filePath).toString('base64');
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+/**
  * Load platform document PDF bytes.
- * Priority: uploaded BoldSignTemplate.pdfUrl ΓåÆ sibling layout upload ΓåÆ default DocuSign template PDF.
- * Uploaded PDFs always win; DocuSign defaults are only used when nothing is uploaded.
+ * Priority: uploaded BoldSignTemplate.pdfUrl → sibling layout upload → default DocuSign template PDF.
+ * Texas ACH prefers the uploaded funder PDF, then the bundled blank ACH form (page-11 coordinates).
  */
 export async function loadPlatformDocumentPdfBase64(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
   const def = PLATFORM_DOCUMENTS[layoutKey];
+
+  if (layoutKey === DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas) {
+    const dedicatedUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
+    if (dedicatedUrl) {
+      return fetchRemotePdfAsBase64(dedicatedUrl, def.name);
+    }
+    // Funder-scoped texas ACH upload (Settings → Funder profile → Addendum PDFs).
+    const funderScoped = await prisma.boldSignTemplate.findFirst({
+      where: {
+        OR: [
+          { layoutKey: { endsWith: '_ach_authorization_texas' } },
+          { type: 'ach_authorization_texas' },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { pdfUrl: true },
+    });
+    const scopedUrl = String(funderScoped?.pdfUrl || '').trim();
+    if (scopedUrl && /^https?:\/\//i.test(scopedUrl)) {
+      return fetchRemotePdfAsBase64(scopedUrl, def.name);
+    }
+    const bundled = loadBundledTexasAchPdfBase64();
+    if (bundled) return bundled;
+  }
+
   const fromDb = await findBoldSignTemplatePdfUrlForLayout(layoutKey);
   if (fromDb) {
     return fetchRemotePdfAsBase64(fromDb, def.name);

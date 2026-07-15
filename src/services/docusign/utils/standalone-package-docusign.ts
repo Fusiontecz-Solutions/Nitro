@@ -477,7 +477,12 @@ export function isAchStandaloneLayoutRef(ref: string): boolean {
   const key = String(ref || '')
     .trim()
     .toLowerCase();
-  return key === 'ach_authorization_standalone' || key.includes('ach_authorization_standalone');
+  return (
+    key === 'ach_authorization_standalone' ||
+    key === 'ach_authorization_texas' ||
+    key.includes('ach_authorization_standalone') ||
+    key.includes('ach_authorization_texas')
+  );
 }
 
 export function resolveStandaloneLinkKind(
