@@ -60,6 +60,26 @@ const TILDE_ADVANCE_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
   infoTableIconBg: "#27272a",
 };
 
+// TODO: paste hosted logo URL + brand colors for ATLAS ADVANCE LLC.
+const ATLAS_ADVANCE_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
+  companyName: "ATLAS ADVANCE LLC",
+  logoSrc: "https://res.cloudinary.com/dehrku8og/image/upload/v1784141929/ChatGPT_Image_Jul_15_2026_07_03_58_PM_lvvg6y.png",
+  watermarkSrc: "",
+  accentStripLight: "#15599F",
+  accentStripDark: "#6FB8F5",
+  infoTableIconBg: "#15599F",
+};
+
+// TODO: paste hosted logo URL + brand colors for EJM VENTURES LLC.
+const EJM_VENTURES_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
+  companyName: "EJM VENTURES LLC",
+  logoSrc: "https://res.cloudinary.com/dehrku8og/image/upload/v1784122585/ChatGPT_Image_Jul_15_2026_07_06_14_PM_oe4oo8.png",
+  watermarkSrc: "",
+  accentStripLight: "#3CAEE0",
+  accentStripDark: "#FCAB12",
+  infoTableIconBg: "#3CAEE0",
+};
+
 type FunderNameFields = Pick<FunderProfile, "name" | "displayName">;
 
 function normalizeFunderToken(value?: string | null): string {
@@ -97,6 +117,14 @@ function isTildeAdvanceFunder(funder: FunderNameFields): boolean {
   return nameMatches(funder, ["tilde advance"]);
 }
 
+function isAtlasAdvanceFunder(funder: FunderNameFields): boolean {
+  return nameMatches(funder, ["atlas advance llc", "atlas advance"]);
+}
+
+function isEjmVenturesFunder(funder: FunderNameFields): boolean {
+  return nameMatches(funder, ["ejm ventures llc", "ejm ventures"]);
+}
+
 /** Resolve logo, watermark, and accent colors for payoff / zero-balance letter emails. */
 export function resolveLetterEmailBranding(
   funder?: Pick<
@@ -114,6 +142,8 @@ export function resolveLetterEmailBranding(
   if (isFbFundingFunder(funder)) return FB_FUNDING_LETTER_EMAIL_BRANDING;
   if (isHewlettAdvanceFunder(funder)) return HEWLETT_ADVANCE_LETTER_EMAIL_BRANDING;
   if (isTildeAdvanceFunder(funder)) return TILDE_ADVANCE_LETTER_EMAIL_BRANDING;
+  if (isAtlasAdvanceFunder(funder)) return ATLAS_ADVANCE_LETTER_EMAIL_BRANDING;
+  if (isEjmVenturesFunder(funder)) return EJM_VENTURES_LETTER_EMAIL_BRANDING;
   if (isWoodmereLetterFunder(funder)) return DEFAULT_LETTER_EMAIL_BRANDING;
 
   const companyName =

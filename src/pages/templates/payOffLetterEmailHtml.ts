@@ -403,9 +403,9 @@ export function renderPayOffLetterEmailHtml(
 
                   <td align="center" style="padding:0 0 25px 0;">
 
-                    <h1 style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;line-height:1.2;color:#18181b;letter-spacing:0.5px;text-transform:uppercase;">
+                    <h1 style="margin:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;line-height:1.2;color:${stripDark};letter-spacing:0.5px;text-transform:uppercase;">
 
-                      PAYOFF <span style="color:#a1a1aa;font-weight:400;">LETTER</span>
+                      PAYOFF <span style="color:${stripLight};font-weight:400;">LETTER</span>
 
                     </h1>
 

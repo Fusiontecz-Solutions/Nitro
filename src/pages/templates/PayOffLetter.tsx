@@ -34,20 +34,20 @@ export const PAY_OFF_LETTER_VARIABLES: TemplateVariable[] = [
   {
     key: "payment_company_name",
     label: "Payment Company Name",
-    placeholder: "Your Company Name",
-    defaultValue: "Your Company Name",
+    placeholder: "Woodmere Capital LLC",
+    defaultValue: "Woodmere Capital LLC",
   },
   {
     key: "payment_address_line1",
     label: "Payment Address Line 1",
-    placeholder: "123 Business Street",
-    defaultValue: "123 Business Street",
+    placeholder: "609 Barnard Ave",
+    defaultValue: "609 Barnard Ave",
   },
   {
     key: "payment_address_line2",
     label: "Payment Address Line 2",
-    placeholder: "City, State, 12345",
-    defaultValue: "City, State, 12345",
+    placeholder: "Woodmere NY 11598",
+    defaultValue: "Woodmere NY 11598",
   },
   {
     key: "payment_routing_number",
@@ -58,8 +58,8 @@ export const PAY_OFF_LETTER_VARIABLES: TemplateVariable[] = [
   {
     key: "payment_account_number",
     label: "Payment Account Number",
-    placeholder: "0210047692",
-    defaultValue: "0210047692",
+    placeholder: "210062956",
+    defaultValue: "210062956",
   },
   {
     key: "sender_name",
