@@ -8,6 +8,7 @@ export const PLATFORM_LAYOUT_KEYS = {
     flexAddendum: "flex_addendum",
     balanceTransfer: "balance_transfer",
     achAuthorization: "ach_authorization",
+    achAuthorizationTexas: "ach_authorization_texas",
 } as const;
 
 export type PlatformLayoutKey =
@@ -48,8 +49,20 @@ export function isAchAuthorizationLayoutKey(value: unknown): boolean {
         .toLowerCase();
     return (
         key === PLATFORM_LAYOUT_KEYS.achAuthorization ||
+        key === PLATFORM_LAYOUT_KEYS.achAuthorizationTexas ||
         key.includes("ach_authorization") ||
         key.includes("ach-authorization")
+    );
+}
+
+export function isTexasAchAuthorizationLayoutKey(value: unknown): boolean {
+    const key = String(value ?? "")
+        .trim()
+        .toLowerCase();
+    return (
+        key === PLATFORM_LAYOUT_KEYS.achAuthorizationTexas ||
+        key.includes("ach_authorization_texas") ||
+        key.includes("texas_ach")
     );
 }
 

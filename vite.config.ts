@@ -24,7 +24,7 @@ function rolldownBundlerBanner(): vite.Plugin {
 export default defineConfig({
   plugins: [rolldownBundlerBanner(), react(), tailwindcss()],
   optimizeDeps: {
-    include: ['stream-browserify', 'buffer', 'events'],
+    include: ['stream-browserify', 'buffer', 'events', 'date-fns-tz', 'date-fns'],
     exclude: ['lucide-react'],
   },
   server: {
@@ -41,6 +41,10 @@ export default defineConfig({
       stream: 'stream-browserify',
       buffer: 'buffer',
       events: path.resolve(__dirname, 'node_modules/events/events.js'),
+      'date-fns-tz': path.resolve(
+        __dirname,
+        'node_modules/date-fns-tz/dist/esm/index.js',
+      ),
     },
   },
 });

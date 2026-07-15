@@ -29,20 +29,33 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   }
   if (payload.organization) formData.append("organization", payload.organization);
   if (payload.legalName) formData.append("legalName", payload.legalName);
-  if (payload.contactEmail) formData.append("contactEmail", payload.contactEmail);
-  if (payload.contactPhone) formData.append("contactPhone", payload.contactPhone);
-  if (payload.addressLine1) formData.append("addressLine1", payload.addressLine1);
-  if (payload.addressCity) formData.append("addressCity", payload.addressCity);
-  if (payload.addressState) formData.append("addressState", payload.addressState);
-  if (payload.addressZip) formData.append("addressZip", payload.addressZip);
+  if (payload.contactEmail != null) formData.append("contactEmail", payload.contactEmail);
+  if (payload.contactPhone != null) formData.append("contactPhone", payload.contactPhone);
+  if (payload.defaultCcEmail != null) formData.append("defaultCcEmail", payload.defaultCcEmail);
+  if (payload.addressLine1 != null) formData.append("addressLine1", payload.addressLine1);
+  if (payload.addressCity != null) formData.append("addressCity", payload.addressCity);
+  if (payload.addressState != null) formData.append("addressState", payload.addressState);
+  if (payload.addressZip != null) formData.append("addressZip", payload.addressZip);
   if (payload.docusignAccountProfileId != null) {
     formData.append("docusignAccountProfileId", payload.docusignAccountProfileId || "");
   }
   if (payload.sortOrder != null) formData.append("sortOrder", String(payload.sortOrder));
   if (payload.isActive != null) formData.append("isActive", String(payload.isActive));
   if (payload.documentsSource) formData.append("documentsSource", payload.documentsSource);
+  if (payload.addendumDocumentsSource) {
+    formData.append("addendumDocumentsSource", payload.addendumDocumentsSource);
+  }
+  if (payload.disclosureDocumentsSource) {
+    formData.append("disclosureDocumentsSource", payload.disclosureDocumentsSource);
+  }
   if (payload.sharedDocumentsFunderId !== undefined) {
     formData.append("sharedDocumentsFunderId", payload.sharedDocumentsFunderId || "");
+  }
+  if (payload.sharedAddendumFunderId !== undefined) {
+    formData.append("sharedAddendumFunderId", payload.sharedAddendumFunderId || "");
+  }
+  if (payload.sharedDisclosureFunderId !== undefined) {
+    formData.append("sharedDisclosureFunderId", payload.sharedDisclosureFunderId || "");
   }
 }
 

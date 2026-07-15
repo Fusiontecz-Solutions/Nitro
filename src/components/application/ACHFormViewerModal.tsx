@@ -108,6 +108,12 @@ const ACH_TERMINAL_VOID_STATUSES = new Set(["revoked", "voided", "declined", "ex
 const ACH_DRAFT_STATUSES = new Set(["", "draft"]);
 
 const ACH_STANDALONE_LAYOUT_KEY = "ach_authorization_standalone";
+const ACH_TEXAS_LAYOUT_KEY = "ach_authorization_texas";
+type AchCoordinateLayoutChoice = "woodmere" | "texas";
+
+function achLayoutKeyForCoordinateChoice(choice: AchCoordinateLayoutChoice): string {
+    return choice === "texas" ? ACH_TEXAS_LAYOUT_KEY : ACH_STANDALONE_LAYOUT_KEY;
+}
 
 function resolveDealStateFromApplication(applicationData: unknown): string {
     const ad = applicationData as Record<string, unknown> | null | undefined;
@@ -176,6 +182,7 @@ function isPlatformAchTemplateRow(template: {
     return (
         layoutKey === "ach_authorization" ||
         layoutKey === "ach_authorization_standalone" ||
+        layoutKey === "ach_authorization_texas" ||
         layoutKey === "woodmere_ach_authorization" ||
         type === "ach" ||
         type === "ach_authorization" ||
@@ -275,9 +282,50 @@ function funderHasAchAuthorizationForm(
         return (
             type === "ach" ||
             type === "ach_authorization" ||
+            type === "ach_authorization_texas" ||
             key.includes("ach_authorization")
         );
     });
+}
+
+/** Resolve ACH coordinate layout from the selected funder's uploaded ACH template. */
+function resolveAchCoordinateChoiceForFunder(
+    profile: FunderProfile | null | undefined,
+    templates: Array<{ layoutKey?: string | null; templateId?: string | null; type?: string | null }>,
+): AchCoordinateLayoutChoice {
+    if (!profile) return "woodmere";
+    const source = String(
+        profile.addendumDocumentsSource ?? profile.documentsSource ?? "",
+    )
+        .trim()
+        .toLowerCase();
+    const docsFunderId =
+        source === "shared"
+            ? String(
+                  profile.sharedAddendumFunderId ??
+                      profile.sharedDocumentsFunderId ??
+                      "",
+              ).trim() || profile.id
+            : source === "platform"
+              ? ""
+              : profile.id;
+    if (!docsFunderId) return "woodmere";
+
+    const prefix = `funder_${docsFunderId}_`.toLowerCase();
+    const hasTexas = templates.some((row) => {
+        const key = String(row.layoutKey ?? row.templateId ?? "")
+            .trim()
+            .toLowerCase();
+        const type = String(row.type ?? "")
+            .trim()
+            .toLowerCase();
+        if (!key.startsWith(prefix)) return false;
+        return (
+            type === "ach_authorization_texas" ||
+            key.includes("ach_authorization_texas")
+        );
+    });
+    return hasTexas ? "texas" : "woodmere";
 }
 const ACH_OUT_FOR_SIGNATURE_STATUSES = new Set(["sent", "viewed", "delivered"]);
 
@@ -542,6 +590,8 @@ export default function ACHFormViewerModal({
     const [selectedFunder, setSelectedFunder] = useState("");
     const [selectedFunderProfileId, setSelectedFunderProfileId] = useState("");
     const userSelectedFunderRef = useRef(false);
+    const [achCoordinateLayout, setAchCoordinateLayout] =
+        useState<AchCoordinateLayoutChoice>("woodmere");
     const templateBlobUrlRef = useRef<string | null>(null);
     const docuSignBlobUrlRef = useRef<string | null>(null);
     const achCcEmailDeliveredRef = useRef(false);
@@ -561,7 +611,7 @@ export default function ACHFormViewerModal({
         findFunder,
         findFunderById,
         resolveDefaultFunder,
-    } = useFunderProfiles(contractStateForFunders || null);
+    } = useFunderProfiles(null);
 
     const boldSignTemplatesState = useSelector((state: RootState) => state.boldSignTemplates);
     const boldSignTemplates = useMemo(
@@ -679,6 +729,16 @@ export default function ACHFormViewerModal({
         },
         [contractId, dispatch, funderSelectionStorageKey, onContractDocumentsChanged],
     );
+
+    useEffect(() => {
+        if (!isOpen) return;
+        setAchCoordinateLayout(
+            resolveAchCoordinateChoiceForFunder(
+                selectedFunderProfile,
+                boldSignTemplates,
+            ),
+        );
+    }, [isOpen, selectedFunderProfile, boldSignTemplates]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -965,8 +1025,25 @@ export default function ACHFormViewerModal({
         const email = String(achSigner.email || "").trim();
         const name = String(achSigner.name || "").trim();
         if (!email) return [];
-        return buildDocuSignRolesFromEditorRows([{ role, name, email }]);
-    }, [achSigner]);
+        const primary = buildDocuSignRolesFromEditorRows([{ role, name, email }]);
+        if (achCoordinateLayout !== "texas") return primary;
+
+        const overrides = parseContractSignerOverridesFromPrefill(
+            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                ?.contractPrefillOverrides,
+        );
+        const owner2 = overrides?.[1];
+        const owner2Email = String(owner2?.email || "").trim();
+        if (!owner2Email) return primary;
+        return buildDocuSignRolesFromEditorRows([
+            { role, name, email },
+            {
+                role: String(owner2?.role || "Owner 2").trim() || "Owner 2",
+                name: String(owner2?.name || "").trim(),
+                email: owner2Email,
+            },
+        ]);
+    }, [achSigner, achCoordinateLayout, resolvedContract]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -1362,6 +1439,9 @@ export default function ACHFormViewerModal({
             setPdfPaneTab("template");
 
             applyFunderSelection(profileId, funderName, { persist: true });
+            setAchCoordinateLayout(
+                resolveAchCoordinateChoiceForFunder(profile, boldSignTemplates),
+            );
 
             const nextCcOptions = {
                 funderDefaultCcEmail: String(profile?.defaultCcEmail ?? "").trim() || null,
@@ -1392,6 +1472,7 @@ export default function ACHFormViewerModal({
             revokeTemplatePdfUrl,
             applyFunderSelection,
             funders,
+            boldSignTemplates,
             achEnvelopeView.hasEnvelope,
             achEnvelopeView.isDraft,
             achEnvelopeView.isCompleted,
@@ -1598,7 +1679,7 @@ export default function ACHFormViewerModal({
 
             const prepared = await onPrepareDocuSignDraft({
                 ccEmails: toSend,
-                achDocumentRef: ACH_STANDALONE_LAYOUT_KEY,
+                achDocumentRef: achLayoutKeyForCoordinateChoice(achCoordinateLayout),
                 standaloneAchOnly: true,
                 roles: signerRoles,
                 funderName: funderName || null,

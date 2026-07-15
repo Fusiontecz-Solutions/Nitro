@@ -603,6 +603,7 @@ export default function ContractTab({
             return (
                 layoutKey === "ach_authorization" ||
                 layoutKey === "ach_authorization_standalone" ||
+                layoutKey === "ach_authorization_texas" ||
                 layoutKey === "woodmere_ach_authorization"
             );
         });
@@ -2168,12 +2169,17 @@ export default function ContractTab({
             const ownerRows = Array.isArray(contractOwnerListState.data)
                 ? contractOwnerListState.data
                 : [];
+            /** Manage Signers / send payload roles win — do not bump Owner 2 from stale Info Required owners. */
             const ownerCountResolved = resolveActiveOwnerCount({
-                owners: ownerRows,
+                owners: roles.length > 0 ? null : ownerRows,
                 signerRoles: roles,
             });
-            /** ACH authorization is always a single-signer envelope. */
-            const ownerCount = standaloneAchOnly ? 1 : ownerCountResolved;
+            /** ACH Woodmere form is single-signer; Texas ACH (p11 coords) supports Owner 2. */
+            const achUsesTexasCoords = /ach_authorization_texas|texas_ach/i.test(
+                String(achDocumentRef || ""),
+            );
+            const ownerCount =
+                standaloneAchOnly && !achUsesTexasCoords ? 1 : ownerCountResolved;
             const secondOwnerNameBeforeCollapse = resolveSecondOwnerSignerName(
                 roles,
                 ownerCount,

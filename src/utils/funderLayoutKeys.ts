@@ -28,7 +28,11 @@ export function funderNamedAddendumLayoutKey(funderId: string, slug: string): st
 export const FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS = [
   { value: "flex_addendum", label: "Flex addendum" },
   { value: "balance_transfer", label: "Balance transfer" },
-  { value: "ach_authorization", label: "ACH authorization" },
+  { value: "ach_authorization", label: "ACH authorization (Woodmere)" },
+  {
+    value: "ach_authorization_texas",
+    label: "ACH authorization (Texas)",
+  },
 ] as const;
 
 export const DISCLOSURE_FREQUENCY_OPTIONS = [
@@ -59,7 +63,9 @@ export function isFunderAddendumRow(row: FunderDocumentTemplateRow): boolean {
     key.includes("_addendum_") ||
     key.endsWith("_flex_addendum") ||
     key.endsWith("_balance_transfer") ||
-    key.endsWith("_ach_authorization")
+    key.endsWith("_ach_authorization") ||
+    key.endsWith("_ach_authorization_texas") ||
+    key.includes("_ach_authorization")
   );
 }
 

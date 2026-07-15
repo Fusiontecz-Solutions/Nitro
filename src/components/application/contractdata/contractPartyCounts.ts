@@ -92,7 +92,9 @@ export function resolveActiveOwnerCount(options: {
     const distinctSignerEmails = countDistinctContractSignersWithEmail(roles);
 
     // Saved Manage Signers list wins over stale CRM owners[1] after remove/replace.
-    if (roles.length > 0) {
+    // Count only roles that carry an email so blank Owner 2 template slots never inflate to 2.
+    const rolesWithEmail = roles.filter((r) => String(r.signerEmail || "").trim());
+    if (rolesWithEmail.length > 0) {
         if (hasExplicitSecondSlot || distinctSignerEmails >= 2) return 2;
         return 1;
     }
