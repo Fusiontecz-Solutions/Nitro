@@ -1,5 +1,6 @@
 import type { ClientUpdatePayload, OwnerDetail } from "@/types/clientTypes";
 import type { BuildContractPrefillFieldsArgs } from "./Contract";
+import { sanitizePaymentFrequencyForPersist } from "./Contract";
 import type { UpdateBankDetailPayload } from "@/types/bankDetailTypes";
 import { parseNumberUS } from "@/lib/utils";
 import type { AppDispatch } from "@/redux/store";
@@ -284,7 +285,7 @@ export function buildOfferDecisionUpsertFromPrefill(
     const offer = parseMoney(prefill.purchaseAmount);
     const totalRemit = parseMoney(prefill.purchasePrice);
     const repayPerPeriod = parseMoney(prefill.remittance);
-    const frequency = str(prefill.frequency);
+    const frequency = sanitizePaymentFrequencyForPersist(prefill.frequency);
     const fees = parseMoney(prefill.appendixUnderwritingFees);
     const rate = parseMoney(prefill.purchasePercent);
 
@@ -460,7 +461,7 @@ async function syncContractAchFromPrefill(
     const paymentAmount =
         str(prefill.remittance) ||
         str(prefill.achAuthorizationAccountHolderBankTransactionFee);
-    const frequency = str(prefill.frequency);
+    const frequency = sanitizePaymentFrequencyForPersist(prefill.frequency);
     const address =
         str(prefill.achAuthorizationAccountHolderAddress) || str(prefill.businessAddress);
     const city =

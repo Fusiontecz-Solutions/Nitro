@@ -131,7 +131,10 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "consistent_with_business",
         "payment_exceeded",
         "out_estimated_percent",
-        "paymentTerms",
+        // Utah disclosure % tabs — never use bare `frequency` / `paymentTerms`
+        // (those IDs are Daily/Weekly cadence on the main contract).
+        "payment_terms_percent",
+        "payment_exceed_percent",
     ],
     disclosure_term_days: ["disclosure_term_days", "estimated_term", "estimated_number_of_payement", "estimated_time_periodic_paymement"],
     disclosure_broker_fee: ["disclosure_broker_fee", "appendix_underwriting_fees"],
