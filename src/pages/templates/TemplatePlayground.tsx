@@ -22,7 +22,12 @@ export default function TemplatePlayground() {
   const [funderProfileId, setFunderProfileId] = useState("");
 
   useEffect(() => {
-    if (funderProfileId) return;
+    if (!funderSelectEntries.length) return;
+    const currentIsValid = funderSelectEntries.some(
+      (entry) => entry.value === funderProfileId,
+    );
+    if (funderProfileId && currentIsValid) return;
+
     const defaultFunderName = resolveDefaultFunder();
     const match = funderSelectEntries.find(
       (entry) => entry.funderName === defaultFunderName,
