@@ -256,7 +256,7 @@ import {
     getBoldSignTemplateMappingRef,
     loadBoldSignTemplatePdfBlob,
 } from "./contractdata/boldSignTemplateDocument";
-import { axiosDelete, axiosGet, axiosPatch, axiosPost } from "@/redux/axios";
+import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 
 /** Fingerprint of saved prefill used to invalidate a reused DocuSign draft after edits. */
 function docuSignPrefillDraftFingerprint(input: {
@@ -2335,12 +2335,6 @@ const PDFViewerModal = ({
         invalidateDocuSignDraftSession();
     }, [prefillDraftFingerprint, invalidateDocuSignDraftSession]);
 
-    const ccListsEqual = (a: string[], b: string[] | null) => {
-        if (!b) return false;
-        const norm = (list: string[]) =>
-            [...list].map((e) => e.trim().toLowerCase()).filter(Boolean).sort().join("\n");
-        return norm(a) === norm(b);
-    };
     const sessionEnvelopeIdRef = useRef<string | null>(null);
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");

@@ -2237,7 +2237,7 @@ export default function ContractTab({
                 );
                 for (const [id, value] of overlay.entries()) {
                     if (!prefillFieldsPayload.some((field) => field.id === id)) {
-                        prefillFieldsPayload.push({ id, value });
+                        prefillFieldsPayload.push({ id, label: id, value });
                     }
                 }
             }
@@ -2408,13 +2408,15 @@ export default function ContractTab({
                         const existing = byId.get(id);
                         byId.set(
                             id,
-                            existing ? { ...existing, value: v } : { id, value: v },
+                            existing
+                                ? { ...existing, value: v }
+                                : { id, label: id, value: v },
                         );
                         // Also seed CRM-scoped envelope labels used after coordinate scoping.
                         const texas = /ach_authorization_texas|texas_ach/i.test(achDocumentRef);
                         const scopedId = `${texas ? "ach_form_texas_" : "ach_form_"}${id}`;
                         if (!byId.has(scopedId)) {
-                            byId.set(scopedId, { id: scopedId, value: v });
+                            byId.set(scopedId, { id: scopedId, label: scopedId, value: v });
                         }
                     }
                     prefillFieldsPayload = Array.from(byId.values());
