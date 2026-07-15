@@ -308,7 +308,16 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   recipient_address: ['recipient_address1', 'business_address'],
   total_amount_commercial_financing: ['disclosure_amount_financed', 'funding_provided', 'total_amount_business_fund'],
   total_commerical_financing: ['disclosure_total_payment', 'total_repayment_amount'],
-  deducted_at_disbursement: ['disclosure_origination_fee'],
+  deducted_at_disbursement: [
+    'disclosure_origination_fee',
+    'disclosure_fees_deducted',
+    'fees_deducted',
+  ],
+  fees_deducted: [
+    'disclosure_fees_deducted',
+    'deducted_at_disbursement',
+    'disclosure_origination_fee',
+  ],
   estimated_time_periodic_paymement: ['disclosure_term_days', 'estimated_number_of_payments'],
   theestimatedpayment: ['disclosure_estimated_payment', 'estimated_payment'],
   payment_exceed_percent: ['disclosure_payment_terms', 'percent_of_business_income'],
