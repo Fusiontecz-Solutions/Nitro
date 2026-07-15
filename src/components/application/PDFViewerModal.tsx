@@ -56,7 +56,9 @@ import {
     funderNamesEquivalent,
     formatFunderSelectLabel,
     findFunderProfileById,
+    isTexasContractState,
     isTexasFundingGroupFunderProfile,
+    isWoodmereFunderProfile,
     persistedFunderProfileIdForApi,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
@@ -144,8 +146,14 @@ import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import RequestedDocumentUploadRows, {
     getRequestedDocumentLabel,
 } from "./RequestedDocumentUploadRows";
-import { uploadApplicationDocuments } from "@/redux/actions/applicationActions";
+import {
+    uploadApplicationDocuments,
+} from "@/redux/actions/applicationActions";
 import { resolveOfferDecisionFeesDisplayDollars } from "@/lib/offerDecisionFees";
+import {
+    resolveApplicationUuidForUpdate,
+    syncContractPrefillToSourceRecords,
+} from "./contractdata/contractPrefillSourceSync";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
@@ -191,6 +199,10 @@ import {
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
+import {
+    docuSignPrefillSyncToast,
+    patchDocuSignPrefillFields,
+} from "./contractdata/syncDocuSignPrefillFields";
 import { isPlatformLayoutKey, PLATFORM_LAYOUT_KEYS, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
 import {
     contractSendPackageFingerprint,
@@ -288,7 +300,11 @@ function resolveDealStateFromApplication(applicationData: unknown): string {
         ? (ad.businessInfo[0] as Record<string, unknown>)
         : undefined;
     const client = ad.client as Record<string, unknown> | undefined;
-    return pickUsStateForSelect(client?.state ?? bi0?.state);
+    const biz = (client?.business ?? {}) as Record<string, unknown>;
+    const addr = (biz.address ?? {}) as Record<string, unknown>;
+    return pickUsStateForSelect(
+        addr.state ?? client?.businessState ?? client?.state ?? bi0?.state,
+    );
 }
 
 function writeDocuSignErrorTab(doc: Document, message: string): void {
@@ -329,6 +345,8 @@ interface PDFViewerModalProps {
         funderProfileId?: string | null;
         contractState?: string | null;
         mainContractLayoutKey?: string | null;
+        /** Current Deal Review values — always applied on each Review & send open. */
+        prefillFields?: Array<{ id: string; value: string }>;
     }) => void | Promise<
         void | {
             envelopeId?: string;
@@ -1064,7 +1082,6 @@ const PDFViewerModal = ({
         findFunder,
         findFunderById,
         resolveFunderOnStateChange,
-        resolveExpectedFunderForState,
     } = useFunderProfiles(selectedState);
     const fundersRef = useRef(funders);
     fundersRef.current = funders;
@@ -2764,11 +2781,26 @@ const PDFViewerModal = ({
                 return;
             }
             const data: UpdateContractData = {};
-            if (patch.state !== undefined) {
-                data.state =
-                    patch.state === "" || patch.state == null
+            const canonicalState =
+                patch.state !== undefined
+                    ? patch.state === "" || patch.state == null
                         ? null
-                        : String(patch.state).trim();
+                        : pickUsStateForSelect(String(patch.state).trim()) ||
+                          String(patch.state).trim() ||
+                          null
+                    : undefined;
+            if (canonicalState !== undefined) {
+                data.state = canonicalState;
+                if (canonicalState) {
+                    Object.assign(
+                        data,
+                        contractPrefillToContractColumnUpdate({
+                            businessAddressState: canonicalState,
+                            businessAddressContractState: canonicalState,
+                            securityBusinessAddressState: canonicalState,
+                        }),
+                    );
+                }
             }
             if (patch.funderName !== undefined) {
                 data.funderName =
@@ -2802,8 +2834,46 @@ const PDFViewerModal = ({
                               : {};
                     return { ...base, ...data };
                 });
+                if (canonicalState) {
+                    setContractPrefillFromDb((prev) => ({
+                        ...(prev ?? {}),
+                        businessAddressState: canonicalState,
+                        businessAddressContractState: canonicalState,
+                        securityBusinessAddressState: canonicalState,
+                    }));
+                    // Force a new DocuSign draft so envelope tabs pick up the state.
+                    prefilledPdfCachedForEnvelopeRef.current = null;
+                    prefilledBoldSignPdfUrlRef.current = null;
+                    invalidateDocuSignDraftSession();
+                    try {
+                        await syncContractPrefillToSourceRecords({
+                            dispatch,
+                            applicationData: applicationDataRef.current,
+                            applicationUuid:
+                                resolveApplicationUuidForUpdate(applicationDataRef.current) ||
+                                applicationIdForLookupRef.current ||
+                                null,
+                            prefill: { businessAddressState: canonicalState },
+                        });
+                    } catch (syncErr: unknown) {
+                        const syncMsg =
+                            typeof syncErr === "string"
+                                ? syncErr
+                                : String(
+                                      (syncErr as { message?: string })?.message ||
+                                          "Failed to sync application business state.",
+                                  );
+                        if (!options?.silent) {
+                            toast.warning(syncMsg);
+                        }
+                    }
+                }
                 if (!options?.silent) {
-                    toast.success("Contract updated.");
+                    toast.success(
+                        canonicalState
+                            ? "Contract and application state updated."
+                            : "Contract updated.",
+                    );
                 }
             } catch (err: unknown) {
                 const msg =
@@ -2820,7 +2890,11 @@ const PDFViewerModal = ({
                 setSavingContractMeta(false);
             }
         },
-        [effectiveContractId, dispatch],
+        [
+            effectiveContractId,
+            dispatch,
+            invalidateDocuSignDraftSession,
+        ],
     );
 
     /** Flush user-selected funder to DB once a contract row exists. */
@@ -2847,27 +2921,39 @@ const PDFViewerModal = ({
         // Skip on initial hydration (empty → loaded state from contract).
         if (!prevState.trim()) return;
         if (prevState === selectedState) return;
+        // State dropdown already applied Texas/Woodmere funder switch.
+        if (userSelectedStateRef.current) return;
         if (userSelectedFunderRef.current) return;
 
-        const expected = resolveExpectedFunderForState(selectedState);
-        if (!expected || expected === selectedFunder) return;
-        const current = findFunder(selectedFunder);
-        const shouldSync =
-            current != null && !funderAvailableForContractState(current, selectedState);
-        if (!shouldSync) return;
-        const expectedProfile = findFunderProfile(funders, expected, selectedState);
+        const switchedFunder = resolveFunderOnStateChange(
+            selectedFunder,
+            selectedState,
+            prevState,
+        );
+        if (switchedFunder == null || switchedFunder === selectedFunder) return;
+
+        const expectedProfile =
+            funders.find(
+                (f) =>
+                    f.isActive !== false &&
+                    (f.name === switchedFunder ||
+                        funderNamesEquivalent(f.name, switchedFunder) ||
+                        funderNamesEquivalent(f.displayName, switchedFunder)),
+            ) ?? findFunderProfile(funders, switchedFunder, selectedState);
         setSelectedFunderProfileId(expectedProfile?.id ?? "");
-        setSelectedFunder(expectedProfile?.name ?? expected);
+        setSelectedFunder(expectedProfile?.name ?? switchedFunder);
         if (effectiveContractId != null) {
-            void persistContractStateAndFunder({ funderName: expected }, { silent: true });
+            void persistContractStateAndFunder(
+                { funderName: switchedFunder },
+                { silent: true },
+            );
         }
     }, [
         isOpen,
         contractPrefillLoaded,
         selectedState,
         selectedFunder,
-        resolveExpectedFunderForState,
-        findFunder,
+        resolveFunderOnStateChange,
         funders,
         effectiveContractId,
         persistContractStateAndFunder,
@@ -3113,8 +3199,6 @@ const PDFViewerModal = ({
                     ? resolveAddendumTemplateIdForDocuSignMerge()
                     : null;
                 const sessionEnv = String(sessionEnvelopeId || "").trim() || null;
-                const prefillMatchesPreparedDraft =
-                    draftPreparedPrefillFingerprintRef.current === prefillDraftFingerprint;
                 const signerFingerprintForSend = contractSignerOverridesFingerprint(
                     signerRolesForSend.map((r) => ({
                         role: r.signerRole,
@@ -3122,97 +3206,62 @@ const PDFViewerModal = ({
                         email: r.signerEmail,
                     })),
                 );
-                const signerRolesMatchPrepared =
-                    draftPreparedSignerRolesRef.current === signerFingerprintForSend;
                 const currentOwnerCount = resolveActiveOwnerCount({
                     signerRoles: signerRolesForSend.map((r) => ({
                         signerRole: r.signerRole,
                         signerEmail: r.signerEmail,
                     })),
                 });
-                const ownerCountMatchesPrepared =
-                    draftPreparedOwnerCountRef.current == null ||
-                    draftPreparedOwnerCountRef.current === currentOwnerCount;
-                const packageMatchesPrepared =
-                    draftPreparedPackageFingerprintRef.current === sendPackageFingerprint;
                 const isResendAfterSigned = canResendMainContract(resolvedContract, sentAt);
-                /** Always create a fresh envelope when CC is set — reusing an old draft can keep broken recipients. */
-                const draftMatchesSelection =
-                    !isResendAfterSigned &&
-                    Boolean(sessionEnv) &&
-                    draftPreparedAddendumIdRef.current !== undefined &&
-                    (draftPreparedAddendumIdRef.current || "") === (addendumTemplateId || "") &&
-                    ccListsEqual(toSend, draftPreparedCcRef.current) &&
-                    prefillMatchesPreparedDraft &&
-                    signerRolesMatchPrepared &&
-                    ownerCountMatchesPrepared &&
-                    packageMatchesPrepared;
+                /** Always rebuild so Sender View reflects current Deal Review prefill/signers. */
+                if (sessionEnv) {
+                    invalidateDocuSignPdfCache();
+                }
+                if (isResendAfterSigned) {
+                    toast.info("Creating a new DocuSign envelope to resend the contract.");
+                }
 
-                let envelopeId = draftMatchesSelection ? sessionEnv : null;
-                let preparedSenderUrl: string | null = null;
-
-                if (!envelopeId) {
-                    if (isResendAfterSigned) {
-                        toast.info(
-                            "Creating a new DocuSign envelope to resend the contract.",
-                        );
-                    } else if (sessionEnv && !ccListsEqual(toSend, draftPreparedCcRef.current)) {
-                        toast.info(
-                            "Creating a new DocuSign draft so CC recipients are configured correctly with the signer.",
-                        );
-                    } else if (
-                        sessionEnv &&
-                        draftPreparedPrefillFingerprintRef.current != null &&
-                        !prefillMatchesPreparedDraft
-                    ) {
-                        toast.info(
-                            "Creating a new DocuSign draft with your updated prefill values.",
-                        );
-                    } else if (
-                        sessionEnv &&
-                        (!signerRolesMatchPrepared || !ownerCountMatchesPrepared)
-                    ) {
-                        toast.info(
-                            "Creating a new DocuSign draft with your updated signers (including Owner 2 when applicable).",
-                        );
-                    }
-                    const disclosureDocumentRef = packageSelection.includeDisclosure
-                        ? resolveDisclosureTemplateRefForDocuSignMerge()
-                        : null;
-                    const prepared = await onPrepareDocuSignDraft({
-                        ccEmails: toSend,
-                        addendumDocumentRef: addendumTemplateId,
-                        disclosureDocumentRef,
-                        includeMainContract: packageSelection.includeMainContract,
-                        sendPackage: packageSelection,
-                        roles: signerRolesForSend,
-                        funderName: selectedFunder.trim() || null,
-                        funderProfileId:
-                            persistedFunderProfileIdForApi(selectedFunderProfile) || null,
-                        contractState: pickUsStateForSelect(selectedState) || null,
-                        mainContractLayoutKey: resolveLayoutKey(
-                            selectedFunder,
-                            selectedFunderProfile?.id,
-                        ),
-                    });
-                    envelopeId = String(
-                        (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
+                const prefillFieldsForDraft = buildDocuSignPrefillFieldsPayload().map((f) => ({
+                    id: f.id,
+                    value: f.value,
+                }));
+                const disclosureDocumentRef = packageSelection.includeDisclosure
+                    ? resolveDisclosureTemplateRefForDocuSignMerge()
+                    : null;
+                const prepared = await onPrepareDocuSignDraft({
+                    ccEmails: toSend,
+                    addendumDocumentRef: addendumTemplateId,
+                    disclosureDocumentRef,
+                    includeMainContract: packageSelection.includeMainContract,
+                    sendPackage: packageSelection,
+                    roles: signerRolesForSend,
+                    funderName: selectedFunder.trim() || null,
+                    funderProfileId:
+                        persistedFunderProfileIdForApi(selectedFunderProfile) || null,
+                    contractState: pickUsStateForSelect(selectedState) || null,
+                    mainContractLayoutKey: resolveLayoutKey(
+                        selectedFunder,
+                        selectedFunderProfile?.id,
+                    ),
+                    prefillFields: prefillFieldsForDraft,
+                });
+                let envelopeId = String(
+                    (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
+                ).trim() || null;
+                let preparedSenderUrl =
+                    String(
+                        (prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "",
                     ).trim() || null;
-                    preparedSenderUrl =
-                        String(
-                            (prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "",
-                        ).trim() || null;
-                    if (envelopeId) {
-                        setSessionEnvelopeId(envelopeId);
-                        linkedEnvelopeIdRef.current = envelopeId;
-                        draftPreparedAddendumIdRef.current = addendumTemplateId;
-                        draftPreparedCcRef.current = [...toSend];
-                        draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
-                        draftPreparedSignerRolesRef.current = signerFingerprintForSend;
-                        draftPreparedOwnerCountRef.current = currentOwnerCount;
-                        draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
-                        await persistContractEnvelopeHistory(envelopeId, "draft");
-                    }
+                if (envelopeId) {
+                    setSessionEnvelopeId(envelopeId);
+                    linkedEnvelopeIdRef.current = envelopeId;
+                    draftPreparedAddendumIdRef.current = addendumTemplateId;
+                    draftPreparedCcRef.current = [...toSend];
+                    draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
+                    draftPreparedSignerRolesRef.current = signerFingerprintForSend;
+                    draftPreparedOwnerCountRef.current = currentOwnerCount;
+                    draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
+                    await persistContractEnvelopeHistory(envelopeId, "draft");
                 }
 
                 if (!envelopeId) {
@@ -4364,19 +4413,20 @@ const PDFViewerModal = ({
         const fields = buildDocuSignPrefillFieldsPayload();
         if (!fields.length) return;
         try {
-            await axiosPatch("/docusign/prefill-fields", {
-                documentId: envelopeId,
-                fields,
-            });
+            const result = await patchDocuSignPrefillFields(envelopeId, fields);
+            docuSignPrefillSyncToast(result, { hasDraftEnvelope: true });
             invalidateDocuSignPdfCache();
             void loadPrefilledPdfFromDocuSign(envelopeId, { manageLoading: false });
         } catch (err) {
             console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
+            toast.warning(
+                "Prefill saved in CRM, but the DocuSign draft could not be updated. Use Review & send to refresh the draft.",
+            );
         }
     }, [
-        buildDocuSignPrefillFieldsPayload,
         sessionEnvelopeId,
         linkedEnvelopeId,
+        buildDocuSignPrefillFieldsPayload,
         invalidateDocuSignPdfCache,
         loadPrefilledPdfFromDocuSign,
     ]);
@@ -6826,23 +6876,51 @@ const PDFViewerModal = ({
                                                         disabled={savingContractMeta}
                                                         onValueChange={(v: string) => {
                                                             userSelectedStateRef.current = true;
+                                                            const previousState = selectedState;
                                                             setSelectedState(v);
-                                                            const picked = pickUsStateForSelect(v);
-                                                            const switchedFunder = resolveFunderOnStateChange(
-                                                                selectedFunder,
-                                                                v,
+                                                            contractStateForFunderSyncRef.current = v;
+                                                            const picked = pickUsStateForSelect(v) || v;
+                                                            const activeFunders = funders.filter(
+                                                                (f) => f.isActive !== false,
                                                             );
                                                             let nextFunder = selectedFunder;
                                                             let nextFunderProfileId = selectedFunderProfileId;
-                                                            if (switchedFunder != null) {
-                                                                nextFunder = switchedFunder;
-                                                                const switchedProfile = findFunderProfile(
-                                                                    funders,
-                                                                    switchedFunder,
-                                                                    picked,
+
+                                                            if (
+                                                                isTexasContractState(picked) &&
+                                                                !isTexasContractState(previousState)
+                                                            ) {
+                                                                // Non-Texas → Texas: always Texas funder
+                                                                const tfg =
+                                                                    activeFunders.find((f) =>
+                                                                        isTexasFundingGroupFunderProfile(f),
+                                                                    ) ??
+                                                                    activeFunders.find(
+                                                                        (f) =>
+                                                                            String(
+                                                                                f.mainContractLayoutKey ||
+                                                                                    "",
+                                                                            ).trim() ===
+                                                                            "texas_funding_group_contract",
+                                                                    );
+                                                                if (tfg) {
+                                                                    nextFunder = tfg.name;
+                                                                    nextFunderProfileId = tfg.id;
+                                                                }
+                                                            } else if (
+                                                                isTexasContractState(previousState) &&
+                                                                !isTexasContractState(picked)
+                                                            ) {
+                                                                // Texas → non-Texas: always Woodmere
+                                                                const woodmere = activeFunders.find((f) =>
+                                                                    isWoodmereFunderProfile(f),
                                                                 );
-                                                                nextFunderProfileId = switchedProfile?.id ?? "";
+                                                                if (woodmere) {
+                                                                    nextFunder = woodmere.name;
+                                                                    nextFunderProfileId = woodmere.id;
+                                                                }
                                                             } else {
+                                                                // Same Texas-ness: keep funder unless unavailable
                                                                 const currentFunder =
                                                                     findFunderById(selectedFunderProfileId) ??
                                                                     findFunder(selectedFunder);
@@ -6859,6 +6937,7 @@ const PDFViewerModal = ({
                                                                     nextFunderProfileId = "";
                                                                 }
                                                             }
+
                                                             if (
                                                                 nextFunder !== selectedFunder ||
                                                                 nextFunderProfileId !== selectedFunderProfileId
@@ -9722,6 +9801,9 @@ const PDFViewerModal = ({
                 contractRecords={contractPrefillRecords}
                 resolvedContract={resolvedContract}
                 linkedAddendumMapping={linkedAddendumMapping}
+                linkedDisclosureMapping={linkedDisclosureMapping}
+                contractDisclosureState={selectedState}
+                contractDisclosureFrequency={contractDisclosureFrequency}
                 agreementDatePlaceholder={formatDate(new Date())}
                 offerDecision={(offerDecisionData as Record<string, unknown> | null) ?? null}
                 readOnly={!canEditContractPrefill}

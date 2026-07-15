@@ -11,7 +11,7 @@ export const BALANCE_TRANSFER_SHEET_FIELD_DEFS = [
     { id: "business_address_city", label: "Business address city" },
     { id: "business_address_state", label: "Business address state" },
     { id: "business_address_zip", label: "Business address ZIP" },
-    { id: "purchase_price", label: "Purchase price" },
+    { id: "purchase_price", label: "Remaining balance" },
     {
         id: "funder_name_with_deal_prefix",
         label: "Funder name (Deal ID prefix)",

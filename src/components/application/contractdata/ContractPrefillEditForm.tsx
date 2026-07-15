@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/select";
 import {
     applyAuthorizationBusinessNamePrefillFields,
+    applyAchConsentClientNamePrefillFields,
     applyLiveBankDetailsToPrefillMerge,
     applyLiveOfferSyncToPrefillPartial,
     applyOwnerRowsToPrefillMerge,
@@ -47,6 +48,7 @@ import {
     CANONICAL_BUSINESS_ADDRESS_STATE_KEYS,
     CANONICAL_BUSINESS_ADDRESS_STREET_KEYS,
     CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS,
+    contractPrefillToContractColumnUpdate,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
@@ -70,7 +72,9 @@ import {
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_SEND_HISTORY_KEY,
     getDocumentTemplatePrefillFieldRowsForEditor,
+    hasStateDisclosurePrefillFieldMap,
     LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
+    LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./documentTemplateMappingPrefill";
 import { useDispatch } from "react-redux";
@@ -79,6 +83,7 @@ import { getByApplicationIdContract, updateContract } from "@/redux/actions/cont
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
 import { syncContractPrefillToSourceRecords } from "./contractPrefillSourceSync";
+import { MANUAL_NET_TO_MERCHANT_KEY } from "../contractRecipientFundsSync";
 import { SpaCalculationModal } from "./SpaCalculationModal";
 import { persistCalculatedPurchasePercent } from "./spaPrefillSync";
 import {
@@ -131,7 +136,7 @@ const FIELD_LABELS = {
     purchasePercent: "Specific Percentage",
     remittance: "Total remit (payment amount)",
     frequency: "Frequency",
-    netToMerchant: "Net to merchant",
+    netToMerchant: "Recipient funds",
     clientName: "Name",
     owner1GuarantorName: "Name",
     owner2GuarantorName: "Name",
@@ -189,8 +194,8 @@ const FIELD_LABELS = {
     achAuthorizationAccountHolderBankTransactionFee: "Transaction fee",
     achAuthorizationAccountHolderBankNumberOfTransactions: "NO. of transaction",
     achAuthorizationAccountHolderDate: "Date",
-    achAuthorizationConcentAccountHolderName: "Name",
-    achAuthorizationConcentAccountHolderName2: "Name (page 2)",
+    achAuthorizationConcentAccountHolderName: "Client name (ACH consent)",
+    achAuthorizationConcentAccountHolderName2: "Client name (ACH consent page 2)",
     achAuthorizationConcentAccountHolderDate: "Date",
     achAuthorizationBankPortalWebsite: "Bank portal URL",
     achAuthorizationUsername: "Username",
@@ -336,7 +341,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             id: "financial",
             title: "Offer & payback",
             description:
-                "Offer amount, payback amount, specific percentage, payment amount per period (total remit), frequency, and net to merchant (advance − fees − refinance).",
+                "Offer amount, payback amount, specific percentage, payment amount per period (total remit), frequency, and recipient funds (offer − fees − refinance — not the offer amount).",
             Icon: DollarSign,
             groups: [
                 {
@@ -874,7 +879,6 @@ const DATE_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
 /** Shown empty until the user saves a value in contract prefill overrides. */
 const REQUIRED_PREFILL_FIELD_KEYS = new Set<keyof BuildContractPrefillFieldsArgs>([
     "customerName",
-    "clientPhone",
     "purchasePercent",
     "remittance",
 ]);
@@ -981,9 +985,7 @@ function validatePrefillValues(values: Record<keyof BuildContractPrefillFieldsAr
     }
 
     const clientPhoneVal = trimField(values, "clientPhone");
-    if (!clientPhoneVal) {
-        err.clientPhone = "Client phone is required.";
-    } else {
+    if (clientPhoneVal) {
         const clientPhoneMsg = validatePhone(clientPhoneVal);
         if (clientPhoneMsg) err.clientPhone = clientPhoneMsg;
     }
@@ -1077,6 +1079,7 @@ function firstSectionIdWithFieldErrors(errors: FieldErrors): string | null {
 export type LinkedAddendumMappingRef = {
     id: string;
     templateId?: string;
+    documentType?: string | null;
     template?: {
         templateId?: string;
         name?: string | null;
@@ -1085,6 +1088,9 @@ export type LinkedAddendumMappingRef = {
         frequency?: string | null;
     } | null;
 };
+
+/** Same shape as linked addendum — reused for state disclosure mappings. */
+export type LinkedDisclosureMappingRef = LinkedAddendumMappingRef;
 
 export type ContractPrefillEditFormProps = {
     open: boolean;
@@ -1113,6 +1119,12 @@ export type ContractPrefillEditFormProps = {
     contractRecords?: ContractPrefillContractRecords;
     resolvedContract?: Record<string, unknown> | null;
     linkedAddendumMapping?: LinkedAddendumMappingRef | null;
+    /** Linked state disclosure mapping — shows disclosure data labels (same catalog as Katan). */
+    linkedDisclosureMapping?: LinkedDisclosureMappingRef | null;
+    /** Contract / Info panel state when the disclosure template row has no `state` column. */
+    contractDisclosureState?: string | null;
+    /** Offer payment frequency (daily / weekly) for disclosure field resolution. */
+    contractDisclosureFrequency?: string | null;
     /** Shown in agreement date field when empty (e.g. today). */
     agreementDatePlaceholder?: string;
     /** Loaded offer decision — used to auto-calculate net to merchant when not overridden. */
@@ -1142,6 +1154,9 @@ export function ContractPrefillEditForm({
     contractRecords,
     resolvedContract = null,
     linkedAddendumMapping = null,
+    linkedDisclosureMapping = null,
+    contractDisclosureState = null,
+    contractDisclosureFrequency = null,
     agreementDatePlaceholder = "",
     offerDecision = null,
     readOnly = false,
@@ -1151,6 +1166,7 @@ export function ContractPrefillEditForm({
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
     const [addendumFieldValues, setAddendumFieldValues] = useState<Record<string, string>>({});
+    const [disclosureFieldValues, setDisclosureFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
     const [saveError, setSaveError] = useState<string | null>(null);
@@ -1195,17 +1211,81 @@ export function ContractPrefillEditForm({
             templateLayoutKey: linkedAddendumMapping.template?.layoutKey ?? null,
             templateState: linkedAddendumMapping.template?.state ?? null,
             templateFrequency: linkedAddendumMapping.template?.frequency ?? null,
+            documentType: linkedAddendumMapping.documentType ?? "addendum",
             contract: resolvedContract ?? contractRecords?.contract ?? null,
             application: applicationData as Record<string, unknown> | null,
             agreementDate: agreementDateForDefaults,
             mainPrefillOverrides: strippedMainPrefillOverrides ?? undefined,
             savedOverridesForMapping: saved,
+            bankDetail: contractRecords?.bankDetail ?? null,
         });
     }, [
         linkedAddendumMapping,
         documentTemplatePrefillByMappingId,
         resolvedContract,
         contractRecords?.contract,
+        contractRecords?.bankDetail,
+        applicationData,
+        agreementDateForDefaults,
+        strippedMainPrefillOverrides,
+    ]);
+
+    const linkedDisclosureTemplateName =
+        linkedDisclosureMapping?.template?.name?.trim() ||
+        linkedDisclosureMapping?.template?.templateId ||
+        linkedDisclosureMapping?.templateId ||
+        "State disclosure";
+    const linkedDisclosureState =
+        String(
+            linkedDisclosureMapping?.template?.state ?? contractDisclosureState ?? "",
+        ).trim() || null;
+    const linkedDisclosureFrequency =
+        String(
+            linkedDisclosureMapping?.template?.frequency ?? contractDisclosureFrequency ?? "",
+        ).trim() || null;
+    const linkedDisclosureHasFieldMap = Boolean(
+        linkedDisclosureMapping &&
+            hasStateDisclosurePrefillFieldMap(
+                linkedDisclosureTemplateName,
+                linkedDisclosureMapping.template?.state ?? null,
+                linkedDisclosureMapping.template?.frequency ?? null,
+                contractDisclosureState,
+                contractDisclosureFrequency,
+                linkedDisclosureMapping.template?.layoutKey ?? null,
+            ),
+    );
+
+    const disclosureEditorRows = useMemo(() => {
+        if (!linkedDisclosureMapping?.id || !linkedDisclosureHasFieldMap) return [];
+        const saved = documentTemplatePrefillByMappingId[linkedDisclosureMapping.id] ?? {};
+        return getDocumentTemplatePrefillFieldRowsForEditor({
+            templateId:
+                linkedDisclosureMapping.template?.templateId ??
+                linkedDisclosureMapping.templateId ??
+                null,
+            templateLayoutKey: linkedDisclosureMapping.template?.layoutKey ?? null,
+            templateName: linkedDisclosureMapping.template?.name ?? null,
+            templateState: linkedDisclosureMapping.template?.state ?? null,
+            templateFrequency: linkedDisclosureMapping.template?.frequency ?? null,
+            fallbackState: contractDisclosureState,
+            fallbackFrequency: contractDisclosureFrequency,
+            documentType: "disclosure",
+            contract: resolvedContract ?? contractRecords?.contract ?? null,
+            application: applicationData as Record<string, unknown> | null,
+            agreementDate: agreementDateForDefaults,
+            mainPrefillOverrides: strippedMainPrefillOverrides ?? undefined,
+            savedOverridesForMapping: saved,
+            bankDetail: contractRecords?.bankDetail ?? null,
+        });
+    }, [
+        linkedDisclosureMapping,
+        linkedDisclosureHasFieldMap,
+        documentTemplatePrefillByMappingId,
+        contractDisclosureState,
+        contractDisclosureFrequency,
+        resolvedContract,
+        contractRecords?.contract,
+        contractRecords?.bankDetail,
         applicationData,
         agreementDateForDefaults,
         strippedMainPrefillOverrides,
@@ -1300,11 +1380,32 @@ export function ContractPrefillEditForm({
                 groups: [],
             });
         }
+        if (linkedDisclosureMapping) {
+            const stateLabel = linkedDisclosureState
+                ? linkedDisclosureState.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                : "selected state";
+            const freqLabel = linkedDisclosureFrequency
+                ? ` (${linkedDisclosureFrequency})`
+                : "";
+            base.push({
+                id: LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID,
+                title: `State disclosure — ${stateLabel}${freqLabel}`,
+                description: linkedDisclosureHasFieldMap
+                    ? `Commercial financing disclosure fields for ${stateLabel}. Values are computed from the deal and can be overridden before send.`
+                    : "This state disclosure template is not registered for field editing yet.",
+                Icon: Receipt,
+                groups: [],
+            });
+        }
         return base;
     }, [
         linkedAddendumMapping,
         addendumEditorRows.length,
         linkedAddendumSectionTitle,
+        linkedDisclosureMapping,
+        linkedDisclosureState,
+        linkedDisclosureFrequency,
+        linkedDisclosureHasFieldMap,
         activeOwnerCount,
         activeGuarantorCount,
         owner2KeySet,
@@ -1382,11 +1483,19 @@ export function ContractPrefillEditForm({
         setAddendumFieldValues(Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""])));
     }, [addendumEditorRows]);
 
+    const resetDisclosureFromSources = useCallback(() => {
+        setDisclosureFieldValues(
+            Object.fromEntries(disclosureEditorRows.map((r) => [r.id, r.value ?? ""])),
+        );
+    }, [disclosureEditorRows]);
+
     /** Stable ref so `resetFromSources` stays current without widening effect deps below. */
     const resetFromSourcesRef = useRef(resetFromSources);
     resetFromSourcesRef.current = resetFromSources;
     const resetAddendumFromSourcesRef = useRef(resetAddendumFromSources);
     resetAddendumFromSourcesRef.current = resetAddendumFromSources;
+    const resetDisclosureFromSourcesRef = useRef(resetDisclosureFromSources);
+    resetDisclosureFromSourcesRef.current = resetDisclosureFromSources;
 
     const openedHydratedRef = useRef(false);
     const prevActiveOwnerCountRef = useRef(activeOwnerCount);
@@ -1403,9 +1512,26 @@ export function ContractPrefillEditForm({
         openedHydratedRef.current = true;
         resetFromSourcesRef.current();
         resetAddendumFromSourcesRef.current();
+        resetDisclosureFromSourcesRef.current();
         prevActiveOwnerCountRef.current = activeOwnerCount;
         // Intentionally omit persistedPrefillOverrides — re-hydrating on parent updates resets in-progress edits.
     }, [open, formReady, activeOwnerCount]);
+
+    const seededDisclosureMappingIdRef = useRef<string | null>(null);
+    const disclosureSavedFingerprint = JSON.stringify(
+        documentTemplatePrefillByMappingId[linkedDisclosureMapping?.id ?? ""] ?? {},
+    );
+    const disclosureSeedKey = `${linkedDisclosureMapping?.id ?? ""}:${linkedDisclosureState ?? ""}:${linkedDisclosureFrequency ?? ""}:${disclosureSavedFingerprint}`;
+    useEffect(() => {
+        if (!open || !linkedDisclosureMapping?.id) {
+            seededDisclosureMappingIdRef.current = null;
+            return;
+        }
+        if (disclosureEditorRows.length === 0) return;
+        if (seededDisclosureMappingIdRef.current === disclosureSeedKey) return;
+        seededDisclosureMappingIdRef.current = disclosureSeedKey;
+        resetDisclosureFromSourcesRef.current();
+    }, [open, linkedDisclosureMapping?.id, disclosureSeedKey, disclosureEditorRows]);
 
     /** When owner 2 is added while the form is open, merge party-2 fields without wiping other edits. */
     useEffect(() => {
@@ -1453,10 +1579,20 @@ export function ContractPrefillEditForm({
         }
     }, [open]);
 
+    const prevOpenRef = useRef(false);
     useEffect(() => {
-        if (open && navSections[0]?.id) {
+        const justOpened = open && !prevOpenRef.current;
+        prevOpenRef.current = open;
+        if (!open || !navSections[0]?.id) return;
+        // Only jump to the first stage when the dialog opens — not whenever navSections
+        // re-memoizes (that was yanking users back from Offer & payback to RPA).
+        if (justOpened) {
             setActiveSectionId(navSections[0].id);
+            return;
         }
+        setActiveSectionId((current) =>
+            navSections.some((s) => s.id === current) ? current : navSections[0]!.id,
+        );
     }, [open, navSections]);
 
     const activeSection = navSections.find((s) => s.id === activeSectionId) ?? navSections[0];
@@ -1464,14 +1600,15 @@ export function ContractPrefillEditForm({
     const nextSection =
         activeIdx >= 0 && activeIdx < navSections.length - 1 ? navSections[activeIdx + 1] : null;
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
+    const isLinkedDisclosureSection = activeSectionId === LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID;
 
     const activeSectionSyncGroups = useMemo(() => {
-        if (!activeSection || isLinkedAddendumSection) {
+        if (!activeSection || isLinkedAddendumSection || isLinkedDisclosureSection) {
             return [] as PrefillSyncGroup[];
         }
         const keysInSection = new Set<string>(activeSection.groups.flatMap((g) => g.keys));
         return PREFILL_SYNC_GROUPS.filter((group) => group.keys.some((k) => keysInSection.has(k)));
-    }, [activeSection, isLinkedAddendumSection]);
+    }, [activeSection, isLinkedAddendumSection, isLinkedDisclosureSection]);
 
     const offerDecisionSyncKey = useMemo(() => {
         const root =
@@ -1613,9 +1750,27 @@ export function ContractPrefillEditForm({
                     : {};
             const nextBlob = { ...existingBlob };
             if (linkedAddendumMapping?.id && addendumEditorRows.length > 0) {
-                nextBlob[linkedAddendumMapping.id] = { ...addendumFieldValues };
+                const addendumValues = { ...addendumFieldValues };
+                const remainingBalance =
+                    String(
+                        addendumValues.purchase_price ??
+                            addendumValues.balance_transfer_purchase_price ??
+                            "",
+                    ).trim();
+                if (remainingBalance) {
+                    addendumValues.purchase_price = remainingBalance;
+                    addendumValues.balance_transfer_purchase_price = remainingBalance;
+                }
+                nextBlob[linkedAddendumMapping.id] = addendumValues;
             }
-            const contractPrefillOverrides = {
+            if (
+                linkedDisclosureMapping?.id &&
+                linkedDisclosureHasFieldMap &&
+                disclosureEditorRows.length > 0
+            ) {
+                nextBlob[linkedDisclosureMapping.id] = { ...disclosureFieldValues };
+            }
+            const contractPrefillOverrides: Record<string, unknown> = {
                 ...pickPreservedContractPrefillMeta(
                     resolvedContract,
                     liveContractSignerOverrides,
@@ -1623,10 +1778,32 @@ export function ContractPrefillEditForm({
                 ...(payload as Record<string, unknown>),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
             };
+            const netToMerchantRaw = String(
+                (payload as { netToMerchant?: unknown }).netToMerchant ?? "",
+            ).trim();
+            if (netToMerchantRaw) {
+                contractPrefillOverrides[MANUAL_NET_TO_MERCHANT_KEY] = true;
+            } else {
+                delete contractPrefillOverrides[MANUAL_NET_TO_MERCHANT_KEY];
+            }
+            const columnSync = contractPrefillToContractColumnUpdate(payload);
+            const approvedAmount = (() => {
+                const n = Number(String(payload.purchaseAmount ?? "").replace(/[$,\s]/g, ""));
+                return Number.isFinite(n) && n > 0 ? n : undefined;
+            })();
+            const totalAmount = (() => {
+                const n = Number(String(payload.purchasePrice ?? "").replace(/[$,\s]/g, ""));
+                return Number.isFinite(n) && n > 0 ? n : undefined;
+            })();
             const updateRes = await dispatch(
                 updateContract({
                     id: cid,
-                    data: { contractPrefillOverrides },
+                    data: {
+                        contractPrefillOverrides,
+                        ...columnSync,
+                        ...(approvedAmount != null ? { approvedAmount } : {}),
+                        ...(totalAmount != null ? { totalAmount } : {}),
+                    },
                 }),
             ).unwrap();
             const appKey = String(applicationUuid ?? "").trim();
@@ -1677,6 +1854,8 @@ export function ContractPrefillEditForm({
                     prefill: payload,
                     offerDecision,
                     contractGuarantors: contractRecords?.guarantors ?? null,
+                    contractOwners: contractRecords?.owners ?? null,
+                    contractAch: (contractRecords?.ach as Record<string, unknown> | null) ?? null,
                     bankDetail: contractRecords?.bankDetail ?? null,
                 });
             } catch (syncErr) {
@@ -1688,7 +1867,7 @@ export function ContractPrefillEditForm({
                 toast.warn(syncMsg);
             }
             setSaveError(null);
-            toast.success("Contract prefill, offer, application, and bank details saved.");
+            toast.success("Saved — contract, application, offer, client, owners, and bank updated.");
             queueMicrotask(() => {
                 onAfterPrefillSaved?.();
             });
@@ -1771,6 +1950,7 @@ export function ContractPrefillEditForm({
             }
             resetFromSources();
             resetAddendumFromSources();
+            resetDisclosureFromSources();
             setSaveError(null);
             toast.success("Saved overrides cleared; DocuSign will use application data again.");
         } catch (e) {
@@ -2036,6 +2216,44 @@ export function ContractPrefillEditForm({
                                                 />
                                             </div>
                                         ))}
+                                    </div>
+                                ) : isLinkedDisclosureSection ? (
+                                    <div className="space-y-4">
+                                        {!linkedDisclosureHasFieldMap ? (
+                                            <p className="text-muted-foreground text-sm">
+                                                No registered field map for this state disclosure. Link a
+                                                disclosure template for the selected state on Info Required.
+                                            </p>
+                                        ) : disclosureEditorRows.length === 0 ? (
+                                            <p className="text-muted-foreground text-sm">
+                                                Loading disclosure field definitions…
+                                            </p>
+                                        ) : (
+                                            <div className="grid gap-3 sm:grid-cols-2">
+                                                {disclosureEditorRows.map((r) => (
+                                                    <div key={r.id} className="space-y-1.5">
+                                                        <Label
+                                                            htmlFor={`disclosure-prefill-${r.id}`}
+                                                            className="text-xs font-medium"
+                                                        >
+                                                            {r.label}
+                                                        </Label>
+                                                        <Input
+                                                            id={`disclosure-prefill-${r.id}`}
+                                                            value={disclosureFieldValues[r.id] ?? ""}
+                                                            onChange={(e) =>
+                                                                setDisclosureFieldValues((prev) => ({
+                                                                    ...prev,
+                                                                    [r.id]: e.target.value,
+                                                                }))
+                                                            }
+                                                            disabled={readOnly}
+                                                            className="h-9 text-sm"
+                                                        />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 ) : (
                                     <div className="space-y-5">

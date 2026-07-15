@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDispatch } from "react-redux";
 import {
     Dialog,
@@ -98,6 +98,8 @@ export function TemplateMappingPrefillEditDialog({
     const dispatch = useDispatch<AppDispatch>();
     const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
+    /** Only hydrate once per open/row — contract status polls must not wipe in-progress edits. */
+    const hydratedSessionKeyRef = useRef<string | null>(null);
 
     const coordinateLayout = usesCoordinateLayoutTemplate(row);
 
@@ -113,6 +115,13 @@ export function TemplateMappingPrefillEditDialog({
             templateLayoutKey: row.template?.layoutKey ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
+            fallbackState:
+                String((resolvedContract as { state?: unknown } | null)?.state ?? "").trim() || null,
+            fallbackFrequency:
+                String(
+                    (resolvedContract as { disclosureFrequency?: unknown } | null)
+                        ?.disclosureFrequency ?? "",
+                ).trim() || null,
             documentType: row.documentType ?? null,
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
@@ -120,6 +129,7 @@ export function TemplateMappingPrefillEditDialog({
             agreementDate,
             mainPrefillOverrides: mainPrefillOverrides ?? undefined,
             savedOverridesForMapping: saved,
+            bankDetail: contractRecords?.bankDetail ?? null,
         });
     }, [
         row,
@@ -133,7 +143,14 @@ export function TemplateMappingPrefillEditDialog({
     ]);
 
     useEffect(() => {
-        if (!open || !row) return;
+        if (!open || !row) {
+            hydratedSessionKeyRef.current = null;
+            return;
+        }
+        const sessionKey = String(row.id);
+        if (hydratedSessionKeyRef.current === sessionKey) return;
+        if (editorRows.length === 0) return;
+        hydratedSessionKeyRef.current = sessionKey;
         setFieldValues(Object.fromEntries(editorRows.map((r) => [r.id, r.value ?? ""])));
     }, [open, row?.id, editorRows]);
 
@@ -299,11 +316,17 @@ export function TemplateMappingPrefillEditDialog({
                     <div className="space-y-4">
                         {editorRows.length === 0 ? (
                             <p className="text-muted-foreground text-sm">
-                                No registered field map for this template. For ACH, ensure BoldSignTemplate has{" "}
+                                No registered field map for this template. For state disclosures, set
+                                BoldSignTemplate{" "}
+                                <span className="font-mono text-xs">type=disclosure</span> with{" "}
+                                <span className="font-mono text-xs">state</span> (e.g.{" "}
+                                <span className="font-mono text-xs">florida</span>) and{" "}
+                                <span className="font-mono text-xs">frequency</span> (
+                                <span className="font-mono text-xs">daily</span> /{" "}
+                                <span className="font-mono text-xs">weekly</span>), or name like{" "}
+                                <span className="font-mono text-xs">daily_florida</span>. For ACH, ensure{" "}
                                 <span className="font-mono text-xs">type=ach</span> or a layout key containing{" "}
-                                <span className="font-mono text-xs">ach_authorization</span> (including{" "}
-                                <span className="font-mono text-xs">ach_authorization_standalone</span> / funder
-                                scoped keys).
+                                <span className="font-mono text-xs">ach_authorization</span>.
                             </p>
                         ) : (
                             <div className="grid gap-3 sm:grid-cols-2">
