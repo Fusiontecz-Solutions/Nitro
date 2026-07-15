@@ -399,24 +399,59 @@ function disclosureDummyContext(): StateDisclosureContext {
     };
 }
 
+/** Parse `state_disclosure_dailyFlorida` / `daily_florida` into state + frequency. */
+function parseStateFrequencyFromDisclosureRef(
+    ref?: string | null,
+): { state: string | null; frequency: string | null } {
+    const raw = String(ref ?? "")
+        .trim()
+        .replace(/[\s-]+/g, "_");
+    if (!raw) return { state: null, frequency: null };
+
+    let key = raw;
+    if (key.toLowerCase().startsWith("state_disclosure_")) {
+        key = key.slice("state_disclosure_".length);
+    }
+
+    const freqMatch = key.match(/^(daily|weekly|monthly)[_]?(.+)$/i);
+    if (!freqMatch) return { state: null, frequency: null };
+    const frequency = freqMatch[1].toLowerCase();
+    let statePart = String(freqMatch[2] ?? "")
+        .replace(/([a-z])([A-Z])/g, "$1_$2")
+        .toLowerCase()
+        .replace(/^_+|_+$/g, "")
+        .replace(/_+/g, "_");
+    if (statePart === "newyork" || statePart === "new_york") statePart = "new_york";
+    return { state: statePart || null, frequency };
+}
+
 function resolveDisclosureStateAndFrequency(options: {
     templateState?: string | null;
     templateFrequency?: string | null;
     fallbackState?: string | null;
     fallbackFrequency?: string | null;
+    templateLayoutKey?: string | null;
+    templateName?: string | null;
     contract?: Record<string, unknown> | null;
 }): { state: string | null; frequency: string | null } {
     const contract = options.contract ?? {};
-    const state =
+    let state =
         String(options.templateState ?? options.fallbackState ?? contract.state ?? "").trim() ||
         null;
-    const frequency =
+    let frequency =
         String(
             options.templateFrequency ??
                 options.fallbackFrequency ??
                 (contract as Record<string, unknown>).disclosureFrequency ??
                 "",
         ).trim() || null;
+
+    if (!state || !frequency) {
+        const fromLayout = parseStateFrequencyFromDisclosureRef(options.templateLayoutKey);
+        const fromName = parseStateFrequencyFromDisclosureRef(options.templateName);
+        state = state || fromLayout.state || fromName.state;
+        frequency = frequency || fromLayout.frequency || fromName.frequency;
+    }
     return { state, frequency };
 }
 
@@ -873,12 +908,15 @@ export function hasStateDisclosurePrefillFieldMap(
     templateFrequency?: string | null,
     fallbackState?: string | null,
     fallbackFrequency?: string | null,
+    templateLayoutKey?: string | null,
 ): boolean {
     const { state, frequency } = resolveDisclosureStateAndFrequency({
         templateState,
         templateFrequency,
         fallbackState,
         fallbackFrequency,
+        templateLayoutKey,
+        templateName,
     });
     return hasStateDisclosurePrefillRegistry(templateName, state, frequency);
 }
@@ -1018,6 +1056,9 @@ export function parseDocumentTemplateEnvelopeByMappingId(
  * values from CRM-derived defaults merged with optional saved overrides for this mapping row.
  */
 export const LINKED_DOCUSIGN_ADDENDUM_SECTION_ID = "linked_docusign_addendum";
+
+/** State disclosure template merged with the contract (Florida, Georgia, etc.). */
+export const LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID = "linked_docusign_disclosure";
 export const LINKED_DOCUSIGN_ACH_SECTION_ID = "linked_docusign_ach";
 
 /**
@@ -1145,9 +1186,37 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
         templateFrequency: options.templateFrequency,
         fallbackState: options.fallbackState,
         fallbackFrequency: options.fallbackFrequency,
+        templateLayoutKey: options.templateLayoutKey,
+        templateName: options.templateName,
         contract: effectiveContract,
     });
     const templateId = options.templateId;
+
+    // Explicit disclosure rows must use the disclosure catalog / PDF data labels
+    // (same as Katan) — never fall through to ACH/addendum name matching.
+    if (isDisclosureDoc) {
+        const stAll = stateDisclosureAllDefs(name, state, frequency);
+        if (stAll.length > 0) {
+            const computed = stateDisclosureComputed(name, state, frequency, sctx);
+            const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
+                options.savedOverridesForMapping,
+            );
+            return applyPlatformDisclosureFunderName(
+                mergeFieldRows(stAll, computed, savedCollapsed),
+            );
+        }
+        const fromEditor = getStateDisclosureEditorFieldDefinitions(name, state, frequency);
+        if (fromEditor.length > 0) {
+            const computed = stateDisclosureComputed(name, state, frequency, sctx);
+            const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
+                options.savedOverridesForMapping,
+            );
+            return applyPlatformDisclosureFunderName(
+                mergeFieldRows(fromEditor, computed, savedCollapsed),
+            );
+        }
+        return [];
+    }
 
     // ACH must win over disclosure matching: state+frequency alone would otherwise
     // return Page 3 / disclosure fields for every template on a disclosure deal.
@@ -1186,19 +1255,6 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
             options.application ?? null,
         );
         return mergeFieldRows(all, computed, options.savedOverridesForMapping);
-    }
-
-    if (isDisclosureDoc) {
-        const stAll = stateDisclosureAllDefs(name, state, frequency);
-        if (stAll.length > 0) {
-            const computed = stateDisclosureComputed(name, state, frequency, sctx);
-            const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
-                options.savedOverridesForMapping,
-            );
-            return applyPlatformDisclosureFunderName(
-                mergeFieldRows(stAll, computed, savedCollapsed),
-            );
-        }
     }
 
     const fromEditor = getStateDisclosureEditorFieldDefinitions(name, state, frequency);
@@ -1310,6 +1366,22 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         for (const [id, value] of Object.entries(fieldsToMerge)) {
             upsertPrefillFieldValue(byId, id, String(value ?? ""));
         }
+        const addendumKind = resolveAddendumKind(
+            templateId || tid || null,
+            normalizeKey(row.template?.name ?? ""),
+            layoutKey || null,
+        );
+        if (addendumKind === "balance_transfer_sheet") {
+            const remaining = String(
+                fieldsToMerge.purchase_price ??
+                    fieldsToMerge.balance_transfer_purchase_price ??
+                    "",
+            ).trim();
+            if (remaining) {
+                upsertPrefillFieldValue(byId, "purchase_price", remaining);
+                upsertPrefillFieldValue(byId, "balance_transfer_purchase_price", remaining);
+            }
+        }
     }
 
     const disclosureMerged = args.templateMappingRows.some((row) => {
@@ -1369,7 +1441,7 @@ export function mergeStateDisclosurePrefillFallback(args: {
         ),
         contract: effectiveContract,
     });
-    if (!state || !frequency || !hasStateDisclosurePrefillRegistry(state, frequency)) {
+    if (!state || !frequency || !hasStateDisclosurePrefillRegistry(null, state, frequency)) {
         return args.payload;
     }
 

@@ -15,7 +15,7 @@ const FIELD_IDS = {
     financeCharge: ["finance_charge"],
     remittance: ["remittance"],
     appendixUnderwritingFees: ["appendix_underwriting_fees"],
-    paymentTermsPercent: ["frequency"],
+    paymentTermsPercent: ["payment_terms_percent", "disclosure_payment_terms", "payment_exceed_percent"],
     monthlyIncome: ["monthly_income"],
 } as const;
 
@@ -101,7 +101,10 @@ export function mapUtahDisclosureCalculatorToPdfFields(
         remittance: formatDisclosureUsd(metrics.estimatedPayment),
         monthly_income: formatDisclosureUsd(metrics.estimatedMerchantAverageMonthlyRevenue),
         appendix_underwriting_fees: formatDisclosureUsd(brokerFeePaidToBroker),
-        frequency: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
+        payment_terms_percent: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
+        disclosure_payment_terms: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
+        payment_exceed_percent: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
+        // Never write percent into bare `frequency` — that label is Daily/Weekly on the main contract.
     };
 }
 

@@ -49,7 +49,7 @@ export interface BuildContractPrefillFieldsArgs {
     remittance?: string;
     /** Payment frequency (e.g. Daily, Weekly). DocuSign data label: `frequency`; BoldSign may use `paymentTerms`. */
     frequency?: string;
-    /** Net cash to merchant (advance − fees − refinance). DocuSign data label: `net_to_merchant`. */
+    /** Recipient funds / net cash to merchant (offer − fees − refinance). DocuSign: `net_to_merchant`. */
     netToMerchant?: string;
 
     clientName?: string;
@@ -620,7 +620,7 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.purchasePercent, "Specific Percentage", purchasePercent),
         ...mapIds(FIELD_IDS.remittance, "Remittance", remittance),
         ...mapIds(FIELD_IDS.frequency, "Frequency", frequency),
-        ...mapIds(FIELD_IDS.netToMerchant, "Net to merchant", netToMerchant),
+        ...mapIds(FIELD_IDS.netToMerchant, "Recipient funds", netToMerchant),
         ...mapIds(FIELD_IDS.clientName, "Client Name", clientName),
         ...mapIds(FIELD_IDS.owner1GuarantorName, "Owner1 Guarantor Name", owner1GuarantorName),
         ...mapIds(FIELD_IDS.owner2GuarantorName, "Owner2 Guarantor Name", owner2GuarantorName),
@@ -1223,7 +1223,9 @@ export function finalizeContractPrefillMoneyFields(
 }
 
 /**
- * Net to merchant = max(0, advance − fees − refinance) — same as Collections "Net funding".
+ * Recipient funds / net to merchant = max(0, advance − fees − refinance).
+ * Same as Contract tab "Recipient Funds" (offer − commission/fees − refinance).
+ * Do not use a stored appendix fee of 0 to skip live offer commission (that made net = offer).
  */
 export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources): number | undefined {
     const advance = resolvePurchaseAmountDollars(sources);
@@ -1247,19 +1249,31 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
               ? (termsRaw as Record<string, unknown>)
               : null;
 
-    const appendixRaw = contract?.appendixUnderwritingFees;
+    const liveFees = resolveOfferFeeAmountForDeal({
+        fundedAmount: advance,
+        factorRate:
+            odEff?.rate ??
+            odRoot?.rate ??
+            terms0?.factorRate,
+        feesRaw: odEff?.fees ?? odRoot?.fees,
+        termsCommissionPercent: terms0?.commissionPercent,
+        applicationCommissionPercentage: app?.commissionPercentage,
+    });
+
+    const appendixFees = coerceToFiniteNumber(
+        sources.prefill?.appendixUnderwritingFees ?? contract?.appendixUnderwritingFees,
+    );
+    // Live offer/app commission wins over a stored appendix of 0 (which incorrectly
+    // made recipient funds / net-to-merchant equal the offer amount).
     const fees =
-        coerceToFiniteNumber(appendixRaw) ??
-        resolveOfferFeeAmountForDeal({
-            fundedAmount: advance,
-            factorRate:
-                odEff?.rate ??
-                odRoot?.rate ??
-                terms0?.factorRate,
-            feesRaw: odEff?.fees ?? odRoot?.fees,
-            termsCommissionPercent: terms0?.commissionPercent,
-            applicationCommissionPercentage: app?.commissionPercentage,
-        });
+        appendixFees !== undefined && appendixFees > 0
+            ? appendixFees
+            : liveFees > 0
+              ? liveFees
+              : appendixFees !== undefined
+                ? appendixFees
+                : 0;
+
     const refinance =
         coerceToFiniteNumber(odRoot?.refinanceAmount) ??
         coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
@@ -1268,6 +1282,20 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
         0;
 
     return Math.max(0, Math.round((advance - (fees || 0) - refinance) * 100) / 100);
+}
+
+/** Alias — DocuSign `net_to_merchant` is recipient funds, not offer amount. */
+export const computeRecipientFundsDollars = computeNetToMerchantDollars;
+
+/** True when a stored net/recipient-funds value is just a copy of the offer amount. */
+export function netToMerchantLooksLikeOfferAmount(
+    storedNet: unknown,
+    sources: NetToMerchantPrefillSources,
+): boolean {
+    const stored = coerceToFiniteNumber(storedNet);
+    const offer = resolvePurchaseAmountDollars(sources);
+    if (stored === undefined || offer === undefined) return false;
+    return Math.abs(stored - offer) < 0.005;
 }
 
 /**
@@ -1311,6 +1339,44 @@ export function formatNetToMerchantPrefillValue(amount: number | undefined): str
     return truncateDecimalPrefill(amount);
 }
 
+const PAYMENT_FREQUENCY_LABELS = new Set([
+    "daily",
+    "weekly",
+    "monthly",
+    "biweekly",
+]);
+
+/** True when a stored remittance value is a payment cadence label, not a dollar amount. */
+export function looksLikePaymentFrequencyLabel(value: string): boolean {
+    const trimmed = String(value ?? "").trim();
+    if (!trimmed) return false;
+    const compact = trimmed.toLowerCase().replace(/[^a-z]/g, "");
+    if (PAYMENT_FREQUENCY_LABELS.has(compact)) return true;
+    return /^(daily|weekly|monthly|bi[-\s]?weekly)$/i.test(trimmed);
+}
+
+/**
+ * Normalize offer/contract frequency to Daily / Weekly / etc.
+ * Rejects percents & bare numbers (Utah disclosure incorrectly maps a % onto DocuSign
+ * label `frequency`, which can pollute `Contract.frequency` / prefill overrides).
+ */
+function coercePaymentFrequencyLabel(raw: unknown): string {
+    const text = str(raw);
+    if (!text) return "";
+    if (/%/.test(text)) return "";
+    const asNum = coerceToFiniteNumber(text);
+    if (asNum !== undefined && !looksLikePaymentFrequencyLabel(text)) return "";
+
+    const normalized = text.replace(/_/g, " ").trim();
+    if (!normalized) return "";
+    if (!looksLikePaymentFrequencyLabel(normalized)) return "";
+
+    return normalized
+        .split(/\s+/)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(" ");
+}
+
 /** Human-readable payment frequency for contract / DocuSign prefill. */
 export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources): string {
     const app = sources.application;
@@ -1330,36 +1396,20 @@ export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources)
               ? (termsRaw as Record<string, unknown>)
               : null;
 
-    const raw =
-        str(contract?.frequency) ||
-        str(odRoot?.frequency) ||
-        str(odEff?.frequency) ||
-        str(terms0?.frequency) ||
-        str(app?.frequency);
-    if (!raw) return "";
-
-    const normalized = raw.replace(/_/g, " ").trim();
-    if (!normalized) return "";
-    return normalized
-        .split(/\s+/)
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        .join(" ");
-}
-
-const PAYMENT_FREQUENCY_LABELS = new Set([
-    "daily",
-    "weekly",
-    "monthly",
-    "biweekly",
-]);
-
-/** True when a stored remittance value is a payment cadence label, not a dollar amount. */
-export function looksLikePaymentFrequencyLabel(value: string): boolean {
-    const trimmed = String(value ?? "").trim();
-    if (!trimmed) return false;
-    const compact = trimmed.toLowerCase().replace(/[^a-z]/g, "");
-    if (PAYMENT_FREQUENCY_LABELS.has(compact)) return true;
-    return /^(daily|weekly|monthly|bi[-\s]?weekly)$/i.test(trimmed);
+    // Prefer live offer cadence; contract.frequency is last because it can hold a stale %.
+    const candidates = [
+        odRoot?.frequency,
+        odEff?.frequency,
+        terms0?.frequency,
+        app?.frequency,
+        sources.prefill?.frequency,
+        contract?.frequency,
+    ];
+    for (const raw of candidates) {
+        const label = coercePaymentFrequencyLabel(raw);
+        if (label) return label;
+    }
+    return "";
 }
 
 /** Specified percentage for contract `purchasePercent` → DocuSign `purchase_percent` (persisted value only). */
@@ -1844,7 +1894,7 @@ const PLATFORM_LABEL = {
     specificPercentage: "Specific Percentage",
     term: "Term",
     frequency: "Frequency",
-    netToMerchant: "Net to merchant",
+    netToMerchant: "Recipient funds",
     underwritingFees: "Underwriting fees",
     repayPerPeriod: "Repay per period",
 } as const;
@@ -2610,6 +2660,10 @@ export const AUTHORIZATION_BUSINESS_NAME_PREFILL_KEYS = [
     "authorizationClientName",
     "authorizationClientNamePrint",
     "achAuthorizationAccountHolderName",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+/** ACH consent lines (pages 14–15) — client/person name, not business legal name. */
+export const ACH_CONSENT_CLIENT_NAME_PREFILL_KEYS = [
     "achAuthorizationConcentAccountHolderName",
     "achAuthorizationConcentAccountHolderName2",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
@@ -2778,10 +2832,27 @@ export function applyAuthorizationBusinessNamePrefillFields(
     application?: unknown,
 ): Partial<BuildContractPrefillFieldsArgs> {
     const businessName = resolveContractBusinessLegalNameForPrefill(partial, application);
-    if (!businessName) return partial;
+    let out = { ...partial };
+    if (businessName) {
+        for (const key of AUTHORIZATION_BUSINESS_NAME_PREFILL_KEYS) {
+            (out as Record<string, string>)[key] = businessName;
+        }
+    }
+    // Consent declaration lines (pages 14–15) always use client/person name.
+    out = applyAchConsentClientNamePrefillFields(out, application);
+    return out;
+}
+
+/** Force ACH consent / declaration lines to client (person) name — pages 14–15. */
+export function applyAchConsentClientNamePrefillFields(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+    application?: unknown,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const clientName = resolveContractClientPersonNameForPrefill(partial, application);
+    if (!clientName) return partial;
     const out = { ...partial };
-    for (const key of AUTHORIZATION_BUSINESS_NAME_PREFILL_KEYS) {
-        (out as Record<string, string>)[key] = businessName;
+    for (const key of ACH_CONSENT_CLIENT_NAME_PREFILL_KEYS) {
+        (out as Record<string, string>)[key] = clientName;
     }
     return out;
 }
@@ -2814,7 +2885,7 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
             computeNetToMerchantDollars({ contract: row, offerDecision: offer }),
         );
     const frequency =
-        str(row.frequency) ||
+        coercePaymentFrequencyLabel(row.frequency) ||
         resolveOfferFrequencyLabel({ contract: row, offerDecision: offer });
 
     const agreementDatePrefill =
@@ -2892,8 +2963,10 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         authorizedBusinessPhone: str(row.authorizedBusinessPhone),
         owner1GuarantorName: str(row.owner1GuarantorName),
 
-        achAuthorizationConcentAccountHolderName: resolveContractBusinessLegalNameForPrefill(row),
-        achAuthorizationConcentAccountHolderName2: resolveContractBusinessLegalNameForPrefill(row),
+        achAuthorizationConcentAccountHolderName:
+            str(row.customerName) || str(row.clientName) || str(row.achAuthorizationConcentAccountHolderName),
+        achAuthorizationConcentAccountHolderName2:
+            str(row.customerName) || str(row.clientName) || str(row.achAuthorizationConcentAccountHolderName2),
         achAuthorizationConcentAccountHolderDate: prefillIsoDate(
             row.achAuthorizationConcentAccountHolderDate,
         ) || str(row.achAuthorizationConcentAccountHolderDate),
@@ -2970,8 +3043,8 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         authorizationClientSignerName: customerName,
         authorizationClientNamePrint: businessLegalName,
         achAuthorizationAccountHolderName: businessLegalName,
-        achAuthorizationConcentAccountHolderName: businessLegalName,
-        achAuthorizationConcentAccountHolderName2: businessLegalName,
+        achAuthorizationConcentAccountHolderName: customerName,
+        achAuthorizationConcentAccountHolderName2: customerName,
     };
 }
 
@@ -3253,16 +3326,24 @@ export function getContractPrefillEditDefaultsFromApplication(
                     ...mergeNonemptyPrefillPartial(clientArgs, recordPartial),
                     customerName,
                     agreementDate,
-                    ...(str(recordPartial.frequency) || !frequencyComputed
-                        ? {}
-                        : { frequency: frequencyComputed }),
+                    ...(frequencyComputed &&
+                    !looksLikePaymentFrequencyLabel(str(recordPartial.frequency))
+                        ? { frequency: frequencyComputed }
+                        : {}),
                     ...(str(recordPartial.purchasePercent) || !purchasePercentComputed
                         ? {}
                         : { purchasePercent: purchasePercentComputed }),
                     ...(remittanceNeedsOverride && remittanceComputed ? { remittance: remittanceComputed } : {}),
-                    ...(str(recordPartial.netToMerchant) || !netComputed
+                    ...(str(recordPartial.netToMerchant) &&
+                    !netToMerchantLooksLikeOfferAmount(recordPartial.netToMerchant, {
+                        application: anyApp as Record<string, unknown> | undefined,
+                        contract: rec?.contract ?? null,
+                        offerDecision: options?.offerDecision ?? null,
+                    })
                         ? {}
-                        : { netToMerchant: netComputed }),
+                        : netComputed
+                          ? { netToMerchant: netComputed }
+                          : {}),
                 }),
                 {
                     application: anyApp as Record<string, unknown> | undefined,
@@ -3376,11 +3457,12 @@ export function buildContractPrefillFieldsFromApplication(
         ...baseMerged,
         ...savedOverrides,
     };
-    if (!str(merged.frequency)) {
+    if (!str(merged.frequency) || !looksLikePaymentFrequencyLabel(String(merged.frequency))) {
         const freq = resolveOfferFrequencyLabel({
             application: anyApp as Record<string, unknown> | undefined,
             contract: rec?.contract ?? null,
             offerDecision: options?.offerDecision ?? null,
+            prefill: merged,
         });
         if (freq) merged.frequency = freq;
     }
@@ -3392,12 +3474,22 @@ export function buildContractPrefillFieldsFromApplication(
         });
         if (purchasePercent) merged.purchasePercent = purchasePercent;
     }
-    if (!str(merged.netToMerchant)) {
+    if (
+        !str(merged.netToMerchant) ||
+        (netToMerchantLooksLikeOfferAmount(merged.netToMerchant, {
+            application: anyApp as Record<string, unknown> | undefined,
+            contract: rec?.contract ?? null,
+            offerDecision: options?.offerDecision ?? null,
+            prefill: merged,
+        }) &&
+            !(savedOverrides as Record<string, unknown>)?._manualNetToMerchant)
+    ) {
         const computed = formatNetToMerchantPrefillValue(
             computeNetToMerchantDollars({
                 application: anyApp as Record<string, unknown> | undefined,
                 contract: rec?.contract ?? null,
                 offerDecision: options?.offerDecision ?? null,
+                prefill: merged,
             }),
         );
         if (computed) merged.netToMerchant = computed;
@@ -3409,7 +3501,11 @@ export function buildContractPrefillFieldsFromApplication(
     };
     const storedRemittance = str(merged.remittance);
     const freqForRemit = str(merged.frequency) || resolveOfferFrequencyLabel(remittanceSources);
-    if (remittanceStoredValueNeedsRecompute(storedRemittance, remittanceSources, freqForRemit)) {
+    // Do not recompute remittance when the merchant saved an explicit value in Verify Prefill.
+    if (
+        !str(savedOverrides.remittance) &&
+        remittanceStoredValueNeedsRecompute(storedRemittance, remittanceSources, freqForRemit)
+    ) {
         const remitComputed = resolveRemittancePrefillValue(remittanceSources);
         if (remitComputed) merged.remittance = remitComputed;
     }
@@ -3430,6 +3526,7 @@ export function buildContractPrefillFieldsFromApplication(
                     offerDecision: options?.offerDecision ?? null,
                     contract: rec?.contract ?? null,
                 }),
+                savedOverrides,
             ),
         );
     }
@@ -3490,8 +3587,8 @@ function isZeroMoneyPrefillValue(value: unknown): boolean {
 }
 
 /**
- * Offer-derived deal-terms money keys that must always reflect the live OfferDecision when one
- * is available. Saved contract prefill overrides must not clobber these.
+ * Offer-derived deal-terms defaults when CRM has no saved Verify Prefill edit.
+ * Saved `contractPrefillOverrides` must win so Review & open DocuSign reflects user edits.
  */
 export const LIVE_OFFER_MONEY_PREFILL_KEYS: ReadonlyArray<keyof BuildContractPrefillFieldsArgs> = [
     "purchaseAmount",
@@ -3508,11 +3605,37 @@ export const LIVE_OFFER_MONEY_PREFILL_KEYS: ReadonlyArray<keyof BuildContractPre
 
 function pickLiveOfferMoneyOverlay(
     liveOfferArgs: Partial<BuildContractPrefillFieldsArgs>,
+    /** When set, skip keys the merchant already saved in Verify Prefill. */
+    preservedOverrides?: Partial<BuildContractPrefillFieldsArgs> | null,
 ): Partial<BuildContractPrefillFieldsArgs> {
+    const preserved = (preservedOverrides ?? {}) as Record<string, unknown>;
     const overlay: Partial<BuildContractPrefillFieldsArgs> = {};
     for (const key of LIVE_OFFER_MONEY_PREFILL_KEYS) {
+        const saved = str(preserved[key as string]);
+        // Keep an intentional recipient-funds edit; replace a stale copy of the offer amount.
+        if (
+            key === "netToMerchant" &&
+            saved &&
+            !preserved._manualNetToMerchant &&
+            netToMerchantLooksLikeOfferAmount(saved, {
+                prefill: { ...liveOfferArgs, ...preservedOverrides },
+                offerDecision: null,
+            })
+        ) {
+            // fall through — allow live recipient-funds value to replace offer-echo
+        } else if (saved) {
+            continue;
+        }
         const value = str((liveOfferArgs as Record<string, unknown>)[key]);
-        if (value && !isZeroMoneyPrefillValue(value)) {
+        if (!value) continue;
+        // Frequency is a cadence label (Daily/Weekly), never treat %/0 as money skip.
+        if (key === "frequency") {
+            if (looksLikePaymentFrequencyLabel(value)) {
+                (overlay as Record<string, unknown>)[key] = value;
+            }
+            continue;
+        }
+        if (!isZeroMoneyPrefillValue(value)) {
             (overlay as Record<string, unknown>)[key] = value;
         }
     }
@@ -3533,22 +3656,16 @@ export function hasLiveOfferPrefillSource(
     return false;
 }
 
+/**
+ * Keep saved Verify Prefill edits (including offer/deal-term money).
+ * Formerly deleted LIVE_OFFER_MONEY keys so Review & open always ignored merchant edits.
+ */
 export function stripStaleOfferOverridesFromPersisted(
     persisted: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
-    offerDecision: Record<string, unknown> | null | undefined,
-    anyApp?: unknown,
+    _offerDecision?: Record<string, unknown> | null | undefined,
+    _anyApp?: unknown,
 ): Partial<BuildContractPrefillFieldsArgs> {
-    const base = { ...(persisted ?? {}) } as Record<string, unknown>;
-    if (!hasLiveOfferPrefillSource(anyApp, offerDecision)) {
-        return base as Partial<BuildContractPrefillFieldsArgs>;
-    }
-    for (const key of LIVE_OFFER_MONEY_PREFILL_KEYS) {
-        delete base[key];
-    }
-    for (const key of APPENDIX_FEE_OVERRIDE_ALIASES) {
-        delete base[key];
-    }
-    return base as Partial<BuildContractPrefillFieldsArgs>;
+    return { ...(persisted ?? {}) } as Partial<BuildContractPrefillFieldsArgs>;
 }
 
 function getLiveOfferPrefillArgs(
@@ -3604,7 +3721,7 @@ function getLiveOfferPrefillArgs(
     };
 }
 
-/** Re-apply live OfferDecision values on top of a prefill partial (deal terms + ACH payment rows). */
+/** Fill empty deal-term keys from OfferDecision; never overwrite saved Verify Prefill values. */
 export function applyLiveOfferSyncToPrefillPartial(
     partial: Partial<BuildContractPrefillFieldsArgs>,
     anyApp: unknown,
@@ -3612,5 +3729,8 @@ export function applyLiveOfferSyncToPrefillPartial(
 ): Partial<BuildContractPrefillFieldsArgs> {
     if (!hasLiveOfferPrefillSource(anyApp, offerDecision)) return partial;
     const liveArgs = getLiveOfferPrefillArgs(anyApp, { offerDecision: offerDecision ?? null });
-    return { ...partial, ...pickLiveOfferMoneyOverlay(liveArgs) };
+    return {
+        ...partial,
+        ...pickLiveOfferMoneyOverlay(liveArgs, partial),
+    };
 }

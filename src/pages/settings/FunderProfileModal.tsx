@@ -35,6 +35,7 @@ import {
   DEFAULT_CONTRACT_FILENAME,
   deleteFunderDocument,
   fetchFunderDocuments,
+  updateFunderProfile,
   uploadFunderAddendumDocument,
   uploadFunderDisclosureDocument,
   type FunderProfileFiles,
@@ -171,6 +172,13 @@ export default function FunderProfileModal({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disclosureInputRef = useRef<HTMLInputElement>(null);
   const addendumInputRef = useRef<HTMLInputElement>(null);
+  /** Tracks DB-persisted document sources so upload can auto-save without requiring Setup → Save. */
+  const persistedDocSourcesRef = useRef<{
+    addendum: string;
+    disclosure: string;
+    sharedAddendumId: string;
+    sharedDisclosureId: string;
+  } | null>(null);
 
   const loadDocuments = useCallback(async (funderId: string) => {
     setDocumentsLoading(true);
@@ -228,11 +236,18 @@ export default function FunderProfileModal({
       setShowStateRules(
         Boolean(initial.allowedStates?.length || initial.excludedStates?.length),
       );
+      persistedDocSourcesRef.current = {
+        addendum: resolveAddendumDocumentsSource(initial),
+        disclosure: resolveDisclosureDocumentsSource(initial),
+        sharedAddendumId: String(initial.sharedAddendumFunderId ?? ""),
+        sharedDisclosureId: String(initial.sharedDisclosureFunderId ?? ""),
+      };
       void loadDocuments(initial.id);
     } else {
       setForm(emptyForm);
       setStatesText("");
       setExcludedStatesText("");
+      persistedDocSourcesRef.current = null;
     }
   }, [open, initial, loadDocuments]);
 
@@ -330,6 +345,43 @@ export default function FunderProfileModal({
     await onSave(payload, { contractFile });
   };
 
+  /** Upload APIs enforce the *saved* DB source; UI only reflects the form. Persist first. */
+  const ensureDocumentSourcesPersisted = async () => {
+    if (!initial?.id) return;
+    const sharedAddendumId =
+      addendumSource === "shared" ? String(form.sharedAddendumFunderId ?? "") : "";
+    const sharedDisclosureId =
+      disclosureSource === "shared" ? String(form.sharedDisclosureFunderId ?? "") : "";
+    const saved = persistedDocSourcesRef.current;
+    if (
+      saved &&
+      saved.addendum === addendumSource &&
+      saved.disclosure === disclosureSource &&
+      saved.sharedAddendumId === sharedAddendumId &&
+      saved.sharedDisclosureId === sharedDisclosureId
+    ) {
+      return;
+    }
+    await updateFunderProfile(initial.id, {
+      name: form.name.trim() || initial.name,
+      addendumDocumentsSource: addendumSource,
+      disclosureDocumentsSource: disclosureSource,
+      documentsSource: addendumSource,
+      sharedAddendumFunderId:
+        addendumSource === "shared" ? form.sharedAddendumFunderId || null : null,
+      sharedDisclosureFunderId:
+        disclosureSource === "shared" ? form.sharedDisclosureFunderId || null : null,
+      sharedDocumentsFunderId:
+        addendumSource === "shared" ? form.sharedAddendumFunderId || null : null,
+    });
+    persistedDocSourcesRef.current = {
+      addendum: addendumSource,
+      disclosure: disclosureSource,
+      sharedAddendumId,
+      sharedDisclosureId,
+    };
+  };
+
   const handleUploadDisclosure = async () => {
     if (!initial?.id) return;
     if (!disclosureFile) {
@@ -338,6 +390,7 @@ export default function FunderProfileModal({
     }
     setDisclosureUploading(true);
     try {
+      await ensureDocumentSourcesPersisted();
       await uploadFunderDisclosureDocument(initial.id, {
         state: disclosureState,
         frequency: disclosureFrequency,
@@ -366,6 +419,7 @@ export default function FunderProfileModal({
     }
     setAddendumUploading(true);
     try {
+      await ensureDocumentSourcesPersisted();
       await uploadFunderAddendumDocument(initial.id, {
         name: addendumName.trim(),
         coordinateLayoutKey: addendumCoordKey,
@@ -937,7 +991,7 @@ export default function FunderProfileModal({
               <>
             <UploadCard
               title="Addendum PDFs"
-              description="Extra pages attached to the contract (flex addendum, balance transfer, etc.). Pick a type, name it, and upload the PDF."
+              description="Upload flex addendum, balance transfer, or ACH PDFs for this funder."
             >
               <div className="flex flex-wrap gap-2">
                 {ADDENDUM_PRESETS.map((preset) => (

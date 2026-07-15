@@ -43,6 +43,12 @@ import {
     persistedFunderProfileIdForApi,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
+import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
+import {
+    DOCUSIGN_CRM_STATUS_POLL_MS,
+    DOCUSIGN_WEBHOOK_STALE_MS,
+    shouldFallbackPollDocuSign,
+} from "./contractdata/docusignPolling";
 import type { FunderProfile } from "@/types/integrationSettingsTypes";
 import { pickUsStateForSelect } from "@/components/ui/searchable-state-select";
 import {
@@ -102,12 +108,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 const DOCUSIGN_PRIMARY_BTN_CLASS =
     "h-9 shrink-0 cursor-pointer border-0 bg-[image:var(--brand-gradient)] px-6 text-white shadow-sm hover:opacity-90 focus-visible:ring-[var(--brand)]/40";
 
-const ACH_STATUS_POLL_MS = 20_000;
+const ACH_STATUS_POLL_MS = DOCUSIGN_CRM_STATUS_POLL_MS;
 
 const ACH_TERMINAL_VOID_STATUSES = new Set(["revoked", "voided", "declined", "expired"]);
 const ACH_DRAFT_STATUSES = new Set(["", "draft"]);
 
 const ACH_STANDALONE_LAYOUT_KEY = "ach_authorization_standalone";
+const ACH_TEXAS_LAYOUT_KEY = "ach_authorization_texas";
+type AchCoordinateLayoutChoice = "woodmere" | "texas";
+
+function achLayoutKeyForCoordinateChoice(choice: AchCoordinateLayoutChoice): string {
+    return choice === "texas" ? ACH_TEXAS_LAYOUT_KEY : ACH_STANDALONE_LAYOUT_KEY;
+}
 
 function resolveDealStateFromApplication(applicationData: unknown): string {
     const ad = applicationData as Record<string, unknown> | null | undefined;
@@ -176,6 +188,7 @@ function isPlatformAchTemplateRow(template: {
     return (
         layoutKey === "ach_authorization" ||
         layoutKey === "ach_authorization_standalone" ||
+        layoutKey === "ach_authorization_texas" ||
         layoutKey === "woodmere_ach_authorization" ||
         type === "ach" ||
         type === "ach_authorization" ||
@@ -275,9 +288,50 @@ function funderHasAchAuthorizationForm(
         return (
             type === "ach" ||
             type === "ach_authorization" ||
+            type === "ach_authorization_texas" ||
             key.includes("ach_authorization")
         );
     });
+}
+
+/** Resolve ACH coordinate layout from the selected funder's uploaded ACH template. */
+function resolveAchCoordinateChoiceForFunder(
+    profile: FunderProfile | null | undefined,
+    templates: Array<{ layoutKey?: string | null; templateId?: string | null; type?: string | null }>,
+): AchCoordinateLayoutChoice {
+    if (!profile) return "woodmere";
+    const source = String(
+        profile.addendumDocumentsSource ?? profile.documentsSource ?? "",
+    )
+        .trim()
+        .toLowerCase();
+    const docsFunderId =
+        source === "shared"
+            ? String(
+                  profile.sharedAddendumFunderId ??
+                      profile.sharedDocumentsFunderId ??
+                      "",
+              ).trim() || profile.id
+            : source === "platform"
+              ? ""
+              : profile.id;
+    if (!docsFunderId) return "woodmere";
+
+    const prefix = `funder_${docsFunderId}_`.toLowerCase();
+    const hasTexas = templates.some((row) => {
+        const key = String(row.layoutKey ?? row.templateId ?? "")
+            .trim()
+            .toLowerCase();
+        const type = String(row.type ?? "")
+            .trim()
+            .toLowerCase();
+        if (!key.startsWith(prefix)) return false;
+        return (
+            type === "ach_authorization_texas" ||
+            key.includes("ach_authorization_texas")
+        );
+    });
+    return hasTexas ? "texas" : "woodmere";
 }
 const ACH_OUT_FOR_SIGNATURE_STATUSES = new Set(["sent", "viewed", "delivered"]);
 
@@ -542,10 +596,13 @@ export default function ACHFormViewerModal({
     const [selectedFunder, setSelectedFunder] = useState("");
     const [selectedFunderProfileId, setSelectedFunderProfileId] = useState("");
     const userSelectedFunderRef = useRef(false);
+    const [achCoordinateLayout, setAchCoordinateLayout] =
+        useState<AchCoordinateLayoutChoice>("woodmere");
     const templateBlobUrlRef = useRef<string | null>(null);
     const docuSignBlobUrlRef = useRef<string | null>(null);
     const achCcEmailDeliveredRef = useRef(false);
     const lastAchStatusSyncAtRef = useRef(0);
+    const lastAchCrmStatusChangeAtRef = useRef(Date.now());
 
     const contractStateForFunders = useMemo(() => {
         const fromContract = String(
@@ -561,7 +618,7 @@ export default function ACHFormViewerModal({
         findFunder,
         findFunderById,
         resolveDefaultFunder,
-    } = useFunderProfiles(contractStateForFunders || null);
+    } = useFunderProfiles(null);
 
     const boldSignTemplatesState = useSelector((state: RootState) => state.boldSignTemplates);
     const boldSignTemplates = useMemo(
@@ -679,6 +736,16 @@ export default function ACHFormViewerModal({
         },
         [contractId, dispatch, funderSelectionStorageKey, onContractDocumentsChanged],
     );
+
+    useEffect(() => {
+        if (!isOpen) return;
+        setAchCoordinateLayout(
+            resolveAchCoordinateChoiceForFunder(
+                selectedFunderProfile,
+                boldSignTemplates,
+            ),
+        );
+    }, [isOpen, selectedFunderProfile, boldSignTemplates]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -837,11 +904,11 @@ export default function ACHFormViewerModal({
             }),
         [linkedAchEnvelope, achSendHistory, isSignedAch],
     );
+    /** Only after send — draft envelopes stay on the ACH template tab. */
     const canPreviewDocuSignPdf = Boolean(
         achPdfEnvelopeId &&
             (canPreviewFilledOrSignedEnvelope(achStatus) ||
                 canPreviewFilledOrSignedEnvelope(achDisplayStatus) ||
-                isAchEnvelopeDraftLikeStatus(achStatus) ||
                 isSignedAch),
     );
 
@@ -965,8 +1032,25 @@ export default function ACHFormViewerModal({
         const email = String(achSigner.email || "").trim();
         const name = String(achSigner.name || "").trim();
         if (!email) return [];
-        return buildDocuSignRolesFromEditorRows([{ role, name, email }]);
-    }, [achSigner]);
+        const primary = buildDocuSignRolesFromEditorRows([{ role, name, email }]);
+        if (achCoordinateLayout !== "texas") return primary;
+
+        const overrides = parseContractSignerOverridesFromPrefill(
+            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                ?.contractPrefillOverrides,
+        );
+        const owner2 = overrides?.[1];
+        const owner2Email = String(owner2?.email || "").trim();
+        if (!owner2Email) return primary;
+        return buildDocuSignRolesFromEditorRows([
+            { role, name, email },
+            {
+                role: String(owner2?.role || "Owner 2").trim() || "Owner 2",
+                name: String(owner2?.name || "").trim(),
+                email: owner2Email,
+            },
+        ]);
+    }, [achSigner, achCoordinateLayout, resolvedContract]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -1000,11 +1084,33 @@ export default function ACHFormViewerModal({
     }, [isOpen, resolvedContract, getSignerName, getSignerEmail, contractCcMergeOptions]);
 
     const syncAchEnvelopeStatus = useCallback(
-        async (silent = false, options?: { force?: boolean }) => {
+        async (silent = false, options?: { force?: boolean; crmOnly?: boolean }) => {
             if (!achEnvelopeId || !achMapping?.id) return;
             if (isAchEnvelopeSigningFinished(achStatus)) return;
 
             const now = Date.now();
+            const webhookStale = shouldFallbackPollDocuSign({
+                force: options?.force === true,
+                signingFinished: isAchEnvelopeSigningFinished(achStatus),
+                lastCrmStatusAtMs: lastAchCrmStatusChangeAtRef.current || now,
+                staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
+            });
+            // Webhook-first: CRM refetch without DocuSign unless forced or Connect looks stale.
+            if (options?.crmOnly || (!options?.force && !webhookStale)) {
+                if (!options?.force && now - lastAchStatusSyncAtRef.current < ACH_STATUS_POLL_MS) {
+                    return;
+                }
+                lastAchStatusSyncAtRef.current = now;
+                if (!silent) setStatusRefreshing(true);
+                try {
+                    await refreshContractRow();
+                    setLastStatusSyncAt(new Date());
+                } finally {
+                    if (!silent) setStatusRefreshing(false);
+                }
+                return;
+            }
+
             if (!options?.force && now - lastAchStatusSyncAtRef.current < ACH_STATUS_POLL_MS) {
                 return;
             }
@@ -1061,8 +1167,10 @@ export default function ACHFormViewerModal({
                 } else {
                     await refreshContractRow();
                 }
+                lastAchCrmStatusChangeAtRef.current = Date.now();
                 setLastStatusSyncAt(new Date());
             } catch (err: unknown) {
+                lastAchCrmStatusChangeAtRef.current = Date.now();
                 if (!silent) {
                     const msg =
                         (err as { response?: { data?: { message?: string } } })?.response?.data
@@ -1084,16 +1192,21 @@ export default function ACHFormViewerModal({
         setTemplatePdfUrl(null);
     }, []);
 
-    /** Same path as Katan ACHViewerModal: platform/funder ACH PDF via DocuSign layout download. */
+    /** Platform/funder ACH PDF via DocuSign layout download (Woodmere or Texas per funder). */
     const loadTemplatePdf = useCallback(async () => {
         const funderName = String(
             selectedFunder || selectedFunderProfile?.name || "",
         ).trim();
         const funderProfileId = persistedFunderProfileIdForApi(selectedFunderProfile);
+        const layoutChoice = resolveAchCoordinateChoiceForFunder(
+            selectedFunderProfile,
+            boldSignTemplates,
+        );
+        const layoutKey = achLayoutKeyForCoordinateChoice(layoutChoice);
         setTemplatePdfLoading(true);
         try {
             const response = await axiosGet(
-                `/docusign/template/${encodeURIComponent(ACH_STANDALONE_LAYOUT_KEY)}/download`,
+                `/docusign/template/${encodeURIComponent(layoutKey)}/download`,
                 {
                     responseType: "blob",
                     params: {
@@ -1134,6 +1247,7 @@ export default function ACHFormViewerModal({
     }, [
         selectedFunder,
         selectedFunderProfile,
+        boldSignTemplates,
         contractStateForFunders,
         revokeTemplatePdfUrl,
     ]);
@@ -1207,59 +1321,89 @@ export default function ACHFormViewerModal({
 
     const syncAchPrefillToDraftEnvelope = useCallback(async (
         overrideTabValues?: Record<string, string> | null,
-    ) => {
-        if (!achEnvelopeId || !achMapping?.id) return;
+    ): Promise<true | false | "skipped_no_envelope" | "skipped_not_draft"> => {
+        const envelopeId = String(achEnvelopeId || "").trim();
+        if (!envelopeId || !achMapping?.id) return "skipped_no_envelope";
+
+        const statusNorm = String(achStatus || "").trim().toLowerCase();
         const draftLike =
             isAchEnvelopeDraftLikeStatus(achStatus) ||
-            ACH_DRAFT_STATUSES.has(achStatus.toLowerCase());
-        if (!draftLike || isAchEnvelopeSigningFinished(achStatus)) return;
+            ACH_DRAFT_STATUSES.has(statusNorm) ||
+            statusNorm === "created";
+        if (!draftLike || isAchEnvelopeSigningFinished(achStatus)) {
+            return "skipped_not_draft";
+        }
 
-        const saved =
-            overrideTabValues && Object.keys(overrideTabValues).length > 0
-                ? overrideTabValues
-                : resolveAchSavedMappingOverrides(
-                      documentTemplatePrefillByMappingId,
-                      achMapping.id,
-                  );
-        const rows = getDocumentTemplatePrefillFieldRowsForEditor({
-            templateId: achMapping.template?.templateId ?? achMapping.templateId ?? null,
-            templateName: achMapping.template?.name ?? null,
-            templateType: achMapping.template?.type ?? achMapping.documentType ?? null,
-            templateLayoutKey: achMapping.template?.layoutKey ?? null,
-            templateState: achMapping.template?.state ?? null,
-            templateFrequency: achMapping.template?.frequency ?? null,
-            documentType: achMapping.documentType ?? null,
-            contract: resolvedContract,
-            application: applicationData as Record<string, unknown> | null,
-            contractRecords: contractPrefillRecords,
-            agreementDate: new Date().toLocaleDateString("en-US"),
-            mainPrefillOverrides: {
-                ...(mainPrefillOverridesForDialog ?? {}),
-                ...(overrideTabValues
-                    ? achTabValuesToCamelPartial(overrideTabValues)
-                    : {}),
-            },
-            savedOverridesForMapping: saved,
-        });
-        const fields = rows
-            .map((f) => ({ id: f.id, value: String(f.value ?? "").trim() }))
-            .filter((f) => f.id && f.value);
-        if (!fields.length) return;
+        // Prefer the exact values just saved in the edit modal — do not re-merge
+        // stale contract defaults that can wipe user edits before the tab PUT.
+        let fields: Array<{ id: string; value: string }> = [];
+        if (overrideTabValues && Object.keys(overrideTabValues).length > 0) {
+            fields = Object.entries(overrideTabValues)
+                .map(([id, value]) => ({
+                    id: String(id || "").trim(),
+                    value: String(value ?? "").trim(),
+                }))
+                .filter((f) => f.id && f.value);
+        } else {
+            const saved = resolveAchSavedMappingOverrides(
+                documentTemplatePrefillByMappingId,
+                achMapping.id,
+            );
+            const rows = getDocumentTemplatePrefillFieldRowsForEditor({
+                templateId: achMapping.template?.templateId ?? achMapping.templateId ?? null,
+                templateName: achMapping.template?.name ?? null,
+                templateType: achMapping.template?.type ?? achMapping.documentType ?? null,
+                templateLayoutKey: achMapping.template?.layoutKey ?? null,
+                templateState: achMapping.template?.state ?? null,
+                templateFrequency: achMapping.template?.frequency ?? null,
+                documentType: achMapping.documentType ?? null,
+                contract: resolvedContract,
+                application: applicationData as Record<string, unknown> | null,
+                contractRecords: contractPrefillRecords,
+                agreementDate: new Date().toLocaleDateString("en-US"),
+                mainPrefillOverrides: mainPrefillOverridesForDialog ?? undefined,
+                savedOverridesForMapping: saved,
+            });
+            fields = rows
+                .map((f) => ({ id: f.id, value: String(f.value ?? "").trim() }))
+                .filter((f) => f.id && f.value);
+        }
+        if (!fields.length) return false;
+
+        // Envelope tabs are CRM-scoped (`ach_form_*` / `ach_form_texas_*`); send both forms.
+        const achPrefix =
+            String(achMapping.template?.layoutKey ?? "").toLowerCase().includes("texas") ||
+            achCoordinateLayout === "texas"
+                ? "ach_form_texas_"
+                : "ach_form_";
+        const expandedFields: Array<{ id: string; value: string }> = [];
+        const seen = new Set<string>();
+        for (const f of fields) {
+            for (const id of [f.id, f.id.startsWith("ach_form_") ? f.id : `${achPrefix}${f.id}`]) {
+                if (seen.has(id)) continue;
+                seen.add(id);
+                expandedFields.push({ id, value: f.value });
+            }
+        }
+
         try {
             await axiosPatch("/docusign/prefill-fields", {
-                documentId: achEnvelopeId,
-                fields,
+                documentId: envelopeId,
+                fields: expandedFields,
             });
             if (pdfPaneTab === "docusign") {
                 void loadDocuSignPdf();
             }
+            return true;
         } catch (err) {
             console.warn("[DocuSign] ACH prefill sync to draft envelope failed:", err);
+            return false;
         }
     }, [
         achEnvelopeId,
         achMapping,
         achStatus,
+        achCoordinateLayout,
         documentTemplatePrefillByMappingId,
         resolvedContract,
         applicationData,
@@ -1297,12 +1441,12 @@ export default function ACHFormViewerModal({
 
     useEffect(() => {
         if (!isOpen) return;
-        if (achPdfEnvelopeId && canPreviewDocuSignPdf) {
+        if (canPreviewDocuSignPdf) {
             setPdfPaneTab("docusign");
-        } else if (!achPdfEnvelopeId) {
+        } else {
             setPdfPaneTab("template");
         }
-    }, [isOpen, achPdfEnvelopeId, canPreviewDocuSignPdf, isSignedAch]);
+    }, [isOpen, canPreviewDocuSignPdf]);
 
     useEffect(() => {
         if (!isOpen || pdfPaneTab !== "docusign") return;
@@ -1321,15 +1465,24 @@ export default function ACHFormViewerModal({
     }, [isOpen, achStatus, achDisplayStatus]);
 
     useEffect(() => {
+        lastAchCrmStatusChangeAtRef.current = Date.now();
+    }, [achStatus]);
+
+    useEffect(() => {
         if (!isOpen || !achEnvelopeId) return;
         if (isAchEnvelopeSigningFinished(achStatus)) return;
-        void syncAchEnvelopeStatus(true, { force: true });
-        const id = window.setInterval(
-            () => void syncAchEnvelopeStatus(true),
-            ACH_STATUS_POLL_MS,
-        );
+        void syncAchEnvelopeStatus(true, { crmOnly: true });
+        const id = window.setInterval(() => {
+            // CRM refresh every tick; DocuSign API only when Connect looks stale.
+            void syncAchEnvelopeStatus(true);
+        }, ACH_STATUS_POLL_MS);
         return () => window.clearInterval(id);
     }, [isOpen, achEnvelopeId, achStatus, syncAchEnvelopeStatus]);
+
+    useContractSigningStatusRealtime(applicationId, () => {
+        lastAchCrmStatusChangeAtRef.current = Date.now();
+        void refreshContractRow();
+    });
 
     useEffect(() => {
         return () => {
@@ -1362,6 +1515,9 @@ export default function ACHFormViewerModal({
             setPdfPaneTab("template");
 
             applyFunderSelection(profileId, funderName, { persist: true });
+            setAchCoordinateLayout(
+                resolveAchCoordinateChoiceForFunder(profile, boldSignTemplates),
+            );
 
             const nextCcOptions = {
                 funderDefaultCcEmail: String(profile?.defaultCcEmail ?? "").trim() || null,
@@ -1392,6 +1548,7 @@ export default function ACHFormViewerModal({
             revokeTemplatePdfUrl,
             applyFunderSelection,
             funders,
+            boldSignTemplates,
             achEnvelopeView.hasEnvelope,
             achEnvelopeView.isDraft,
             achEnvelopeView.isCompleted,
@@ -1598,7 +1755,7 @@ export default function ACHFormViewerModal({
 
             const prepared = await onPrepareDocuSignDraft({
                 ccEmails: toSend,
-                achDocumentRef: ACH_STANDALONE_LAYOUT_KEY,
+                achDocumentRef: achLayoutKeyForCoordinateChoice(achCoordinateLayout),
                 standaloneAchOnly: true,
                 roles: signerRoles,
                 funderName: funderName || null,
@@ -1640,7 +1797,8 @@ export default function ACHFormViewerModal({
                 },
             );
             await refreshContractRow();
-            setPdfPaneTab("docusign");
+            // Stay on ACH template until DocuSign send completes (envelope tab unlocks on sent).
+            setPdfPaneTab("template");
 
             if (docuSignTab) {
                 try {
@@ -2229,24 +2387,25 @@ export default function ACHFormViewerModal({
                                 >
                                     ACH template
                                 </button>
-                                <button
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={pdfPaneTab === "docusign"}
-                                    disabled={!achPdfEnvelopeId}
-                                    className={cn(
-                                        "flex-1 rounded-md px-3 py-1.5 text-center text-[11px] font-semibold transition-colors disabled:opacity-40",
-                                        pdfPaneTab === "docusign"
-                                            ? "bg-white text-slate-900 shadow-sm"
-                                            : "text-slate-300 hover:text-white",
-                                    )}
-                                    onClick={() => setPdfPaneTab("docusign")}
-                                >
-                                    {isSignedAch ? "Signed ACH form" : "DocuSign envelope"}
-                                </button>
+                                {canPreviewDocuSignPdf ? (
+                                    <button
+                                        type="button"
+                                        role="tab"
+                                        aria-selected={pdfPaneTab === "docusign"}
+                                        className={cn(
+                                            "flex-1 rounded-md px-3 py-1.5 text-center text-[11px] font-semibold transition-colors",
+                                            pdfPaneTab === "docusign"
+                                                ? "bg-white text-slate-900 shadow-sm"
+                                                : "text-slate-300 hover:text-white",
+                                        )}
+                                        onClick={() => setPdfPaneTab("docusign")}
+                                    >
+                                        {isSignedAch ? "Signed ACH form" : "DocuSign envelope"}
+                                    </button>
+                                ) : null}
                             </div>
                             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
-                                {pdfPaneTab === "template" ? (
+                                {pdfPaneTab === "template" || !canPreviewDocuSignPdf ? (
                                     templatePdfLoading ? (
                                         <div className="absolute inset-0 flex items-center justify-center">
                                             <Loader2 className="h-8 w-8 animate-spin text-[var(--brand)]" />
@@ -2346,10 +2505,36 @@ export default function ACHFormViewerModal({
                     String(selectedFunder || selectedFunderProfile?.name || "").trim() || null
                 }
                 onSaved={(savedTabValues) => {
-                    void refreshContractRow().then(() => {
-                        void syncAchPrefillToDraftEnvelope(savedTabValues);
-                    });
-                    if (pdfPaneTab === "template") void loadTemplatePdf();
+                    void (async () => {
+                        // Sync draft envelope first with the exact saved values, then refresh CRM.
+                        const synced = await syncAchPrefillToDraftEnvelope(savedTabValues);
+                        await refreshContractRow();
+                        if (synced === true) {
+                            toast.success("ACH fields updated on the DocuSign draft envelope.");
+                        } else if (synced === false) {
+                            toast.warn(
+                                "ACH fields saved in CRM, but DocuSign draft tabs could not be updated. Click Review & send again to open a fresh envelope with your edits.",
+                            );
+                            // Stale / deleted envelope IDs (ENVELOPE_DOES_NOT_EXIST) block future sync —
+                            // clear draft linkage so the next Review & send creates a clean envelope.
+                            if (achMapping?.id && achEnvelopeId) {
+                                try {
+                                    await persistAchEnvelopeOnContract(achMapping.id, "", "");
+                                } catch {
+                                    /* non-blocking */
+                                }
+                            }
+                        } else if (synced === "skipped_not_draft") {
+                            toast.info(
+                                "ACH fields saved in CRM. This envelope is already out for signature — void it, then Review & send again to apply the new values.",
+                            );
+                        } else if (synced === "skipped_no_envelope") {
+                            toast.info(
+                                "ACH fields saved. Click Review & send to open DocuSign with these values.",
+                            );
+                        }
+                        if (pdfPaneTab === "template") void loadTemplatePdf();
+                    })();
                 }}
             />
 

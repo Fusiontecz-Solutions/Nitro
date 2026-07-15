@@ -4,10 +4,14 @@ import type { UpdateBankDetailPayload } from "@/types/bankDetailTypes";
 import { parseNumberUS } from "@/lib/utils";
 import type { AppDispatch } from "@/redux/store";
 import { getApplicationById } from "@/redux/actions/applicationActions";
-import { updateClient } from "@/redux/actions/clientActions";
+import { getClientById, updateClient } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
-import { updateContractGuarantor } from "@/redux/actions/contractActions";
+import {
+    updateACH,
+    updateContractGuarantor,
+    updateContractOwner,
+} from "@/redux/actions/contractActions";
 import { getBankDetails, updateBankDetail } from "@/redux/actions/bankDetailActions";
 import { axiosPost } from "@/redux/axios";
 import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
@@ -41,8 +45,14 @@ export function resolveClientIdFromApplication(anyApp: unknown): string | null {
     const a = anyApp as Record<string, unknown> | null | undefined;
     if (!a) return null;
     const client = a.client as Record<string, unknown> | undefined;
-    const id = client?.id ?? client?._id;
-    return id != null && str(id) ? String(id) : null;
+    const fromClient = client?.id ?? client?._id;
+    if (fromClient != null && str(fromClient)) return String(fromClient);
+    const fromApp = a.clientId;
+    // Prefer Mongo/UUID client ids; skip numeric application refs mistaken for clientId.
+    if (fromApp != null && str(fromApp) && !/^\d+$/.test(String(fromApp))) {
+        return String(fromApp);
+    }
+    return null;
 }
 
 function splitPersonName(full: string): { firstName: string; lastName: string } {
@@ -113,7 +123,10 @@ function resolveOwner1NameFromPrefill(prefill: Partial<BuildContractPrefillField
         str(prefill.guarantyClientName) ||
         str(prefill.guarantyOwner1Name) ||
         str(prefill.guarantyGuarantor1Name) ||
-        str(prefill.customerName)
+        str(prefill.owner1GuarantorName) ||
+        str(prefill.authorizationClientSignerName) ||
+        str(prefill.customerName) ||
+        str(prefill.clientName)
     );
 }
 
@@ -121,7 +134,8 @@ function resolveOwner2NameFromPrefill(prefill: Partial<BuildContractPrefillField
     return (
         str(prefill.merchant2Name) ||
         str(prefill.guarantyOwner2Name) ||
-        str(prefill.guarantyGuarantor2Name)
+        str(prefill.guarantyGuarantor2Name) ||
+        str(prefill.owner2GuarantorName)
     );
 }
 
@@ -219,19 +233,40 @@ export function buildClientUpdateFromPrefill(
         if (o2Ssn) owners[1]!.ssn = o2Ssn;
     }
 
-    if (str(prefill.legalName)) business.name = str(prefill.legalName);
-    if (str(prefill.federalTaxIdEin)) business.einNumber = str(prefill.federalTaxIdEin);
-    if (str(prefill.state)) business.incorporationState = str(prefill.state);
+    if (str(prefill.legalName) || str(prefill.securityBusinessName)) {
+        business.name = str(prefill.legalName) || str(prefill.securityBusinessName);
+    }
+    if (str(prefill.federalTaxIdEin) || str(prefill.securityTaxEin)) {
+        business.einNumber = str(prefill.federalTaxIdEin) || str(prefill.securityTaxEin);
+    }
+    if (str(prefill.state) || str(prefill.businessAddressState)) {
+        business.incorporationState = str(prefill.state) || str(prefill.businessAddressState);
+    }
     if (str(prefill.entityType)) business.businessEntityType = str(prefill.entityType);
     if (str(prefill.clientEmail)) {
         business.email = str(prefill.clientEmail);
-        if (!str(owners[0]!.email)) owners[0]!.email = str(prefill.clientEmail);
+        owners[0]!.email = str(prefill.clientEmail);
     }
-    if (str(prefill.clientPhone)) business.number = str(prefill.clientPhone);
-    if (str(prefill.businessAddress)) business.address!.address1 = str(prefill.businessAddress);
-    if (str(prefill.businessAddressCity)) business.address!.city = str(prefill.businessAddressCity);
-    if (str(prefill.businessAddressState)) business.address!.state = str(prefill.businessAddressState);
-    if (str(prefill.businessAddressZip)) business.address!.zipCode = str(prefill.businessAddressZip);
+    if (str(prefill.clientPhone)) {
+        business.number = str(prefill.clientPhone);
+        owners[0]!.mobileNumber = str(prefill.clientPhone);
+    }
+    if (str(prefill.businessAddress) || str(prefill.securityBusinessAddress)) {
+        business.address!.address1 =
+            str(prefill.businessAddress) || str(prefill.securityBusinessAddress);
+    }
+    if (str(prefill.businessAddressCity) || str(prefill.securityBusinessAddressCity)) {
+        business.address!.city =
+            str(prefill.businessAddressCity) || str(prefill.securityBusinessAddressCity);
+    }
+    if (str(prefill.businessAddressState) || str(prefill.securityBusinessAddressState)) {
+        business.address!.state =
+            str(prefill.businessAddressState) || str(prefill.securityBusinessAddressState);
+    }
+    if (str(prefill.businessAddressZip) || str(prefill.securityBusinessAddressZip)) {
+        business.address!.zipCode =
+            str(prefill.businessAddressZip) || str(prefill.securityBusinessAddressZip);
+    }
 
     const primaryOwner = cloneOwnerDetail(owners[0]!);
 
@@ -251,13 +286,15 @@ export function buildOfferDecisionUpsertFromPrefill(
     const repayPerPeriod = parseMoney(prefill.remittance);
     const frequency = str(prefill.frequency);
     const fees = parseMoney(prefill.appendixUnderwritingFees);
+    const rate = parseMoney(prefill.purchasePercent);
 
     if (
         offer == null &&
         totalRemit == null &&
         repayPerPeriod == null &&
         !frequency &&
-        fees == null
+        fees == null &&
+        rate == null
     ) {
         return null;
     }
@@ -272,9 +309,12 @@ export function buildOfferDecisionUpsertFromPrefill(
     if (repayPerPeriod != null) payload.repayPerPeriod = repayPerPeriod;
     if (frequency) payload.frequency = frequency;
     if (fees != null) payload.fees = fees;
+    if (rate != null) payload.rate = rate;
 
     if ("position" in existing && existing.position != null) payload.position = existing.position;
-    if ("rate" in existing && existing.rate != null) payload.rate = existing.rate;
+    if (!("rate" in payload) && "rate" in existing && existing.rate != null) {
+        payload.rate = existing.rate;
+    }
     if ("term" in existing && existing.term != null) payload.term = existing.term;
     if ("monthlyPayment" in existing && existing.monthlyPayment != null) {
         payload.monthlyPayment = existing.monthlyPayment;
@@ -323,16 +363,19 @@ export type SyncContractPrefillSourceRecordsArgs = {
     prefill: Partial<BuildContractPrefillFieldsArgs>;
     offerDecision?: Record<string, unknown> | null;
     contractGuarantors?: Record<string, unknown>[] | null;
+    contractOwners?: Record<string, unknown>[] | null;
+    contractAch?: Record<string, unknown> | null;
     bankDetail?: Record<string, unknown> | null;
     contract?: Record<string, unknown> | null;
 };
 
-async function syncContractGuarantorsFromPrefill(
+async function syncContractPartyRowsFromPrefill(
     dispatch: AppDispatch,
-    contractGuarantors: Record<string, unknown>[] | null | undefined,
+    rows: Record<string, unknown>[] | null | undefined,
     prefill: Partial<BuildContractPrefillFieldsArgs>,
+    kind: "guarantor" | "owner",
 ): Promise<void> {
-    const rows = Array.isArray(contractGuarantors) ? contractGuarantors : [];
+    const list = Array.isArray(rows) ? rows : [];
     const patches: Array<{
         row: Record<string, unknown> | undefined;
         name: string;
@@ -340,7 +383,7 @@ async function syncContractGuarantorsFromPrefill(
         driverLicense: string;
     }> = [
         {
-            row: rows[0],
+            row: list[0],
             name: resolveOwner1NameFromPrefill(prefill),
             ssn: resolveOwner1SsFromPrefill(prefill),
             driverLicense:
@@ -349,7 +392,7 @@ async function syncContractGuarantorsFromPrefill(
                 str(prefill.guarantyGuarantor1DriverLicense),
         },
         {
-            row: rows[1],
+            row: list[1],
             name: resolveOwner2NameFromPrefill(prefill),
             ssn: resolveOwner2SsFromPrefill(prefill),
             driverLicense:
@@ -369,20 +412,103 @@ async function syncContractGuarantorsFromPrefill(
         if (patch.name) {
             const { firstName, lastName } = splitPersonName(patch.name);
             if (firstName) data.firstName = firstName;
-            if (lastName) data.lastName = lastName;
+            data.lastName = lastName;
         }
-        await dispatch(
-            updateContractGuarantor({
-                id: id as number | string,
-                data,
-            }),
-        ).unwrap();
+        if (kind === "guarantor") {
+            await dispatch(
+                updateContractGuarantor({
+                    id: id as number | string,
+                    data,
+                }),
+            ).unwrap();
+        } else {
+            await dispatch(
+                updateContractOwner({
+                    id: id as number | string,
+                    data,
+                }),
+            ).unwrap();
+        }
     }
 }
 
+async function syncContractAchFromPrefill(
+    dispatch: AppDispatch,
+    ach: Record<string, unknown> | null | undefined,
+    prefill: Partial<BuildContractPrefillFieldsArgs>,
+): Promise<void> {
+    const id = ach?.id;
+    if (id == null || String(id).trim() === "") return;
+
+    const bankName =
+        str(prefill.authorizationClientBankName) ||
+        str(prefill.achAuthorizationAccountHolderBankName);
+    const accountNumber =
+        str(prefill.authorizationClientBankAccount) ||
+        str(prefill.achAuthorizationAccountHolderBankAccountNumber);
+    const routingNumber =
+        str(prefill.authorizationClientBankRouting) ||
+        str(prefill.achAuthorizationAccountHolderBankRoutingNumber);
+    const dba =
+        str(prefill.doingBusinessAs) ||
+        str(prefill.achAuthorizationAccountHolderDba) ||
+        str(prefill.securityDoingBusinessAs);
+    const phone =
+        str(prefill.authorizedBusinessPhone) ||
+        str(prefill.achAuthorizationAccountHolderPhone) ||
+        str(prefill.clientPhone);
+    const paymentAmount =
+        str(prefill.remittance) ||
+        str(prefill.achAuthorizationAccountHolderBankTransactionFee);
+    const frequency = str(prefill.frequency);
+    const address =
+        str(prefill.achAuthorizationAccountHolderAddress) || str(prefill.businessAddress);
+    const city =
+        str(prefill.achAuthorizationAccountHolderCity) || str(prefill.businessAddressCity);
+    const state =
+        str(prefill.achAuthorizationAccountHolderState) || str(prefill.businessAddressState);
+    const zip =
+        str(prefill.achAuthorizationAccountHolderZip) || str(prefill.businessAddressZip);
+
+    const data: Record<string, unknown> = {};
+    if (bankName) data.bankName = bankName;
+    if (accountNumber) data.accountNumber = accountNumber;
+    if (routingNumber) data.routingNumber = routingNumber;
+    if (dba) data.dba = dba;
+    if (phone) data.phone = phone;
+    if (paymentAmount) data.paymentAmount = paymentAmount;
+    if (frequency) data.frequency = frequency;
+    if (address) data.address = address;
+    if (city) data.city = city;
+    if (state) data.state = state;
+    if (zip) data.zip = zip;
+    const holderName =
+        str(prefill.achAuthorizationAccountHolderName) ||
+        str(prefill.authorizationClientName) ||
+        str(prefill.legalName);
+    if (holderName) data.accountHolderName = holderName;
+    if (str(prefill.achAuthorizationAccountHolderBankBranchCity)) {
+        data.bankBranchCity = str(prefill.achAuthorizationAccountHolderBankBranchCity);
+    }
+    if (str(prefill.achAuthorizationAccountHolderBankState)) {
+        data.bankState = str(prefill.achAuthorizationAccountHolderBankState);
+    }
+    if (str(prefill.achAuthorizationAccountHolderBankZip)) {
+        data.bankZip = str(prefill.achAuthorizationAccountHolderBankZip);
+    }
+    if (Object.keys(data).length === 0) return;
+
+    await dispatch(
+        updateACH({
+            id: id as number | string,
+            data,
+        }),
+    ).unwrap();
+}
+
 /**
- * Persist offer-decision and client/application fields edited via contract prefill
- * so Deal Review and other screens read the same values after reload.
+ * Persist offer-decision, client, bank, ACH, and owner/guarantor fields edited via
+ * Verify contract prefill so application screens reload the same values.
  */
 export async function syncContractPrefillToSourceRecords({
     dispatch,
@@ -391,6 +517,8 @@ export async function syncContractPrefillToSourceRecords({
     prefill,
     offerDecision = null,
     contractGuarantors = null,
+    contractOwners = null,
+    contractAch = null,
     bankDetail = null,
 }: SyncContractPrefillSourceRecordsArgs): Promise<void> {
     const offerAppId =
@@ -398,8 +526,27 @@ export async function syncContractPrefillToSourceRecords({
         (str(applicationUuid) || null);
     const appUuid =
         str(applicationUuid) || resolveApplicationUuidForUpdate(applicationData) || null;
-    const clientId = resolveClientIdFromApplication(applicationData);
+    let clientId = resolveClientIdFromApplication(applicationData);
+    if (!clientId) {
+        const app = applicationData as Record<string, unknown> | null | undefined;
+        const fromApp = app?.clientId;
+        if (fromApp != null && str(fromApp)) clientId = String(fromApp);
+    }
     const bankDetailId = resolveBankDetailId(bankDetail);
+
+    // Application detail sometimes omits nested client — fetch so business/owner updates still run.
+    let appForClient = applicationData;
+    if (clientId && !existingClientPayload(appForClient)) {
+        try {
+            const res = await dispatch(getClientById(clientId)).unwrap();
+            const client = (res as { data?: unknown })?.data ?? res;
+            if (client && typeof client === "object") {
+                appForClient = { ...(appForClient as object), client };
+            }
+        } catch {
+            /* continue with whatever we have */
+        }
+    }
 
     const tasks: Promise<unknown>[] = [];
 
@@ -416,7 +563,7 @@ export async function syncContractPrefillToSourceRecords({
         );
     }
 
-    const clientPayload = buildClientUpdateFromPrefill(prefill, applicationData);
+    const clientPayload = buildClientUpdateFromPrefill(prefill, appForClient);
     if (clientPayload && clientId) {
         tasks.push(
             dispatch(
@@ -428,15 +575,20 @@ export async function syncContractPrefillToSourceRecords({
                 .unwrap()
                 .then(() => {
                     dispatch(resetUpdateClient());
-                    if (appUuid) {
-                        return dispatch(getApplicationById(appUuid)).unwrap();
-                    }
                 }),
         );
     }
 
     if (contractGuarantors?.length) {
-        tasks.push(syncContractGuarantorsFromPrefill(dispatch, contractGuarantors, prefill));
+        tasks.push(
+            syncContractPartyRowsFromPrefill(dispatch, contractGuarantors, prefill, "guarantor"),
+        );
+    }
+    if (contractOwners?.length) {
+        tasks.push(syncContractPartyRowsFromPrefill(dispatch, contractOwners, prefill, "owner"));
+    }
+    if (contractAch) {
+        tasks.push(syncContractAchFromPrefill(dispatch, contractAch, prefill));
     }
 
     const bankPayload = buildBankDetailUpdateFromPrefill(prefill);
@@ -455,6 +607,11 @@ export async function syncContractPrefillToSourceRecords({
                     }
                 }),
         );
+    }
+
+    // Always refresh application last so Deal Review / app screens see all synced sources.
+    if (appUuid) {
+        tasks.push(dispatch(getApplicationById(appUuid)).unwrap());
     }
 
     if (tasks.length === 0) return;

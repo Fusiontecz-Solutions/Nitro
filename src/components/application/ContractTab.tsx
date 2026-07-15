@@ -95,10 +95,15 @@ import {
     mergeStateDisclosurePrefillFallback,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
+    parseDocumentTemplatePrefillByMappingId,
     parseLastAchSentFunder,
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
+import {
+    achCamelPartialToTabValues,
+    resolveAchSavedMappingOverrides,
+} from "./contractdata/achFormEditConfig";
 import {
     achCapsuleClassName,
     parseAchAuthorizationDocuSignFromPrefill,
@@ -115,6 +120,8 @@ import {
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
+import { syncContractPrefillToSourceRecords } from "./contractdata/contractPrefillSourceSync";
 import {
     buildAchFormEnvelopeEmailSubject,
     buildPackageEnvelopeEmailMessage,
@@ -603,6 +610,7 @@ export default function ContractTab({
             return (
                 layoutKey === "ach_authorization" ||
                 layoutKey === "ach_authorization_standalone" ||
+                layoutKey === "ach_authorization_texas" ||
                 layoutKey === "woodmere_ach_authorization"
             );
         });
@@ -1707,6 +1715,11 @@ export default function ContractTab({
         ],
     );
 
+    /** Instant UI when DocuSign Connect webhook updates envelope status. */
+    useContractSigningStatusRealtime(applicationUuid, () => {
+        void reloadFetchedContract();
+    });
+
     const handleVoidSentEnvelopeRow = async (row: ContractSendTableRow) => {
         const envelopeId = String(row.envelopeId ?? "").trim();
         if (
@@ -1997,6 +2010,8 @@ export default function ContractTab({
             contractState?: string | null;
             /** Main contract layout key (Woodmere vs Texas Funding Group). */
             mainContractLayoutKey?: string | null;
+            /** Deal Review values from the contract modal (latest UI state). */
+            prefillFields?: Array<{ id: string; value: string }>;
         },
         options: { autoSend: boolean; suppressSuccessToast?: boolean },
     ): Promise<{
@@ -2168,12 +2183,17 @@ export default function ContractTab({
             const ownerRows = Array.isArray(contractOwnerListState.data)
                 ? contractOwnerListState.data
                 : [];
+            /** Manage Signers / send payload roles win — do not bump Owner 2 from stale Info Required owners. */
             const ownerCountResolved = resolveActiveOwnerCount({
-                owners: ownerRows,
+                owners: roles.length > 0 ? null : ownerRows,
                 signerRoles: roles,
             });
-            /** ACH authorization is always a single-signer envelope. */
-            const ownerCount = standaloneAchOnly ? 1 : ownerCountResolved;
+            /** ACH Woodmere form is single-signer; Texas ACH (p11 coords) supports Owner 2. */
+            const achUsesTexasCoords = /ach_authorization_texas|texas_ach/i.test(
+                String(achDocumentRef || ""),
+            );
+            const ownerCount =
+                standaloneAchOnly && !achUsesTexasCoords ? 1 : ownerCountResolved;
             const secondOwnerNameBeforeCollapse = resolveSecondOwnerSignerName(
                 roles,
                 ownerCount,
@@ -2204,6 +2224,23 @@ export default function ContractTab({
 
             const primarySignerEmail = String(roles[0]?.signerEmail || "").trim();
             let prefillFieldsPayload: ContractPrefillField[] = buildPrefillFields(latestContract);
+            if (sendPayload.prefillFields?.length) {
+                const overlay = new Map(
+                    sendPayload.prefillFields
+                        .filter((f) => String(f.id || "").trim() && String(f.value || "").trim())
+                        .map((f) => [String(f.id).trim(), String(f.value).trim()]),
+                );
+                prefillFieldsPayload = prefillFieldsPayload.map((field) =>
+                    overlay.has(field.id)
+                        ? { ...field, value: overlay.get(field.id)! }
+                        : field,
+                );
+                for (const [id, value] of overlay.entries()) {
+                    if (!prefillFieldsPayload.some((field) => field.id === id)) {
+                        prefillFieldsPayload.push({ id, value });
+                    }
+                }
+            }
             if (primarySignerEmail) {
                 prefillFieldsPayload = prefillFieldsPayload.map((field) =>
                     field.id === "client_email" || field.id === "customer_email"
@@ -2355,6 +2392,34 @@ export default function ContractTab({
                     });
                 }
 
+                // Standalone ACH: always apply the stable ACH edit alias + camelCase overrides.
+                // Platform ACH often has no contract mapping row, so the loop above skips them.
+                if (standaloneAchOnly) {
+                    const achBlob = parseDocumentTemplatePrefillByMappingId(rawOverrides);
+                    const achSaved = resolveAchSavedMappingOverrides(achBlob, null);
+                    const achFromCamel = achCamelPartialToTabValues(mainPrefillForTemplates);
+                    const achTabs = { ...achFromCamel, ...achSaved };
+                    const byId = new Map(
+                        prefillFieldsPayload.map((f) => [f.id, { ...f }]),
+                    );
+                    for (const [id, value] of Object.entries(achTabs)) {
+                        const v = String(value ?? "").trim();
+                        if (!id || !v) continue;
+                        const existing = byId.get(id);
+                        byId.set(
+                            id,
+                            existing ? { ...existing, value: v } : { id, value: v },
+                        );
+                        // Also seed CRM-scoped envelope labels used after coordinate scoping.
+                        const texas = /ach_authorization_texas|texas_ach/i.test(achDocumentRef);
+                        const scopedId = `${texas ? "ach_form_texas_" : "ach_form_"}${id}`;
+                        if (!byId.has(scopedId)) {
+                            byId.set(scopedId, { id: scopedId, value: v });
+                        }
+                    }
+                    prefillFieldsPayload = Array.from(byId.values());
+                }
+
                 prefillFieldsPayload = mergeStateDisclosurePrefillFallback({
                     payload: prefillFieldsPayload,
                     supplementalRefs: supplementalDocumentRefs,
@@ -2443,6 +2508,27 @@ export default function ContractTab({
                             ...columnUpdate,
                             contractPrefillOverrides: nextOverrides,
                         });
+                        try {
+                            await syncContractPrefillToSourceRecords({
+                                dispatch,
+                                applicationData,
+                                applicationUuid: String(applicationUuid || ""),
+                                prefill: syncedPartial,
+                                offerDecision:
+                                    (offerDecision as Record<string, unknown> | null) ?? null,
+                                contractGuarantors: contractPrefillRecords.guarantors ?? null,
+                                contractOwners: contractPrefillRecords.owners ?? null,
+                                contractAch:
+                                    (contractPrefillRecords.ach as Record<string, unknown> | null) ??
+                                    null,
+                                bankDetail: contractPrefillRecords.bankDetail ?? null,
+                            });
+                        } catch (syncErr) {
+                            console.warn(
+                                "[ContractTab] prefill → application source sync failed:",
+                                syncErr,
+                            );
+                        }
                     } catch (persistErr) {
                         console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
                     }
@@ -2726,6 +2812,7 @@ export default function ContractTab({
         funderProfileId?: string | null;
         contractState?: string | null;
         mainContractLayoutKey?: string | null;
+        prefillFields?: Array<{ id: string; value: string }>;
     }) => {
         const result = await runDocuSignEnvelope(payload, {
             autoSend: false,
