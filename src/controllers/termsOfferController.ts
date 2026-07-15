@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 
 const mapTermsOfferToApi = (offer: any) => {
   if (!offer) return offer;
@@ -198,7 +199,7 @@ class TermsOfferController {
           commissionPercent: commissionPercentNum,
           paymentAmount: paymentAmountNum,
           percentOfGross: percentOfGrossNum,
-          frequency,
+          frequency: sanitizePaymentFrequencyForPersist(frequency) || 'Daily',
           buyRate: buyRateNum,
           commissionAmount: commissionAmountNum,
           position,
@@ -483,7 +484,10 @@ class TermsOfferController {
         const num = parseOptNumber(percentOfGross);
         if (num !== undefined) data.percentOfGross = num;
       }
-      if (frequency !== undefined) data.frequency = frequency;
+      if (frequency !== undefined) {
+        const sanitized = sanitizePaymentFrequencyForPersist(frequency);
+        if (sanitized != null) data.frequency = sanitized;
+      }
       if (buyRate !== undefined) {
         const num = parseOptNumber(buyRate);
         if (num !== undefined) data.buyRate = num;

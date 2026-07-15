@@ -2,6 +2,7 @@
 import prisma from '../config/prismaClient';
 import uploadService from './uploadService';
 import { parseContractLengthDaysFromOfferTerm } from '../utils/deriveFrequencyFromTerm';
+import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 import { syncApplicationToContractGenerated } from './contractApplicationWorkflowSync';
 import {
   decryptEncryptedStringsInJson,
@@ -1073,7 +1074,8 @@ class ContractService {
             accountNumber: bankAccount || null,
             routingNumber: bankRouting || null,
             paymentAmount: purchaseAmount || null,
-            frequency: firstNonEmptyString(offer?.frequency) || null,
+            frequency:
+              sanitizePaymentFrequencyForPersist(offer?.frequency) || null,
             dba: dba || null,
             phone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
             address: businessAddress || null,
@@ -1443,7 +1445,7 @@ class ContractService {
         ach_authorization_reference_relationship3:
           data.ach_authorization_reference_relationship3 || null,
         paymentAmount: data.paymentAmount || null,
-        frequency: data.frequency || null,
+        frequency: sanitizePaymentFrequencyForPersist(data.frequency),
         dba: data.dba || null,
         phone: data.phone || null,
         address: data.address || null,
@@ -1559,7 +1561,11 @@ class ContractService {
     if (data.ach_authorization_reference_number3 !== undefined) updateData.ach_authorization_reference_number3 = data.ach_authorization_reference_number3;
     if (data.ach_authorization_reference_relationship3 !== undefined) updateData.ach_authorization_reference_relationship3 = data.ach_authorization_reference_relationship3;
     if (data.paymentAmount !== undefined) updateData.paymentAmount = data.paymentAmount;
-    if (data.frequency !== undefined) updateData.frequency = data.frequency;
+    if (data.frequency !== undefined) {
+      // Skip junk % values; do not clobber a good stored cadence with "0.00%".
+      const sanitized = sanitizePaymentFrequencyForPersist(data.frequency);
+      if (sanitized != null) updateData.frequency = sanitized;
+    }
     if (data.clientId !== undefined) updateData.clientId = data.clientId;
     if (data.contractId !== undefined) updateData.contractId = data.contractId;
     if (data.businessInfoId !== undefined) {

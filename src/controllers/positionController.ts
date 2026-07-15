@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -182,7 +183,7 @@ class PositionController {
           fundingDate: fundingDateObj,
           activeStatus: activeStatus !== undefined ? !!activeStatus : false,
           fundedAmount: fundedAmountNum,
-          frequency,
+          frequency: sanitizePaymentFrequencyForPersist(frequency) || 'Daily',
           closeDate: closeDateObj,
           notes: notes || '',
           applicationId: applicationExists.id,
@@ -412,7 +413,10 @@ class PositionController {
       if (fundedAmount !== undefined) {
         data.fundedAmount = parseAmount(fundedAmount);
       }
-      if (frequency !== undefined) data.frequency = frequency;
+      if (frequency !== undefined) {
+        const sanitized = sanitizePaymentFrequencyForPersist(frequency);
+        if (sanitized != null) data.frequency = sanitized;
+      }
       if (closeDate !== undefined) {
         const closeDateObj = new Date(closeDate);
         if (isNaN(closeDateObj.getTime())) {

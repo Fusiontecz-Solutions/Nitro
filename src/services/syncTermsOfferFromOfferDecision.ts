@@ -1,4 +1,5 @@
 import prisma from '../config/prismaClient';
+import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 
 function parseTermInt(term: unknown): number {
     if (term == null) return 10;
@@ -41,7 +42,8 @@ export async function syncTermsOfferFromOfferDecision(
             : paybackAmount / termLength;
     const commissionPercent = Number(application.commissionPercentage ?? 0);
     const commissionAmount = (offer * commissionPercent) / 100;
-    const frequency = String(offerDecision.frequency || 'Daily').trim() || 'Daily';
+    const frequency =
+        sanitizePaymentFrequencyForPersist(offerDecision.frequency) || 'Daily';
     const position = String(offerDecision.position || '1').trim() || '1';
 
     const offerExpiryDate = new Date();

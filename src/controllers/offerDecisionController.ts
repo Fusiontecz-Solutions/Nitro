@@ -9,6 +9,7 @@ import {
     offerDecisionValuesChanged,
 } from '../services/contractReinitiationService';
 import { recordContractWorkflowActivityLog } from '../services/contractWorkflowActivityLog';
+import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -167,7 +168,7 @@ class OfferDecisionController {
       };
 
       const parseFrequencyForPrisma = (f: unknown): string | null =>
-        f != null && String(f).trim() !== '' ? String(f).trim() : null;
+        sanitizePaymentFrequencyForPersist(f);
 
       const createData: any = {
         decision: String(decision),

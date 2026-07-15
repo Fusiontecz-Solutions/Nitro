@@ -194,8 +194,10 @@ const UTAH_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'remittance', x: '189', y: '344' },
   { tabLabel: 'monthly_income', x: '227', y: '529' },
   { tabLabel: 'appendix_underwriting_fees', x: '190', y: '461' },
-  { tabLabel: 'frequency', x: '174', y: '514' },
-  { tabLabel: 'frequency', x: '403', y: '559' },
+  // Payment-terms % of daily revenue (not cadence). Keep off bare `frequency`
+  // so Contract / OfferDecision frequency cannot be polluted with "0.00%".
+  { tabLabel: 'payment_terms_percent', x: '174', y: '514' },
+  { tabLabel: 'payment_exceed_percent', x: '403', y: '559' },
 ];
 
 /** Kansas disclosure page-1 coordinates — daily layout. */
