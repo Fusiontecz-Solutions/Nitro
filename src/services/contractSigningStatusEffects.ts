@@ -17,13 +17,24 @@ const CRM_INTERNAL_NOTIFY_ROLES: Role[] = [
   'ACCOUNTS',
 ];
 
-const TRACKED_STAGES = new Set(['sent', 'viewed', 'signed', 'completed']);
+const TRACKED_STAGES = new Set([
+  'sent',
+  'viewed',
+  'signed',
+  'completed',
+  'declined',
+  'revoked',
+  'expired',
+]);
 
 const STAGE_LABEL: Record<string, string> = {
   sent: 'Sent',
   viewed: 'Viewed',
   signed: 'Signed',
   completed: 'Completed',
+  declined: 'Declined',
+  revoked: 'Voided',
+  expired: 'Expired',
 };
 
 const STAGE_SUBTITLE: Record<string, string> = {
@@ -31,6 +42,21 @@ const STAGE_SUBTITLE: Record<string, string> = {
   viewed: 'Signer opened',
   signed: 'Signature captured',
   completed: 'All done',
+  declined: 'Signer declined',
+  revoked: 'Envelope voided',
+  expired: 'Envelope expired',
+};
+
+/** Socket event for open CRM screens to refresh contract/ACH status instantly (no DocuSign poll). */
+export const CONTRACT_SIGNING_STATUS_SOCKET_EVENT = 'contract:signing-status';
+
+export type ContractSigningStatusRealtimePayload = {
+  applicationId: string;
+  envelopeId?: string | null;
+  status: string;
+  priorStatus?: string | null;
+  provider?: 'docusign' | 'boldsign';
+  envelopeKind?: string | null;
 };
 
 interface RecipientUser {
@@ -168,7 +194,7 @@ async function createAndPushNotifications(
     applicationId: string;
     createdById: string | null;
   },
-  meta: { realtimeKind?: string; actionUrl?: string },
+  meta: Record<string, unknown>,
 ): Promise<void> {
   if (!recipients.length) return;
 
@@ -203,6 +229,36 @@ async function createAndPushNotifications(
       notification: toApiNotification(result.value),
       meta,
     });
+  }
+}
+
+/**
+ * Push signing-status to CRM users watching this deal so the UI can refresh from
+ * DB instantly after a DocuSign Connect webhook (no envelope polling required).
+ */
+export async function emitContractSigningStatusRealtime(
+  input: ContractSigningStatusRealtimePayload,
+): Promise<void> {
+  const applicationId = String(input.applicationId || '').trim();
+  const status = String(input.status || '').trim().toLowerCase();
+  if (!applicationId || !status) return;
+
+  const payload: ContractSigningStatusRealtimePayload = {
+    applicationId,
+    envelopeId: input.envelopeId ? String(input.envelopeId) : null,
+    status,
+    priorStatus: input.priorStatus ? String(input.priorStatus).toLowerCase() : null,
+    provider: input.provider ?? 'docusign',
+    envelopeKind: input.envelopeKind ?? null,
+  };
+
+  try {
+    const recipients = await resolveRecipients(applicationId);
+    for (const recipient of recipients) {
+      emitToUser(recipient.id, CONTRACT_SIGNING_STATUS_SOCKET_EVENT, payload);
+    }
+  } catch (err) {
+    console.error('[contractSigningStatusEffects] realtime emit failed:', err);
   }
 }
 
@@ -261,6 +317,18 @@ export async function handleContractSigningStatusTransition(
       : `/application-details/${applicationId}`;
 
   try {
+    await emitContractSigningStatusRealtime({
+      applicationId,
+      envelopeId: input.envelopeId,
+      status: next,
+      priorStatus: prior,
+      provider: input.provider ?? 'docusign',
+    });
+  } catch (err) {
+    console.error('[contractSigningStatusEffects] realtime emit failed:', err);
+  }
+
+  try {
     const recipients = await resolveRecipients(applicationId);
     await createAndPushNotifications(
       recipients,
@@ -271,7 +339,14 @@ export async function handleContractSigningStatusTransition(
         applicationId,
         createdById: null,
       },
-      { realtimeKind: 'contract_signing_status', actionUrl },
+      {
+        realtimeKind: 'contract_signing_status',
+        actionUrl,
+        applicationId,
+        envelopeId: input.envelopeId ?? null,
+        status: next,
+        priorStatus: prior,
+      },
     );
   } catch (err) {
     console.error('[contractSigningStatusEffects] notifications failed:', err);

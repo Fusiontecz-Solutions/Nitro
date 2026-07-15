@@ -79,9 +79,14 @@ import {
   findApplicationIdByAchEnvelopeId,
   isStandaloneAchEnvelope,
   linkAchAuthorizationEnvelopeToContract,
+  parseAchAuthorizationDocuSignFromPrefill,
   updateAchAuthorizationDocuSignStatus,
 } from './utils/ach-authorization-docusign';
 import { syncApplicationOnMainContractResend } from '../contractApplicationWorkflowSync';
+import {
+  emitContractSigningStatusRealtime,
+  handleContractSigningStatusTransition,
+} from '../contractSigningStatusEffects';
 import {
   buildContractEnvelopeDocumentName,
   buildContractEnvelopeEmailSubject,
@@ -1251,6 +1256,21 @@ export class DocusignService {
       const prefill = contract?.contractPrefillOverrides;
       if (!prefill || typeof prefill !== 'object' || Array.isArray(prefill)) return '';
       const raw = prefill as Record<string, unknown>;
+      const achMeta = parseAchAuthorizationDocuSignFromPrefill(raw);
+      if (achMeta && String(achMeta.envelopeId).trim() === eid) {
+        switch (achMeta.status) {
+          case 'SIGNED':
+            return 'completed';
+          case 'VIEWED':
+            return 'viewed';
+          case 'SENT':
+            return 'sent';
+          case 'VOIDED':
+            return 'revoked';
+          default:
+            return 'draft';
+        }
+      }
       const envelopeMap = raw.documentTemplateEnvelopeByMappingId;
       if (envelopeMap && typeof envelopeMap === 'object' && !Array.isArray(envelopeMap)) {
         for (const meta of Object.values(envelopeMap)) {
@@ -2552,8 +2572,8 @@ export class DocusignService {
   }
 
   /**
-   * Handle contract status change: create notification and audit log.
-   * Only triggers when the status actually changes (not for duplicate webhooks).
+   * Webhook / sync status change: realtime UI push (always) + inbox/audit for tracked stages.
+   * DocuSign Connect is the primary path; FE should not poll DocuSign unless this is missed.
    */
   private async handleContractStatusChange(
     applicationId: string,
@@ -2568,15 +2588,14 @@ export class DocusignService {
       return;
     }
 
-    const notifiableStatuses = ['sent', 'viewed', 'signed', 'completed', 'declined', 'revoked', 'expired'];
-    if (!notifiableStatuses.includes(normalizedNew)) {
-      return;
-    }
-
-    await Promise.all([
-      this.createContractStatusNotification(applicationId, normalizedNew, normalizedPrev, envelopeId),
-      this.createContractStatusAuditLog(applicationId, normalizedNew, normalizedPrev, envelopeId),
-    ]);
+    await handleContractSigningStatusTransition({
+      applicationId,
+      priorStatus: normalizedPrev,
+      newStatus: normalizedNew,
+      envelopeId,
+      documentName: 'Contract',
+      provider: 'docusign',
+    });
   }
 
   /** After auto-send: mark linked `Document` row and `Contract.status` as SENT. */
@@ -4377,7 +4396,13 @@ export class DocusignService {
       });
     }
 
-    const priorStatus = String(existingDoc?.status || '').toLowerCase();
+    let priorStatus = String(existingDoc?.status || '').toLowerCase();
+    if (!priorStatus && applicationId) {
+      priorStatus = await this.getStoredEnvelopeStatusFromContract(
+        String(applicationId),
+        envelopeId,
+      );
+    }
     const envelopeKind = extractCrmEnvelopeKindFromWebhook(body);
     const status = await this.applySigningStatusUpdate(
       envelopeId,
@@ -4396,18 +4421,27 @@ export class DocusignService {
       );
     }
 
-    if (
-      applicationId &&
-      status &&
-      priorStatus !== status &&
-      (await this.shouldSyncContractSigningStatus(applicationId, envelopeId, envelopeKind))
-    ) {
-      await this.handleContractStatusChange(
-        applicationId,
-        status,
-        priorStatus || null,
-        envelopeId,
-      );
+    if (applicationId && status && priorStatus !== status) {
+      if (
+        await this.shouldSyncContractSigningStatus(applicationId, envelopeId, envelopeKind)
+      ) {
+        await this.handleContractStatusChange(
+          applicationId,
+          status,
+          priorStatus || null,
+          envelopeId,
+        );
+      } else {
+        // ACH / package capsules: still push realtime so open CRM UIs refresh instantly.
+        await emitContractSigningStatusRealtime({
+          applicationId,
+          envelopeId,
+          status,
+          priorStatus: priorStatus || null,
+          provider: 'docusign',
+          envelopeKind: envelopeKind ?? null,
+        });
+      }
     }
 
     console.info('[DocuSign] webhook processed', {
@@ -4510,18 +4544,26 @@ export class DocusignService {
       }
     }
 
-    if (
-      appId &&
-      status &&
-      priorStatus !== status &&
-      (await this.shouldSyncContractSigningStatus(String(appId), envelopeId, envelopeKind))
-    ) {
-      await this.handleContractStatusChange(
-        appId,
-        status,
-        priorStatus || null,
-        envelopeId,
-      );
+    if (appId && status && priorStatus !== status) {
+      if (
+        await this.shouldSyncContractSigningStatus(String(appId), envelopeId, envelopeKind)
+      ) {
+        await this.handleContractStatusChange(
+          appId,
+          status,
+          priorStatus || null,
+          envelopeId,
+        );
+      } else {
+        await emitContractSigningStatusRealtime({
+          applicationId: String(appId),
+          envelopeId,
+          status,
+          priorStatus: priorStatus || null,
+          provider: 'docusign',
+          envelopeKind: envelopeKind ?? null,
+        });
+      }
     }
 
     return {
