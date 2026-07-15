@@ -43,6 +43,12 @@ import {
     persistedFunderProfileIdForApi,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
+import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
+import {
+    DOCUSIGN_CRM_STATUS_POLL_MS,
+    DOCUSIGN_WEBHOOK_STALE_MS,
+    shouldFallbackPollDocuSign,
+} from "./contractdata/docusignPolling";
 import type { FunderProfile } from "@/types/integrationSettingsTypes";
 import { pickUsStateForSelect } from "@/components/ui/searchable-state-select";
 import {
@@ -102,7 +108,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 const DOCUSIGN_PRIMARY_BTN_CLASS =
     "h-9 shrink-0 cursor-pointer border-0 bg-[image:var(--brand-gradient)] px-6 text-white shadow-sm hover:opacity-90 focus-visible:ring-[var(--brand)]/40";
 
-const ACH_STATUS_POLL_MS = 20_000;
+const ACH_STATUS_POLL_MS = DOCUSIGN_CRM_STATUS_POLL_MS;
 
 const ACH_TERMINAL_VOID_STATUSES = new Set(["revoked", "voided", "declined", "expired"]);
 const ACH_DRAFT_STATUSES = new Set(["", "draft"]);
@@ -596,6 +602,7 @@ export default function ACHFormViewerModal({
     const docuSignBlobUrlRef = useRef<string | null>(null);
     const achCcEmailDeliveredRef = useRef(false);
     const lastAchStatusSyncAtRef = useRef(0);
+    const lastAchCrmStatusChangeAtRef = useRef(Date.now());
 
     const contractStateForFunders = useMemo(() => {
         const fromContract = String(
@@ -1077,11 +1084,33 @@ export default function ACHFormViewerModal({
     }, [isOpen, resolvedContract, getSignerName, getSignerEmail, contractCcMergeOptions]);
 
     const syncAchEnvelopeStatus = useCallback(
-        async (silent = false, options?: { force?: boolean }) => {
+        async (silent = false, options?: { force?: boolean; crmOnly?: boolean }) => {
             if (!achEnvelopeId || !achMapping?.id) return;
             if (isAchEnvelopeSigningFinished(achStatus)) return;
 
             const now = Date.now();
+            const webhookStale = shouldFallbackPollDocuSign({
+                force: options?.force === true,
+                signingFinished: isAchEnvelopeSigningFinished(achStatus),
+                lastCrmStatusAtMs: lastAchCrmStatusChangeAtRef.current || now,
+                staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
+            });
+            // Webhook-first: CRM refetch without DocuSign unless forced or Connect looks stale.
+            if (options?.crmOnly || (!options?.force && !webhookStale)) {
+                if (!options?.force && now - lastAchStatusSyncAtRef.current < ACH_STATUS_POLL_MS) {
+                    return;
+                }
+                lastAchStatusSyncAtRef.current = now;
+                if (!silent) setStatusRefreshing(true);
+                try {
+                    await refreshContractRow();
+                    setLastStatusSyncAt(new Date());
+                } finally {
+                    if (!silent) setStatusRefreshing(false);
+                }
+                return;
+            }
+
             if (!options?.force && now - lastAchStatusSyncAtRef.current < ACH_STATUS_POLL_MS) {
                 return;
             }
@@ -1138,8 +1167,10 @@ export default function ACHFormViewerModal({
                 } else {
                     await refreshContractRow();
                 }
+                lastAchCrmStatusChangeAtRef.current = Date.now();
                 setLastStatusSyncAt(new Date());
             } catch (err: unknown) {
+                lastAchCrmStatusChangeAtRef.current = Date.now();
                 if (!silent) {
                     const msg =
                         (err as { response?: { data?: { message?: string } } })?.response?.data
@@ -1434,15 +1465,24 @@ export default function ACHFormViewerModal({
     }, [isOpen, achStatus, achDisplayStatus]);
 
     useEffect(() => {
+        lastAchCrmStatusChangeAtRef.current = Date.now();
+    }, [achStatus]);
+
+    useEffect(() => {
         if (!isOpen || !achEnvelopeId) return;
         if (isAchEnvelopeSigningFinished(achStatus)) return;
-        void syncAchEnvelopeStatus(true, { force: true });
-        const id = window.setInterval(
-            () => void syncAchEnvelopeStatus(true),
-            ACH_STATUS_POLL_MS,
-        );
+        void syncAchEnvelopeStatus(true, { crmOnly: true });
+        const id = window.setInterval(() => {
+            // CRM refresh every tick; DocuSign API only when Connect looks stale.
+            void syncAchEnvelopeStatus(true);
+        }, ACH_STATUS_POLL_MS);
         return () => window.clearInterval(id);
     }, [isOpen, achEnvelopeId, achStatus, syncAchEnvelopeStatus]);
+
+    useContractSigningStatusRealtime(applicationId, () => {
+        lastAchCrmStatusChangeAtRef.current = Date.now();
+        void refreshContractRow();
+    });
 
     useEffect(() => {
         return () => {

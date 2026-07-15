@@ -120,6 +120,7 @@ import {
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
 import { syncContractPrefillToSourceRecords } from "./contractdata/contractPrefillSourceSync";
 import {
     buildAchFormEnvelopeEmailSubject,
@@ -1713,6 +1714,11 @@ export default function ContractTab({
             refreshPackageEnvelopeStatus,
         ],
     );
+
+    /** Instant UI when DocuSign Connect webhook updates envelope status. */
+    useContractSigningStatusRealtime(applicationUuid, () => {
+        void reloadFetchedContract();
+    });
 
     const handleVoidSentEnvelopeRow = async (row: ContractSendTableRow) => {
         const envelopeId = String(row.envelopeId ?? "").trim();

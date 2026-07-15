@@ -14,6 +14,9 @@ import {
  * reconciles inbound `notification:new` pushes into Redux so the bell, sidebar
  * badge and notifications page update with zero latency — no polling lag.
  *
+ * Contract/ACH signing status UI refreshes via `contract:signing-status`
+ * listeners (`useContractSigningStatusRealtime`) — not this bell bridge.
+ *
  * In-app corner toasts are intentionally disabled; notifications appear only in
  * the Notifications module and bell dropdown.
  *

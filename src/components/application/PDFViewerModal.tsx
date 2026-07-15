@@ -203,6 +203,13 @@ import {
     docuSignPrefillSyncToast,
     patchDocuSignPrefillFields,
 } from "./contractdata/syncDocuSignPrefillFields";
+import {
+    DOCUSIGN_CRM_STATUS_POLL_MS,
+    DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS,
+    DOCUSIGN_WEBHOOK_STALE_MS,
+    shouldFallbackPollDocuSign,
+} from "./contractdata/docusignPolling";
+import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
 import { isPlatformLayoutKey, PLATFORM_LAYOUT_KEYS, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
 import {
     contractSendPackageFingerprint,
@@ -2016,12 +2023,12 @@ const PDFViewerModal = ({
         void dispatch(getOfferDecisionByApplication(applicationIdForLookup));
     }, [isOpen, applicationIdForLookup, dispatch]);
 
-    /** Sent step always shows the latest CRM + DocuSign envelope state. */
+    /** Sent step: refresh from CRM (webhook). DocuSign API only if Connect looks stale. */
     useEffect(() => {
         if (!isOpen || activeStep !== "sent") return;
         void refreshContractSigningStateRef.current(true, {
             syncDocuSign: true,
-            forceDocuSignSync: true,
+            forceDocuSignSync: false,
         });
     }, [isOpen, activeStep]);
 
@@ -3897,6 +3904,8 @@ const PDFViewerModal = ({
     }, [applicationIdForLookup, dispatch]);
 
     const lastDocuSignSyncAtRef = useRef(0);
+    /** Last time CRM contract status changed (webhook or CRM refetch) — drives stale DocuSign fallback. */
+    const lastCrmStatusChangeAtRef = useRef(Date.now());
     const contractWasSentRef = useRef(false);
     const prevContractStatusRef = useRef("");
     const pendingCcForSentRef = useRef<string[]>([]);
@@ -3906,13 +3915,6 @@ const PDFViewerModal = ({
     loadPrefilledPdfRef.current = loadPrefilledPdfFromDocuSign;
     const setPdfRightPaneTabRef = useRef(setPdfRightPaneTab);
     setPdfRightPaneTabRef.current = setPdfRightPaneTab;
-    const DOCUSIGN_SYNC_MIN_INTERVAL_MS = 60_000;
-    const DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS = 45_000;
-    const DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS = 10_000;
-    /** How often the modal polls while a draft exists (awaiting Send in DocuSign). */
-    const DOCUSIGN_AWAITING_SEND_POLL_MS = 12_000;
-    /** How often the modal polls on step 4 while signers are still pending. */
-    const SIGNING_STATUS_CRM_POLL_MS = 30_000;
     const contractModalWasOpenRef = useRef(false);
     const activeStepRef = useRef(activeStep);
     activeStepRef.current = activeStep;
@@ -3930,7 +3932,10 @@ const PDFViewerModal = ({
         [],
     );
 
-    /** Refresh contract row from CRM; optional DocuSign sync (throttled, sent contracts only). */
+    /**
+     * Refresh contract row from CRM (webhook primary). DocuSign API sync only when forced
+     * (manual Refresh) or when Connect looks stale.
+     */
     const refreshContractSigningState = useCallback(
         async (
             silent?: boolean,
@@ -4016,8 +4021,15 @@ const PDFViewerModal = ({
                 const signingFinished =
                     contractStatus === "COMPLETED" ||
                     ["DECLINED", "REVOKED", "EXPIRED"].includes(contractStatus);
+                const webhookLooksStale = shouldFallbackPollDocuSign({
+                    force: options?.forceDocuSignSync === true,
+                    signingFinished,
+                    lastCrmStatusAtMs: lastCrmStatusChangeAtRef.current,
+                    staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
+                });
                 const maySyncDocuSign =
                     wantsSync &&
+                    webhookLooksStale &&
                     Boolean(envelopeForSync || appId) &&
                     !signingFinished &&
                     (options?.forceDocuSignSync === true ||
@@ -4027,21 +4039,9 @@ const PDFViewerModal = ({
 
                 if (maySyncDocuSign) {
                     const now = Date.now();
-                    const hasPendingCc =
-                        pendingCcForSentRef.current.length > 0 ||
-                        ccEmailsRef.current.length > 0;
-                    const syncMinInterval = awaitingDocuSignSendRef.current
-                        ? DOCUSIGN_AWAITING_SEND_POLL_MS
-                        : onSentStep
-                          ? ccEmailDeliveredRef.current
-                              ? DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS
-                              : DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
-                          : hasPendingCc
-                            ? DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
-                            : DOCUSIGN_SYNC_MIN_INTERVAL_MS;
                     if (
                         options?.forceDocuSignSync ||
-                        now - lastDocuSignSyncAtRef.current >= syncMinInterval
+                        now - lastDocuSignSyncAtRef.current >= DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS
                     ) {
                         lastDocuSignSyncAtRef.current = now;
                         try {
@@ -4097,7 +4097,10 @@ const PDFViewerModal = ({
                                 }
                             }
                             c = (await fetchContractRow()) ?? c;
+                            // Space fallback polls — don't call DocuSign every CRM tick once stale.
+                            lastCrmStatusChangeAtRef.current = Date.now();
                         } catch (syncErr) {
+                            lastCrmStatusChangeAtRef.current = Date.now();
                             if (!silent) {
                                 console.warn("[DocuSign] sync-envelope-status failed:", syncErr);
                             }
@@ -4113,6 +4116,10 @@ const PDFViewerModal = ({
 
                 if (nowSent) {
                     awaitingDocuSignSendRef.current = false;
+                }
+
+                if (statusUpper && statusUpper !== prevStatus) {
+                    lastCrmStatusChangeAtRef.current = Date.now();
                 }
 
                 if (nowSent && !contractWasSentRef.current) {
@@ -4140,6 +4147,7 @@ const PDFViewerModal = ({
                         );
                     }
                     if (!ccEmailDeliveredRef.current && cc.length > 0) {
+                        // One recovery sync after CRM sees sent — webhook primary for status.
                         void refreshContractSigningState(true, {
                             syncDocuSign: true,
                             forceDocuSignSync: true,
@@ -4198,7 +4206,7 @@ const PDFViewerModal = ({
         contractWasSentRef.current = true;
     }, [isOpen, resolvedContract, hydrateSentAtFromContract]);
 
-    /** Once per modal open — not on every contract row refresh (avoids sync-envelope-status storms). */
+    /** Once per modal open — CRM refresh only (webhook already wrote DB); DocuSign poll only if stale. */
     useEffect(() => {
         if (!isOpen) {
             contractModalWasOpenRef.current = false;
@@ -4214,6 +4222,7 @@ const PDFViewerModal = ({
         }
         if (contractModalWasOpenRef.current) return;
         contractModalWasOpenRef.current = true;
+        lastCrmStatusChangeAtRef.current = Date.now();
         const alreadySent =
             sentStepUnlockedRef.current ||
             isContractAlreadySent(resolvedContract, sentAtRef.current);
@@ -4225,7 +4234,10 @@ const PDFViewerModal = ({
         prevContractStatusRef.current = String(resolvedContract?.status ?? "")
             .trim()
             .toUpperCase();
-        void refreshContractSigningState(true, { syncDocuSign: true, forceDocuSignSync: true });
+        void refreshContractSigningState(true, {
+            syncDocuSign: true,
+            forceDocuSignSync: false,
+        });
     }, [isOpen, refreshContractSigningState, resolvedContract, hydrateSentAtFromContract]);
 
     const envelopeIdForSigningPoll = useMemo(
@@ -4240,41 +4252,56 @@ const PDFViewerModal = ({
     );
 
     /**
-     * Single poll while modal is open: detect Send in DocuSign + signing updates.
-     * (Previously two 20s intervals overlapped on step 4.)
+     * Prefer DocuSign Connect + CRM refetch. Interval only refreshes CRM;
+     * DocuSign API sync runs when Connect looks stale (3+ min without status change).
      */
     useEffect(() => {
         if (!isOpen || signingFinishedForPoll || !envelopeIdForSigningPoll) return;
 
-        const pollMs =
-            activeStep === "sent" ? SIGNING_STATUS_CRM_POLL_MS : DOCUSIGN_AWAITING_SEND_POLL_MS;
         const pollId = window.setInterval(() => {
-            void refreshContractSigningState(true, {
-                syncDocuSign: true,
-                forceDocuSignSync: awaitingDocuSignSendRef.current,
+            const stale = shouldFallbackPollDocuSign({
+                force: false,
+                signingFinished: signingFinishedForPoll,
+                lastCrmStatusAtMs: lastCrmStatusChangeAtRef.current,
+                staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
             });
-        }, pollMs);
+            void refreshContractSigningState(true, {
+                syncDocuSign: stale,
+                forceDocuSignSync: false,
+            });
+        }, DOCUSIGN_CRM_STATUS_POLL_MS);
         return () => window.clearInterval(pollId);
     }, [
         isOpen,
-        activeStep,
         signingFinishedForPoll,
         envelopeIdForSigningPoll,
         refreshContractSigningState,
     ]);
 
-    /** When user returns from DocuSign after clicking Send, sync immediately. */
+    /** When user returns from DocuSign, refresh CRM immediately; DocuSign poll only if still stale. */
     useEffect(() => {
         if (!isOpen || !envelopeIdForSigningPoll) return;
         const onFocus = () => {
+            const stale = shouldFallbackPollDocuSign({
+                force: false,
+                signingFinished: signingFinishedForPoll,
+                lastCrmStatusAtMs: lastCrmStatusChangeAtRef.current,
+                staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
+            });
             void refreshContractSigningState(true, {
-                syncDocuSign: true,
-                forceDocuSignSync: true,
+                syncDocuSign: stale || awaitingDocuSignSendRef.current,
+                forceDocuSignSync: false,
             });
         };
         window.addEventListener("focus", onFocus);
         return () => window.removeEventListener("focus", onFocus);
-    }, [isOpen, envelopeIdForSigningPoll, refreshContractSigningState]);
+    }, [isOpen, envelopeIdForSigningPoll, refreshContractSigningState, signingFinishedForPoll]);
+
+    /** Instant UI when Connect webhook updates status (Socket.IO). */
+    useContractSigningStatusRealtime(applicationIdForLookup, () => {
+        lastCrmStatusChangeAtRef.current = Date.now();
+        void refreshContractSigningStateRef.current(true, { syncDocuSign: false });
+    });
 
     const invalidateDocuSignPdfCache = useCallback(() => {
         prefilledPdfCachedForEnvelopeRef.current = null;
