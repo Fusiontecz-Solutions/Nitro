@@ -25,6 +25,48 @@ export function toDisclosureScopedPrefillId(pdfFieldId: string): string {
   return `${DISCLOSURE_PDF_FIELD_PREFIX}${String(pdfFieldId || '').trim()}`;
 }
 
+/** Disclosure PDF slots that must show the merchant business / legal name (never owner person). */
+export const DISCLOSURE_MERCHANT_BUSINESS_NAME_VARS = new Set([
+  'client_name',
+  'recipient_name',
+  'recipient_name2',
+  'disclosure_name',
+  'disclosure_merchant_name',
+]);
+
+/**
+ * Business / legal name for state disclosure merchant fields.
+ * Do not use `client_name` — package sends overwrite that with Owner 1 person name.
+ */
+export function resolveDisclosureMerchantBusinessName(
+  values: Record<string, string>,
+): string {
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const v = String(values[key] ?? '').trim();
+      if (v) return v;
+    }
+    return '';
+  };
+  return (
+    pick(
+      toDisclosureScopedPrefillId('disclosure_merchant_name'),
+      toDisclosureScopedPrefillId('disclosure_name'),
+      toDisclosureScopedPrefillId('client_name'),
+      'disclosure_merchant_name',
+      'disclosure_name',
+      'client_legal_name',
+      'business_legal_name',
+      'security_business_name',
+      'legal_name',
+      'merchant_legal_name',
+      'doing_business_as',
+      'authorization_client_name',
+      'authorization_application',
+    ) || ''
+  );
+}
+
 /** Map funder-specific layout keys to platform coordinate layouts. */
 export function resolveCanonicalSupplementalLayoutKey(layoutKey: string): string | null {
   const k = String(layoutKey || '').trim().toLowerCase();
@@ -92,16 +134,24 @@ export function buildScopedValuesForLayout(
     if (!pdfVar) continue;
 
     if (isStateDisclosureTextPlacement(placement)) {
+      // Individual data labels use unique sourceTabLabel (e.g. funder_name_5) so
+      // repeated PDF slots stay independent in DocuSign. Prefer that value, but
+      // always also expose the shared pdfVar so envelope value lookup works.
       const uniqueKey = String(placement.sourceTabLabel || '').trim();
       const perPlacement = uniqueKey
         ? String(globalValues[toDisclosureScopedPrefillId(uniqueKey)] ?? '').trim()
         : '';
       const scoped = String(globalValues[toDisclosureScopedPrefillId(pdfVar)] ?? '').trim();
+      const pdfVarNorm = pdfVar.toLowerCase();
+      // Prefer business/legal name over package-synced Owner 1 person name on client_name.
+      const businessName = DISCLOSURE_MERCHANT_BUSINESS_NAME_VARS.has(pdfVarNorm)
+        ? resolveDisclosureMerchantBusinessName(globalValues)
+        : '';
       const legacy = String(globalValues[pdfVar] ?? '').trim();
-      const val = perPlacement || scoped || legacy;
+      const val = perPlacement || scoped || businessName || legacy;
       if (val) {
         if (uniqueKey) out[uniqueKey] = val;
-        else out[pdfVar] = val;
+        out[pdfVar] = val;
       }
       continue;
     }

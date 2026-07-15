@@ -138,6 +138,8 @@ export function buildLayoutPrefillValueRecord(
   const map = buildPrefillValueMap(fields);
   const out: Record<string, string> = {};
 
+  const ACH_SCOPED_PREFIXES = ['ach_form_texas_', 'ach_form_'] as const;
+
   for (const [key, value] of map.entries()) {
     const v = String(value || '').trim();
     if (!v) continue;
@@ -150,6 +152,25 @@ export function buildLayoutPrefillValueRecord(
     if (norm !== key) out[norm] = v;
     const layoutFromNorm = CRM_ID_TO_LAYOUT_VARIABLE[norm];
     if (layoutFromNorm) out[layoutFromNorm] = v;
+
+    // Seed CRM-scoped ACH tab labels so create + draft sync match envelope tabs.
+    let bare = norm;
+    for (const prefix of ACH_SCOPED_PREFIXES) {
+      if (bare.startsWith(prefix)) {
+        bare = bare.slice(prefix.length);
+        break;
+      }
+    }
+    if (
+      bare.startsWith('authorization_') ||
+      bare.startsWith('authorized_') ||
+      bare.startsWith('ach_authorization_')
+    ) {
+      out[bare] = v;
+      for (const prefix of ACH_SCOPED_PREFIXES) {
+        out[`${prefix}${bare}`] = v;
+      }
+    }
   }
 
   return out;

@@ -18,8 +18,12 @@ import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
 import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
 import {
   buildScopedValuesForLayout,
+  DISCLOSURE_MERCHANT_BUSINESS_NAME_VARS,
   isMainContractLayoutKey,
+  isStateDisclosureTextPlacement,
+  resolveDisclosureMerchantBusinessName,
   resolveSupplementalEnvelopeTabLabel,
+  toDisclosureScopedPrefillId,
 } from './layout-prefill-scope';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
@@ -473,8 +477,16 @@ function usesWoodmereStyleNonTexasContractLayout(layoutKey: string | undefined):
   return false;
 }
 
-/** Contract page 1 — merchant confirms or enters phone at signing (prefilled when available). */
-export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set(['client_phone']);
+/** Contract page 1 — merchant may confirm/enter phone at signing (optional, stays editable). */
+export const OPTIONAL_SIGNER_EDITABLE_VARIABLES = new Set(['client_phone']);
+
+/** Text fields that must be filled by the signer (none currently — client_phone is optional). */
+export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set<string>([]);
+
+function isOptionalSignerEditablePlacement(placement: DocumentLayoutPlacement): boolean {
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return OPTIONAL_SIGNER_EDITABLE_VARIABLES.has(variable);
+}
 
 function isRequiredSignerEditablePlacement(placement: DocumentLayoutPlacement): boolean {
   const variable = String(placement.variable || '').trim().toLowerCase();
@@ -487,13 +499,30 @@ function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
   return FILL_AT_SIGNING_VARIABLES.has(variable);
 }
 
+/** Contract pages 14–15 authorized business phone (signer enters; never CRM). */
+function isAuthorizedBusinessPhoneFillAtSigningPlacement(
+  placement: DocumentLayoutPlacement,
+): boolean {
+  const page = String(placement.pageNumber || '').trim();
+  if (page !== '14' && page !== '15') return false;
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  const label = String(placement.sourceTabLabel || '').trim().toLowerCase();
+  return (
+    variable === 'authorized_business_phone' ||
+    label === 'authorized_business_phone' ||
+    label === 'authorized_business_phone_page14' ||
+    label === 'authorized_business_phone_page15'
+  );
+}
+
 function isWoodmereContractFillAtSigningPlacement(
   layoutKey: string | undefined,
   placement: DocumentLayoutPlacement,
 ): boolean {
   if (!usesWoodmereStyleNonTexasContractLayout(layoutKey)) return false;
-  // Explicit fillAtSigning works on any page (e.g. page-14 business phone).
+  // Explicit fillAtSigning works on any page (e.g. page-14/15 business phone).
   if (placement.fillAtSigning === true) return true;
+  if (isAuthorizedBusinessPhoneFillAtSigningPlacement(placement)) return true;
   return (
     String(placement.pageNumber || '') === WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE &&
     isFillAtSigningPlacement(placement)
@@ -512,13 +541,14 @@ function isSignerEditableTextPlacement(
   layoutKey: string | undefined,
   placement: DocumentLayoutPlacement,
 ): boolean {
-  // Page-1 client_phone is always signer-editable (required) on every contract layout.
+  // Page-1 client_phone stays signer-editable (optional) on every contract layout.
+  if (isOptionalSignerEditablePlacement(placement)) return true;
   if (isRequiredSignerEditablePlacement(placement)) return true;
   if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
   return false;
 }
 
-/** Portal / reference fields on contract page 16, plus page-1 client phone. */
+/** Portal / reference fields on contract page 16, plus any explicitly required signer text. */
 function isRequiredSignerTextField(
   placement: DocumentLayoutPlacement,
   layoutKey?: string,
@@ -532,16 +562,29 @@ function isRequiredSignerTextField(
 export function isFillAtSigningTabRef(tab: {
   tabLabel?: string;
   name?: string;
+  pageNumber?: string | number;
 }): boolean {
-  const label = String(tab.tabLabel || tab.name || '')
+  const stripUnique = (s: string) =>
+    s.replace(/__p\d+_[a-z0-9]+$/i, '').replace(/__page\d+$/i, '');
+  const raw = String(tab.tabLabel || tab.name || '')
     .trim()
     .toLowerCase();
-  return Boolean(
+  const label = stripUnique(raw);
+  const page = String(tab.pageNumber ?? '').trim();
+  if (
     label &&
-      (FILL_AT_SIGNING_VARIABLES.has(label) ||
-        REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label) ||
-        label === 'authorized_business_phone'),
-  );
+    (OPTIONAL_SIGNER_EDITABLE_VARIABLES.has(label) ||
+      REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label) ||
+      FILL_AT_SIGNING_VARIABLES.has(label) ||
+      label === 'authorized_business_phone_page14' ||
+      label === 'authorized_business_phone_page15')
+  ) {
+    return true;
+  }
+  if (label === 'authorized_business_phone' && (page === '14' || page === '15')) {
+    return true;
+  }
+  return false;
 }
 
 function shouldIncludeEmptyTextPlacement(
@@ -639,6 +682,8 @@ function expandPrefillValues(
   ownerCount?: number,
 ): Record<string, string> {
   const out = { ...values };
+  // Capture disclosure merchant business name before Owner-1 person sync overwrites client_name.
+  const disclosureBusinessBeforeSync = resolveDisclosureMerchantBusinessName(out);
   syncParty1NameFields(out);
   mirrorIdentityFields(out, PARTY1_SS_KEYS);
   mirrorIdentityFields(out, PARTY1_DL_KEYS);
@@ -666,6 +711,23 @@ function expandPrefillValues(
     if (!v) continue;
     for (const alias of aliases) {
       if (!String(out[alias] || '').trim()) out[alias] = v;
+    }
+  }
+
+  // After party-name sync, re-seed disclosure merchant fields from business/legal name.
+  const disclosureBusiness =
+    disclosureBusinessBeforeSync || resolveDisclosureMerchantBusinessName(out);
+  if (disclosureBusiness) {
+    for (const key of [
+      'disclosure_merchant_name',
+      'disclosure_name',
+      'recipient_name',
+      'recipient_name2',
+    ] as const) {
+      out[key] = disclosureBusiness;
+    }
+    for (const key of DISCLOSURE_MERCHANT_BUSINESS_NAME_VARS) {
+      out[toDisclosureScopedPrefillId(key)] = disclosureBusiness;
     }
   }
 
@@ -979,6 +1041,27 @@ function resolveTextPlacementValue(
       ? formatFlexAddendumMoneyUsd(raw)
       : raw;
 
+  // State disclosures use per-slot sourceTabLabel keys (funder_name_5, client_name_1).
+  // Resolve those before any owner-name remapping so Woodmere funder/merchant fills work.
+  if (isStateDisclosureTextPlacement(placement)) {
+    const uniqueKey = String(placement?.sourceTabLabel || '').trim();
+    if (uniqueKey) {
+      const perPlacement = String(
+        values[toDisclosureScopedPrefillId(uniqueKey)] ?? values[uniqueKey] ?? '',
+      ).trim();
+      if (perPlacement) return formatIfMoney(perPlacement);
+    }
+    const sharedScoped = String(values[toDisclosureScopedPrefillId(key)] ?? '').trim();
+    if (sharedScoped) return formatIfMoney(sharedScoped);
+    // Merchant-name slots: prefer business/legal name over Owner-1 person synced into client_name.
+    if (DISCLOSURE_MERCHANT_BUSINESS_NAME_VARS.has(key.toLowerCase())) {
+      const business = resolveDisclosureMerchantBusinessName(values);
+      if (business) return formatIfMoney(business);
+    }
+    const sharedDirect = String(values[key] ?? '').trim();
+    if (sharedDirect) return formatIfMoney(sharedDirect);
+  }
+
   if (
     layoutKey === 'contract' &&
     (String(placement?.pageNumber || '') === '14' ||
@@ -998,8 +1081,9 @@ function resolveTextPlacementValue(
   }
 
   if (
-    key.toLowerCase() === 'client_name' ||
-    key.toLowerCase() === 'addendum_client_name'
+    !isStateDisclosureTextPlacement(placement) &&
+    (key.toLowerCase() === 'client_name' ||
+      key.toLowerCase() === 'addendum_client_name')
   ) {
     // Always prefer Owner 1 person name — never merchant legal name.
     for (const aliasKey of PARTY1_NAME_PRIORITY) {
@@ -1105,6 +1189,29 @@ function includeEmptyLockedOptionalTextPlacement(
   );
 }
 
+/**
+ * DocuSign auto-groups tabs that share the same Data Label (tabLabel) → green sync set.
+ * Value fields must stay unique (blue/independent). Prefill still resolves via `variable`/`name`.
+ */
+function uniquifyEnvelopeTextTabLabel(
+  baseLabel: string,
+  placement: DocumentLayoutPlacement,
+): string {
+  const base = String(baseLabel || '').trim() || 'text';
+  const id = String(placement.id || '').trim();
+  if (!id) {
+    const page = String(placement.pageNumber || '').trim();
+    return page ? `${base}__page${page}` : base;
+  }
+  if (base === id || base.endsWith(`_${id}`) || base.endsWith(`__${id}`)) {
+    return base;
+  }
+  const page = String(placement.pageNumber || '').trim();
+  const suffix = page ? `p${page}_${id}` : id;
+  if (base.includes(suffix)) return base;
+  return `${base}__${suffix}`;
+}
+
 function toTextTab(
   placement: DocumentLayoutPlacement,
   value: string,
@@ -1125,11 +1232,13 @@ function toTextTab(
     placement,
     variable,
   );
-  const tabLabel =
+  const baseLabel =
     scopedTabLabel ||
     String(placement.sourceTabLabel || '').trim() ||
     displayLabel ||
     `${variable || 'text'}_${placement.id}`;
+  // Unique Data Label per field so page 14/15 (etc.) do not green-link as one group.
+  const tabLabel = uniquifyEnvelopeTextTabLabel(baseLabel, placement);
   const width = resolveDocuSignPrefillTabWidth({
     value: tabValue,
     height: placement.height,
@@ -1139,10 +1248,15 @@ function toTextTab(
   // Page-16 ACH and page-1 client phone stay editable; other prefilled text locks at send.
   const lockTab = signerEditable ? false : lockDataTabs || Boolean(placement.lockedForSigner);
   const optionalTab = !isRequiredSignerTextField(placement, layoutKey);
+  // Fill-at-signing phones use unique labels — keep name in sync so CRM post-create
+  // sync cannot rematch bare `authorized_business_phone`.
+  const tabName = clearsValueAtSend(layoutKey, placement)
+    ? tabLabel || variable || undefined
+    : variable || undefined;
   return applyDocuSignPrefillTabStyle(
     {
       tabLabel,
-      name: variable || undefined,
+      name: tabName,
       documentId: envelopeDocumentId,
       pageNumber: placement.pageNumber,
       xPosition: placement.x,
@@ -1179,8 +1293,13 @@ export async function renderFlattenedLayoutPdf(
     if (placement.type !== 'text' && placement.type !== 'date') continue;
     if (!placementAllowed(placement, counts, scopedExpanded, layout.key)) continue;
     if (isWoodmereContractFillAtSigningPlacement(layout.key, placement)) continue;
-    // Keep client_phone as a live DocuSign tab (required + writable), never burn into PDF.
-    if (isRequiredSignerEditablePlacement(placement)) continue;
+    // Keep client_phone as a live DocuSign tab (optional + writable), never burn into PDF.
+    if (
+      isOptionalSignerEditablePlacement(placement) ||
+      isRequiredSignerEditablePlacement(placement)
+    ) {
+      continue;
+    }
     const text = resolveTextPlacementValue(
       placement.variable || '',
       scopedExpanded,
@@ -1247,18 +1366,26 @@ function toSignTab(
   envelopeDocumentId: string,
   layoutKey?: string,
 ): DocuSignTab {
-  const baseLabel = placement.slot || `${placement.type}_${placement.id}`;
+  // Prefer unique source label (GUID / page-specific); never reuse one Data Label across tabs.
+  const baseLabel =
+    String(placement.sourceTabLabel || '').trim() ||
+    placement.slot ||
+    `${placement.type}_${placement.id}`;
   const scoped =
     layoutKey && !isMainContractLayoutKey(layoutKey)
       ? `${String(layoutKey).replace(/[^a-zA-Z0-9]+/g, '_')}_${baseLabel}`
       : baseLabel;
+  const id = String(placement.id || '').trim();
+  const tabLabel =
+    id && !scoped.includes(id) ? `${scoped}__${id}` : scoped;
   return {
-    tabLabel: scoped,
+    tabLabel,
     documentId: envelopeDocumentId,
     pageNumber: placement.pageNumber,
     xPosition: placement.x,
     yPosition: resolveTabYPosition(placement.y, layoutKey),
     optional: placement.optional ? 'true' : 'false',
+    shared: 'false',
   };
 }
 

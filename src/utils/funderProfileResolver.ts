@@ -91,14 +91,43 @@ export function resolveDefaultFunderNameForState(
     excludedStates?: string[];
     sortOrder?: number;
     isActive?: boolean;
+    mainContractLayoutKey?: string | null;
+    organization?: string | null;
+    legalName?: string | null;
   }>,
   state?: string | null,
 ): string | null {
   const normalizedState = normalizeFunderToken(state);
   const active = profiles.filter((p) => p.isActive !== false);
 
+  if (isTexasContractState(normalizedState)) {
+    const tfg = active.find((p) => isTexasFundingGroupFunderProfile(p));
+    if (
+      tfg?.name &&
+      funderAvailableForState(
+        tfg.allowedStates ?? [],
+        tfg.excludedStates ?? [],
+        normalizedState,
+      )
+    ) {
+      return String(tfg.name).trim();
+    }
+  }
+
   const woodmere = active.find((p) => isWoodmereFunderProfile(p));
-  if (woodmere?.name) return String(woodmere.name).trim();
+  if (
+    woodmere?.name &&
+    funderAvailableForState(
+      woodmere.allowedStates ?? [],
+      woodmere.excludedStates ?? [],
+      normalizedState,
+    )
+  ) {
+    return String(woodmere.name).trim();
+  }
+  if (woodmere?.name && !isTexasContractState(normalizedState)) {
+    return String(woodmere.name).trim();
+  }
 
   const fallback = active
     .filter((p) => !isTexasFundingGroupFunderProfile(p))
@@ -113,8 +142,15 @@ export function resolveDefaultFunderNameForState(
   return fallback?.name ? String(fallback.name).trim() : null;
 }
 
+/**
+ * Auto-select funder on contract state change:
+ * - Selecting Texas → Texas Funding Group
+ * - Leaving Texas → Woodmere
+ * - Same Texas-ness → keep current funder
+ */
 export function resolveFunderSwitchOnStateChange(options: {
   currentFunderName?: string | null;
+  previousState?: string | null;
   newState?: string | null;
   profiles: Array<{
     name: string;
@@ -124,6 +160,8 @@ export function resolveFunderSwitchOnStateChange(options: {
     sortOrder?: number;
     isActive?: boolean;
     mainContractLayoutKey?: string | null;
+    organization?: string | null;
+    legalName?: string | null;
   }>;
 }): string | null {
   const pickedState = String(options.newState ?? '').trim();
@@ -135,28 +173,45 @@ export function resolveFunderSwitchOnStateChange(options: {
     options.currentFunderName,
     pickedState,
   );
-  const enteringTexas = isTexasContractState(pickedState);
+  const prevTexas = isTexasContractState(options.previousState);
+  const nextTexas = isTexasContractState(pickedState);
 
-  if (current && isWoodmereFunderProfile(current)) {
-    return null;
+  // Selecting Texas (from any non-Texas state): Texas Funding Group.
+  if (nextTexas && !prevTexas) {
+    const tfg =
+      profiles.find((p) => isTexasFundingGroupFunderProfile(p)) ??
+      profiles.find(
+        (p) =>
+          String(p.mainContractLayoutKey || '').trim() ===
+          DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
+      );
+    if (!tfg?.name) return null;
+    if (current && isTexasFundingGroupFunderProfile(current)) return null;
+    return String(tfg.name).trim();
   }
 
-  if (current && isTexasFundingGroupFunderProfile(current) && !enteringTexas) {
+  // Leaving Texas: Woodmere.
+  if (prevTexas && !nextTexas) {
+    const woodmere = profiles.find((p) => isWoodmereFunderProfile(p));
+    if (woodmere?.name) {
+      if (current && isWoodmereFunderProfile(current)) return null;
+      return String(woodmere.name).trim();
+    }
     return resolveDefaultFunderNameForState(profiles, pickedState);
   }
 
+  // Same Texas-ness: keep funder unless it is unavailable for the new state.
   if (
     current &&
-    !funderAvailableForState(
+    funderAvailableForState(
       current.allowedStates ?? [],
       current.excludedStates ?? [],
       pickedState,
     )
   ) {
-    return resolveDefaultFunderNameForState(profiles, pickedState);
+    return null;
   }
-
-  return null;
+  return resolveDefaultFunderNameForState(profiles, pickedState);
 }
 
 export async function getFunderWithDocuSignCredentialsResolved(options: {

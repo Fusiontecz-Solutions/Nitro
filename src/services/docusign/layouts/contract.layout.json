@@ -794,7 +794,7 @@
       "signerRole": "Signer",
       "optional": false,
       "fillAtSigning": true,
-      "sourceTabLabel": "authorized_business_phone",
+      "sourceTabLabel": "authorized_business_phone_page14",
       "signerParty": "primary"
     },
     {
@@ -987,8 +987,11 @@
       "pageNumber": "15",
       "x": "370",
       "y": "98",
+      "width": "232",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "fillAtSigning": true,
       "sourceTabLabel": "authorized_business_phone_page15"
     },
     {
@@ -1218,7 +1221,7 @@
       "x": "89",
       "y": "314",
       "signerRole": "Signer",
-      "optional": false,
+      "optional": true,
       "sourceTabLabel": "client_phone"
     },
     {

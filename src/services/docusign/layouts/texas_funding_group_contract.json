@@ -15,7 +15,7 @@
       {"tabLabel": "business_address_state", "pageNumber": "1", "xPosition": "220", "yPosition": "328", "tabType": "text", "width": "35", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "business_address_zip", "pageNumber": "1", "xPosition": "254", "yPosition": "328", "tabType": "text", "width": "55", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "seller_1_name", "pageNumber": "1", "xPosition": "415", "yPosition": "186", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
-      {"tabLabel": "client_phone", "pageNumber": "1", "xPosition": "417", "yPosition": "250", "tabType": "text", "width": "120", "height": "19", "required": "true", "locked": "false", "fontSize": "size9"},
+      {"tabLabel": "client_phone", "pageNumber": "1", "xPosition": "417", "yPosition": "250", "tabType": "text", "width": "120", "height": "19", "required": "false", "locked": "false", "fontSize": "size9"},
       {"tabLabel": "client_email", "pageNumber": "1", "xPosition": "416", "yPosition": "282", "tabType": "text", "width": "170", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "business_address_contract", "pageNumber": "1", "xPosition": "418", "yPosition": "309", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "business_address_contract_city", "pageNumber": "1", "xPosition": "418", "yPosition": "328", "tabType": "text", "width": "80", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
