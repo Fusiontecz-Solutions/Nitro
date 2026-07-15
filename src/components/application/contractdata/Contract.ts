@@ -1357,10 +1357,10 @@ export function looksLikePaymentFrequencyLabel(value: string): boolean {
 
 /**
  * Normalize offer/contract frequency to Daily / Weekly / etc.
- * Rejects percents & bare numbers (Utah disclosure incorrectly maps a % onto DocuSign
- * label `frequency`, which can pollute `Contract.frequency` / prefill overrides).
+ * Rejects percents & bare numbers (disclosure % was incorrectly expanded onto DocuSign
+ * labels `frequency` / `paymentTerms`, which polluted Contract / OfferDecision / ACH).
  */
-function coercePaymentFrequencyLabel(raw: unknown): string {
+export function coercePaymentFrequencyLabel(raw: unknown): string {
     const text = str(raw);
     if (!text) return "";
     if (/%/.test(text)) return "";
@@ -1375,6 +1375,12 @@ function coercePaymentFrequencyLabel(raw: unknown): string {
         .split(/\s+/)
         .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
         .join(" ");
+}
+
+/** Persist-only: cadence label or null (never save "0.00%" / bare numbers as frequency). */
+export function sanitizePaymentFrequencyForPersist(raw: unknown): string | null {
+    const label = coercePaymentFrequencyLabel(raw);
+    return label || null;
 }
 
 /** Human-readable payment frequency for contract / DocuSign prefill. */
@@ -2283,6 +2289,12 @@ export function mergeContractPrefillOverrideLayers(
         for (const [key, val] of Object.entries(layer)) {
             if (val === undefined || val === null) continue;
             if (!str(val)) continue;
+            if (key === "frequency") {
+                const freq = sanitizePaymentFrequencyForPersist(val);
+                if (!freq) continue;
+                out.frequency = freq;
+                continue;
+            }
             (out as Record<string, unknown>)[key] = val;
         }
     }
@@ -2349,9 +2361,15 @@ export function contractPrefillFieldsToPartial(
     for (const field of fields) {
         const key = PREFILL_ID_TO_CAMEL_KEY[String(field.id || "").trim().toLowerCase()];
         const value = str(field.value);
-        if (key && value) {
-            (partial as Record<string, string>)[key] = value;
+        if (!key || !value) continue;
+        // Never map disclosure % tabs onto payment cadence.
+        if (key === "frequency") {
+            const freq = sanitizePaymentFrequencyForPersist(value);
+            if (!freq) continue;
+            partial.frequency = freq;
+            continue;
         }
+        (partial as Record<string, string>)[key] = value;
     }
     return partial;
 }

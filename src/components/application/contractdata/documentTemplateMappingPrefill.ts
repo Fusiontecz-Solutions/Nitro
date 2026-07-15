@@ -1573,7 +1573,9 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
             "finance_charge",
             "remittance",
             "monthly_income",
-            "frequency",
+            "payment_terms_percent",
+            "payment_exceed_percent",
+            "disclosure_payment_terms",
         ] as const;
         for (const key of utahPdfKeys) {
             const fromRaw = String(raw[key] ?? "").trim();
@@ -1594,9 +1596,18 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
     if (!disclosureFields.length) return payload;
     const byId = new Map(payload.map((f) => [f.id, { ...f }]));
     for (const field of disclosureFields) {
+        const id = String(field.id ?? "").trim();
         const v = String(field.value ?? "").trim();
-        if (!v) continue;
-        const existing = byId.get(field.id);
+        if (!id || !v) continue;
+        // Cadence-only slots: never let disclosure % (e.g. "0.00%") overwrite Daily/Weekly.
+        const idNorm = id.toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (
+            (idNorm === "frequency" || idNorm === "paymentterms") &&
+            /%/.test(v)
+        ) {
+            continue;
+        }
+        const existing = byId.get(id);
         const existingNum = parsePrefillMoneyForMerge(existing?.value);
         const incomingNum = parsePrefillMoneyForMerge(v);
         if (
@@ -1608,10 +1619,10 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
             continue;
         }
         byId.set(
-            field.id,
+            id,
             existing
                 ? { ...existing, value: v }
-                : { id: field.id, value: v, label: String(field.label ?? "").trim() },
+                : { id, value: v, label: String(field.label ?? "").trim() },
         );
     }
     return Array.from(byId.values());
