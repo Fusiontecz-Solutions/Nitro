@@ -77,6 +77,13 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "disbursement_amount",
         "net_to_merchant",
     ],
+    /** Connecticut / Virginia page-1 fees deducted from amount financed. */
+    disclosure_fees_deducted: [
+        "disclosure_fees_deducted",
+        "deducted_at_disbursement",
+        "fees_deducted",
+        "disclosure_origination_fee",
+    ],
     disclosure_apr: ["disclosure_apr", "estimated_annual_percentage_rate"],
     disclosure_finance_charge: [
         "disclosure_finance_charge",
@@ -255,6 +262,26 @@ export function expandDisclosureEditorValuesToPdfFields(
         }
     }
 
+    // Connecticut / Virginia page-1 "fees deducted" = amount financed − recipient funds
+    // when not already set explicitly (editor may omit this derived slot).
+    const explicitFees = String(editorValues.disclosure_fees_deducted ?? "").trim();
+    const financed = parseDisclosurePrefillMoney(
+        editorValues.disclosure_amount_financed ?? out.disclosure_amount_financed,
+    );
+    const recipient = parseDisclosurePrefillMoney(
+        editorValues.disclosure_recipient_funds ?? out.disclosure_recipient_funds,
+    );
+    const derivedFees =
+        explicitFees ||
+        (financed !== undefined && recipient !== undefined
+            ? formatDisclosureUsd(Math.max(0, financed - recipient))
+            : "");
+    if (derivedFees) {
+        for (const pdfId of EDITOR_TO_PDF_FIELD_IDS.disclosure_fees_deducted ?? []) {
+            if (!String(out[pdfId] ?? "").trim()) out[pdfId] = derivedFees;
+        }
+    }
+
     return out;
 }
 
@@ -273,6 +300,7 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_avg_monthly_revenue: ctx.averageMonthlyIncome ?? "",
         disclosure_amount_financed: ctx.amountBusinessFund || ctx.fundingProvided || "",
         disclosure_recipient_funds: ctx.fundingDisbursed || "",
+        disclosure_fees_deducted: ctx.feesDeducted || "",
         disclosure_apr: ctx.estimatedAnnualPercentageRate ?? "",
         disclosure_finance_charge: ctx.financeCharge || ctx.totalDollarCost || "",
         disclosure_total_payment: ctx.totalRepayment ?? "",
@@ -329,14 +357,16 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
             ? options.inputs.purchasePrice
             : metrics.amountFinanced;
 
+    const amountFinancedForFees = isUtah ? fundsProvided : metrics.amountFinanced;
     const editorFields: Record<string, string> = {
         disclosure_avg_monthly_revenue: formatDisclosureUsd(
             metrics.estimatedMerchantAverageMonthlyRevenue,
         ),
-        disclosure_amount_financed: formatDisclosureUsd(
-            isUtah ? fundsProvided : metrics.amountFinanced,
-        ),
+        disclosure_amount_financed: formatDisclosureUsd(amountFinancedForFees),
         disclosure_recipient_funds: formatDisclosureUsd(metrics.recipientFunds),
+        disclosure_fees_deducted: formatDisclosureUsd(
+            Math.max(0, amountFinancedForFees - metrics.recipientFunds),
+        ),
         disclosure_apr: formatDisclosurePercent(metrics.estimatedAnnualPercentageRate),
         disclosure_finance_charge: formatDisclosureUsd(metrics.financeCharge),
         disclosure_total_payment: formatDisclosureUsd(metrics.estimatedTotalPayment),
