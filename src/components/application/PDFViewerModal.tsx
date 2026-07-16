@@ -2402,7 +2402,9 @@ const PDFViewerModal = ({
             });
 
         const isRateLimitError = (message: string) =>
-            /hourly_envelope_polling_limit|rate.?limit|too many requests/i.test(message);
+            /hourly_envelope_polling_limit|burst_envelope_polling|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit|polling.?limit|rate.?limit|too many requests/i.test(
+                message,
+            );
 
         let lastError = "";
 

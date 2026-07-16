@@ -1,6 +1,6 @@
 import { axiosPost } from "@/redux/axios";
 
-const MIN_SYNC_INTERVAL_MS = 60_000;
+const MIN_SYNC_INTERVAL_MS = 5 * 60_000;
 
 const lastSyncedAtByEnvelope = new Map<string, number>();
 const inFlightByEnvelope = new Map<string, Promise<unknown>>();
@@ -11,7 +11,9 @@ function isRateLimitedError(err: unknown): boolean {
     const msg = String(
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "",
     );
-    return /burst_envelope_polling|hourly_envelope_polling|polling.?limit/i.test(msg);
+    return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit/i.test(
+        msg,
+    );
 }
 
 export function extractDocuSignApiErrorMessage(err: unknown, fallback: string): string {
@@ -94,7 +96,7 @@ export async function syncDocuSignEnvelopeStatus(
             lastSyncedAtByEnvelope.set(eid, Date.now());
             if (options?.silent) return { rateLimited: true };
             throw new Error(
-                "DocuSign rate limit reached. Wait a moment and click Update status again.",
+                "DocuSign hourly API limit reached (3000/hour). Wait about an hour, then click Update status once.",
             );
         }
         throw new Error(

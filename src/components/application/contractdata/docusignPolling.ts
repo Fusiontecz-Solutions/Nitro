@@ -1,17 +1,17 @@
 /** Client throttle for automatic DocuSign API sync only — manual Refresh uses `force: true`. */
-export const DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS = 60_000;
+export const DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS = 5 * 60_000;
 
 /**
  * How long after the last CRM status change before we treat DocuSign Connect as missed
  * and fall back to a single envelope status poll.
  */
-export const DOCUSIGN_WEBHOOK_STALE_MS = 3 * 60_000;
+export const DOCUSIGN_WEBHOOK_STALE_MS = 15 * 60_000;
 
 /** CRM-only refresh while waiting for webhooks (no DocuSign API). */
-export const DOCUSIGN_CRM_STATUS_POLL_MS = 45_000;
+export const DOCUSIGN_CRM_STATUS_POLL_MS = 2 * 60_000;
 
 export function isDocuSignPollingLimitError(message: string): boolean {
-    return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|rate.?limit|too many requests/i.test(
+    return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit|rate.?limit|too many requests/i.test(
         message,
     );
 }
@@ -23,7 +23,7 @@ export function formatDocuSignSyncErrorMessage(err: unknown, context: string): s
         (typeof fromAxios === "string" && fromAxios.trim()) ||
         (err instanceof Error ? err.message : String(err ?? ""));
     if (isDocuSignPollingLimitError(raw)) {
-        return `DocuSign polling limit reached for ${context}. Status will update via webhook — wait a few minutes or use Refresh once.`;
+        return `DocuSign API limit reached for ${context}. Status will update via webhook — wait about an hour, then try Refresh once.`;
     }
     if (raw.trim()) return raw.trim();
     return `Could not refresh ${context} status.`;
