@@ -157,6 +157,14 @@ type SignerRoleInput = Record<string, unknown> & {
 };
 
 export class DocusignService {
+  /**
+   * Dedupes CC PDF downloads across Connect webhooks / sync for the same envelope.
+   * Without this, recipient-sent events can burn dozens of DocuSign API calls each.
+   */
+  private readonly ccNotifyAttemptedAt = new Map<string, number>();
+  private readonly ccNotifyInFlight = new Set<string>();
+  private static readonly CC_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
+
   // ─── OAuth ───────────────────────────────────────────────────────────────────
 
   /**
@@ -1041,18 +1049,44 @@ export class DocusignService {
     accountId: string,
     envelopeId: string,
   ): Promise<boolean> {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) return false;
     try {
       const res = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/custom_fields`,
+        `/v2.1/accounts/${accountId}/envelopes/${eid}/custom_fields`,
       );
       const list = res.data?.textCustomFields || [];
       const val = (list as Array<{ name?: string; value?: string }>).find(
         (f) => f.name === 'crmCcEmailedAt',
       )?.value;
-      return Boolean(String(val || '').trim());
-    } catch {
+      const done = Boolean(String(val || '').trim());
+      if (done) {
+        this.ccNotifyAttemptedAt.set(eid, Date.now());
+      }
+      return done;
+    } catch (err) {
+      if (isDocuSignPollingLimitError(err)) {
+        // Treat rate-limit as "skip" so we do not keep hammering custom_fields.
+        this.ccNotifyAttemptedAt.set(eid, Date.now());
+        return true;
+      }
       return false;
     }
+  }
+
+  private shouldSkipCcNotify(envelopeId: string): boolean {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) return true;
+    if (this.ccNotifyInFlight.has(eid)) return true;
+    const last = this.ccNotifyAttemptedAt.get(eid);
+    if (last == null) return false;
+    return Date.now() - last < DocusignService.CC_NOTIFY_COOLDOWN_MS;
+  }
+
+  private markCcNotifyAttempted(envelopeId: string): void {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) return;
+    this.ccNotifyAttemptedAt.set(eid, Date.now());
   }
 
   private async resolveClientDisplayNameForApplication(
@@ -2710,52 +2744,6 @@ export class DocusignService {
     }
   }
 
-  /** Longest non-empty text-tab value on the envelope (used to verify PDF embed). */
-  private async getEnvelopePrefillSampleValue(
-    client: AxiosInstance,
-    accountId: string,
-    envelopeId: string,
-  ): Promise<string | null> {
-    let best = '';
-    const consider = (raw: string) => {
-      const v = String(raw || '').trim();
-      if (v.length > best.length) best = v;
-    };
-    const sampleReady = () => best.length >= 4;
-
-    try {
-      const rec = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
-      );
-      for (const signer of rec.data?.signers || []) {
-        const recipientId = String(signer.recipientId || '');
-        if (!recipientId) continue;
-        const tabsRes = await client.get(
-          `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${recipientId}/tabs`,
-        );
-        for (const tab of tabsRes.data?.textTabs || []) {
-          consider(String(tab.value ?? ''));
-        }
-        if (sampleReady()) return best;
-      }
-    } catch (err) {
-      console.warn('[DocuSign] getEnvelopePrefillSampleValue (recipients) failed:', err);
-    }
-
-    if (!sampleReady()) {
-      for (const tab of await this.fetchEnvelopeDocumentTextTabs(
-        client,
-        accountId,
-        envelopeId,
-      )) {
-        consider(String(tab.value ?? ''));
-        if (sampleReady()) break;
-      }
-    }
-
-    return sampleReady() ? best : null;
-  }
-
   private async downloadEnvelopeCombinedPdf(
     client: AxiosInstance,
     accountId: string,
@@ -2773,6 +2761,7 @@ export class DocusignService {
       const buf = Buffer.from(res.data);
       return buf?.length ? buf : null;
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) throw err;
       console.warn('[DocuSign] download combined PDF failed:', err);
       return null;
     }
@@ -2861,69 +2850,47 @@ export class DocusignService {
    */
   /**
    * Download combined envelope PDF for CC email (contract + addendum when merged).
-   * Retries aggressively after send — DocuSign may need time to flatten tabs into the PDF.
+   * Keep DocuSign API usage minimal — Connect webhooks must not burn the hourly quota.
    */
   private async downloadEnvelopePdfBufferForCcEmail(
     client: AxiosInstance,
     accountId: string,
     envelopeId: string,
   ): Promise<Buffer | null> {
-    const status = await this.getEnvelopeStatus(client, accountId, envelopeId);
-    const sentOrLater =
-      status === 'sent' || status === 'completed' || status === 'delivered';
-    const maxAttempts = sentOrLater ? 10 : 5;
-    const delayMs = sentOrLater ? 3000 : 2000;
+    const maxAttempts = 2;
+    const delayMs = 2500;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) {
         await this.sleep(delayMs);
       }
 
-      const showChangesFirst = !sentOrLater && attempt < 2;
-      let buf =
-        (await this.downloadEnvelopeCombinedPdf(
-          client,
-          accountId,
-          envelopeId,
-          showChangesFirst,
-        )) ??
-        (await this.downloadEnvelopeCombinedPdf(
+      try {
+        const buf = await this.downloadEnvelopeCombinedPdf(
           client,
           accountId,
           envelopeId,
           false,
-        ));
-
-      if (!buf?.length) {
-        buf = await this.downloadEnvelopePdfBuffer(
-          client,
-          accountId,
-          envelopeId,
-          status,
         );
-      }
-
-      if (buf?.length) {
-        try {
-          const docsRes = await client.get(
-            `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents`,
-          );
-          const contentDocs = this.filterEnvelopeContentDocuments(
-            docsRes.data?.envelopeDocuments || docsRes.data?.documents || [],
-          );
+        if (buf?.length) {
           console.log(
-            `[DocuSign] CC PDF ready for ${envelopeId}: ${buf.length} bytes, ` +
-              `${contentDocs.length} content document(s) (combined includes contract + addendum when present)`,
+            `[DocuSign] CC PDF ready for ${envelopeId}: ${buf.length} bytes (attempt ${attempt + 1})`,
           );
-        } catch {
-          /* logging only */
+          return buf;
         }
-        return buf;
+      } catch (err) {
+        if (isDocuSignPollingLimitError(err)) {
+          console.warn(
+            `[DocuSign] CC PDF aborted for ${envelopeId}: DocuSign API hourly limit exceeded`,
+          );
+          return null;
+        }
+        console.warn(`[DocuSign] CC PDF download attempt ${attempt + 1} failed:`, err);
       }
     }
 
     console.warn(
-      `[DocuSign] CC PDF not available after ${maxAttempts} attempt(s) for envelope ${envelopeId} (status=${status})`,
+      `[DocuSign] CC PDF not available after ${maxAttempts} attempt(s) for envelope ${envelopeId}`,
     );
     return null;
   }
@@ -2936,42 +2903,9 @@ export class DocusignService {
   ): Promise<Buffer | null> {
     const status =
       knownStatus || (await this.getEnvelopeStatus(client, accountId, envelopeId));
-    if (status === 'completed') {
-      return this.downloadEnvelopePdfBuffer(client, accountId, envelopeId, status);
-    }
-
-    let sample: string | null = null;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      if (attempt > 0) await this.sleep(2000);
-      sample = await this.getEnvelopePrefillSampleValue(
-        client,
-        accountId,
-        envelopeId,
-      );
-      if (sample) break;
-    }
-
-    await this.sleep(sample ? 3000 : 1500);
-    let buf = await this.downloadEnvelopePdfBuffer(
-      client,
-      accountId,
-      envelopeId,
-      status,
-    );
-    if (!buf?.length) {
-      await this.sleep(2000);
-      buf = await this.downloadEnvelopePdfBuffer(client, accountId, envelopeId, status);
-    }
-
-    if (sample && buf?.length) {
-      console.log(
-        `[DocuSign] Draft PDF downloaded for envelope ${envelopeId} (${buf.length} bytes). ` +
-          `Tabs include prefilled values (e.g. "${sample.slice(0, 48)}${sample.length > 48 ? '…' : ''}") but DocuSign may not embed them in the PDF until send/completed. ` +
-          'Use Sender View to verify fields, or enable Admin → Sending Settings → write initial field values for all recipients.',
-      );
-    }
-
-    return buf;
+    // Single download attempt — the caller / frontend already retries, so we must not
+    // multiply DocuSign API calls here (prefill sample polling was purely informational).
+    return this.downloadEnvelopePdfBuffer(client, accountId, envelopeId, status);
   }
 
   private async emailPrefilledContractPdfToCcRecipients(
@@ -4061,11 +3995,7 @@ export class DocusignService {
     }
     const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
     const status = await this.getEnvelopeStatus(client, accountId, eid);
-    let buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
-    if (!buf?.length) {
-      await this.sleep(2000);
-      buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
-    }
+    const buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
     if (!buf?.length) {
       throw new BadRequestException('Could not download PDF from DocuSign');
     }
@@ -4408,6 +4338,14 @@ export class DocusignService {
     ccEmailsOverride?: string[],
     titleOverride?: string,
   ): Promise<{ emailed: string[]; skippedReason?: string }> {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) return { emailed: [], skippedReason: 'missing_envelope' };
+
+    if (this.shouldSkipCcNotify(eid)) {
+      return { emailed: [], skippedReason: 'already_attempted_or_in_flight' };
+    }
+
+    this.ccNotifyInFlight.add(eid);
     try {
       let authUserId = String(userId || '').trim();
       if (!authUserId && existingDoc?.userId != null) {
@@ -4417,20 +4355,24 @@ export class DocusignService {
         });
         authUserId = owner?.id || '';
       }
-      const { client, accountId } = await this.getAuthContextForEnvelope(authUserId, envelopeId, {
+      const { client, accountId } = await this.getAuthContextForEnvelope(authUserId, eid, {
         applicationId,
       });
 
-      if (await this.isEnvelopeCcAlreadyEmailed(client, accountId, envelopeId)) {
+      if (await this.isEnvelopeCcAlreadyEmailed(client, accountId, eid)) {
+        this.markCcNotifyAttempted(eid);
         return { emailed: [], skippedReason: 'already_emailed' };
       }
 
-      const envelopeKind = await this.getEnvelopeCrmKindFromApi(client, accountId, envelopeId);
+      // Claim this envelope before PDF downloads so concurrent webhooks bail out.
+      this.markCcNotifyAttempted(eid);
+
+      const envelopeKind = await this.getEnvelopeCrmKindFromApi(client, accountId, eid);
       const includeDefaultCc = this.includeDefaultCcForEnvelopeKind(envelopeKind);
       let ccEmails = this.normalizeCcEmails(ccEmailsOverride, { includeDefault: includeDefaultCc });
       if (!ccEmails.length) {
         ccEmails = this.normalizeCcEmails(
-          await this.getEnvelopeCcEmailsFromApi(client, accountId, envelopeId),
+          await this.getEnvelopeCcEmailsFromApi(client, accountId, eid),
           { includeDefault: includeDefaultCc },
         );
       }
@@ -4444,29 +4386,37 @@ export class DocusignService {
       const subject = await this.resolveEnvelopeEmailSubject(
         client,
         accountId,
-        envelopeId,
+        eid,
         applicationId,
         titleOverride,
       );
       const result = await this.emailPrefilledContractPdfToCcRecipients(
         client,
         accountId,
-        envelopeId,
+        eid,
         ccEmails,
         subject,
       );
       if (result.emailed.length) {
-        await this.upsertEnvelopeTextCustomFields(client, accountId, envelopeId, {
+        await this.upsertEnvelopeTextCustomFields(client, accountId, eid, {
           crmCcEmailedAt: new Date().toISOString(),
         });
         console.log(
-          `[DocuSign] CC contract emailed to ${result.emailed.join(', ')} (envelope ${envelopeId}, subject "${subject}")`,
+          `[DocuSign] CC contract emailed to ${result.emailed.join(', ')} (envelope ${eid}, subject "${subject}")`,
         );
       }
       return result;
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) {
+        console.warn(
+          '[DocuSign] notifyCcRecipientsOnEnvelopeSent aborted: hourly API limit exceeded',
+        );
+        return { emailed: [], skippedReason: 'api_limit_exceeded' };
+      }
       console.warn('[DocuSign] notifyCcRecipientsOnEnvelopeSent failed:', err);
       return { emailed: [], skippedReason: 'error' };
+    } finally {
+      this.ccNotifyInFlight.delete(eid);
     }
   }
 
@@ -4625,12 +4575,19 @@ export class DocusignService {
     );
 
     if (incomingResolved === 'sent' || incomingResolved === 'completed') {
-      await this.notifyCcRecipientsOnEnvelopeSent(
-        '',
-        envelopeId,
-        applicationId,
-        existingDoc,
-      );
+      // CC PDF download hits DocuSign REST heavily — only on first envelope-level
+      // sent/completed, never on recipient-* Connect events (those map to "sent" too).
+      const eventLower = String(eventName || '').trim().toLowerCase();
+      const isRecipientEvent = eventLower.startsWith('recipient-');
+      const alreadySentLike = this.isSentLikeEnvelopeStatus(priorStatus);
+      if (!isRecipientEvent && !alreadySentLike && !this.shouldSkipCcNotify(String(envelopeId))) {
+        await this.notifyCcRecipientsOnEnvelopeSent(
+          '',
+          envelopeId,
+          applicationId,
+          existingDoc,
+        );
+      }
     }
 
     if (applicationId && status && priorStatus !== status) {
@@ -4735,24 +4692,31 @@ export class DocusignService {
       incomingResolved === 'sent' || incomingResolved === 'completed';
     if (incomingSentLike) {
       const priorSentLike = this.isSentLikeEnvelopeStatus(priorStatus);
-      const alreadyEmailed = await this.isEnvelopeCcAlreadyEmailed(
-        client,
-        accountId,
-        envelopeId,
-      );
-      if (alreadyEmailed || priorSentLike) {
+      if (priorSentLike || this.shouldSkipCcNotify(envelopeId)) {
         ccPrefilledEmail = {
           emailed: [],
-          skippedReason: alreadyEmailed ? 'already_emailed' : 'already_sent_in_crm',
+          skippedReason: priorSentLike ? 'already_sent_in_crm' : 'already_attempted_or_in_flight',
         };
       } else {
-        ccPrefilledEmail = await this.notifyCcRecipientsOnEnvelopeSent(
-          userId,
+        const alreadyEmailed = await this.isEnvelopeCcAlreadyEmailed(
+          client,
+          accountId,
           envelopeId,
-          appId,
-          existingDoc,
-          options.ccEmails,
         );
+        if (alreadyEmailed) {
+          ccPrefilledEmail = {
+            emailed: [],
+            skippedReason: 'already_emailed',
+          };
+        } else {
+          ccPrefilledEmail = await this.notifyCcRecipientsOnEnvelopeSent(
+            userId,
+            envelopeId,
+            appId,
+            existingDoc,
+            options.ccEmails,
+          );
+        }
       }
     }
 

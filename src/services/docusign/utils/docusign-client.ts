@@ -145,8 +145,19 @@ export function formatDocusignApiErrorMessage(err: unknown): string {
 }
 
 export function isDocuSignPollingLimitError(err: unknown): boolean {
+  const ax = err as { response?: { data?: { errorCode?: string; message?: string } } };
+  const code = String(ax?.response?.data?.errorCode || '');
+  if (
+    /HOURLY_APIINVOCATION|BURST_ENVELOPE_POLLING|HOURLY_ENVELOPE_POLLING|APIINVOCATION_LIMIT/i.test(
+      code,
+    )
+  ) {
+    return true;
+  }
   const msg = formatDocusignApiErrorMessage(err);
-  return /burst_envelope_polling|hourly_envelope_polling|polling.?limit/i.test(msg);
+  return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit/i.test(
+    msg,
+  );
 }
 
 export function formatDocusignRouteError(err: unknown): {
@@ -154,11 +165,20 @@ export function formatDocusignRouteError(err: unknown): {
   message: string;
 } {
   const e = err as { status?: number; message?: string };
+  const message = formatDocusignApiErrorMessage(err);
+  if (isDocuSignPollingLimitError(err)) {
+    return {
+      status: 429,
+      message:
+        /hourly_apiinvocation|apiinvocation.?limit/i.test(message)
+          ? "DocuSign hourly API limit exceeded (3000/hour). Wait about an hour before sending or syncing again — status still updates via webhook."
+          : message,
+    };
+  }
   const status =
     typeof e?.status === 'number' && e.status >= 400 && e.status < 600
       ? e.status
       : 500;
-  const message = formatDocusignApiErrorMessage(err);
   return { status, message };
 }
 
