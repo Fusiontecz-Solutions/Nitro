@@ -171,8 +171,10 @@ export function formatDocusignRouteError(err: unknown): {
       status: 429,
       message:
         /hourly_apiinvocation|apiinvocation.?limit/i.test(message)
-          ? "DocuSign hourly API limit exceeded (3000/hour). Wait about an hour before sending or syncing again — status still updates via webhook."
-          : message,
+          ? 'DocuSign hourly API limit exceeded (3000/hour). Wait about an hour before sending or syncing again — status still updates via webhook.'
+          : /hourly_envelope_polling|burst_envelope_polling|polling.?limit/i.test(message)
+            ? 'DocuSign envelope polling limit exceeded (250 GET/hour). Status updates via webhook — wait about an hour before Refresh/sync. Do not keep retrying.'
+            : message,
     };
   }
   const status =
