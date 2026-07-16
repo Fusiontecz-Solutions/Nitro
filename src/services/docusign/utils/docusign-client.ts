@@ -66,7 +66,7 @@ export const DOCUSIGN_SECONDARY_ROLE_NAME =
 
 /** Always included as a DocuSign carbon-copy recipient on contract envelopes. */
 export const DOCUSIGN_DEFAULT_CC_EMAIL =
-  process.env.DOCUSIGN_DEFAULT_CC_EMAIL || 'info@woodmerefinancial.com';
+  process.env.DOCUSIGN_DEFAULT_CC_EMAIL || 'subs@woodmerefinancial.com';
 
 /**
  * When true, envelope is set to `sent` after prefill (DocuSign emails signers).
@@ -142,6 +142,11 @@ export function formatDocusignApiErrorMessage(err: unknown): string {
     return `DocuSign API request failed (HTTP ${ax.response.status})`;
   }
   return msg;
+}
+
+export function isDocuSignPollingLimitError(err: unknown): boolean {
+  const msg = formatDocusignApiErrorMessage(err);
+  return /burst_envelope_polling|hourly_envelope_polling|polling.?limit/i.test(msg);
 }
 
 export function formatDocusignRouteError(err: unknown): {

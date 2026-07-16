@@ -164,6 +164,9 @@ const LAYOUT_SCOPED_TAB_PREFIXES = [
   'disclosure_',
 ] as const;
 
+/** Only ACH bare fields should be auto-seeded onto scoped ACH tab labels. */
+const ACH_SCOPED_TAB_PREFIXES = ['ach_form_texas_', 'ach_form_'] as const;
+
 function stripLayoutScopedTabPrefix(key: string): string {
   const k = normalizeFieldKey(key);
   for (const prefix of LAYOUT_SCOPED_TAB_PREFIXES) {
@@ -174,12 +177,27 @@ function stripLayoutScopedTabPrefix(key: string): string {
   return k;
 }
 
-function registerPrefillMapValue(map: Map<string, string>, rawKey: string, value: string): void {
+function isAchLikeBareFieldId(bare: string): boolean {
+  const k = normalizeFieldKey(bare);
+  return (
+    k.startsWith('authorization_') ||
+    k.startsWith('authorized_') ||
+    k.startsWith('ach_authorization_') ||
+    k.startsWith('ach_')
+  );
+}
+
+function registerPrefillMapValue(
+  map: Map<string, string>,
+  rawKey: string,
+  value: string,
+  options?: { overwrite?: boolean },
+): void {
   const key = normalizeFieldKey(rawKey);
   if (!key || !value) return;
-  if (!map.has(key)) map.set(key, value);
+  if (options?.overwrite || !map.has(key)) map.set(key, value);
   const alt = key.replace(/_/g, '');
-  if (!map.has(alt)) map.set(alt, value);
+  if (options?.overwrite || !map.has(alt)) map.set(alt, value);
 }
 
 export function buildPrefillValueMap(
@@ -192,11 +210,16 @@ export function buildPrefillValueMap(
     if (!id || !value) continue;
     const key = normalizeFieldKey(id);
     const bare = stripLayoutScopedTabPrefix(key);
-    registerPrefillMapValue(map, key, value);
+    // Exact CRM field ids always win (e.g. balance_transfer_purchase_price Remaining Balance).
+    registerPrefillMapValue(map, key, value, { overwrite: true });
     if (bare !== key) registerPrefillMapValue(map, bare, value);
-    // Also register scoped envelope labels so unprefixed CRM edits match new ACH tabs.
-    for (const prefix of LAYOUT_SCOPED_TAB_PREFIXES) {
-      registerPrefillMapValue(map, `${prefix}${bare}`, value);
+    // Seed ACH scoped labels from unprefixed ACH edits only.
+    // Do NOT broadcast main-contract purchase_price onto balance_transfer_purchase_price
+    // (or flex_addendum_*) — that overwrote Remaining Balance with payback amount.
+    if (isAchLikeBareFieldId(bare)) {
+      for (const prefix of ACH_SCOPED_TAB_PREFIXES) {
+        registerPrefillMapValue(map, `${prefix}${bare}`, value);
+      }
     }
   }
   for (const [aliasKey, fieldId] of Object.entries(CRM_LABEL_TO_FIELD_ID)) {
@@ -221,14 +244,25 @@ function lookupPrefillValue(map: Map<string, string>, tabKey: string): string | 
     if (map.has(bareUniqueNoUs)) return map.get(bareUniqueNoUs);
   }
 
-  const bare = stripLayoutScopedTabPrefix(k);
-  if (bare !== k) {
-    if (map.has(bare)) return map.get(bare);
-    const bareNoUs = bare.replace(/_/g, '');
-    if (map.has(bareNoUs)) return map.get(bareNoUs);
+  const scopedSource = bareUnique !== k ? bareUnique : k;
+  const bare = stripLayoutScopedTabPrefix(scopedSource);
+  if (bare !== scopedSource) {
+    // Do not fall back from balance_transfer_purchase_price → purchase_price (payback).
+    // Remaining Balance is a separate CRM-scoped value.
+    const isProtectedScopedMoney =
+      scopedSource === 'balance_transfer_purchase_price' ||
+      scopedSource === 'flex_addendum_purchase_price';
+    if (!isProtectedScopedMoney) {
+      if (map.has(bare)) return map.get(bare);
+      const bareNoUs = bare.replace(/_/g, '');
+      if (map.has(bareNoUs)) return map.get(bareNoUs);
+    }
   }
 
-  const viaAlias = CRM_LABEL_TO_FIELD_ID[k] || CRM_LABEL_TO_FIELD_ID[bare] || CRM_LABEL_TO_FIELD_ID[bareUnique];
+  const viaAlias =
+    CRM_LABEL_TO_FIELD_ID[k] ||
+    CRM_LABEL_TO_FIELD_ID[bare] ||
+    CRM_LABEL_TO_FIELD_ID[bareUnique];
   if (viaAlias) {
     const v = map.get(normalizeFieldKey(viaAlias));
     if (v) return v;

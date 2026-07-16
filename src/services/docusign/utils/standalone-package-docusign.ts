@@ -477,11 +477,13 @@ export function isAchStandaloneLayoutRef(ref: string): boolean {
   const key = String(ref || '')
     .trim()
     .toLowerCase();
+  if (!key) return false;
   return (
+    key === 'ach_authorization' ||
     key === 'ach_authorization_standalone' ||
     key === 'ach_authorization_texas' ||
-    key.includes('ach_authorization_standalone') ||
-    key.includes('ach_authorization_texas')
+    key.includes('ach_authorization') ||
+    (key.includes('_ach_') && !key.includes('addendum') && !key.includes('disclosure'))
   );
 }
 
@@ -489,9 +491,22 @@ export function resolveStandaloneLinkKind(
   supplementalRefs: string[],
   includeMainContract?: boolean,
 ): 'main' | 'ach' | 'package' {
-  if (includeMainContract !== false) return 'main';
-  if (supplementalRefs.length === 1 && isAchStandaloneLayoutRef(supplementalRefs[0])) {
+  const refs = (supplementalRefs || [])
+    .map((r) => String(r || '').trim())
+    .filter(Boolean);
+
+  // Explicit main-contract include always wins.
+  if (includeMainContract === true) return 'main';
+
+  // ACH-only refs → ACH capsule (standalone ACH often omits includeMainContract:false).
+  if (refs.length > 0 && refs.every(isAchStandaloneLayoutRef)) {
     return 'ach';
   }
+
+  if (includeMainContract === false) return 'package';
+
+  // No supplemental / standalone refs → main contract envelope.
+  if (refs.length === 0) return 'main';
+
   return 'package';
 }

@@ -25,7 +25,33 @@ export type ContractSendHistoryEntry = {
   completedAt?: string | null;
   archivedAt: string;
   termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
+  /** Documents included in this main-contract envelope (for separate table rows). */
+  package?: {
+    includeMainContract?: boolean;
+    includeAddendum?: boolean;
+    includeDisclosure?: boolean;
+  } | null;
 };
+
+export const MAIN_CONTRACT_SEND_PACKAGE_KEY = 'mainContractSendPackage';
+
+function parseMainContractSendPackageFromPrefill(
+  raw: unknown,
+  envelopeId?: string | null,
+): ContractSendHistoryEntry['package'] | null {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const blob = (raw as Record<string, unknown>)[MAIN_CONTRACT_SEND_PACKAGE_KEY];
+  if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) return null;
+  const o = blob as Record<string, unknown>;
+  const storedEnvelopeId = String(o.envelopeId ?? '').trim();
+  const expected = String(envelopeId ?? '').trim();
+  if (expected && storedEnvelopeId && storedEnvelopeId !== expected) return null;
+  return {
+    includeMainContract: o.includeMainContract !== false,
+    includeAddendum: Boolean(o.includeAddendum),
+    includeDisclosure: Boolean(o.includeDisclosure),
+  };
+}
 
 /** Coerce Prisma Decimal / numeric strings into plain numbers for JSON snapshots. */
 function toSnapshotNumber(value: unknown): number | null {
@@ -132,6 +158,19 @@ export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendH
             completedAt: o.completedAt != null ? String(o.completedAt) : null,
             archivedAt: String(o.archivedAt ?? new Date(0).toISOString()),
             termsSnapshot,
+            package:
+              o.package != null && typeof o.package === 'object' && !Array.isArray(o.package)
+                ? {
+                    includeMainContract:
+                      (o.package as Record<string, unknown>).includeMainContract !== false,
+                    includeAddendum: Boolean(
+                      (o.package as Record<string, unknown>).includeAddendum,
+                    ),
+                    includeDisclosure: Boolean(
+                      (o.package as Record<string, unknown>).includeDisclosure,
+                    ),
+                  }
+                : null,
         });
   }
   return out;
@@ -142,6 +181,7 @@ export function appendContractSendHistoryEntry(
   entry: Omit<ContractSendHistoryEntry, 'archivedAt'> & {
     archivedAt?: string;
     termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
+    package?: ContractSendHistoryEntry['package'];
   },
 ): Record<string, unknown> {
   const base =
@@ -160,6 +200,7 @@ export function appendContractSendHistoryEntry(
     completedAt: entry.completedAt ?? null,
     archivedAt: entry.archivedAt ?? new Date().toISOString(),
     termsSnapshot: entry.termsSnapshot ?? null,
+    package: entry.package ?? null,
   };
 
   return {
@@ -241,6 +282,7 @@ export async function archiveMainContractEnvelopeToHistory(
     sentAt?: Date | string | null;
     completedAt?: Date | string | null;
     termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
+    package?: ContractSendHistoryEntry['package'];
   },
 ): Promise<boolean> {
   const appId = String(applicationId || '').trim();
@@ -253,6 +295,10 @@ export async function archiveMainContractEnvelopeToHistory(
   });
   if (!contract) return false;
 
+  const packageMeta =
+    snapshot.package ??
+    parseMainContractSendPackageFromPrefill(contract.contractPrefillOverrides, envelopeId);
+
   const merged = appendContractSendHistoryEntry(contract.contractPrefillOverrides, {
     envelopeId,
     status: snapshot.status,
@@ -260,6 +306,7 @@ export async function archiveMainContractEnvelopeToHistory(
     completedAt: snapshot.completedAt ? new Date(snapshot.completedAt).toISOString() : null,
     archivedAt: new Date().toISOString(),
     termsSnapshot: snapshot.termsSnapshot ?? null,
+    package: packageMeta,
   });
 
   await prisma.contract.update({
@@ -268,6 +315,57 @@ export async function archiveMainContractEnvelopeToHistory(
       contractPrefillOverrides: merged as Prisma.InputJsonValue,
       status: 'DRAFT',
     },
+  });
+  return true;
+}
+
+/** Persist which documents were included in the current main-contract envelope. */
+export async function persistMainContractSendPackage(
+  applicationId: string,
+  envelopeId: string,
+  sendPackage?: {
+    includeMainContract?: boolean;
+    includeAddendum?: boolean;
+    includeDisclosure?: boolean;
+  } | null,
+  contractId?: number,
+): Promise<boolean> {
+  const appId = String(applicationId || '').trim();
+  const eid = String(envelopeId || '').trim();
+  if (!appId || !eid || !sendPackage) return false;
+
+  const contract =
+    Number.isFinite(Number(contractId)) && Number(contractId) > 0
+      ? await prisma.contract.findUnique({
+          where: { id: Number(contractId) },
+          select: { id: true, contractPrefillOverrides: true },
+        })
+      : await prisma.contract.findUnique({
+          where: { applicationId: appId },
+          select: { id: true, contractPrefillOverrides: true },
+        });
+  if (!contract) return false;
+
+  const base =
+    contract.contractPrefillOverrides &&
+    typeof contract.contractPrefillOverrides === 'object' &&
+    !Array.isArray(contract.contractPrefillOverrides)
+      ? { ...(contract.contractPrefillOverrides as Record<string, unknown>) }
+      : {};
+
+  const next = {
+    ...base,
+    [MAIN_CONTRACT_SEND_PACKAGE_KEY]: {
+      envelopeId: eid,
+      includeMainContract: sendPackage.includeMainContract !== false,
+      includeAddendum: Boolean(sendPackage.includeAddendum),
+      includeDisclosure: Boolean(sendPackage.includeDisclosure),
+    },
+  };
+
+  await prisma.contract.update({
+    where: { id: contract.id },
+    data: { contractPrefillOverrides: next as Prisma.InputJsonValue },
   });
   return true;
 }

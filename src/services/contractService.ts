@@ -899,6 +899,12 @@ class ContractService {
     const businessCity = firstNonEmptyString(client?.businessCity, biz?.city);
     const businessState = firstNonEmptyString(client?.businessState, biz?.state);
     const businessZip = firstNonEmptyString(client?.businessZipCode, biz?.zipCode, biz?.zip);
+    const ownerHomeAddress = firstNonEmptyString(
+      [client?.ownerAddress1, client?.ownerAddress2].filter(Boolean).join(', '),
+    );
+    const ownerHomeCity = firstNonEmptyString(client?.ownerCity);
+    const ownerHomeState = firstNonEmptyString(client?.ownerState);
+    const ownerHomeZip = firstNonEmptyString(client?.ownerZipCode);
     const purchaseAmount = derivedApprovedAmount != null ? String(derivedApprovedAmount) : '';
     const purchasePrice = derivedTotalAmount != null ? String(derivedTotalAmount) : '';
     const legalName = firstNonEmptyString(client?.businessName, biz?.clientBusinessName);
@@ -953,10 +959,11 @@ class ContractService {
       authorizationClientBankAccount: bankAccount || null,
       authorizationClientBankRouting: bankRouting || null,
       authorizedBusinessPhone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
-      businessAddressContract: businessAddress || null,
-      businessAddressContractCity: businessCity || null,
-      businessAddressContractState: businessState || null,
-      businessAddressContractZip: businessZip || null,
+      /** Contact / mailing address = Owner 1 home (not business location). */
+      businessAddressContract: ownerHomeAddress || null,
+      businessAddressContractCity: ownerHomeCity || null,
+      businessAddressContractState: ownerHomeState || null,
+      businessAddressContractZip: ownerHomeZip || null,
       securityBusinessName: legalName || null,
       securityDoingBusinessAs: dba || null,
       securityBusinessAddress: businessAddress || null,

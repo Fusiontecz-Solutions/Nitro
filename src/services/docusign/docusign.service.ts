@@ -22,6 +22,7 @@ import {
   DOCUSIGN_SENDER_RETURN_URL,
   DOCUSIGN_DEFAULT_CC_EMAIL,
   formatDocusignApiErrorMessage,
+  isDocuSignPollingLimitError,
 } from './utils/docusign-client';
 import {
   buildTextTabsFromPrefillIds,
@@ -40,7 +41,7 @@ import {
   clearDocusignProfileJwtCache,
   getDocusignJwtSessionForProfile,
 } from './utils/docusign-profile-jwt';
-import { getFunderWithDocuSignCredentials, resolveFunderProfile } from '../funderProfileService';
+import { getFunderWithDocuSignCredentials, resolveFunderProfile, isPersistedFunderProfileId } from '../funderProfileService';
 import { resolveMainContractLayoutKeyForSend } from './utils/resolve-main-contract-layout';
 import {
   extractCrmApplicationIdFromWebhook,
@@ -70,6 +71,7 @@ import {
 import {
   archiveMainContractEnvelopeToHistory,
   isCompletedEnvelopeStatus,
+  persistMainContractSendPackage,
   resolveArchivedMainContractEnvelopeStatus,
   updateArchivedContractSendHistoryStatus,
 } from './utils/contract-send-history';
@@ -93,6 +95,12 @@ import {
   buildContractEnvelopePdfFilename,
   normalizeContractCcEmailSubject,
 } from '../../utils/contractEnvelopeEmailSubject';
+import {
+  isDocuSignUserNotEnvelopeSenderError,
+  listEnvelopeFunderAuthCandidates,
+  resolveEnvelopeFunderAuthHints,
+  type EnvelopeFunderAuthHints,
+} from './utils/envelope-funder-auth';
 
 /** Contract signing status labels for notifications */
 const CONTRACT_STATUS_LABELS: Record<string, string> = {
@@ -351,6 +359,47 @@ export class DocusignService {
     };
   }
 
+  private async getJwtAuthContextForFunderProfile(funderProfileId: string) {
+    const profileId = String(funderProfileId || '').trim();
+    if (!isPersistedFunderProfileId(profileId)) {
+      throw new ServiceConfigException(`Invalid funder profile id "${profileId}".`);
+    }
+    const row = await prisma.funderProfile.findUnique({
+      where: { id: profileId },
+      include: { docusignAccountProfile: true },
+    });
+    const dsProfile = row?.docusignAccountProfile;
+    if (!row || !dsProfile?.id || dsProfile.isActive === false) {
+      throw new ServiceConfigException(
+        `Funder profile "${profileId}" has no active linked DocuSign account.`,
+      );
+    }
+    try {
+      const { accessToken, accountId, baseUri } = await getDocusignJwtSessionForProfile(
+        String(dsProfile.id),
+        {
+          integrationKey: dsProfile.integrationKey,
+          impersonatedUserId: dsProfile.impersonatedUserId,
+          rsaPrivateKey: dsProfile.rsaPrivateKey,
+          accountId: dsProfile.accountId,
+          baseUri: dsProfile.baseUri,
+        },
+      );
+      return {
+        user: null as any,
+        accountId,
+        client: this.createRestClient(accessToken, baseUri),
+        docusignProfileId: String(dsProfile.id),
+      };
+    } catch (error: any) {
+      clearDocusignProfileJwtCache(String(dsProfile.id));
+      const detail = error?.response?.data?.error_description || error?.message || String(error);
+      throw new ServiceConfigException(
+        `DocuSign JWT failed for funder profile "${row.name}". ${detail}`,
+      );
+    }
+  }
+
   private async getJwtAuthContextForFunder(
     funderName?: string | null,
     contractState?: string | null,
@@ -392,9 +441,22 @@ export class DocusignService {
 
   private async getAuthContext(
     userId: string,
-    options?: { funderName?: string | null; contractState?: string | null },
+    options?: {
+      funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
+    },
   ) {
     if (resolveDocusignAuthMode() === 'jwt') {
+      const funderProfileId = String(options?.funderProfileId || '').trim();
+      if (funderProfileId && isPersistedFunderProfileId(funderProfileId)) {
+        try {
+          return await this.getJwtAuthContextForFunderProfile(funderProfileId);
+        } catch (err) {
+          const funderName = String(options?.funderName || '').trim();
+          if (!funderName) throw err;
+        }
+      }
       const funderName = String(options?.funderName || '').trim();
       if (funderName) {
         const linked = await getFunderWithDocuSignCredentials(
@@ -2990,6 +3052,15 @@ export class DocusignService {
     const appId = String(options.applicationId || '').trim();
     if (appId && !options.skipApplicationEnvelopeLink) {
       await this.linkEnvelopeToApplication(userId, appId, envelopeId);
+      if (options.sendPackage) {
+        const contractIdNum = Number(options.contractId);
+        await persistMainContractSendPackage(
+          appId,
+          envelopeId,
+          options.sendPackage,
+          Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+        );
+      }
     } else if (appId && options.skipApplicationEnvelopeLink) {
       const contractIdNum = Number(options.contractId);
       const resolvedContractId =
@@ -3223,104 +3294,39 @@ export class DocusignService {
     };
   }
 
-  /**
-   * Resolve funder DocuSign JWT context for an existing envelope.
-   * Create uses funder-linked accounts; reopen/send/download must use the same account.
-   */
   private async resolveFunderAuthOptionsForEnvelope(
     envelopeId?: string | null,
     hints?: {
       applicationId?: string | null;
       contractId?: number | null;
       funderName?: string | null;
+      funderProfileId?: string | null;
       contractState?: string | null;
     },
-  ): Promise<{ funderName?: string | null; contractState?: string | null }> {
-    const explicitFunder = String(hints?.funderName || '').trim();
-    if (explicitFunder) {
+  ): Promise<{
+    funderName?: string | null;
+    funderProfileId?: string | null;
+    contractState?: string | null;
+  }> {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) {
       return {
-        funderName: explicitFunder,
+        funderName: String(hints?.funderName || '').trim() || null,
+        funderProfileId: String(hints?.funderProfileId || '').trim() || null,
         contractState: String(hints?.contractState || '').trim() || null,
       };
     }
-
-    const contractIdHint = Number(hints?.contractId);
-    if (Number.isFinite(contractIdHint) && contractIdHint > 0) {
-      return this.resolveContractFunderAndState(contractIdHint);
-    }
-
-    const eid = String(envelopeId || '').trim();
-    let appId = String(hints?.applicationId || '').trim();
-
-    if (!appId && eid) {
-      const doc = await prisma.document.findFirst({
-        where: { envelopeId: eid },
-        select: { applicationId: true },
-      });
-      appId = String(doc?.applicationId || '').trim();
-    }
-
-    if (!appId && eid) {
-      appId = String((await findApplicationIdByAchEnvelopeId(eid)) || '').trim();
-    }
-
-    if (eid) {
-      const linkedContract = await prisma.contract.findFirst({
-        where: {
-          OR: [
-            {
-              contractPrefillOverrides: {
-                path: [ACH_AUTHORIZATION_DOCUSIGN_KEY, 'envelopeId'],
-                equals: eid,
-              },
-            },
-            {
-              contractPrefillOverrides: {
-                path: [STANDALONE_PACKAGE_DOCUSIGN_KEY, 'envelopeId'],
-                equals: eid,
-              },
-            },
-          ],
-        },
-        select: { funderName: true, state: true, applicationId: true },
-      });
-      if (linkedContract?.funderName) {
-        return {
-          funderName: linkedContract.funderName,
-          contractState: linkedContract.state,
-        };
-      }
-      if (!appId && linkedContract?.applicationId) {
-        appId = String(linkedContract.applicationId).trim();
-      }
-    }
-
-    if (eid) {
-      const dsEnv = await prisma.docuSignEnvelope.findUnique({
-        where: { envelopeId: eid },
-        select: { contractId: true },
-      });
-      if (dsEnv?.contractId) {
-        return this.resolveContractFunderAndState(dsEnv.contractId);
-      }
-    }
-
-    if (appId) {
-      const contract = await prisma.contract.findFirst({
-        where: { applicationId: appId },
-        select: { funderName: true, state: true },
-      });
-      if (contract) {
-        return {
-          funderName: contract.funderName,
-          contractState: contract.state,
-        };
-      }
-    }
-
+    const resolved = await resolveEnvelopeFunderAuthHints(eid, {
+      applicationId: hints?.applicationId,
+      contractId: hints?.contractId ?? undefined,
+      funderName: hints?.funderName,
+      funderProfileId: hints?.funderProfileId,
+      contractState: hints?.contractState,
+    });
     return {
-      funderName: String(hints?.funderName || '').trim() || null,
-      contractState: String(hints?.contractState || '').trim() || null,
+      funderName: resolved.funderName,
+      funderProfileId: resolved.funderProfileId,
+      contractState: resolved.contractState,
     };
   }
 
@@ -3331,11 +3337,45 @@ export class DocusignService {
       applicationId?: string | null;
       contractId?: number | null;
       funderName?: string | null;
+      funderProfileId?: string | null;
       contractState?: string | null;
     },
   ) {
     const funderOpts = await this.resolveFunderAuthOptionsForEnvelope(envelopeId, hints);
     return this.getAuthContext(userId, funderOpts);
+  }
+
+  private async applyVoidOrDeleteOnDocuSign(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    voidReason: string,
+    crmDsStatus: string,
+  ): Promise<void> {
+    if (['voided', 'declined', 'deleted'].includes(crmDsStatus)) {
+      return;
+    }
+    if (crmDsStatus === 'created') {
+      await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
+        status: 'deleted',
+      });
+      return;
+    }
+    try {
+      await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
+        status: 'voided',
+        voidedReason: voidReason,
+      });
+    } catch (voidErr: unknown) {
+      const voidMsg = formatDocusignApiErrorMessage(voidErr).toLowerCase();
+      if (voidMsg.includes('created') || voidMsg.includes('draft')) {
+        await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
+          status: 'deleted',
+        });
+        return;
+      }
+      throw voidErr;
+    }
   }
 
   private async sendEnvelopeFromPlatformLayouts(
@@ -3775,24 +3815,76 @@ export class DocusignService {
     return res.data;
   }
 
-  async voidDocument(userId: string, documentId: string, reason: string) {
+  async voidDocument(
+    userId: string,
+    documentId: string,
+    reason: string,
+    hints?: Partial<EnvelopeFunderAuthHints>,
+  ) {
     const envelopeId = String(documentId || '').trim();
-    const { client, accountId } = await this.getAuthContextForEnvelope(userId, envelopeId);
-    await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
-      status: 'voided',
-      voidedReason: reason || 'Voided by user',
-    });
+    if (!envelopeId) {
+      throw new BadRequestException('Missing documentId');
+    }
+    const voidReason = String(reason || '').trim() || 'Voided by user';
+
+    const crmStatus = await this.resolveCrmEnvelopeInternalStatus(envelopeId);
+    const crmDsStatus = this.mapCrmInternalToDocuSignEnvelopeStatus(crmStatus);
+
+    if (crmDsStatus === 'completed') {
+      throw new BadRequestException(
+        'This document is already completed in DocuSign and cannot be voided. Send a new envelope instead.',
+      );
+    }
+
+    const candidates = await listEnvelopeFunderAuthCandidates(envelopeId, hints);
+    let lastErr: unknown;
+    let voidApplied = ['voided', 'declined', 'deleted'].includes(crmDsStatus);
+
+    if (!voidApplied) {
+      for (const candidate of candidates) {
+        try {
+          const { client, accountId } = await this.getAuthContext(userId, candidate);
+          await this.applyVoidOrDeleteOnDocuSign(
+            client,
+            accountId,
+            envelopeId,
+            voidReason,
+            crmDsStatus,
+          );
+          voidApplied = true;
+          lastErr = null;
+          break;
+        } catch (err: unknown) {
+          lastErr = err;
+          if (isDocuSignPollingLimitError(err)) {
+            throw new BadRequestException(
+              'DocuSign polling limit reached. Wait about an hour, then void again — or void from the DocuSign console.',
+            );
+          }
+          if (!isDocuSignUserNotEnvelopeSenderError(err)) {
+            throw new BadRequestException(formatDocusignApiErrorMessage(err));
+          }
+        }
+      }
+    }
+
+    if (!voidApplied && lastErr) {
+      throw new BadRequestException(
+        formatDocusignApiErrorMessage(lastErr) ||
+          'No linked DocuSign sender account could void this envelope. Void it from the funder DocuSign account that originally sent it.',
+      );
+    }
 
     const isAchEnvelope = await isStandaloneAchEnvelope(envelopeId);
     if (isAchEnvelope) {
       await updateAchAuthorizationDocuSignStatus(envelopeId, 'revoked');
-      return { success: true, achAuthorization: true };
+      return { success: true, achAuthorization: true, docusignStatus: crmDsStatus || 'voided' };
     }
 
     const isPackageEnvelope = await isStandalonePackageEnvelope(envelopeId);
     if (isPackageEnvelope) {
       await updateStandalonePackageDocuSignStatus(envelopeId, 'revoked');
-      return { success: true, standalonePackage: true };
+      return { success: true, standalonePackage: true, docusignStatus: crmDsStatus || 'voided' };
     }
 
     const existingDoc = await prisma.document.findFirst({
@@ -3807,12 +3899,80 @@ export class DocusignService {
       ? String(existingDoc.applicationId).trim()
       : '';
     if (appId) {
-      const kind = await this.getEnvelopeCrmKindFromApi(client, accountId, envelopeId);
-      if (await this.shouldSyncContractSigningStatus(appId, envelopeId, kind)) {
-        await this.syncContractSigningStatus(appId, 'revoked');
+      await this.syncContractSigningStatus(appId, 'revoked');
+    }
+    return { success: true, achAuthorization: false, docusignStatus: crmDsStatus || 'voided' };
+  }
+
+  /** CRM-only envelope status for void/delete — avoids DocuSign status GET (polling quota). */
+  private async resolveCrmEnvelopeInternalStatus(envelopeId: string): Promise<string> {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) return '';
+
+    const doc = await prisma.document.findFirst({
+      where: { envelopeId: eid },
+      select: { status: true },
+    });
+    if (doc?.status) return String(doc.status).trim().toLowerCase();
+
+    const achContracts = await prisma.contract.findMany({
+      where: {
+        contractPrefillOverrides: {
+          path: [ACH_AUTHORIZATION_DOCUSIGN_KEY, 'envelopeId'],
+          equals: eid,
+        },
+      },
+      select: { contractPrefillOverrides: true },
+      take: 1,
+    });
+    for (const row of achContracts) {
+      const ach = parseAchAuthorizationDocuSignFromPrefill(row.contractPrefillOverrides);
+      if (ach?.envelopeId === eid) {
+        if (ach.status === 'SIGNED') return 'completed';
+        if (ach.status === 'VIEWED') return 'viewed';
+        if (ach.status === 'SENT') return 'sent';
+        if (ach.status === 'VOIDED') return 'revoked';
+        return 'draft';
       }
     }
-    return { success: true, achAuthorization: false };
+
+    const packageContracts = await prisma.contract.findMany({
+      where: {
+        contractPrefillOverrides: {
+          path: [STANDALONE_PACKAGE_DOCUSIGN_KEY, 'envelopeId'],
+          equals: eid,
+        },
+      },
+      select: { contractPrefillOverrides: true },
+      take: 1,
+    });
+    for (const row of packageContracts) {
+      const raw = row.contractPrefillOverrides;
+      if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const blob = (raw as Record<string, unknown>)[STANDALONE_PACKAGE_DOCUSIGN_KEY];
+      if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) continue;
+      const o = blob as Record<string, unknown>;
+      if (String(o.envelopeId ?? '').trim() !== eid) continue;
+      const statusRaw = String(o.status ?? 'DRAFT').trim().toUpperCase();
+      if (statusRaw === 'SIGNED') return 'completed';
+      if (statusRaw === 'VIEWED') return 'viewed';
+      if (statusRaw === 'SENT') return 'sent';
+      if (statusRaw === 'VOIDED') return 'revoked';
+      return 'draft';
+    }
+
+    return '';
+  }
+
+  private mapCrmInternalToDocuSignEnvelopeStatus(crmStatus: string): string {
+    const k = String(crmStatus || '').trim().toLowerCase();
+    if (!k) return '';
+    if (['voided', 'revoked', 'declined', 'deleted', 'expired'].includes(k)) return 'voided';
+    if (['completed', 'signed'].includes(k)) return 'completed';
+    if (['viewed', 'delivered'].includes(k)) return 'delivered';
+    if (['sent', 'processing'].includes(k)) return 'sent';
+    if (['draft', 'created'].includes(k)) return 'created';
+    return k;
   }
 
   async getDocumentProperties(userId: string, documentId: string) {

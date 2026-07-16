@@ -429,6 +429,8 @@ const CALIFORNIA_DAILY_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs'
   { tabLabel: 'funding_provided', x: '345', y: '139' },
   { tabLabel: 'estimated_annual_percentage_rate', x: '178', y: '236' },
   { tabLabel: 'avarage_monthly_income', x: '330', y: '316' },
+  /** Merchant business legal name (not owner / client person name). */
+  { tabLabel: 'disclosure_merchant_name', x: '383', y: '301' },
   { tabLabel: 'funder_name', x: '433', y: '376' },
   { tabLabel: 'finance_charge', x: '182', y: '421' },
   { tabLabel: 'payment_total', x: '184', y: '441' },
@@ -473,6 +475,8 @@ const CALIFORNIA_WEEKLY_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs
   { tabLabel: 'funder_name', x: '415', y: '96' },
   { tabLabel: 'estimated_annual_percentage_rate', x: '178', y: '236' },
   { tabLabel: 'avarage_monthly_income', x: '330', y: '316' },
+  /** Merchant business legal name (not owner / client person name). */
+  { tabLabel: 'disclosure_merchant_name', x: '383', y: '301' },
   { tabLabel: 'funder_name', x: '433', y: '376' },
   { tabLabel: 'finance_charge', x: '183', y: '408' },
   { tabLabel: 'payment_total', x: '183', y: '429' },
@@ -612,7 +616,7 @@ const LOUISIANA_DISCLOSURE_SIGN_AND_DATE: Pick<
   ],
 };
 
-/** Texas disclosure — 2-page PDF (page-2 carries signature + page-3 fee block). */
+/** Texas disclosure — 3-page PDF (page 2 = fees/payoff; page 3 = broker/payoff lines + signatures). */
 const TEXAS_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'total_amount_business_fund', x: '430', y: '101' },
   { tabLabel: 'total_amount_of_fund_disbursed', x: '431', y: '138' },
@@ -631,13 +635,13 @@ const TEXAS_DISCLOSURE_PAGE2_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
 ];
 
 const TEXAS_DISCLOSURE_PAGE3_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
-  { tabLabel: 'funder_name', x: '241', y: '257', pageNumber: '2' },
-  { tabLabel: 'disclosure_broker_fee', x: '510', y: '257', pageNumber: '2' },
+  { tabLabel: 'funder_name', x: '241', y: '257', pageNumber: '3' },
+  { tabLabel: 'disclosure_broker_fee', x: '510', y: '257', pageNumber: '3' },
   {
     tabLabel: 'disclosure_page3_line_1',
     x: '323',
     y: '310',
-    pageNumber: '2',
+    pageNumber: '3',
     optional: true,
     lockedForSigner: true,
   },
@@ -645,7 +649,7 @@ const TEXAS_DISCLOSURE_PAGE3_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
     tabLabel: 'disclosure_page3_line_2',
     x: '289',
     y: '337',
-    pageNumber: '2',
+    pageNumber: '3',
     optional: true,
     lockedForSigner: true,
   },
@@ -653,11 +657,11 @@ const TEXAS_DISCLOSURE_PAGE3_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
     tabLabel: 'disclosure_page3_net',
     x: '489',
     y: '350',
-    pageNumber: '2',
+    pageNumber: '3',
     optional: true,
     lockedForSigner: true,
   },
-  { tabLabel: 'total_dollar_cost', x: '475', y: '398', pageNumber: '2' },
+  { tabLabel: 'total_dollar_cost', x: '475', y: '398', pageNumber: '3' },
 ];
 
 const TEXAS_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
@@ -671,12 +675,12 @@ const TEXAS_DISCLOSURE_SIGN_AND_DATE: Pick<
   'signHere' | 'dateTabs'
 > = {
   signHere: [
-    { x: '95', y: '515', pageNumber: '2' },
-    { x: '431', y: '514', pageNumber: '2', signerParty: 'secondary' },
+    { x: '95', y: '515', pageNumber: '3' },
+    { x: '431', y: '514', pageNumber: '3', signerParty: 'secondary' },
   ],
   dateTabs: [
-    { x: '92', y: '592', pageNumber: '2', tabLabel: 'Signature_date' },
-    { x: '429', y: '590', pageNumber: '2', tabLabel: 'Signature_date', signerParty: 'secondary' },
+    { x: '92', y: '592', pageNumber: '3', tabLabel: 'Signature_date' },
+    { x: '429', y: '590', pageNumber: '3', tabLabel: 'Signature_date', signerParty: 'secondary' },
   ],
 };
 

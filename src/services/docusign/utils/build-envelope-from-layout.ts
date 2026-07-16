@@ -176,37 +176,46 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'security_guarantor',
   ],
   business_address: [
-    'business_address_contract',
     'security_business_address',
-    'guarantor_address',
     'recipient_address',
     'recipient_address1',
     'ach_authorization_account_holder_address',
   ],
   business_address_city: [
-    'business_address_contract_city',
     'security_business_address_city',
-    'guarantor_address_city',
     'ach_authorization_account_holder_city',
   ],
   business_address_state: [
-    'business_address_contract_state',
     'security_business_address_state',
-    'guarantor_address_state',
     'ach_authorization_account_holder_state',
   ],
   business_address_zip: [
-    'business_address_contract_zip',
     'security_business_address_zip',
-    'guarantor_address_zip',
     'ach_authorization_account_holder_zip',
   ],
+  /** Owner 1 home / contact — keep distinct from business location. */
+  business_address_contract: ['guarantor_address'],
+  business_address_contract_city: ['guarantor_address_city'],
+  business_address_contract_state: ['guarantor_address_state'],
+  business_address_contract_zip: ['guarantor_address_zip'],
+  guarantor_address: ['business_address_contract'],
+  guarantor_address_city: ['business_address_contract_city'],
+  guarantor_address_state: ['business_address_contract_state'],
+  guarantor_address_zip: ['business_address_contract_zip'],
   authorization_client_name: [
     'client_legal_name',
     'security_business_name',
     'business_legal_name',
   ],
+  /** ACH auth page-13 signer line — business / merchant legal name. */
   authorization_client_signer_name: [
+    'authorization_client_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+  ],
+  /** ACH auth page-13 printed name — person / client name. */
+  authorization_client_name_print: [
     'customer_name',
     'client_name',
     'owner1_guarantor_name',
@@ -230,7 +239,25 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   federal_tax_id_ein: ['security_tax_ein', 'authorization_client_tax_id'],
   security_tax_ein: ['federal_tax_id_ein', 'authorization_client_tax_id'],
   frequency: ['paymentterms', 'payment_terms'],
+  remittance: [
+    'ach_authorization_account_holder_bank_transaction_fee',
+    'estimated_payment',
+    'estimated_payment_amount',
+    'disclosure_estimated_payment',
+    'theestimatedpayment',
+  ],
   net_to_merchant: ['netfundprovided', 'net_fund_provided'],
+  purchase_amount: [
+    'disclosure_amount_financed',
+    'funding_provided',
+    'addendum_dated_principal_owner_amount',
+  ],
+  purchase_price: [
+    'disclosure_total_payment',
+    'total_repayment_amount',
+    'estimatedTotalPaymentAmount',
+    'addendum_dated_principal_owner_amount2',
+  ],
   purchase_percent: ['specified_percentage', 'purchased_percent', 'percent_of_business_income'],
   percent_of_business_income: ['purchase_percent', 'specified_percentage', 'purchased_percent'],
   total_dollar_cost: [
@@ -325,8 +352,6 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   signature2_date: ['disclosure_date', 'agreement_date', 'signature_date'],
   estimated_payment_amount: ['disclosure_estimated_payment', 'estimated_payment', 'remittance'],
   monthly_income: ['disclosure_avg_monthly_revenue', 'avarage_monthly_income', 'etimated_average_income'],
-  purchase_amount: ['disclosure_amount_financed', 'funding_provided'],
-  purchase_price: ['disclosure_total_payment', 'total_repayment_amount', 'estimatedTotalPaymentAmount'],
   appendix_underwriting_fees: ['disclosure_broker_fee', 'underwriter_fee', 'underwriterfee', 'underwriter_fees'],
   owner1_guarantor_name: ['guaranty_owner1_name', 'guaranty_guarantor1_name', 'guaranty_client_name'],
   guaranty_owner1_name: ['owner1_guarantor_name', 'guaranty_guarantor1_name', 'guaranty_client_name', 'client_name'],
@@ -720,6 +745,63 @@ function expandPrefillValues(
     if (!v) continue;
     for (const alias of aliases) {
       if (!String(out[alias] || '').trim()) out[alias] = v;
+    }
+  }
+
+  /**
+   * State disclosure "Funding Provided" must be offer / purchase_amount — never recipient funds.
+   */
+  const offerAmount =
+    String(out.purchase_amount || '').trim() ||
+    String(out.approved_amount || '').trim() ||
+    String(out.disclosure_amount_financed || '').trim();
+  if (offerAmount) {
+    out.funding_provided = offerAmount;
+  }
+
+  /**
+   * CA / NY page-3 auto-calc (before DocuSign):
+   *   recipient_funds (top) = offer amount
+   *   subtotal = recipient_funds + line_1 + line_2
+   *   net      = subtotal − broker_fee
+   */
+  {
+    const hasPage3 =
+      String(out.disclosure_page3_subtotal ?? '').trim() !== '' ||
+      String(out.disclosure_page3_net ?? '').trim() !== '' ||
+      String(out.disclosure_page3_line_1 ?? '').trim() !== '' ||
+      String(out.disclosure_page3_line_2 ?? '').trim() !== '' ||
+      String(out.disclosure_broker_fee ?? '').trim() !== '' ||
+      String(out.disclosure_recipient_funds ?? '').trim() !== '';
+    if (hasPage3) {
+      const parseMoney = (raw: unknown): number => {
+        const n = Number.parseFloat(String(raw ?? '').replace(/[$,%\s]/g, ''));
+        return Number.isFinite(n) ? n : 0;
+      };
+      const formatMoney = (n: number): string =>
+        (Math.round(n * 100) / 100).toFixed(2);
+      if (offerAmount) {
+        out.disclosure_recipient_funds = offerAmount;
+      }
+      const top =
+        parseMoney(out.disclosure_recipient_funds) ||
+        parseMoney(out.funding_provided) ||
+        parseMoney(out.purchase_amount);
+      const line1 = parseMoney(out.disclosure_page3_line_1);
+      const line2 = parseMoney(out.disclosure_page3_line_2);
+      const broker =
+        parseMoney(out.disclosure_broker_fee) ||
+        parseMoney(out.appendix_underwriting_fees);
+      const subtotal = top + line1 + line2;
+      const net = Math.max(0, subtotal - broker);
+      out.disclosure_page3_subtotal = formatMoney(subtotal);
+      out.disclosure_page3_net = formatMoney(net);
+      if (!String(out.disclosure_page3_line_1 ?? '').trim()) {
+        out.disclosure_page3_line_1 = formatMoney(line1);
+      }
+      if (!String(out.disclosure_page3_line_2 ?? '').trim()) {
+        out.disclosure_page3_line_2 = formatMoney(line2);
+      }
     }
   }
 

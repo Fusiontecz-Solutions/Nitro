@@ -116,9 +116,61 @@ export function mergeAchAuthorizationDocuSignIntoPrefill(
     funderName:
       patch.funderName !== undefined ? patch.funderName : (prior.funderName ?? null),
   };
+
+  // Keep mapping-id envelope blob + documentSendHistory in sync for FE status UI.
+  const envelopeMapRaw = base.documentTemplateEnvelopeByMappingId;
+  const envelopeMap =
+    envelopeMapRaw && typeof envelopeMapRaw === 'object' && !Array.isArray(envelopeMapRaw)
+      ? { ...(envelopeMapRaw as Record<string, unknown>) }
+      : {};
+  const envelopeMeta = {
+    envelopeId: meta.envelopeId,
+    status: achCapsuleToInternal(meta.status),
+    updatedAt: meta.updatedAt,
+  };
+  envelopeMap.ach_authorization = envelopeMeta;
+  for (const [key, value] of Object.entries(envelopeMap)) {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) continue;
+    if (String((value as Record<string, unknown>).envelopeId ?? '').trim() === meta.envelopeId) {
+      envelopeMap[key] = {
+        ...(value as Record<string, unknown>),
+        ...envelopeMeta,
+      };
+    }
+  }
+
+  const historyRaw = base.documentSendHistory;
+  let documentSendHistory = Array.isArray(historyRaw) ? [...historyRaw] : [];
+  let historyTouched = false;
+  documentSendHistory = documentSendHistory.map((item) => {
+    if (item == null || typeof item !== 'object' || Array.isArray(item)) return item;
+    const row = item as Record<string, unknown>;
+    if (String(row.envelopeId ?? '').trim() !== meta.envelopeId) return item;
+    const kind = String(row.documentKind ?? '').trim().toLowerCase();
+    if (kind && kind !== 'ach') return item;
+    historyTouched = true;
+    return {
+      ...row,
+      documentKind: 'ach',
+      status: achCapsuleToInternal(meta.status),
+      updatedAt: meta.updatedAt,
+    };
+  });
+  if (!historyTouched && meta.status !== 'DRAFT') {
+    documentSendHistory.push({
+      envelopeId: meta.envelopeId,
+      documentKind: 'ach',
+      label: 'ACH Authorization',
+      status: achCapsuleToInternal(meta.status),
+      updatedAt: meta.updatedAt,
+    });
+  }
+
   return {
     ...base,
     [ACH_AUTHORIZATION_DOCUSIGN_KEY]: meta,
+    documentTemplateEnvelopeByMappingId: envelopeMap,
+    documentSendHistory,
   };
 }
 
@@ -203,6 +255,7 @@ export type AchEnvelopeAuthHints = {
   applicationId: string | null;
   contractId: number | null;
   funderName: string | null;
+  funderProfileId: string | null;
 };
 
 /** Resolve CRM contract + funder for a standalone ACH envelope (not in Document table). */
@@ -232,11 +285,14 @@ export async function findAchEnvelopeAuthHints(
   for (const row of byCurrent) {
     const ach = parseAchAuthorizationDocuSignFromPrefill(row.contractPrefillOverrides);
     if (ach?.envelopeId !== eid) continue;
+    const prefillFunder = parseAchFunderFromPrefill(row.contractPrefillOverrides, eid);
     return {
       applicationId: row.applicationId ? String(row.applicationId).trim() : null,
       contractId: row.id,
       funderName:
-        String(ach.funderName ?? row.funderName ?? '').trim() || null,
+        String(ach.funderName ?? prefillFunder.funderName ?? row.funderName ?? '').trim() ||
+        null,
+      funderProfileId: prefillFunder.funderProfileId,
     };
   }
 
@@ -266,10 +322,48 @@ export async function findAchEnvelopeAuthHints(
       contractId: row.id,
       funderName:
         String(match.funderName ?? row.funderName ?? '').trim() || null,
+      funderProfileId: null,
     };
   }
 
   return null;
+}
+
+function parseAchFunderFromPrefill(
+  prefill: unknown,
+  envelopeId: string,
+): { funderName: string | null; funderProfileId: string | null } {
+  if (prefill == null || typeof prefill !== 'object' || Array.isArray(prefill)) {
+    return { funderName: null, funderProfileId: null };
+  }
+  const raw = prefill as Record<string, unknown>;
+  const eid = String(envelopeId || '').trim();
+
+  const history = raw.documentSendHistory;
+  if (Array.isArray(history)) {
+    for (const row of history) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      if (String(r.envelopeId ?? '').trim() !== eid) continue;
+      if (String(r.documentKind ?? '').toLowerCase() !== 'ach') continue;
+      const funderName = String(r.funderName ?? '').trim() || null;
+      const funderProfileId = String(r.funderProfileId ?? '').trim() || null;
+      if (funderName || funderProfileId) return { funderName, funderProfileId };
+    }
+  }
+
+  const lastAch = raw.lastAchSentFunder;
+  if (lastAch && typeof lastAch === 'object' && !Array.isArray(lastAch)) {
+    const o = lastAch as Record<string, unknown>;
+    if (String(o.envelopeId ?? '').trim() === eid) {
+      return {
+        funderName: String(o.funderName ?? '').trim() || null,
+        funderProfileId: String(o.funderProfileId ?? '').trim() || null,
+      };
+    }
+  }
+
+  return { funderName: null, funderProfileId: null };
 }
 
 type AchContractPrefillRow = {
@@ -440,12 +534,55 @@ async function findContractsForAchEnvelopeUpdate(
       hints.applicationId ?? '',
       hints.contractId,
     );
-    contracts = candidates.filter(
-      (row) =>
-        parseAchAuthorizationDocuSignFromPrefill(row.contractPrefillOverrides)?.envelopeId === eid,
+    contracts = candidates.filter((row) =>
+      contractPrefillReferencesAchEnvelope(row.contractPrefillOverrides, eid),
     );
   }
   return contracts;
+}
+
+/** True when prefill stores this envelope as ACH (capsule, alias blob, or send history). */
+function contractPrefillReferencesAchEnvelope(
+  raw: unknown,
+  envelopeId: string,
+): boolean {
+  const eid = String(envelopeId || '').trim();
+  if (!eid) return false;
+  if (parseAchAuthorizationDocuSignFromPrefill(raw)?.envelopeId === eid) return true;
+  if (parseAchSendHistoryFromPrefill(raw).some((h) => h.envelopeId === eid)) return true;
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const o = raw as Record<string, unknown>;
+
+  const docHistory = o.documentSendHistory;
+  if (Array.isArray(docHistory)) {
+    for (const item of docHistory) {
+      if (item == null || typeof item !== 'object' || Array.isArray(item)) continue;
+      const row = item as Record<string, unknown>;
+      if (String(row.envelopeId ?? '').trim() !== eid) continue;
+      const kind = String(row.documentKind ?? '').trim().toLowerCase();
+      if (kind === 'ach' || kind === '') return true;
+    }
+  }
+
+  const envelopeMap = o.documentTemplateEnvelopeByMappingId;
+  if (envelopeMap && typeof envelopeMap === 'object' && !Array.isArray(envelopeMap)) {
+    for (const [key, meta] of Object.entries(envelopeMap as Record<string, unknown>)) {
+      if (meta == null || typeof meta !== 'object' || Array.isArray(meta)) continue;
+      if (String((meta as Record<string, unknown>).envelopeId ?? '').trim() !== eid) {
+        continue;
+      }
+      const k = String(key ?? '').trim().toLowerCase();
+      if (
+        k === 'ach_authorization' ||
+        k.includes('ach_authorization') ||
+        k.endsWith('_ach') ||
+        k.includes('ach_form')
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**

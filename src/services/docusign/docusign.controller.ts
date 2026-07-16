@@ -208,18 +208,30 @@ export const getEmbeddedSignLink = async (req: Request, res: Response) => {
 export const voidDocument = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { documentId, reason } = req.body;
+    const { documentId, reason, applicationId, contractId, funderName, funderProfileId, contractState } =
+      req.body;
     if (!documentId) {
       return res.status(400).json({ message: 'Missing documentId' });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.voidDocument(
       userId,
       documentId,
       reason || 'Voided by user',
+      {
+        applicationId: applicationId ? String(applicationId) : undefined,
+        contractId:
+          Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+        funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+        funderProfileId:
+          typeof funderProfileId === 'string' ? funderProfileId.trim() : undefined,
+        contractState: typeof contractState === 'string' ? contractState.trim() : undefined,
+      },
     );
     return res.json(result);
   } catch (error: any) {
-    return res.status(error.status || 500).json({ message: error.message });
+    const { status, message } = formatDocusignRouteError(error);
+    return res.status(status).json({ message });
   }
 };
 
