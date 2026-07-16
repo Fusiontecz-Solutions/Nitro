@@ -82,44 +82,60 @@ export function resolveContractSendRowFunderAuth(
     contractState?: string;
 } {
     const envelopeId = String(row.envelopeId ?? "").trim();
+    const contractState = String((contract as { state?: unknown })?.state ?? "").trim();
+    const withState = (auth: {
+        funderName?: string;
+        funderProfileId?: string;
+    }) => ({
+        ...auth,
+        ...(contractState ? { contractState } : {}),
+    });
+
     if (row.funderName || row.funderProfileId) {
-        return {
+        return withState({
             ...(row.funderName ? { funderName: String(row.funderName).trim() } : {}),
             ...(row.funderProfileId
                 ? { funderProfileId: String(row.funderProfileId).trim() }
                 : {}),
-            ...(contract?.state
-                ? { contractState: String((contract as { state?: unknown }).state).trim() }
-                : {}),
-        };
+        });
     }
+
     const prefill = contract?.contractPrefillOverrides;
     if (envelopeId) {
         const fromHistory = parseDocumentSendHistory(prefill).find(
             (h) => String(h.envelopeId ?? "").trim() === envelopeId,
         );
         if (fromHistory?.funderName || fromHistory?.funderProfileId) {
-            return {
+            return withState({
                 ...(fromHistory.funderName ? { funderName: fromHistory.funderName } : {}),
                 ...(fromHistory.funderProfileId
                     ? { funderProfileId: fromHistory.funderProfileId }
                     : {}),
-            };
+            });
         }
         const lastAch = parseLastAchSentFunder(prefill);
-        if (lastAch?.envelopeId === envelopeId) {
-            return {
+        if (
+            lastAch &&
+            (row.rowType === "ach" ||
+                !lastAch.envelopeId ||
+                lastAch.envelopeId === envelopeId)
+        ) {
+            return withState({
                 funderName: lastAch.funderName,
                 ...(lastAch.funderProfileId ? { funderProfileId: lastAch.funderProfileId } : {}),
-            };
+            });
         }
     }
+
+    // For ACH rows, never guess the contract funder — backend will try linked DocuSign accounts.
+    if (row.rowType === "ach") {
+        return withState({});
+    }
+
     const contractFunder = String((contract as { funderName?: unknown })?.funderName ?? "").trim();
-    const contractState = String((contract as { state?: unknown })?.state ?? "").trim();
-    return {
+    return withState({
         ...(contractFunder ? { funderName: contractFunder } : {}),
-        ...(contractState ? { contractState } : {}),
-    };
+    });
 }
 
 export function pickContractEnvelopeDocument(
