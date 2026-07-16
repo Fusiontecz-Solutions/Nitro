@@ -63,6 +63,7 @@ import { isUtahDisclosureState } from "./daily_utah";
 import {
     ACH_AUTHORIZATION_EDITABLE_FIELD_IDS,
     ACH_AUTHORIZATION_FIELD_LABELS,
+    ACH_PREFILL_MAPPING_ALIAS_KEY,
     resolveAchSavedMappingOverrides,
 } from "./achFormEditConfig";
 import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
@@ -232,6 +233,53 @@ export function resolveAchEnvelopeDisplayStatus(
     if (priorOther.length > 0) return String(priorOther[0].status).trim();
 
     return raw || "draft";
+}
+
+/**
+ * Resolve the ACH envelope meta for the modal/status UI.
+ * Prefer the live mapping id, then the stable `ach_authorization` alias, then
+ * any ACH entry in the envelope blob / send history (survives mapping-id swaps).
+ */
+export function resolveAchLinkedEnvelopeMeta(args: {
+    mappingId?: string | null;
+    envelopeByMappingId: Record<string, DocumentTemplateEnvelopeMeta>;
+    sendHistory?: DocumentSendHistoryEntry[];
+    /** Optional capsule from `achAuthorizationDocuSign` (Contracts Generated source). */
+    capsule?: { envelopeId?: string | null; status?: string | null; updatedAt?: string | null } | null;
+}): DocumentTemplateEnvelopeMeta | null {
+    const byId = args.envelopeByMappingId ?? {};
+    const mappingId = String(args.mappingId ?? "").trim();
+    if (mappingId && byId[mappingId]?.envelopeId) {
+        return byId[mappingId];
+    }
+    const alias = byId[ACH_PREFILL_MAPPING_ALIAS_KEY];
+    if (alias?.envelopeId) return alias;
+
+    const capsuleId = String(args.capsule?.envelopeId ?? "").trim();
+    if (capsuleId) {
+        return {
+            envelopeId: capsuleId,
+            status: String(args.capsule?.status ?? "").trim() || undefined,
+            updatedAt: String(args.capsule?.updatedAt ?? "").trim() || undefined,
+        };
+    }
+
+    for (const meta of Object.values(byId)) {
+        if (String(meta?.envelopeId ?? "").trim()) return meta;
+    }
+
+    const achHistory = (args.sendHistory ?? []).filter((h) => h.documentKind === "ach");
+    const latest = [...achHistory]
+        .filter((h) => String(h.envelopeId ?? "").trim())
+        .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+    if (latest.length > 0) {
+        return {
+            envelopeId: String(latest[0].envelopeId).trim(),
+            status: String(latest[0].status ?? "").trim() || undefined,
+            updatedAt: String(latest[0].updatedAt ?? "").trim() || undefined,
+        };
+    }
+    return null;
 }
 
 /** DocuSign envelope id to load in the PDF pane (may differ from current when resend is in progress). */
@@ -602,11 +650,12 @@ function buildBalanceTransferComputed(
         recipientName: sctx.recipientName,
         recipientAddress: sctx.recipientAddress,
     });
+    // Remaining Balance is NOT main-contract payback (purchasePrice). Prefer explicit BT
+    // remaining-balance overrides; leave blank for the mapping editor when unset.
     const purchasePrice =
-        str(c.purchasePrice) ||
-        str(c.purchaseAmount) ||
-        str(overrides.purchasePrice) ||
-        str(overrides.purchaseAmount) ||
+        str(overrides.balance_transfer_purchase_price) ||
+        str(overrides.remainingBalance) ||
+        str(overrides.remaining_balance) ||
         "";
     const funderNameWithDealPrefix = formatFunderNameWithDealIdPrefix(
         str(c.funderName) || str(overrides.funderName),
@@ -1288,6 +1337,58 @@ function upsertPrefillFieldValue(
     byId.set(id, existing ? { ...existing, value: v } : { id, value: v, label: "" });
 }
 
+/**
+ * Main RPA / Verify Prefill money tabs. Disclosure + addendum expansion must not
+ * overwrite these when already set — shared envelope value maps feed the main contract PDF.
+ */
+const MAIN_CONTRACT_PROTECTED_MONEY_FIELD_IDS = new Set(
+    [
+        "purchase_price",
+        "purchasePrice",
+        "purchase_amount",
+        "purchaseAmount",
+        "remittance",
+        "net_to_merchant",
+        "NetFundProvided",
+        "frequency",
+        "paymentTerms",
+        "purchase_percent",
+        "specified_percentage",
+        "appendix_underwriting_fees",
+        "underwriter_fee",
+        "underwriterfee",
+        "underwriter_fees",
+        "ach_authorization_account_holder_bank_transaction_fee",
+        "ach_authorization_account_holder_bank_number_of_transactions",
+        "addendum_dated_principal_owner_amount",
+        "addendum_dated_principal_owner_amount2",
+    ].map((id) => id.toLowerCase()),
+);
+
+function isMainContractProtectedMoneyFieldId(id: string): boolean {
+    return MAIN_CONTRACT_PROTECTED_MONEY_FIELD_IDS.has(
+        String(id || "")
+            .trim()
+            .toLowerCase(),
+    );
+}
+
+/** Upsert unless this is a protected main-contract money id that already has a value. */
+function upsertPrefillFieldValuePreserveMainMoney(
+    byId: Map<string, ContractPrefillField>,
+    id: string,
+    value: string,
+): void {
+    const key = String(id || "").trim();
+    const v = String(value ?? "").trim();
+    if (!key || !v) return;
+    if (isMainContractProtectedMoneyFieldId(key)) {
+        const existing = String(byId.get(key)?.value ?? "").trim();
+        if (existing) return;
+    }
+    upsertPrefillFieldValue(byId, key, v);
+}
+
 export function applyDocumentTemplateMappingPrefillOverrides(args: {
     prefillFieldsPayload: ContractPrefillField[];
     mergedTemplateIds: string[];
@@ -1364,7 +1465,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             ? expandDisclosureEditorValuesToPdfFields(editorValues)
             : editorValues;
         for (const [id, value] of Object.entries(fieldsToMerge)) {
-            upsertPrefillFieldValue(byId, id, String(value ?? ""));
+            upsertPrefillFieldValuePreserveMainMoney(byId, id, String(value ?? ""));
         }
         const addendumKind = resolveAddendumKind(
             templateId || tid || null,
@@ -1375,11 +1476,19 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             const remaining = String(
                 fieldsToMerge.purchase_price ??
                     fieldsToMerge.balance_transfer_purchase_price ??
+                    perMap?.purchase_price ??
+                    perMap?.balance_transfer_purchase_price ??
                     "",
             ).trim();
             if (remaining) {
-                upsertPrefillFieldValue(byId, "purchase_price", remaining);
+                // Never clobber main RPA purchase_price (payback) with BT remaining balance.
                 upsertPrefillFieldValue(byId, "balance_transfer_purchase_price", remaining);
+                // Keep bare purchase_price on the mapping payload for editor round-trips only
+                // when main payback is absent — otherwise leave main purchase_price alone.
+                const mainPayback = String(byId.get("purchase_price")?.value ?? "").trim();
+                if (!mainPayback) {
+                    upsertPrefillFieldValue(byId, "purchase_price", remaining);
+                }
             }
         }
     }
@@ -1608,6 +1717,12 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
             continue;
         }
         const existing = byId.get(id);
+        const existingVal = String(existing?.value ?? "").trim();
+        // Verify Prefill / Final Calculation money on the main RPA must win over
+        // disclosure calculator aliases (purchase_price, remittance, etc.).
+        if (isMainContractProtectedMoneyFieldId(id) && existingVal) {
+            continue;
+        }
         const existingNum = parsePrefillMoneyForMerge(existing?.value);
         const incomingNum = parsePrefillMoneyForMerge(v);
         if (

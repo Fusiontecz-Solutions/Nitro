@@ -108,15 +108,23 @@ export function parseStandalonePackageDocuSignFromPrefill(
     };
 }
 
+/** One label per included document — never merges addendum + disclosure. */
+export function listStandalonePackageDocumentLabels(
+    packageMeta?: StandalonePackageDocuSignMeta["package"],
+): string[] {
+    if (!packageMeta) return ["Supplemental documents"];
+    const labels: string[] = [];
+    if (packageMeta.includeAddendum) labels.push("Addendum");
+    if (packageMeta.includeDisclosure) labels.push("State disclosure");
+    if (!labels.length) return ["Supplemental documents"];
+    return labels;
+}
+
 export function formatStandalonePackageSendLabel(
     packageMeta?: StandalonePackageDocuSignMeta["package"],
 ): string {
-    if (!packageMeta) return "Supplemental documents";
-    const { includeAddendum, includeDisclosure } = packageMeta;
-    if (includeAddendum && includeDisclosure) return "Addendum & disclosure";
-    if (includeAddendum) return "Addendum";
-    if (includeDisclosure) return "State disclosure";
-    return "Supplemental documents";
+    const labels = listStandalonePackageDocumentLabels(packageMeta);
+    return labels.join(" & ");
 }
 
 export function formatStandalonePackageTableStatusLabel(
@@ -124,7 +132,8 @@ export function formatStandalonePackageTableStatusLabel(
     envelopeId?: string | null,
 ): string {
     if (!String(envelopeId ?? "").trim()) return "Pending";
-    if (status === "DRAFT") return "Draft";
+    // Drafts are filtered from Contracts Generated — do not surface Draft here.
+    if (status === "DRAFT") return "Pending";
     if (status === "VOIDED") return "Voided";
     if (status === "SENT") return "Sent";
     if (status === "VIEWED") return "Viewed";

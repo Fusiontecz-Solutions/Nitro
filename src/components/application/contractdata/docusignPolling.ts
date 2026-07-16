@@ -62,6 +62,7 @@ export function shouldFallbackPollDocuSign(args: {
     const now = args.nowMs ?? Date.now();
     const staleMs = args.staleMs ?? DOCUSIGN_WEBHOOK_STALE_MS;
     const last = Number(args.lastCrmStatusAtMs) || 0;
-    if (!last) return true;
+    // Webhooks + Socket.IO push CRM updates — do not poll DocuSign on first open.
+    if (!last) return false;
     return now - last >= staleMs;
 }

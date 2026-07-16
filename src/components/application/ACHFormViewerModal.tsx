@@ -76,6 +76,7 @@ import {
     parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
     resolveAchEnvelopeDisplayStatus,
+    resolveAchLinkedEnvelopeMeta,
     resolveAchPdfEnvelopeId,
     getDocumentTemplatePrefillFieldRowsForEditor,
     parseLastAchSentFunder,
@@ -85,7 +86,10 @@ import {
     TemplateMappingPrefillEditDialog,
     type TemplateMappingPrefillEditRow,
 } from "./contractdata/TemplateMappingPrefillEditDialog";
-import { resolveAchSavedMappingOverrides } from "./contractdata/achFormEditConfig";
+import {
+    ACH_PREFILL_MAPPING_ALIAS_KEY,
+    resolveAchSavedMappingOverrides,
+} from "./contractdata/achFormEditConfig";
 import {
     normalizeContractPrefillOverrides,
     type BuildContractPrefillFieldsArgs,
@@ -99,6 +103,7 @@ import {
     type ContractSignerOverrideRow,
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
+import { parseAchAuthorizationDocuSignFromPrefill } from "./contractdata/achAuthorizationDocuSign";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
@@ -871,9 +876,16 @@ export default function ACHFormViewerModal({
     );
 
     const linkedAchEnvelope = useMemo((): DocumentTemplateEnvelopeMeta | null => {
-        if (!achMapping?.id) return null;
-        return documentTemplateEnvelopeByMappingId[achMapping.id] ?? null;
-    }, [achMapping, documentTemplateEnvelopeByMappingId]);
+        const prefill = (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+            ?.contractPrefillOverrides;
+        const capsule = parseAchAuthorizationDocuSignFromPrefill(prefill);
+        return resolveAchLinkedEnvelopeMeta({
+            mappingId: achMapping?.id,
+            envelopeByMappingId: documentTemplateEnvelopeByMappingId,
+            sendHistory: parseDocumentSendHistory(prefill).filter((h) => h.documentKind === "ach"),
+            capsule,
+        });
+    }, [achMapping?.id, documentTemplateEnvelopeByMappingId, resolvedContract]);
 
     const achSendHistory = useMemo(
         () =>
@@ -1082,13 +1094,19 @@ export default function ACHFormViewerModal({
 
     const syncAchEnvelopeStatus = useCallback(
         async (silent = false, options?: { force?: boolean; crmOnly?: boolean }) => {
-            if (!achEnvelopeId || !achMapping?.id) return;
-            if (isAchEnvelopeSigningFinished(achStatus)) return;
+            if (!achEnvelopeId) return;
+            const mappingKey =
+                String(achMapping?.id ?? "").trim() || ACH_PREFILL_MAPPING_ALIAS_KEY;
+            if (isAchEnvelopeSigningFinished(achStatus) || isAchEnvelopeSigningFinished(achDisplayStatus)) {
+                return;
+            }
 
             const now = Date.now();
             const webhookStale = shouldFallbackPollDocuSign({
                 force: options?.force === true,
-                signingFinished: isAchEnvelopeSigningFinished(achStatus),
+                signingFinished:
+                    isAchEnvelopeSigningFinished(achStatus) ||
+                    isAchEnvelopeSigningFinished(achDisplayStatus),
                 lastCrmStatusAtMs: lastAchCrmStatusChangeAtRef.current || now,
                 staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
             });
@@ -1151,7 +1169,7 @@ export default function ACHFormViewerModal({
                         achCcEmailDeliveredRef.current = true;
                     }
                     await persistAchEnvelopeOnContract(
-                        achMapping.id,
+                        mappingKey,
                         achEnvelopeId,
                         syncedStatus,
                     );
@@ -1178,7 +1196,16 @@ export default function ACHFormViewerModal({
                 if (!silent) setStatusRefreshing(false);
             }
         },
-        [achEnvelopeId, achMapping?.id, achStatus, achDisplayStatus, applicationId, persistAchEnvelopeOnContract, refreshContractRow, resolveCcForSend],
+        [
+            achEnvelopeId,
+            achMapping?.id,
+            achStatus,
+            achDisplayStatus,
+            applicationId,
+            persistAchEnvelopeOnContract,
+            refreshContractRow,
+            resolveCcForSend,
+        ],
     );
 
     const revokeTemplatePdfUrl = useCallback(() => {
@@ -1412,12 +1439,15 @@ export default function ACHFormViewerModal({
 
     const refreshAchSigningPreview = useCallback(
         async (silent = false) => {
-            if (!isAchEnvelopeSigningFinished(achStatus)) {
+            const finished =
+                isAchEnvelopeSigningFinished(achStatus) ||
+                isAchEnvelopeSigningFinished(achDisplayStatus);
+            if (!finished && achEnvelopeId) {
                 await syncAchEnvelopeStatus(silent, { force: true });
             }
             await loadDocuSignPdf();
         },
-        [achStatus, syncAchEnvelopeStatus, loadDocuSignPdf],
+        [achEnvelopeId, achStatus, achDisplayStatus, syncAchEnvelopeStatus, loadDocuSignPdf],
     );
 
     useEffect(() => {
@@ -1467,14 +1497,19 @@ export default function ACHFormViewerModal({
 
     useEffect(() => {
         if (!isOpen || !achEnvelopeId) return;
-        if (isAchEnvelopeSigningFinished(achStatus)) return;
+        if (
+            isAchEnvelopeSigningFinished(achStatus) ||
+            isAchEnvelopeSigningFinished(achDisplayStatus)
+        ) {
+            return;
+        }
         void syncAchEnvelopeStatus(true, { crmOnly: true });
         const id = window.setInterval(() => {
             // CRM refresh every tick; DocuSign API only when Connect looks stale.
             void syncAchEnvelopeStatus(true);
         }, ACH_STATUS_POLL_MS);
         return () => window.clearInterval(id);
-    }, [isOpen, achEnvelopeId, achStatus, syncAchEnvelopeStatus]);
+    }, [isOpen, achEnvelopeId, achStatus, achDisplayStatus, syncAchEnvelopeStatus]);
 
     useContractSigningStatusRealtime(applicationId, () => {
         lastAchCrmStatusChangeAtRef.current = Date.now();
@@ -1665,6 +1700,10 @@ export default function ACHFormViewerModal({
                 voidBoldSignDocument({
                     documentId: achEnvelopeId,
                     reason: "Cancelled by user from CRM",
+                    ...(applicationId ? { applicationId: String(applicationId) } : {}),
+                    ...(contractId != null ? { contractId } : {}),
+                    funderName: String(selectedFunder || selectedFunderProfile?.name || "").trim(),
+                    funderProfileId: persistedFunderProfileIdForApi(selectedFunderProfile),
                 }),
             ).unwrap();
             await persistAchEnvelopeOnContract(achMapping.id, achEnvelopeId, "revoked");
@@ -2279,7 +2318,12 @@ export default function ACHFormViewerModal({
                                         variant="outline"
                                         size="sm"
                                         className="h-8 text-xs"
-                                        disabled={statusRefreshing || !achPdfEnvelopeId}
+                                        disabled={statusRefreshing || !achEnvelopeId}
+                                        title={
+                                            achEnvelopeId
+                                                ? "Refresh ACH signing status from DocuSign"
+                                                : "No ACH envelope to refresh yet"
+                                        }
                                         onClick={() => void refreshAchSigningPreview(false)}
                                     >
                                         {statusRefreshing ? (

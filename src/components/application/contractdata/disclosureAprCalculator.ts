@@ -514,7 +514,7 @@ export function mapDisclosureMetricsToFieldOverrides(
         options.includeApr ?? stateDisclosureRequiresApr(options.state, options.frequency);
 
     const overrides: Record<string, string> = {
-        funding_provided: formatDisclosureUsd(metrics.amountFinanced),
+        funding_provided: formatDisclosureUsd(metrics.purchasePrice),
         finance_charge: formatDisclosureUsd(metrics.financeCharge),
         estimated_payment: formatDisclosureUsd(metrics.estimatedPayment),
         daily_payment: formatDisclosureUsd(metrics.estimatedPayment),

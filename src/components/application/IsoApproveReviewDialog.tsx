@@ -308,7 +308,13 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
         if (!open) return;
         const nextOwners = mapResolvedOwnersToForm();
         setOwners(nextOwners);
-        setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+        // Preserve open accordion across owner refetches; only clamp index.
+        setExpandedOwnerIndex((current) => {
+            if (nextOwners.length <= 1) return 0;
+            if (current < 0) return current;
+            if (current >= nextOwners.length) return Math.max(0, nextOwners.length - 1);
+            return current;
+        });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, resolvedOwnerRecords]);
 
@@ -492,7 +498,10 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
     };
 
     const ownerLabel = (owner: OwnerForm, index: number) => {
-        const name = `${owner.firstName} ${owner.lastName}`.trim();
+        const lastRaw = String(owner.lastName ?? "").trim();
+        const lastName =
+            !lastRaw || lastRaw === "—" || /^\d+$/.test(lastRaw) ? "" : lastRaw;
+        const name = `${owner.firstName} ${lastName}`.trim();
         return name || `Owner ${index + 1}`;
     };
 

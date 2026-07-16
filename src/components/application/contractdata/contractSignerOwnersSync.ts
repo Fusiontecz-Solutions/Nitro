@@ -5,6 +5,7 @@ import { getClientByClientId, getClientById, updateClient } from "@/redux/action
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import {
     createContractOwner,
+    deleteContractOwner,
     getAllContractOwners,
     updateContractOwner,
 } from "@/redux/actions/contractActions";
@@ -139,6 +140,29 @@ function mergeOwnerRowAtIndex(
     contractRow: Record<string, unknown> | undefined,
     clientRow: Record<string, unknown> | undefined,
 ): Record<string, unknown> | null {
+    const clientAddr =
+        clientRow?.address && typeof clientRow.address === "object"
+            ? (clientRow.address as Record<string, unknown>)
+            : null;
+    const address1 = str(
+        clientRow?.address1 ??
+            clientAddr?.address1 ??
+            (typeof clientRow?.address === "string" ? clientRow.address : undefined) ??
+            contractRow?.address1 ??
+            (typeof contractRow?.address === "string" ? contractRow.address : undefined),
+    );
+    const address2 = str(
+        clientRow?.address2 ?? clientAddr?.address2 ?? contractRow?.address2,
+    );
+    const city = str(clientRow?.city ?? clientAddr?.city ?? contractRow?.city);
+    const state = str(clientRow?.state ?? clientAddr?.state ?? contractRow?.state);
+    const zip = str(
+        clientRow?.zip ??
+            clientRow?.zipCode ??
+            clientAddr?.zipCode ??
+            contractRow?.zip ??
+            contractRow?.zipCode,
+    );
     const merged: Record<string, unknown> = {
         firstName: str(
             clientRow?.firstName ??
@@ -182,6 +206,13 @@ function mergeOwnerRowAtIndex(
                 contractRow?.driverLicenseNumber ??
                 contractRow?.driverLicense,
         ),
+        address1,
+        address2,
+        city,
+        state,
+        zip,
+        zipCode: zip,
+        address: address1,
     };
     return ownerRowHasIdentity(merged) ? merged : null;
 }
@@ -217,12 +248,21 @@ export function resolveOwnerRowsForContractPrefill(
         }
 
         const own = (client.owner ?? {}) as Record<string, unknown>;
+        const ownAddr =
+            own.address && typeof own.address === "object"
+                ? (own.address as Record<string, unknown>)
+                : {};
         const flat = mergeOwnerRowAtIndex(fromContract[0], {
             firstName: client.ownerFirstName ?? own.firstName,
             lastName: client.ownerLastName ?? own.lastName,
             email: client.ownerEmail ?? own.email ?? client.businessEmail,
             ssn: client.ownerSsn ?? own.ssn,
             driverLicense: client.driverLicense ?? own.driverLicense,
+            address1: client.ownerAddress1 ?? own.address1 ?? ownAddr.address1,
+            address2: client.ownerAddress2 ?? own.address2 ?? ownAddr.address2,
+            city: client.ownerCity ?? own.city ?? ownAddr.city,
+            state: client.ownerState ?? own.state ?? ownAddr.state,
+            zipCode: client.ownerZipCode ?? own.zipCode ?? ownAddr.zipCode,
         });
         const rows: Record<string, unknown>[] = flat ? [flat] : [];
         for (let i = 1; i < fromContract.length; i++) {
@@ -269,11 +309,11 @@ export function buildContractSignerRowsFromOwnerParties(
 ): ContractSignerOverrideRow[] {
     return owners
         .slice(0, 2)
-        .map((o) => {
+        .map((o, index) => {
             const name = `${str(o.ownerFirstName)} ${str(o.ownerLastName)}`.trim();
             const email = str(o.ownerEmail);
             return {
-                role: resolveDocuSignSignerRole(),
+                role: resolveDocuSignSignerRole(index === 0 ? undefined : "Owner 2"),
                 name: name || (email ? email.split("@")[0] : ""),
                 email,
             };
@@ -374,13 +414,13 @@ export function sortContractOwnerRows(
     });
 }
 
-function partyRowFromOwner(party: OwnerPartyForSigner | undefined): ContractSignerOverrideRow {
+function partyRowFromOwner(party: OwnerPartyForSigner | undefined, index = 0): ContractSignerOverrideRow {
     const name = party
         ? `${str(party.ownerFirstName)} ${str(party.ownerLastName)}`.trim()
         : "";
     const email = party ? str(party.ownerEmail) : "";
     return {
-        role: resolveDocuSignSignerRole(),
+        role: resolveDocuSignSignerRole(index === 0 ? undefined : "Owner 2"),
         name: name || (email ? email.split("@")[0] : ""),
         email,
     };
@@ -401,7 +441,7 @@ export function mergeContractSignerEditorRows(
     for (let i = 0; i < count; i++) {
         const current = currentRows[i];
         const suggest = suggested[i];
-        const party = partyRowFromOwner(parties[i]);
+        const party = partyRowFromOwner(parties[i], i);
         out.push({
             role: resolveDocuSignSignerRole(
                 current?.role || suggest?.role || party.role,
@@ -585,6 +625,7 @@ async function syncContractOwnerRecords(
     existingOwners: Record<string, unknown>[],
     signerRows: ContractSignerOverrideRow[],
 ): Promise<void> {
+    const sorted = sortContractOwnerRows(existingOwners);
     for (let i = 0; i < signerRows.length; i++) {
         const row = signerRows[i]!;
         const email = str(row.email);
@@ -594,11 +635,12 @@ async function syncContractOwnerRecords(
         const data = {
             contractId,
             firstName: firstName || "Owner",
-            lastName: lastName || String(i + 1),
+            /** Placeholder only for required contract-owner column — never use slot index. */
+            lastName: lastName || "—",
             email: email || undefined,
         };
 
-        const existing = existingOwners[i];
+        const existing = sorted[i];
         const existingId = existing?.id;
         if (existingId != null && String(existingId).trim() !== "") {
             await dispatch(
@@ -611,6 +653,19 @@ async function syncContractOwnerRecords(
             await dispatch(createContractOwner(data)).unwrap();
         }
     }
+
+    /** Remove stale Owner 2+ contract rows when Signer 2 was removed. */
+    for (let i = sorted.length - 1; i >= signerRows.length; i--) {
+        const oid = Number(sorted[i]?.id);
+        if (Number.isFinite(oid) && oid > 0) {
+            try {
+                await dispatch(deleteContractOwner(oid)).unwrap();
+            } catch {
+                /* ignore delete failures */
+            }
+        }
+    }
+
     await dispatch(getAllContractOwners({ contractId })).unwrap();
 }
 
@@ -670,14 +725,21 @@ export async function syncContractSignerRowsToCrm(args: {
     while (base.owners.length < rows.length) {
         base.owners.push(emptyOwnerDetail());
     }
+    /** Signer 1 → Owner 1, Signer 2 → Owner 2; drop extra CRM owners when Signer 2 is removed. */
+    if (base.owners.length > rows.length) {
+        base.owners = base.owners.slice(0, Math.max(1, rows.length));
+    }
 
     for (let i = 0; i < rows.length; i++) {
         const row = rows[i]!;
         const email = str(row.email);
         const { firstName, lastName } = splitPersonName(row.name);
         const owner = base.owners[i]!;
-        if (firstName) owner.firstName = firstName;
-        if (lastName) owner.lastName = lastName;
+        if (firstName || lastName || str(row.name)) {
+            owner.firstName = firstName || str(row.name) || owner.firstName;
+            // Always write lastName so single-token signer names clear stale "2"/"1" leftovers.
+            owner.lastName = lastName === "—" ? "" : lastName;
+        }
         if (email) owner.email = email;
     }
 

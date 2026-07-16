@@ -59,6 +59,7 @@ export const californiaDisclosureMergeRoleFormFields: CaliforniaDisclosureMergeR
         textField("funding_provided", 1, 345, 139),
         textField("estimated_annual_percentage_rate", 1, 178, 236),
         textField("avarage_monthly_income", 1, 330, 316),
+        textField("disclosure_merchant_name", 1, 383, 301, 160),
         textField("funder_name", 1, 433, 376, 160),
         textField("finance_charge", 1, 182, 421),
         textField("payment_total", 1, 184, 441),
@@ -94,6 +95,7 @@ export const weeklyCaliforniaDisclosureMergeRoleFormFields: CaliforniaDisclosure
         textField("funder_name", 1, 415, 96, 160),
         textField("estimated_annual_percentage_rate", 1, 178, 236),
         textField("avarage_monthly_income", 1, 330, 316),
+        textField("disclosure_merchant_name", 1, 383, 301, 160),
         textField("funder_name", 1, 433, 376, 160),
         textField("finance_charge", 1, 183, 408),
         textField("payment_total", 1, 183, 429),
@@ -271,26 +273,23 @@ export function resolveCaliforniaEstimatedTermDays(args: {
     return "";
 }
 
+/**
+ * California / NY-style page 3 amounts:
+ *   subtotal = recipient_funds (offer line) + line_1 + line_2
+ *   net      = subtotal − broker_fee
+ */
 export function buildCaliforniaDisclosurePage3Amounts(args: {
     recipientFunds?: string;
     page3Line1?: string;
     page3Line2?: string;
     brokerFee?: string;
-    fundingProvided?: string;
-    fundingDisbursed?: string;
 }): { page3Subtotal: string; page3Net: string } {
     const recipient = parseMoney(args.recipientFunds);
     const line1 = parseMoney(args.page3Line1);
     const line2 = parseMoney(args.page3Line2);
     const broker = parseMoney(args.brokerFee);
-    const computedSubtotal = recipient + line1 + line2;
-    const subtotal =
-        computedSubtotal > 0 ? computedSubtotal : parseMoney(args.fundingProvided);
-    const computedNet = Math.max(0, subtotal - broker);
-    const net =
-        parseMoney(args.fundingDisbursed) > 0
-            ? parseMoney(args.fundingDisbursed)
-            : computedNet;
+    const subtotal = recipient + line1 + line2;
+    const net = Math.max(0, subtotal - broker);
     return {
         page3Subtotal: formatUsdAmount(subtotal),
         page3Net: formatUsdAmount(net),

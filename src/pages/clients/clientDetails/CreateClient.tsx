@@ -192,6 +192,7 @@ const CreateClient = () => {
 	const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0)
 	const submittedCreateRef = useRef(false)
 	const submittedUpdateRef = useRef(false)
+	const ownersHydratedClientIdRef = useRef<string | null>(null)
 
 	const isViewMode = !!clientId && searchParams.get('mode') === 'view'
 	const isEditMode = !!clientId && !isViewMode
@@ -327,12 +328,27 @@ const CreateClient = () => {
 
 		reset(formData)
 		replace(owners)
-		setExpandedOwnerIndex(isViewMode && owners.length > 1 ? -1 : 0)
+		const hydrateKey = String(clientId ?? '')
+		const isFirstHydrateForClient = ownersHydratedClientIdRef.current !== hydrateKey
+		if (isFirstHydrateForClient) {
+			ownersHydratedClientIdRef.current = hydrateKey
+			setExpandedOwnerIndex(isViewMode && owners.length > 1 ? -1 : 0)
+		} else {
+			setExpandedOwnerIndex((current) => {
+				if (owners.length <= 1) return 0
+				if (current < 0) return current
+				if (current >= owners.length) return Math.max(0, owners.length - 1)
+				return current
+			})
+		}
 	}, [clientData, clientId, isEditMode, isViewMode, reset, replace])
 
 	useEffect(() => {
 		if (isViewMode) return
-		if (isEditMode) setExpandedOwnerIndex(0)
+		if (isEditMode) {
+			ownersHydratedClientIdRef.current = null
+			setExpandedOwnerIndex(0)
+		}
 	}, [isViewMode, isEditMode, clientId])
 
 	useEffect(() => {
@@ -427,7 +443,9 @@ const CreateClient = () => {
 
 	const getOwnerLabel = (index: number) => {
 		const owner = watchedOwners?.[index]
-		const fullName = [owner?.firstName, owner?.middleName, owner?.lastName].filter(Boolean).join(' ').trim()
+		const lastRaw = String(owner?.lastName ?? '').trim()
+		const lastName = !lastRaw || lastRaw === '—' || /^\d+$/.test(lastRaw) ? '' : lastRaw
+		const fullName = [owner?.firstName, owner?.middleName, lastName].filter(Boolean).join(' ').trim()
 		return fullName || `Owner ${index + 1}`
 	}
 

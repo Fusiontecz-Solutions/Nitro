@@ -13,6 +13,7 @@ import {
     mapUtahDisclosureCalculatorToPdfFields,
 } from "./daily_utah";
 import { buildNewYorkDisclosurePage3Amounts } from "./new_york_disclosure";
+import { buildCaliforniaDisclosurePage3Amounts } from "./california_disclosure";
 import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
 import type { StateDisclosureContext } from "./stateDisclosurePrefill";
 
@@ -63,8 +64,8 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     disclosure_amount_financed: [
         "disclosure_amount_financed",
         "total_amount_business_fund",
-        "funding_provided",
-        "purchase_amount",
+        // funding_provided is forced from purchase_amount (offer) in the envelope expander —
+        // do not alias amount-financed-after-fees onto it.
         "total_amount_commercial_financing",
         "amountFinanced",
         "total_amount_of_fund_provided",
@@ -75,7 +76,7 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "total_amount_of_fund_disbursed",
         "total_amount_fund_disbursed",
         "disbursement_amount",
-        "net_to_merchant",
+        // Do NOT alias onto main RPA `net_to_merchant`.
     ],
     /** Connecticut / Virginia page-1 fees deducted from amount financed. */
     disclosure_fees_deducted: [
@@ -100,10 +101,9 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "total_repayment_amount",
         "total_commerical_financing",
         "total_of_payments",
-        "purchase_price",
-        "purchasePrice",
+        // Do NOT alias onto main RPA `purchase_price` / payback — disclosure calculator
+        // was overwriting Final Calculation values on Review & open DocuSign.
         "estimatedTotalPaymentAmount",
-        "total_repayment_amount",
         "payment_total",
     ],
     disclosure_estimated_payment: [
@@ -111,7 +111,7 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "estimated_payment_amount",
         "estimated_payment",
         "daily_payment",
-        "remittance",
+        // Do NOT alias onto main RPA `remittance`.
         "estimatedPayment",
     ],
     disclosure_monthly_cost: ["disclosure_monthly_cost", "estimated_monthly_cost"],
@@ -292,8 +292,15 @@ export function buildDisclosureEditorFieldsFromContext(
     ctx: StateDisclosureContext,
 ): ContractPrefillField[] {
     const disclosureDate = formatDisclosureUsDate(ctx.signatureDate) || "";
-    const page3 = buildNewYorkDisclosurePage3Amounts({
-        recipientFunds: ctx.fundingDisbursed,
+    const page3TopLine = ctx.fundingProvided || "";
+    const page3 = buildCaliforniaDisclosurePage3Amounts({
+        recipientFunds: page3TopLine,
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
+        brokerFee: ctx.brokerFeePaidToBroker,
+    });
+    const nyLines = buildNewYorkDisclosurePage3Amounts({
+        recipientFunds: page3TopLine,
         page3Line1: ctx.page3Line1,
         page3Line2: ctx.page3Line2,
         brokerFee: ctx.brokerFeePaidToBroker,
@@ -302,7 +309,9 @@ export function buildDisclosureEditorFieldsFromContext(
     const values: Record<string, string> = {
         disclosure_avg_monthly_revenue: ctx.averageMonthlyIncome ?? "",
         disclosure_amount_financed: ctx.amountBusinessFund || ctx.fundingProvided || "",
-        disclosure_recipient_funds: ctx.fundingDisbursed || "",
+        /** Same offer amount as funding_provided (CA page-3 top line uses this id). */
+        disclosure_recipient_funds: page3TopLine,
+        funding_provided: ctx.fundingProvided || "",
         disclosure_fees_deducted: ctx.feesDeducted || "",
         disclosure_apr: ctx.estimatedAnnualPercentageRate ?? "",
         disclosure_finance_charge: ctx.financeCharge || ctx.totalDollarCost || "",
@@ -312,8 +321,8 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_payment_terms: ctx.percentOfBusinessIncome || ctx.paymentExceededPercent || "",
         disclosure_term_days: ctx.estimatedTermDays ?? ctx.estimatedTerm ?? "",
         disclosure_broker_fee: ctx.brokerFeePaidToBroker ?? "0.00",
-        disclosure_page3_line_1: page3.page3Line1,
-        disclosure_page3_line_2: page3.page3Line2,
+        disclosure_page3_line_1: nyLines.page3Line1,
+        disclosure_page3_line_2: nyLines.page3Line2,
         disclosure_page3_subtotal: page3.page3Subtotal,
         disclosure_page3_net: page3.page3Net,
         client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
@@ -361,12 +370,19 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
             : metrics.amountFinanced;
 
     const amountFinancedForFees = isUtah ? fundsProvided : metrics.amountFinanced;
+    const offerAmount =
+        options?.inputs?.purchasePrice != null && options.inputs.purchasePrice > 0
+            ? options.inputs.purchasePrice
+            : metrics.purchasePrice;
     const editorFields: Record<string, string> = {
         disclosure_avg_monthly_revenue: formatDisclosureUsd(
             metrics.estimatedMerchantAverageMonthlyRevenue,
         ),
         disclosure_amount_financed: formatDisclosureUsd(amountFinancedForFees),
-        disclosure_recipient_funds: formatDisclosureUsd(metrics.recipientFunds),
+        /** Offer / amount financed on the deal — never recipient funds. */
+        funding_provided: formatDisclosureUsd(offerAmount),
+        /** Offer amount — CA page-3 `disclosure_recipient_funds` tab uses this id. */
+        disclosure_recipient_funds: formatDisclosureUsd(offerAmount),
         disclosure_fees_deducted: formatDisclosureUsd(
             Math.max(0, amountFinancedForFees - metrics.recipientFunds),
         ),

@@ -269,6 +269,31 @@ export function buildClientUpdateFromPrefill(
             str(prefill.businessAddressZip) || str(prefill.securityBusinessAddressZip);
     }
 
+    /** Contact / mailing + guarantor address → Owner 1 home address. */
+    const ownerStreet =
+        str(prefill.businessAddressContract) || str(prefill.guarantorAddress);
+    const ownerCity =
+        str(prefill.businessAddressContractCity) || str(prefill.guarantorAddressCity);
+    const ownerState =
+        str(prefill.businessAddressContractState) || str(prefill.guarantorAddressState);
+    const ownerZip =
+        str(prefill.businessAddressContractZip) || str(prefill.guarantorAddressZip);
+    if (ownerStreet || ownerCity || ownerState || ownerZip) {
+        if (!owners[0]!.address) {
+            owners[0]!.address = {
+                address1: "",
+                address2: "",
+                city: "",
+                state: "",
+                zipCode: "",
+            };
+        }
+        if (ownerStreet) owners[0]!.address.address1 = ownerStreet;
+        if (ownerCity) owners[0]!.address.city = ownerCity;
+        if (ownerState) owners[0]!.address.state = ownerState;
+        if (ownerZip) owners[0]!.address.zipCode = ownerZip;
+    }
+
     const primaryOwner = cloneOwnerDetail(owners[0]!);
 
     return {
@@ -382,6 +407,10 @@ async function syncContractPartyRowsFromPrefill(
         name: string;
         ssn: string;
         driverLicense: string;
+        address?: string;
+        city?: string;
+        state?: string;
+        zip?: string;
     }> = [
         {
             row: list[0],
@@ -391,6 +420,10 @@ async function syncContractPartyRowsFromPrefill(
                 str(prefill.guarantySsDriverLicense) ||
                 str(prefill.guarantyOwner1DriverLicense) ||
                 str(prefill.guarantyGuarantor1DriverLicense),
+            address: str(prefill.businessAddressContract) || str(prefill.guarantorAddress),
+            city: str(prefill.businessAddressContractCity) || str(prefill.guarantorAddressCity),
+            state: str(prefill.businessAddressContractState) || str(prefill.guarantorAddressState),
+            zip: str(prefill.businessAddressContractZip) || str(prefill.guarantorAddressZip),
         },
         {
             row: list[1],
@@ -405,11 +438,25 @@ async function syncContractPartyRowsFromPrefill(
     for (const patch of patches) {
         const id = patch.row?.id;
         if (id == null || String(id).trim() === "") continue;
-        if (!patch.name && !patch.ssn && !patch.driverLicense) continue;
+        if (
+            !patch.name &&
+            !patch.ssn &&
+            !patch.driverLicense &&
+            !patch.address &&
+            !patch.city &&
+            !patch.state &&
+            !patch.zip
+        ) {
+            continue;
+        }
 
         const data: Record<string, unknown> = {};
         if (patch.ssn) data.ssn = patch.ssn;
         if (patch.driverLicense) data.driverLicense = patch.driverLicense;
+        if (patch.address) data.address = patch.address;
+        if (patch.city) data.city = patch.city;
+        if (patch.state) data.state = patch.state;
+        if (patch.zip) data.zip = patch.zip;
         if (patch.name) {
             const { firstName, lastName } = splitPersonName(patch.name);
             if (firstName) data.firstName = firstName;

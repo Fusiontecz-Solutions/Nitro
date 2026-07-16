@@ -43,14 +43,21 @@ import {
     applyLiveBankDetailsToPrefillMerge,
     applyLiveOfferSyncToPrefillPartial,
     applyOwnerRowsToPrefillMerge,
+    applySeparatedAddressPrefillFields,
     CANONICAL_BUSINESS_ADDRESS_CITY_KEYS,
     CANONICAL_BUSINESS_ADDRESS_STATE_KEYS,
     CANONICAL_BUSINESS_ADDRESS_STREET_KEYS,
     CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS,
+    CANONICAL_OWNER_ADDRESS_CITY_KEYS,
+    CANONICAL_OWNER_ADDRESS_STATE_KEYS,
+    CANONICAL_OWNER_ADDRESS_STREET_KEYS,
+    CANONICAL_OWNER_ADDRESS_ZIP_KEYS,
     contractPrefillToContractColumnUpdate,
+    finalCalculationPrefillSyncKey,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
+    omitLiveOfferMoneyPrefillKeys,
     stripStaleOfferOverridesFromPersisted,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
@@ -172,8 +179,8 @@ const FIELD_LABELS = {
     authorizationClientBankRouting: "Routing number",
     authorizationClientBankAccount: "Account number",
     authorizationClientName: "Signer name",
-    authorizationClientSignerName: "Seller's name (signature)",
-    authorizationClientNamePrint: "Printed name",
+    authorizationClientSignerName: "Business name (signer line)",
+    authorizationClientNamePrint: "Printed client name",
     authorizationClientTaxId: "Tax ID / EIN",
     authorizationClientDate: "Date",
     authorizedBusinessPhone: "Business phone",
@@ -299,14 +306,14 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "business_address",
             title: "Business address",
-            description: "Street, city, state, ZIP for the merchant location on page 1.",
+            description: "Merchant business location from Create Client → Business Profile.",
             Icon: Building2,
             groups: [{ keys: ["businessAddress", "businessAddressCity", "businessAddressState", "businessAddressZip"] }],
         },
         {
             id: "contact_address",
             title: "Contact / mailing address",
-            description: "Contract mailing address (contact address block on the agreement).",
+            description: "Owner 1 home address (Create Client → Business Owner Detail).",
             Icon: Mail,
             groups: [
                 {
@@ -322,7 +329,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "guarantor_address",
             title: "Guarantor address",
-            description: "Guarantor(s) street, city, state, ZIP.",
+            description: "Guarantor / Owner 1 home street, city, state, ZIP (same as contact address).",
             Icon: MapPin,
             groups: [{ keys: ["guarantorAddress", "guarantorAddressCity", "guarantorAddressState", "guarantorAddressZip"] }],
         },
@@ -451,6 +458,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                         "authorizationClientBankRouting",
                         "authorizationClientBankAccount",
                         "authorizationClientName",
+                        "authorizationClientSignerName",
                         "authorizationClientNamePrint",
                         "authorizationClientTaxId",
                         "authorizationClientDate",
@@ -618,7 +626,9 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "legalName",
             "securityBusinessName",
             "achAuthorizationAccountHolderName",
-            "achAuthorizationConcentAccountHolderName",
+            "authorizationClientName",
+            "authorizationClientSignerName",
+            "authorizationApplication",
             "addendumDatedPrincipalBusiness",
         ],
     },
@@ -629,9 +639,8 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "customerName",
             "clientName",
             "appendixClientName",
-            "authorizationApplication",
-            "authorizationClientName",
             "authorizationClientNamePrint",
+            "achAuthorizationConcentAccountHolderName",
             "guarantyClientName",
             "securityGuarantor",
             "exhibitOwnerName",
@@ -648,23 +657,43 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
     },
     {
         id: "street",
-        label: "Street",
+        label: "Business street",
         keys: [...CANONICAL_BUSINESS_ADDRESS_STREET_KEYS],
     },
     {
         id: "city",
-        label: "City",
+        label: "Business city",
         keys: [...CANONICAL_BUSINESS_ADDRESS_CITY_KEYS],
     },
     {
         id: "addressState",
-        label: "State",
+        label: "Business state",
         keys: [...CANONICAL_BUSINESS_ADDRESS_STATE_KEYS],
     },
     {
         id: "zip",
-        label: "ZIP",
+        label: "Business ZIP",
         keys: [...CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS],
+    },
+    {
+        id: "ownerStreet",
+        label: "Owner / contact street",
+        keys: [...CANONICAL_OWNER_ADDRESS_STREET_KEYS],
+    },
+    {
+        id: "ownerCity",
+        label: "Owner / contact city",
+        keys: [...CANONICAL_OWNER_ADDRESS_CITY_KEYS],
+    },
+    {
+        id: "ownerAddressState",
+        label: "Owner / contact state",
+        keys: [...CANONICAL_OWNER_ADDRESS_STATE_KEYS],
+    },
+    {
+        id: "ownerZip",
+        label: "Owner / contact ZIP",
+        keys: [...CANONICAL_OWNER_ADDRESS_ZIP_KEYS],
     },
     {
         id: "offerAmount",
@@ -1195,8 +1224,13 @@ export function ContractPrefillEditForm({
                 : (normalizeContractPrefillOverrides(persistedPrefillOverrides) ?? null),
         );
         if (main === undefined) return undefined;
-        return stripStaleOfferOverridesFromPersisted(main, offerDecision, applicationData);
-    }, [persistedPrefillOverrides, offerDecision, applicationData]);
+        return stripStaleOfferOverridesFromPersisted(
+            main,
+            offerDecision,
+            applicationData,
+            contractRecords?.contract ?? null,
+        );
+    }, [persistedPrefillOverrides, offerDecision, applicationData, contractRecords?.contract]);
 
     const addendumEditorRows = useMemo(() => {
         if (!linkedAddendumMapping?.id) return [];
@@ -1412,7 +1446,8 @@ export function ContractPrefillEditForm({
         guarantor1KeySet,
     ]);
 
-    const resetFromSources = useCallback(() => {
+    const resetFromSources = useCallback((options?: { forceLiveOfferMoney?: boolean }) => {
+        const forceLiveOfferMoney = options?.forceLiveOfferMoney === true;
         const defaults = getContractPrefillEditDefaultsFromApplication(applicationData, {
             agreementDate: agreementDateForDefaults,
             contractRecords,
@@ -1422,7 +1457,17 @@ export function ContractPrefillEditForm({
             strippedMainPrefillOverrides === undefined
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (strippedMainPrefillOverrides ?? ({} as Partial<BuildContractPrefillFieldsArgs>));
-        const mergedBase = applyLiveBankDetailsToPrefillMerge(defaults, { ...defaults, ...persistedRaw });
+        /** Reload must not keep stale saved offer/payback/remit over the live OfferDecision. */
+        const persistedForMerge = forceLiveOfferMoney
+            ? omitLiveOfferMoneyPrefillKeys(persistedRaw)
+            : persistedRaw;
+        const defaultsForMerge = forceLiveOfferMoney
+            ? omitLiveOfferMoneyPrefillKeys(defaults)
+            : defaults;
+        const mergedBase = applyLiveBankDetailsToPrefillMerge(defaultsForMerge, {
+            ...defaultsForMerge,
+            ...persistedForMerge,
+        });
         let merged = applyAuthorizationBusinessNamePrefillFields(
             finalizeContractPrefillMoneyFields(mergedBase, {
                 application: applicationData as Record<string, unknown> | undefined,
@@ -1432,7 +1477,10 @@ export function ContractPrefillEditForm({
             }),
             applicationData,
         );
-        merged = applyLiveOfferSyncToPrefillPartial(merged, applicationData, offerDecision);
+        merged = applyLiveOfferSyncToPrefillPartial(merged, applicationData, offerDecision, {
+            forceLiveOfferMoney: forceLiveOfferMoney || undefined,
+            contract: contractRecords?.contract ?? null,
+        });
 
         const ownerCount = Math.min(
             2,
@@ -1464,8 +1512,13 @@ export function ContractPrefillEditForm({
         }
 
         clearParty2PrefillPartial(merged as Record<string, unknown>, ownerCount);
+        /** Undo stale overrides that mirrored business address onto contact / owner tabs. */
+        merged = applySeparatedAddressPrefillFields(merged, applicationData);
         setValues(mergeFormState(merged));
         setFieldErrors({});
+        if (forceLiveOfferMoney) {
+            toast.success("Reloaded offer & deal terms from the application.");
+        }
     }, [
         applicationData,
         contractRecords,
@@ -1498,6 +1551,7 @@ export function ContractPrefillEditForm({
 
     const openedHydratedRef = useRef(false);
     const prevActiveOwnerCountRef = useRef(activeOwnerCount);
+    const prevOfferDecisionSyncKeyRef = useRef("");
     const formReady = prefillOverridesReady && persistedPrefillOverrides !== undefined;
 
     useEffect(() => {
@@ -1631,35 +1685,51 @@ export function ContractPrefillEditForm({
                       }
                       return null;
                   })();
-        if (!root || typeof root !== "object") return "";
-        const inner =
-            root.offer != null && typeof root.offer === "object" && !Array.isArray(root.offer)
-                ? (root.offer as Record<string, unknown>)
-                : root;
-        return [
-            inner.offer,
-            inner.approvedAmount,
-            inner.totalRemit,
-            inner.fees,
-            inner.rate,
-            inner.term,
-            inner.numberOfPayments,
-            inner.paymentFrequency,
-            inner.monthlyPayment,
-            inner.dailyPayment,
-        ]
-            .map((v) => String(v ?? ""))
-            .join("|");
+        const offerKey = (() => {
+            if (!root || typeof root !== "object") return "";
+            const inner =
+                root.offer != null && typeof root.offer === "object" && !Array.isArray(root.offer)
+                    ? (root.offer as Record<string, unknown>)
+                    : root;
+            return [
+                inner.offer,
+                inner.approvedAmount,
+                inner.totalRemit,
+                inner.fees,
+                inner.rate,
+                inner.term,
+                inner.numberOfPayments,
+                inner.paymentFrequency,
+                inner.monthlyPayment,
+                inner.dailyPayment,
+                inner.repayPerPeriod,
+            ]
+                .map((v) => String(v ?? ""))
+                .join("|");
+        })();
+        const finalCalcKey = finalCalculationPrefillSyncKey(applicationData);
+        return [offerKey, finalCalcKey].filter(Boolean).join("||");
     }, [offerDecision, applicationData]);
 
     useEffect(() => {
-        if (!open || !offerDecisionSyncKey) return;
+        if (!open) {
+            prevOfferDecisionSyncKeyRef.current = "";
+            return;
+        }
+        if (!offerDecisionSyncKey) return;
+        const prevKey = prevOfferDecisionSyncKeyRef.current;
+        prevOfferDecisionSyncKeyRef.current = offerDecisionSyncKey;
+        // Initial open is handled by resetFromSources / stripStale; only push when offer changes.
+        if (!prevKey || prevKey === offerDecisionSyncKey) return;
         setValues((prev) =>
             mergeFormState(
-                applyLiveOfferSyncToPrefillPartial(prev, applicationData, offerDecision),
+                applyLiveOfferSyncToPrefillPartial(prev, applicationData, offerDecision, {
+                    forceLiveOfferMoney: true,
+                    contract: contractRecords?.contract ?? null,
+                }),
             ),
         );
-    }, [open, offerDecisionSyncKey, applicationData, offerDecision]);
+    }, [open, offerDecisionSyncKey, applicationData, offerDecision, contractRecords?.contract]);
 
     const handleSyncSectionToAll = () => {
         if (readOnly || !activeSection) return;
@@ -1737,7 +1807,8 @@ export function ContractPrefillEditForm({
         setSaving(true);
         try {
             const rawPayload = toPayload(values);
-            const payload = finalizeContractPrefillMoneyFields(rawPayload, {
+            const separated = applySeparatedAddressPrefillFields(rawPayload, applicationData);
+            const payload = finalizeContractPrefillMoneyFields(separated, {
                 application: applicationData as Record<string, unknown> | undefined,
                 contract: contractRecords?.contract ?? null,
                 offerDecision: offerDecision ?? null,
@@ -2432,7 +2503,7 @@ export function ContractPrefillEditForm({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => resetFromSources()}
+                                onClick={() => resetFromSources({ forceLiveOfferMoney: true })}
                                 disabled={saving}
                             >
                                 Reload from application

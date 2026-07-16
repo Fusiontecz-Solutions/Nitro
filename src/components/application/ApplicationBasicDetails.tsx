@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -179,6 +179,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
     });
     const [owners, setOwners] = useState<OwnerForm[]>([{ ...emptyOwnerForm }]);
     const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0);
+    const ownersHydratedForClientRef = useRef<string>("");
 
     const buildBusinessForm = (app: any, clientSource?: unknown) => {
         const business =
@@ -213,20 +214,40 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         };
     };
 
-    const syncFormFromSource = () => {
+    const syncFormFromSource = (options?: { collapseOwners?: boolean }) => {
         const app = applicationData as any;
         setForm(buildBusinessForm(app, ownerSourceClient));
         const nextOwners = resolvedOwnerRecords.length
             ? resolvedOwnerRecords.map(mapOwnerToForm)
             : [{ ...emptyOwnerForm }];
         setOwners(nextOwners);
-        setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+        if (options?.collapseOwners) {
+            setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+            return;
+        }
+        // Keep the open accordion open across client/owner refetches.
+        setExpandedOwnerIndex((current) => {
+            if (nextOwners.length <= 1) return 0;
+            if (current < 0) return current;
+            if (current >= nextOwners.length) return Math.max(0, nextOwners.length - 1);
+            return current;
+        });
     };
 
     useEffect(() => {
         if (isEditMode) return;
-        syncFormFromSource();
-    }, [applicationData, resolvedOwnerRecords, ownerSourceClient, isEditMode]);
+        const hydrateKey = `${clientId}:${resolvedOwnerRecords
+            .map(
+                (o) =>
+                    `${o.firstName}|${o.lastName}|${o.email}|${o.address?.address1 ?? ""}`,
+            )
+            .join(";")}`;
+        const isNewClient = ownersHydratedForClientRef.current.split(":")[0] !== clientId;
+        const shouldCollapse = isNewClient || !ownersHydratedForClientRef.current;
+        ownersHydratedForClientRef.current = hydrateKey;
+        syncFormFromSource({ collapseOwners: shouldCollapse && resolvedOwnerRecords.length > 1 });
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- sync from latest owner/client snapshot only
+    }, [applicationData, resolvedOwnerRecords, ownerSourceClient, isEditMode, clientId]);
 
     const updateField = (key: keyof typeof form, value: string) =>
         setForm((prev) => ({ ...prev, [key]: value }));
@@ -278,7 +299,10 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
     };
 
     const ownerLabel = (owner: OwnerForm, index: number) => {
-        const fullName = `${owner.firstName} ${owner.lastName}`.trim();
+        const lastRaw = String(owner.lastName ?? "").trim();
+        const lastName =
+            !lastRaw || lastRaw === "—" || /^\d+$/.test(lastRaw) ? "" : lastRaw;
+        const fullName = `${owner.firstName} ${lastName}`.trim();
         return fullName || `Owner ${index + 1}`;
     };
 
@@ -390,7 +414,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
 
     const cancelEdit = () => {
         setIsEditMode(false);
-        syncFormFromSource();
+        syncFormFromSource({ collapseOwners: owners.length > 1 });
     };
 
     return (
@@ -489,14 +513,18 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                     <div className="space-y-3 pt-3">
                         {owners.map((owner, ownerIndex) => {
                             const isExpanded = expandedOwnerIndex === ownerIndex;
+                            const ownerKey =
+                                `${owner.email || owner.firstName || "owner"}-${ownerIndex}`;
                             return (
                                 <div
-                                    key={ownerIndex}
+                                    key={ownerKey}
                                     className={`rounded-md border overflow-hidden ${isDark ? "border-[#374151]" : "border-[#E5E7EB]"}`}
                                 >
                                     <button
                                         type="button"
-                                        onClick={() => setExpandedOwnerIndex(isExpanded ? -1 : ownerIndex)}
+                                        onClick={() =>
+                                            setExpandedOwnerIndex(isExpanded ? -1 : ownerIndex)
+                                        }
                                         className={`w-full flex items-center justify-between px-4 py-3 text-left cursor-pointer ${isDark ? "bg-[#1E1F23] hover:bg-[#25262B]" : "bg-[#F9FAFD] hover:bg-[#F3F4F6]"}`}
                                     >
                                         <span className={`text-sm font-medium ${isDark ? "text-white" : "text-[#374151]"}`}>

@@ -102,11 +102,13 @@ export interface StateDisclosureContext {
 type StateDisclosureBuilder = (ctx: StateDisclosureContext) => ContractPrefillField[];
 
 function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): ContractPrefillField[] {
+    /** Page-3 top line is offer amount (same as funding_provided / disclosure_recipient_funds). */
+    const page3TopLine = ctx.fundingProvided;
     const page3 = buildCaliforniaDisclosurePage3Amounts({
-        recipientFunds: ctx.fundingDisbursed,
+        recipientFunds: page3TopLine,
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
         brokerFee: ctx.brokerFeePaidToBroker,
-        fundingProvided: ctx.fundingProvided,
-        fundingDisbursed: ctx.fundingDisbursed,
     });
     return buildDailyCaliforniaContractPrefillFields({
         fundingProvided: ctx.fundingProvided,
@@ -125,8 +127,10 @@ function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): Contract
         financeCharge: ctx.financeCharge,
         funderName: ctx.funderName?.toUpperCase() ?? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         recipientName: ctx.recipientName?.toUpperCase(),
-        recipientFunds: ctx.fundingDisbursed,
+        recipientFunds: page3TopLine,
         brokerFee: ctx.brokerFeePaidToBroker,
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
         page3Subtotal: page3.page3Subtotal,
         page3Net: page3.page3Net,
         signatureDate: ctx.signatureDate,
@@ -134,8 +138,15 @@ function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): Contract
 }
 
 function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPrefillField[] {
-    const page3 = buildNewYorkDisclosurePage3Amounts({
-        recipientFunds: ctx.fundingDisbursed,
+    const page3TopLine = ctx.fundingProvided;
+    const page3 = buildCaliforniaDisclosurePage3Amounts({
+        recipientFunds: page3TopLine,
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
+        brokerFee: ctx.brokerFeePaidToBroker,
+    });
+    const nyLines = buildNewYorkDisclosurePage3Amounts({
+        recipientFunds: page3TopLine,
         brokerFee: ctx.brokerFeePaidToBroker,
         page3Line1: ctx.page3Line1,
         page3Line2: ctx.page3Line2,
@@ -154,10 +165,10 @@ function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPre
             financeCharge: ctx.financeCharge,
             funderName: ctx.funderName?.toUpperCase() ?? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
             recipientName: ctx.recipientName?.toUpperCase(),
-            recipientFunds: ctx.fundingDisbursed,
+            recipientFunds: page3TopLine,
             brokerFee: ctx.brokerFeePaidToBroker,
-            page3Line1: page3.page3Line1,
-            page3Line2: page3.page3Line2,
+            page3Line1: nyLines.page3Line1,
+            page3Line2: nyLines.page3Line2,
             page3Subtotal: page3.page3Subtotal,
             page3Net: page3.page3Net,
             signatureDate: ctx.signatureDate,

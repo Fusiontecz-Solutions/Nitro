@@ -7,7 +7,11 @@ const inFlightByEnvelope = new Map<string, Promise<unknown>>();
 
 function isRateLimitedError(err: unknown): boolean {
     const status = (err as { response?: { status?: number } })?.response?.status;
-    return status === 429;
+    if (status === 429) return true;
+    const msg = String(
+        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "",
+    );
+    return /burst_envelope_polling|hourly_envelope_polling|polling.?limit/i.test(msg);
 }
 
 export function extractDocuSignApiErrorMessage(err: unknown, fallback: string): string {

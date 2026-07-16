@@ -178,6 +178,23 @@ export function TemplateMappingPrefillEditDialog({
             const envelopeBlob = parseDocumentTemplateEnvelopeByMappingId(rawOverrides);
 
             const tabValues = { ...fieldValues };
+            // Balance Transfer Remaining Balance must map to the CRM-scoped DocuSign
+            // label (balance_transfer_purchase_price) — never overwrite main RPA purchase_price.
+            const remainingBalance = String(
+                tabValues.purchase_price ?? tabValues.balance_transfer_purchase_price ?? "",
+            ).trim();
+            if (remainingBalance) {
+                const layoutKey = String(row.template?.layoutKey ?? "").trim().toLowerCase();
+                const templateName = String(row.template?.name ?? "").toLowerCase();
+                const isBalanceTransfer =
+                    layoutKey === "balance_transfer" ||
+                    layoutKey.endsWith("_balance_transfer") ||
+                    templateName.includes("balance transfer");
+                if (isBalanceTransfer) {
+                    tabValues.purchase_price = remainingBalance;
+                    tabValues.balance_transfer_purchase_price = remainingBalance;
+                }
+            }
             let nextBlob: Record<string, Record<string, string>> = {
                 ...existingBlob,
                 ...documentTemplatePrefillByMappingId,

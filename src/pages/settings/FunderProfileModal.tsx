@@ -500,7 +500,7 @@ export default function FunderProfileModal({
                   type="text"
                   value={form.defaultCcEmail ?? ""}
                   onChange={(e) => set("defaultCcEmail", e.target.value)}
-                  placeholder="info@woodmerefinancial.com, billing@example.com"
+                  placeholder="subs@woodmerefinancial.com, billing@example.com"
                 />
                 <p className="text-xs text-muted-foreground">
                   Used as the default CC on contracts for this funder. Leave blank to use{" "}

@@ -97,12 +97,12 @@ export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
     },
     {
         key: "authorizationClientSignerName",
-        label: "Seller's name (signature)",
+        label: "Business name (signer line)",
         tabLabel: "authorization_client_signer_name",
     },
     {
         key: "authorizationClientNamePrint",
-        label: "Print name",
+        label: "Printed client name",
         tabLabel: "authorization_client_name_print",
     },
     {

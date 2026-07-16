@@ -2,7 +2,7 @@
 export const BOLDSIGN_CC_LIST_STORAGE_KEY = "boldsign_cc_list";
 
 /** Platform default when a funder has no default CC configured in Settings. */
-export const DOCUSIGN_DEFAULT_CC_EMAIL = "info@woodmerefinancial.com";
+export const DOCUSIGN_DEFAULT_CC_EMAIL = "subs@woodmerefinancial.com";
 
 export function normalizeCcEmailToken(email: string): string {
     return email.trim().toLowerCase();
