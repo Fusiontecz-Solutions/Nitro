@@ -445,16 +445,28 @@ export class DocusignService {
       funderName?: string | null;
       funderProfileId?: string | null;
       contractState?: string | null;
+      usePlatformDefault?: boolean;
+      /** When true, do not silently fall back to platform JWT if funder has no DocuSign link. */
+      requireFunderCredentials?: boolean;
     },
   ) {
     if (resolveDocusignAuthMode() === 'jwt') {
+      if (options?.usePlatformDefault) {
+        if (!isDocusignJwtConfigured()) {
+          throw new ServiceConfigException(
+            'DocuSign JWT is not configured. Set DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_IMPERSONATED_USER_ID, and DOCUSIGN_RSA_PRIVATE_KEY.',
+          );
+        }
+        return this.getJwtAuthContext();
+      }
+
       const funderProfileId = String(options?.funderProfileId || '').trim();
       if (funderProfileId && isPersistedFunderProfileId(funderProfileId)) {
         try {
           return await this.getJwtAuthContextForFunderProfile(funderProfileId);
         } catch (err) {
           const funderName = String(options?.funderName || '').trim();
-          if (!funderName) throw err;
+          if (!funderName || options?.requireFunderCredentials) throw err;
         }
       }
       const funderName = String(options?.funderName || '').trim();
@@ -466,6 +478,16 @@ export class DocusignService {
         if (linked?.docusignProfile?.id && linked.docusignProfile.isActive !== false) {
           return this.getJwtAuthContextForFunder(funderName, options?.contractState);
         }
+        if (options?.requireFunderCredentials) {
+          throw new ServiceConfigException(
+            `Funder "${funderName}" has no active linked DocuSign account in Settings.`,
+          );
+        }
+      }
+      if (options?.requireFunderCredentials) {
+        throw new ServiceConfigException(
+          'No funder DocuSign credentials available for this envelope sender candidate.',
+        );
       }
       if (!isDocusignJwtConfigured()) {
         throw new ServiceConfigException(
@@ -3836,14 +3858,25 @@ export class DocusignService {
       );
     }
 
-    const candidates = await listEnvelopeFunderAuthCandidates(envelopeId, hints);
+    const candidates = [...(await listEnvelopeFunderAuthCandidates(envelopeId, hints))];
     let lastErr: unknown;
     let voidApplied = ['voided', 'declined', 'deleted'].includes(crmDsStatus);
+    const tried: string[] = [];
 
     if (!voidApplied) {
+      if (!candidates.length) {
+        candidates.push({ usePlatformDefault: true });
+      }
       for (const candidate of candidates) {
+        const label = candidate.usePlatformDefault
+          ? 'platform-default'
+          : String(candidate.funderProfileId || candidate.funderName || 'unknown');
+        tried.push(label);
         try {
-          const { client, accountId } = await this.getAuthContext(userId, candidate);
+          const { client, accountId } = await this.getAuthContext(userId, {
+            ...candidate,
+            requireFunderCredentials: !candidate.usePlatformDefault,
+          });
           await this.applyVoidOrDeleteOnDocuSign(
             client,
             accountId,
@@ -3853,6 +3886,11 @@ export class DocusignService {
           );
           voidApplied = true;
           lastErr = null;
+          console.info('[DocuSign] void succeeded with sender candidate', {
+            envelopeId,
+            candidate: label,
+            tried,
+          });
           break;
         } catch (err: unknown) {
           lastErr = err;
@@ -3861,17 +3899,31 @@ export class DocusignService {
               'DocuSign polling limit reached. Wait about an hour, then void again — or void from the DocuSign console.',
             );
           }
-          if (!isDocuSignUserNotEnvelopeSenderError(err)) {
-            throw new BadRequestException(formatDocusignApiErrorMessage(err));
+          if (isDocuSignUserNotEnvelopeSenderError(err)) {
+            console.warn('[DocuSign] void USER_NOT_ENVELOPE_SENDER — trying next funder account', {
+              envelopeId,
+              candidate: label,
+            });
+            continue;
           }
+          // Skip funders with no DocuSign link and keep trying others.
+          const msg = formatDocusignApiErrorMessage(err);
+          if (/no active linked DocuSign|no funder DocuSign credentials/i.test(msg)) {
+            console.warn('[DocuSign] void skip candidate without DocuSign credentials', {
+              envelopeId,
+              candidate: label,
+            });
+            continue;
+          }
+          throw new BadRequestException(msg);
         }
       }
     }
 
     if (!voidApplied && lastErr) {
       throw new BadRequestException(
-        formatDocusignApiErrorMessage(lastErr) ||
-          'No linked DocuSign sender account could void this envelope. Void it from the funder DocuSign account that originally sent it.',
+        `${formatDocusignApiErrorMessage(lastErr)} Tried sender accounts: ${tried.join(', ') || 'none'}. ` +
+          'Link the funder that originally sent this envelope to its DocuSign account in Settings, then void again.',
       );
     }
 
