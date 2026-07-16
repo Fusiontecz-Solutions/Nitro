@@ -1,6 +1,6 @@
 import { axiosPost } from "@/redux/axios";
 
-const MIN_SYNC_INTERVAL_MS = 5 * 60_000;
+const MIN_SYNC_INTERVAL_MS = 10 * 60_000;
 
 const lastSyncedAtByEnvelope = new Map<string, number>();
 const inFlightByEnvelope = new Map<string, Promise<unknown>>();
