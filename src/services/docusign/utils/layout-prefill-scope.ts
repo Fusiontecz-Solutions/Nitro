@@ -3,6 +3,7 @@ import type { DocumentLayout, DocumentLayoutPlacement } from './convert-docusign
 /** CRM storage prefix — PDF tab labels on each layout stay unchanged for value lookup. */
 export const LAYOUT_CRM_PREFIX: Record<string, string> = {
   flex_addendum: 'flex_addendum_',
+  pre_payment_addendum: 'pre_payment_addendum_',
   balance_transfer: 'balance_transfer_',
   ach_authorization: 'ach_form_',
   ach_authorization_standalone: 'ach_form_',
@@ -72,6 +73,9 @@ export function resolveCanonicalSupplementalLayoutKey(layoutKey: string): string
   const k = String(layoutKey || '').trim().toLowerCase();
   if (!k) return null;
   if (k === 'flex_addendum' || k.endsWith('_flex_addendum')) return 'flex_addendum';
+  if (k === 'pre_payment_addendum' || k.endsWith('_pre_payment_addendum')) {
+    return 'pre_payment_addendum';
+  }
   if (k === 'balance_transfer' || k.endsWith('_balance_transfer')) return 'balance_transfer';
   if (
     k === 'ach_authorization' ||
@@ -97,7 +101,7 @@ export function isMainContractLayoutKey(layoutKey: string): boolean {
     return true;
   }
   if (!k.startsWith('funder_')) return false;
-  return !/_flex_addendum|_balance_transfer|_ach_|_disclosure|_addendum_/.test(k);
+  return !/_flex_addendum|_pre_payment_addendum|_balance_transfer|_ach_|_disclosure|_addendum_/.test(k);
 }
 
 export function resolveCrmKeyForLayoutVariable(layoutKey: string, pdfVariable: string): string {

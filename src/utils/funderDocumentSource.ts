@@ -205,6 +205,7 @@ export function canManageFunderDocuments(
 
 const SUPPLEMENTAL_GENERIC_DISPLAY_NAMES: Record<string, string> = {
   flex_addendum: "Flex Addendum",
+  pre_payment_addendum: 'Pre-Payment Addendum',
   balance_transfer: "Balance Transfer Sheet",
   ach_authorization: "ACH Authorization",
   ach_authorization_standalone: "ACH Authorization",

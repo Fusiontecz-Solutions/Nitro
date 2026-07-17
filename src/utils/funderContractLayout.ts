@@ -3,6 +3,7 @@ export const DEFAULT_FUNDER_CONTRACT_FILENAME = 'Contract.pdf';
 
 export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [
   'flex_addendum',
+  'pre_payment_addendum',
   'balance_transfer',
   'ach_authorization',
   'ach_authorization_texas',

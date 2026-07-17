@@ -1,5 +1,19 @@
+import type { Request } from 'express';
 import prisma from '../config/prismaClient';
-import { NotFoundError, ValidationError } from '../utils/errors';
+import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
+import { createApplicationActivityLog } from './applicationActivityLogService';
+import {
+  getApplicationForUserByRef,
+  getAuthenticatedUserFromRequest,
+  type AuthenticatedUser,
+} from './applicationService';
+import {
+  isOpenCorporatesSyncFieldKey,
+  normalizeIncorporationDate,
+  normalizeStateCode,
+  parseUsAddressBlob,
+  type OpenCorporatesSyncFieldKey,
+} from './opencorporatesComparison';
 
 export type OpenCorporatesOfficer = {
   name: string;
@@ -178,6 +192,41 @@ async function assertApplicationExists(applicationId: string): Promise<void> {
   }
 }
 
+function pickOpenCorporatesAddressBlob(company: OpenCorporatesCompanyHit): string {
+  const labeled =
+    company.addresses?.find((entry) =>
+      /registered|principal|head office|business/i.test(entry.label),
+    )?.address ?? company.addresses?.[0]?.address;
+  return String(
+    labeled ||
+      company.registeredAddress ||
+      company.headOfficeAddress ||
+      company.mailingAddress ||
+      '',
+  ).trim();
+}
+
+function parseSyncFields(raw: unknown): OpenCorporatesSyncFieldKey[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new ValidationError('fields must be a non-empty array');
+  }
+  const fields: OpenCorporatesSyncFieldKey[] = [];
+  for (const item of raw) {
+    if (!isOpenCorporatesSyncFieldKey(item)) {
+      throw new ValidationError(`Unsupported sync field: ${String(item)}`);
+    }
+    if (!fields.includes(item)) fields.push(item);
+  }
+  return fields;
+}
+
+function displayValue(value: unknown): string {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '' : value.toISOString().slice(0, 10);
+  }
+  return String(value ?? '').trim();
+}
+
 export const opencorporatesService = {
   normalizeImportPayload(body: unknown): {
     searchQuery: string;
@@ -219,5 +268,174 @@ export const opencorporatesService = {
       companies: normalized.companies,
       searchedAt: new Date().toISOString(),
     };
+  },
+
+  async syncToClient(
+    applicationRef: string,
+    body: unknown,
+    user: AuthenticatedUser | null,
+    req?: Request | null,
+  ): Promise<{
+    clientId: string;
+    updatedFields: Record<string, string>;
+    before: Record<string, string>;
+    after: Record<string, string>;
+  }> {
+    if (!body || typeof body !== 'object') {
+      throw new ValidationError('Invalid OpenCorporates sync payload');
+    }
+    const payload = body as Record<string, unknown>;
+    const company = normalizeCompanyHit(payload.company, 0);
+    const fields = parseSyncFields(payload.fields);
+
+    const { application, forbidden } = await getApplicationForUserByRef(applicationRef, user, {
+      client: true,
+    });
+    if (forbidden) {
+      throw new ForbiddenError('Forbidden: you do not have access to this application');
+    }
+    if (!application) {
+      throw new NotFoundError('Application not found');
+    }
+
+    const clientId = String(
+      (application as { clientId?: string | null }).clientId ??
+        (application as { client?: { id?: string | null } | null }).client?.id ??
+        '',
+    ).trim();
+    if (!clientId) {
+      throw new ValidationError('Application has no linked client to sync');
+    }
+
+    const client = await prisma.client.findUnique({ where: { id: clientId } });
+    if (!client) {
+      throw new NotFoundError('Client not found');
+    }
+
+    const parsedAddress = parseUsAddressBlob(pickOpenCorporatesAddressBlob(company));
+    const wantsAddress = fields.some((field) =>
+      ['address1', 'city', 'state', 'zipCode'].includes(field),
+    );
+    if (wantsAddress && !parsedAddress) {
+      throw new ValidationError(
+        'Registered address could not be confidently parsed into street, city, state, and ZIP',
+      );
+    }
+
+    const updateData: Record<string, unknown> = {};
+    const before: Record<string, string> = {};
+    const after: Record<string, string> = {};
+    const updatedFields: Record<string, string> = {};
+
+    const setField = (
+      key: OpenCorporatesSyncFieldKey,
+      clientKey: string,
+      nextValue: string | Date | null | undefined,
+    ) => {
+      if (nextValue == null) return;
+      const nextDisplay = displayValue(nextValue);
+      if (!nextDisplay) return;
+      before[key] = displayValue((client as unknown as Record<string, unknown>)[clientKey]);
+      after[key] = nextDisplay;
+      updatedFields[key] = nextDisplay;
+      updateData[clientKey] = nextValue;
+    };
+
+    for (const field of fields) {
+      switch (field) {
+        case 'businessName':
+          setField(field, 'businessName', company.name);
+          break;
+        case 'businessEntityType':
+          setField(field, 'businessEntityType', company.companyType);
+          break;
+        case 'incorporationDate': {
+          const iso = normalizeIncorporationDate(company.incorporationDate);
+          if (iso) {
+            setField(field, 'businessIncorporationDate', new Date(`${iso}T00:00:00.000Z`));
+          }
+          break;
+        }
+        case 'incorporationState':
+          setField(field, 'businessIncorporationState', normalizeStateCode(company.jurisdictionCode));
+          break;
+        case 'address1':
+          if (parsedAddress) setField(field, 'businessAddress1', parsedAddress.address1);
+          break;
+        case 'city':
+          if (parsedAddress) setField(field, 'businessCity', parsedAddress.city);
+          break;
+        case 'state':
+          if (parsedAddress) setField(field, 'businessState', parsedAddress.state);
+          break;
+        case 'zipCode':
+          if (parsedAddress) setField(field, 'businessZipCode', parsedAddress.zipCode);
+          break;
+      }
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      throw new ValidationError('No non-empty OpenCorporates values available for the selected fields');
+    }
+
+    await prisma.client.update({
+      where: { id: clientId },
+      data: updateData,
+    });
+
+    await createApplicationActivityLog({
+      applicationId: application.id,
+      user,
+      actionType: 'APPLICATION_UPDATED',
+      actionDescription: 'Synced OpenCorporates company fields into application business profile',
+      req,
+      metadata: {
+        source: 'opencorporates',
+        companyNumber: company.companyNumber,
+        jurisdictionCode: company.jurisdictionCode,
+        companyName: company.name,
+        fields: Object.keys(updatedFields),
+        before,
+        after,
+        ownersModified: false,
+      },
+    });
+
+    const backgroundCheck = await prisma.backgroundCheck.findUnique({
+      where: { applicationId: application.id },
+      select: {
+        id: true,
+        items: {
+          where: { checkType: 'OPENCORPORATES' },
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+    if (backgroundCheck?.id) {
+      await prisma.backgroundCheckEvent.create({
+        data: {
+          backgroundCheckId: backgroundCheck.id,
+          itemId: backgroundCheck.items?.[0]?.id ?? null,
+          action: 'opencorporates_synced_to_client',
+          detail: {
+            clientId,
+            companyNumber: company.companyNumber,
+            jurisdictionCode: company.jurisdictionCode,
+            fields: Object.keys(updatedFields),
+            before,
+            after,
+            ownersModified: false,
+          },
+          actorId: user?.id ?? null,
+        },
+      });
+    }
+
+    return { clientId, updatedFields, before, after };
+  },
+
+  getAuthenticatedUser(req: Request): AuthenticatedUser | null {
+    return getAuthenticatedUserFromRequest(req);
   },
 };

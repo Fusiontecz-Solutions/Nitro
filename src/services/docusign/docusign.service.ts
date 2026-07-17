@@ -25,17 +25,12 @@ import {
   isDocuSignPollingLimitError,
 } from './utils/docusign-client';
 import {
-  assertDocuSignPollingAllowed,
-  extractDocusignAccountIdFromUrl,
   getCachedEnvelopeCustomFields,
   getCachedEnvelopeRecipients,
   getCachedEnvelopeStatus,
   getEnvelopeStatusSyncCache,
   invalidateCachedEnvelopeRecipients,
   invalidateCachedEnvelopeStatus,
-  isDocuSignEnvelopePollingGet,
-  isDocuSignPollingCircuitOpen,
-  noteDocuSignApiErrorForCircuit,
   rememberEnvelopeWebhook,
   setCachedEnvelopeCustomFields,
   setCachedEnvelopeRecipients,
@@ -330,10 +325,9 @@ export class DocusignService {
   private createRestClient(
     accessToken: string,
     baseUri: string,
-    accountId: string,
+    _accountId: string,
   ): AxiosInstance {
-    const boundAccountId = String(accountId || '').trim();
-    const client = axios.create({
+    return axios.create({
       baseURL: baseUri,
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -341,32 +335,6 @@ export class DocusignService {
         'Content-Type': 'application/json',
       },
     });
-
-    client.interceptors.request.use((config) => {
-      const method = String(config.method || 'get');
-      const url = String(config.url || '');
-      const aid =
-        extractDocusignAccountIdFromUrl(url) ||
-        extractDocusignAccountIdFromUrl(String(config.baseURL || '')) ||
-        boundAccountId;
-      // Circuit is per DocuSign account — Woodmere limit must not block Atlas/other funders.
-      if (isDocuSignEnvelopePollingGet(method, url)) {
-        assertDocuSignPollingAllowed(aid, 'Envelope status/recipient poll');
-      } else if (isDocuSignPollingCircuitOpen(aid) && method.toLowerCase() === 'get') {
-        assertDocuSignPollingAllowed(aid, 'DocuSign GET');
-      }
-      return config;
-    });
-
-    client.interceptors.response.use(
-      (res) => res,
-      (err) => {
-        noteDocuSignApiErrorForCircuit(err, boundAccountId);
-        return Promise.reject(err);
-      },
-    );
-
-    return client;
   }
 
   /**
@@ -1096,20 +1064,15 @@ export class DocusignService {
       const cached = getCachedEnvelopeCustomFields(accountId, eid);
       if (cached) return cached;
     }
-    try {
-      const res = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${eid}/custom_fields`,
-      );
-      const list =
-        (res.data?.textCustomFields ||
-          res.data?.customFields?.textCustomFields ||
-          []) as Array<{ name?: string; value?: string; show?: string }>;
-      setCachedEnvelopeCustomFields(accountId, eid, list);
-      return list;
-    } catch (err) {
-      noteDocuSignApiErrorForCircuit(err, accountId);
-      throw err;
-    }
+    const res = await client.get(
+      `/v2.1/accounts/${accountId}/envelopes/${eid}/custom_fields`,
+    );
+    const list =
+      (res.data?.textCustomFields ||
+        res.data?.customFields?.textCustomFields ||
+        []) as Array<{ name?: string; value?: string; show?: string }>;
+    setCachedEnvelopeCustomFields(accountId, eid, list);
+    return list;
   }
 
   private async upsertEnvelopeTextCustomFields(
@@ -2849,8 +2812,7 @@ export class DocusignService {
       const status = String(res.data?.status || '').toLowerCase();
       if (status) setCachedEnvelopeStatus(accountId, envelopeId, status);
       return status;
-    } catch (err) {
-      noteDocuSignApiErrorForCircuit(err, accountId);
+    } catch {
       return '';
     }
   }
@@ -3555,6 +3517,7 @@ export class DocusignService {
         documentName: buildContractEnvelopeDocumentName(envelopeSubject),
         flattenPrefillInPdf: sendImmediately,
         lockDataTabs: sendImmediately,
+        contractId: options.contractId,
       });
     } catch (err: any) {
       throw new BadRequestException(err?.message || String(err));
@@ -4905,20 +4868,10 @@ export class DocusignService {
       }
     }
 
-    // Resolve account first so circuit is checked for this DocuSign account only (not globally).
     const { client, accountId } = await this.getAuthContextForEnvelope(userId, envelopeId, {
       applicationId,
       contractId: options.contractId,
     });
-
-    // Never burn this account's 250/hour polling budget when its circuit is already open.
-    if (isDocuSignPollingCircuitOpen(accountId)) {
-      const crmFallback = await this.buildCrmEnvelopeSyncPayload(envelopeId, applicationId);
-      if (crmFallback) {
-        return { ...crmFallback, rateLimited: true, source: 'crm' };
-      }
-      assertDocuSignPollingAllowed(accountId, 'Envelope status sync');
-    }
 
     let dsStatus = getCachedEnvelopeStatus(accountId, envelopeId) || '';
     if (!dsStatus || forceRefresh) {
@@ -4932,7 +4885,6 @@ export class DocusignService {
         dsStatus = String(res.data?.status || '').toLowerCase();
         if (dsStatus) setCachedEnvelopeStatus(accountId, envelopeId, dsStatus);
       } catch (err) {
-        noteDocuSignApiErrorForCircuit(err, accountId);
         if (isDocuSignPollingLimitError(err)) {
           const crmFallback = await this.buildCrmEnvelopeSyncPayload(envelopeId, applicationId);
           if (crmFallback) {

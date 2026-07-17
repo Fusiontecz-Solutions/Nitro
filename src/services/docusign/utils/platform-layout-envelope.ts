@@ -40,6 +40,7 @@ import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
 import {
   resolveMainContractCoordinateLayoutKey,
 } from './resolve-main-contract-layout';
+import { maybeAppendReverseDisbursementToMainContractLayout } from '../../pdf/reverseDisbursementSchedule.service';
 import {
   isPersistedFunderProfileId,
   resolveFunderProfile,
@@ -477,6 +478,8 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   /** Burn prefill into PDF at create (auto-send). Draft review keeps editable tabs. */
   flattenPrefillInPdf?: boolean;
   lockDataTabs?: boolean;
+  /** When set, may append reverse disbursement schedule as last page of main contract PDF. */
+  contractId?: number;
 }) {
   const standaloneRefs = options.standaloneDocumentRefs || [];
   const hasStandaloneOnly = standaloneRefs.length > 0;
@@ -503,9 +506,18 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   if (includeMainContract) {
     const mainContractLayoutKey =
       String(options.mainContractLayoutKey || '').trim() || DOCUMENT_LAYOUT_KEYS.contract;
-    layouts.push(
-      await loadMainContractLayoutPackage(mainContractLayoutKey, options.contractState),
+    let mainLayout = await loadMainContractLayoutPackage(
+      mainContractLayoutKey,
+      options.contractState,
     );
+    const contractId = Number(options.contractId);
+    if (Number.isFinite(contractId) && contractId > 0) {
+      mainLayout = await maybeAppendReverseDisbursementToMainContractLayout(
+        mainLayout,
+        contractId,
+      );
+    }
+    layouts.push(mainLayout);
   }
   for (const ref of options.supplementalRefs || []) {
     layouts.push(await loadSupplementalLayoutPackage(ref, funderContext));

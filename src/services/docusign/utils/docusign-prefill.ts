@@ -159,6 +159,7 @@ export function normalizeFieldKey(raw: string): string {
 const LAYOUT_SCOPED_TAB_PREFIXES = [
   'ach_form_texas_',
   'ach_form_',
+  'pre_payment_addendum_',
   'flex_addendum_',
   'balance_transfer_',
   'disclosure_',

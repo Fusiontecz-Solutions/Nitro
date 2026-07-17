@@ -70,6 +70,10 @@ model Contract {
   securityDoingBusinessAs        String?
   securityGuarantor              String?
   securityTaxEin                 String?
+  /// When true, append a reverse disbursement schedule page to the contract PDF before DocuSign send.
+  reverseDisbursementEnabled     Boolean                           @default(false)
+  /// { fixedDailyDebit?: string, summary?: { totalFundingAmount, netFundingAmount, dailyDebit, totalTermLength, reductionOnDailyRate, originationFeePercent, factorRate }, rows: Array<{ period, netDailysCredit, dailysCreditInclFees, totalPeriodCredits, receivablesPurchased }> }
+  reverseDisbursementSchedule    Json?
   achs                           ACH[]
   addendums                      Addendum[]
   application                    Application?                      @relation(fields: [applicationId], references: [id])

@@ -111,6 +111,9 @@ model FunderProfile {
   assignsDealId            Boolean                 @default(false)
   mainContractLayoutKey    String                  @default("contract")
   contractPdfFileName      String?
+  /// Cloudinary image shown on funder-branded generated pages.
+  logoUrl                  String?
+  logoPublicId             String?
   /// State codes/names when this funder appears in dropdown; empty = all states.
   allowedStates            Json?
   /// State codes/names where this funder is hidden; empty = no exclusions.

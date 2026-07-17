@@ -1,18 +1,3 @@
-import {
-  formatDocusignApiErrorMessage,
-  isDocuSignPollingLimitError,
-} from './docusign-client';
-
-class DocuSignRateLimitError extends Error {
-  status = 429;
-  constructor(message: string) {
-    super(message);
-    this.name = 'BadRequestException';
-  }
-}
-
-/** Keep circuit closed slightly under 1h so the next hour window can recover. */
-const CIRCUIT_OPEN_MS = 55 * 60 * 1000;
 /** Reuse GET /recipients within a single send / finalize flow. */
 const RECIPIENTS_CACHE_TTL_MS = 2 * 60_000;
 /** Reuse GET /envelopes/{id} status within short windows. */
@@ -29,9 +14,6 @@ const ENVELOPE_STATUS_SYNC_MIN_INTERVAL_MS = Math.max(
   60_000,
   parseInt(String(process.env.DOCUSIGN_FALLBACK_POLL_MS || ''), 10) || 15 * 60_000,
 );
-
-/** Per DocuSign account GUID — Woodmere limit must not block Atlas / other funders. */
-const pollingCircuitOpenUntilByAccount = new Map<string, number>();
 
 type CacheEntry<T> = { value: T; expiresAt: number };
 
@@ -53,91 +35,6 @@ function normalizeAccountId(accountId?: string | null): string {
 
 function cacheKey(accountId: string, envelopeId: string): string {
   return `${normalizeAccountId(accountId)}::${String(envelopeId).trim()}`;
-}
-
-/** Extract DocuSign account GUID from REST path `/v2.1/accounts/{guid}/...`. */
-export function extractDocusignAccountIdFromUrl(url?: string): string | null {
-  const m = String(url || '').match(/\/accounts\/([0-9a-f-]{36})(?:\/|$|\?)/i);
-  return m?.[1] ? m[1].toLowerCase() : null;
-}
-
-export function isDocuSignPollingCircuitOpen(accountId?: string | null): boolean {
-  const aid = normalizeAccountId(accountId);
-  if (!aid) return false;
-  const until = pollingCircuitOpenUntilByAccount.get(aid) ?? 0;
-  if (Date.now() >= until) {
-    if (until) pollingCircuitOpenUntilByAccount.delete(aid);
-    return false;
-  }
-  return true;
-}
-
-export function getDocuSignPollingCircuitOpenUntilMs(accountId?: string | null): number {
-  const aid = normalizeAccountId(accountId);
-  if (!aid) return 0;
-  return pollingCircuitOpenUntilByAccount.get(aid) ?? 0;
-}
-
-export function tripDocuSignPollingCircuit(
-  accountId?: string | null,
-  err?: unknown,
-): void {
-  const aid = normalizeAccountId(accountId);
-  if (!aid) {
-    console.warn(
-      '[DocuSign] rate-limit error without accountId — circuit not tripped (avoid global block)',
-    );
-    return;
-  }
-  const until = Date.now() + CIRCUIT_OPEN_MS;
-  pollingCircuitOpenUntilByAccount.set(aid, until);
-  const detail = err ? formatDocusignApiErrorMessage(err) : 'DocuSign polling/API limit';
-  console.warn(
-    `[DocuSign] polling circuit OPEN for account ${aid} until ${new Date(until).toISOString()}: ${detail}`,
-  );
-}
-
-export function clearDocuSignPollingCircuit(accountId?: string | null): void {
-  const aid = normalizeAccountId(accountId);
-  if (!aid) {
-    pollingCircuitOpenUntilByAccount.clear();
-    return;
-  }
-  pollingCircuitOpenUntilByAccount.delete(aid);
-}
-
-export function assertDocuSignPollingAllowed(
-  accountId?: string | null,
-  action = 'DocuSign API call',
-): void {
-  const aid = normalizeAccountId(accountId);
-  if (!aid || !isDocuSignPollingCircuitOpen(aid)) return;
-  const until = getDocuSignPollingCircuitOpenUntilMs(aid);
-  const mins = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
-  throw new DocuSignRateLimitError(
-    `DocuSign account ${aid.slice(0, 8)}… hourly polling/API limit reached. ${action} blocked for ~${mins} more minute(s). ` +
-      'Other DocuSign accounts are unaffected. Status still updates via webhook — do not refresh this funder until the hour resets.',
-  );
-}
-
-/** GETs against envelope resources count toward DocuSign's 250/hour polling budget. */
-export function isDocuSignEnvelopePollingGet(method?: string, url?: string): boolean {
-  if (String(method || 'get').toLowerCase() !== 'get') return false;
-  const path = String(url || '');
-  // /envelopes/{guid} or /envelopes/{guid}/...
-  return /\/envelopes\/[0-9a-f-]{36}(\/|$|\?)/i.test(path);
-}
-
-export function noteDocuSignApiErrorForCircuit(
-  err: unknown,
-  accountId?: string | null,
-): void {
-  if (!isDocuSignPollingLimitError(err)) return;
-  const ax = err as { config?: { url?: string; baseURL?: string } };
-  const fromUrl =
-    extractDocusignAccountIdFromUrl(ax?.config?.url) ||
-    extractDocusignAccountIdFromUrl(ax?.config?.baseURL);
-  tripDocuSignPollingCircuit(accountId || fromUrl, err);
 }
 
 export function getCachedEnvelopeRecipients(

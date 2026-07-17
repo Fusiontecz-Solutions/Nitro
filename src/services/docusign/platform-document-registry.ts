@@ -35,6 +35,11 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
     name: 'Woodmere Flex Addendum',
     type: 'flex_addendum',
   },
+  [DOCUMENT_LAYOUT_KEYS.prePaymentAddendum]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.prePaymentAddendum,
+    name: 'Woodmere Pre-Payment Addendum',
+    type: 'pre_payment_addendum',
+  },
   [DOCUMENT_LAYOUT_KEYS.balanceTransfer]: {
     layoutKey: DOCUMENT_LAYOUT_KEYS.balanceTransfer,
     name: 'Woodmere Financial Balance Transfer Sheet',
@@ -60,6 +65,7 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
 /** Supplemental documents available in the addendum picker (excludes main contract). */
 export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [
   PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.flexAddendum],
+  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.prePaymentAddendum],
   PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.balanceTransfer],
   PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.achAuthorization],
 ];

@@ -113,6 +113,7 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
     assignsDealId: row.assignsDealId === true,
     mainContractLayoutKey: String(row.mainContractLayoutKey ?? 'contract'),
     contractPdfFileName: row.contractPdfFileName != null ? String(row.contractPdfFileName) : null,
+    logoUrl: row.logoUrl != null ? String(row.logoUrl) : null,
     allowedStates: parseStateList(row.allowedStates),
     excludedStates: parseStateList(row.excludedStates),
     organization: row.organization != null ? String(row.organization) : null,
@@ -522,6 +523,8 @@ async function upsertFunderSupplementalBoldSignTemplate(
   const label =
     supplementalType === 'flex_addendum'
       ? 'Flex Addendum'
+      : supplementalType === 'pre_payment_addendum'
+        ? 'Pre-Payment Addendum'
       : supplementalType === 'balance_transfer'
         ? 'Balance Transfer'
         : 'ACH Authorization';
@@ -752,7 +755,7 @@ export async function uploadFunderNamedAddendumPdf(
   const coordsKey = String(coordinateLayoutKey || '').trim();
   if (!coordsKey || !isDocumentLayoutKey(coordsKey)) {
     throw new Error(
-      'Select a valid coordinate layout (Flex Addendum, Balance Transfer, ACH Authorization, or Texas ACH).',
+      'Select a valid coordinate layout (Flex Addendum, Pre-Payment Addendum, Balance Transfer, ACH Authorization, or Texas ACH).',
     );
   }
 
@@ -838,6 +841,49 @@ export async function deleteFunderDocumentTemplate(funderId: string, templateId:
 
   await prisma.boldSignTemplate.delete({ where: { id: tid } });
   return { id: tid };
+}
+
+export async function uploadFunderLogo(funderId: string, file: UploadedFile) {
+  const profile = await prisma.funderProfile.findUnique({
+    where: { id: funderId },
+    select: { id: true, logoPublicId: true },
+  });
+  if (!profile) throw new Error('Funder profile not found.');
+
+  const mime = String(file.mimetype || '').toLowerCase();
+  if (!mime.startsWith('image/')) {
+    throw new Error('Funder logo must be an image file.');
+  }
+  if (Number(file.size || 0) > 5 * 1024 * 1024) {
+    throw new Error('Funder logo must be 5 MB or smaller.');
+  }
+
+  const result = await uploadService.uploadFile(
+    file,
+    `ih-crm/funder-logos/${funderId}`,
+    file.name,
+  );
+  const logoUrl = String(result.data?.secure_url || '').trim();
+  const logoPublicId = String(result.data?.public_id || '').trim();
+  if (!result.success || !logoUrl || !logoPublicId) {
+    throw new Error(result.error || result.message || 'Failed to upload funder logo.');
+  }
+
+  const row = await prisma.funderProfile.update({
+    where: { id: funderId },
+    data: { logoUrl, logoPublicId },
+    include: { docusignAccountProfile: { select: { id: true, name: true } } },
+  });
+
+  const oldPublicId = String(profile.logoPublicId || '').trim();
+  if (oldPublicId && oldPublicId !== logoPublicId) {
+    void uploadService.deleteFile(oldPublicId, 'image');
+  }
+
+  const [enriched] = await enrichFunderProfilesWithSharedNames([
+    serializeFunderProfile(row as unknown as Record<string, unknown>),
+  ]);
+  return enriched;
 }
 
 export async function createFunderProfile(input: FunderProfileInput) {
@@ -1008,6 +1054,14 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
 }
 
 export async function deleteFunderProfile(id: string) {
+  const existing = await prisma.funderProfile.findUnique({
+    where: { id },
+    select: { logoPublicId: true },
+  });
   await prisma.funderProfile.delete({ where: { id } });
+  const logoPublicId = String(existing?.logoPublicId || '').trim();
+  if (logoPublicId) {
+    void uploadService.deleteFile(logoPublicId, 'image');
+  }
   return { success: true };
 }

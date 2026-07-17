@@ -19,6 +19,11 @@ import {
   type KycDocumentType,
   type KycExtractionMapped,
 } from './contractKycPrefillMapper';
+import {
+  loadContractReverseDisbursementConfig,
+  normalizeReverseDisbursementScheduleData,
+  renderReverseDisbursementSchedulePdf,
+} from './pdf/reverseDisbursementSchedule.service';
 
 async function resolvePaymentBankDetailForContract(
   prismaClient: typeof prisma | any,
@@ -1316,6 +1321,8 @@ class ContractService {
       state?: string | null;
       funderName?: string | null;
       contractPrefillOverrides?: unknown;
+      reverseDisbursementEnabled?: boolean;
+      reverseDisbursementSchedule?: unknown;
     } & ContractExtraFields,
   ) {
     const updateData: any = {};
@@ -1340,6 +1347,15 @@ class ContractService {
           : (decryptEncryptedStringsInJson(
               data.contractPrefillOverrides,
             ) as Prisma.InputJsonValue);
+    }
+    if (data.reverseDisbursementEnabled !== undefined) {
+      updateData.reverseDisbursementEnabled = data.reverseDisbursementEnabled === true;
+    }
+    if (data.reverseDisbursementSchedule !== undefined) {
+      updateData.reverseDisbursementSchedule =
+        data.reverseDisbursementSchedule === null
+          ? Prisma.DbNull
+          : (data.reverseDisbursementSchedule as Prisma.InputJsonValue);
     }
     applyContractExtraFields(updateData, data);
 
@@ -2215,6 +2231,29 @@ class ContractService {
     return (prisma as any).boldSignTemplate.delete({
       where: { id },
     });
+  }
+
+  async previewReverseDisbursementSchedulePdf(
+    contractId: number,
+    scheduleOverride?: unknown,
+  ): Promise<Buffer> {
+    const contract = await prisma.contract.findUnique({
+      where: { id: contractId },
+      select: { funderName: true },
+    });
+    const funderName = contract?.funderName ?? null;
+
+    let schedule = normalizeReverseDisbursementScheduleData(scheduleOverride);
+    if (!schedule) {
+      const config = await loadContractReverseDisbursementConfig(contractId);
+      schedule = config.schedule;
+    }
+    if (!schedule?.rows?.length) {
+      throw new Error(
+        'No disbursement schedule rows found. Paste the table and save before previewing.',
+      );
+    }
+    return renderReverseDisbursementSchedulePdf(schedule, funderName);
   }
 
 }

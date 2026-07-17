@@ -6,6 +6,7 @@ import achAuthorizationTexasExport from './ach_authorization_texas.json';
 import balanceTransferLayout from './balance_transfer.layout.json';
 import contractLayout from './contract.layout.json';
 import flexAddendumLayout from './flex_addendum.layout.json';
+import prePaymentAddendumLayout from './pre_payment_addendum.layout.json';
 import texasFundingGroupContractExport from './texas_funding_group_contract.json';
 
 /** Document type keys used with BoldSignTemplate.type and merge order. */
@@ -14,6 +15,7 @@ export const DOCUMENT_LAYOUT_KEYS = {
   texasFundingGroupContract: 'texas_funding_group_contract',
   balanceTransfer: 'balance_transfer',
   flexAddendum: 'flex_addendum',
+  prePaymentAddendum: 'pre_payment_addendum',
   achAuthorization: 'ach_authorization',
   achAuthorizationStandalone: 'ach_authorization_standalone',
   achAuthorizationTexas: 'ach_authorization_texas',
@@ -30,6 +32,8 @@ export const BOLD_SIGN_TYPE_TO_LAYOUT_KEY: Record<string, DocumentLayoutKey> = {
   balance_transfer: DOCUMENT_LAYOUT_KEYS.balanceTransfer,
   addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
   flex_addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
+  pre_payment_addendum: DOCUMENT_LAYOUT_KEYS.prePaymentAddendum,
+  epo: DOCUMENT_LAYOUT_KEYS.prePaymentAddendum,
   ach_authorization: DOCUMENT_LAYOUT_KEYS.achAuthorization,
   ach_authorization_standalone: DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone,
   ach_authorization_texas: DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas,
@@ -64,6 +68,7 @@ const REGISTRY: Record<DocumentLayoutKey, DocumentLayout> = {
   [DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract]: texasFundingGroupLayout,
   [DOCUMENT_LAYOUT_KEYS.balanceTransfer]: balanceTransferLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.flexAddendum]: flexAddendumLayout as DocumentLayout,
+  [DOCUMENT_LAYOUT_KEYS.prePaymentAddendum]: prePaymentAddendumLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.achAuthorization]: achAuthorizationLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone]:
     achAuthorizationStandaloneLayout as DocumentLayout,

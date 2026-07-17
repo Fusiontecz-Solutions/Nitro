@@ -3,7 +3,7 @@ export class NotFoundError extends Error {
 
   constructor(message: string) {
     super(message);
-    this.name = "NotFoundError";
+    this.name = 'NotFoundError';
   }
 }
 
@@ -12,6 +12,15 @@ export class ValidationError extends Error {
 
   constructor(message: string) {
     super(message);
-    this.name = "ValidationError";
+    this.name = 'ValidationError';
+  }
+}
+
+export class ForbiddenError extends Error {
+  readonly statusCode = 403;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ForbiddenError';
   }
 }

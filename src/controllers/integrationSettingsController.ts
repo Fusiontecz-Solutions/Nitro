@@ -15,6 +15,7 @@ import {
   listFunderProfiles,
   updateFunderProfile,
   uploadFunderContractPdf,
+  uploadFunderLogo,
   uploadFunderSupplementalPdf,
   uploadFunderDisclosurePdf,
   uploadFunderNamedAddendumPdf,
@@ -34,6 +35,13 @@ function getUploadedContractFile(req: Request): UploadedFile | null {
   const files = (req as Request & { files?: { contract?: UploadedFile | UploadedFile[] } }).files;
   if (!files?.contract) return null;
   const file = files.contract;
+  return Array.isArray(file) ? file[0] : file;
+}
+
+function getUploadedLogoFile(req: Request): UploadedFile | null {
+  const files = (req as Request & { files?: { logo?: UploadedFile | UploadedFile[] } }).files;
+  if (!files?.logo) return null;
+  const file = files.logo;
   return Array.isArray(file) ? file[0] : file;
 }
 
@@ -187,11 +195,12 @@ function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInp
   return payload;
 }
 
-async function saveFunderWithOptionalContract(
+async function saveFunderWithOptionalAssets(
   req: Request,
   save: () => Promise<Awaited<ReturnType<typeof createFunderProfile>>>,
 ) {
   const contractFile = getUploadedContractFile(req);
+  const logoFile = getUploadedLogoFile(req);
   let data = await save();
 
   if (contractFile) {
@@ -201,6 +210,14 @@ async function saveFunderWithOptionalContract(
       throw new Error('Funder id and name are required to upload a contract.');
     }
     data = await uploadFunderContractPdf(funderId, funderName, contractFile);
+  }
+
+  if (logoFile) {
+    const funderId = String(data.id || '').trim();
+    if (!funderId) {
+      throw new Error('Funder id is required to upload a logo.');
+    }
+    data = await uploadFunderLogo(funderId, logoFile);
   }
 
   for (const [field, supplementalType] of Object.entries(SUPPLEMENTAL_UPLOAD_FIELDS)) {
@@ -324,7 +341,7 @@ export const createFunder = async (req: Request, res: Response) => {
     if (!input.name) {
       return res.status(400).json({ success: false, message: 'Funder name is required.' });
     }
-    const data = await saveFunderWithOptionalContract(req, () => createFunderProfile(input));
+    const data = await saveFunderWithOptionalAssets(req, () => createFunderProfile(input));
     return res.status(201).json({ success: true, data });
   } catch (error) {
     return handleError(res, error);
@@ -335,7 +352,7 @@ export const updateFunder = async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
     const input = parseFunderProfileBody((req.body || {}) as Record<string, unknown>);
-    const data = await saveFunderWithOptionalContract(req, () =>
+    const data = await saveFunderWithOptionalAssets(req, () =>
       updateFunderProfile(id, input),
     );
     return res.json({ success: true, data });
@@ -413,7 +430,8 @@ export const uploadFunderAddendum = async (req: Request, res: Response) => {
     if (!coordinateLayoutKey) {
       return res.status(400).json({
         success: false,
-        message: 'coordinateLayoutKey is required (flex_addendum, balance_transfer, ach_authorization).',
+        message:
+          'coordinateLayoutKey is required (flex_addendum, pre_payment_addendum, balance_transfer, ach_authorization).',
       });
     }
 

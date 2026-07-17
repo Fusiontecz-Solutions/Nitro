@@ -9,5 +9,9 @@ opencorporatesRouter.post(
   '/applications/:applicationId/import',
   opencorporatesController.importForApplication,
 );
+opencorporatesRouter.post(
+  '/applications/:applicationId/sync-to-client',
+  opencorporatesController.syncToClient,
+);
 
 export default opencorporatesRouter;
