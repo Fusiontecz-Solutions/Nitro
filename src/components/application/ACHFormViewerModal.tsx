@@ -588,9 +588,19 @@ export default function ACHFormViewerModal({
         name: "",
         email: "",
     });
+    const [achSecondSigner, setAchSecondSigner] = useState<ContractSignerOverrideRow>({
+        role: "Owner 2",
+        name: "",
+        email: "",
+    });
     const [showAchSignerEditor, setShowAchSignerEditor] = useState(false);
     const [signerDraft, setSignerDraft] = useState<ContractSignerOverrideRow>({
         role: "Receiver",
+        name: "",
+        email: "",
+    });
+    const [secondSignerDraft, setSecondSignerDraft] = useState<ContractSignerOverrideRow>({
+        role: "Owner 2",
         name: "",
         email: "",
     });
@@ -1041,25 +1051,21 @@ export default function ACHFormViewerModal({
         const email = String(achSigner.email || "").trim();
         const name = String(achSigner.name || "").trim();
         if (!email) return [];
-        const primary = buildDocuSignRolesFromEditorRows([{ role, name, email }]);
-        if (achCoordinateLayout !== "texas") return primary;
-
-        const overrides = parseContractSignerOverridesFromPrefill(
-            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
-                ?.contractPrefillOverrides,
-        );
-        const owner2 = overrides?.[1];
-        const owner2Email = String(owner2?.email || "").trim();
-        if (!owner2Email) return primary;
+        const owner2Email = String(achSecondSigner.email || "").trim();
         return buildDocuSignRolesFromEditorRows([
             { role, name, email },
-            {
-                role: String(owner2?.role || "Owner 2").trim() || "Owner 2",
-                name: String(owner2?.name || "").trim(),
-                email: owner2Email,
-            },
+            ...(owner2Email
+                ? [
+                      {
+                          role:
+                              String(achSecondSigner.role || "Owner 2").trim() || "Owner 2",
+                          name: String(achSecondSigner.name || "").trim(),
+                          email: owner2Email,
+                      },
+                  ]
+                : []),
         ]);
-    }, [achSigner, achCoordinateLayout, resolvedContract]);
+    }, [achSigner, achSecondSigner]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -1077,6 +1083,7 @@ export default function ACHFormViewerModal({
                 ?.contractPrefillOverrides,
         );
         const primary = overrides?.[0];
+        const secondary = overrides?.[1];
         if (primary?.email?.trim()) {
             setAchSigner({
                 role: primary.role?.trim() || "Receiver",
@@ -1090,6 +1097,11 @@ export default function ACHFormViewerModal({
                 email: getSignerEmail().trim(),
             });
         }
+        setAchSecondSigner({
+            role: secondary?.role?.trim() || "Owner 2",
+            name: secondary?.name?.trim() || "",
+            email: secondary?.email?.trim() || "",
+        });
     }, [isOpen, resolvedContract, getSignerName, getSignerEmail, contractCcMergeOptions]);
 
     const syncAchEnvelopeStatus = useCallback(
@@ -1617,6 +1629,7 @@ export default function ACHFormViewerModal({
             return;
         }
         setSignerDraft({ ...achSigner });
+        setSecondSignerDraft({ ...achSecondSigner });
         setShowAchSignerEditor(true);
     };
 
@@ -1633,7 +1646,18 @@ export default function ACHFormViewerModal({
             return;
         }
         const row: ContractSignerOverrideRow = { role, name, email };
-        const roles = buildDocuSignRolesFromEditorRows([row]);
+        const secondEmail = String(secondSignerDraft.email || "").trim();
+        const secondRow: ContractSignerOverrideRow = {
+            role: String(secondSignerDraft.role || "Owner 2").trim() || "Owner 2",
+            name: String(secondSignerDraft.name || "").trim(),
+            email: secondEmail,
+        };
+        if (secondEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(secondEmail)) {
+            toast.error("Enter a valid second signer email address.");
+            return;
+        }
+        const signerRows = [row, ...(secondEmail ? [secondRow] : [])];
+        const roles = buildDocuSignRolesFromEditorRows(signerRows);
         const validation = validateDocuSignSignerRoles(roles);
         if (!validation.valid) {
             toast.error(validation.message || "Invalid signer details.");
@@ -1643,13 +1667,14 @@ export default function ACHFormViewerModal({
         setSavingSigner(true);
         try {
             setAchSigner(row);
+            setAchSecondSigner(secondRow);
             if (contractId != null) {
                 const prefillBase =
                     (resolvedContract as { contractPrefillOverrides?: unknown } | null)
                         ?.contractPrefillOverrides ?? null;
                 const contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
                     prefillBase,
-                    [row],
+                    signerRows,
                 );
                 const updated = await dispatch(
                     updateContract({
@@ -1779,6 +1804,45 @@ export default function ACHFormViewerModal({
                 if (docuSignTab) writeDocuSignErrorTab(docuSignTab.document, msg);
                 toast.error(msg);
                 return;
+            }
+
+            // Persist both ACH signers before envelope create so status/persist
+            // updates cannot drop Owner 2 from contractSignerOverrides.
+            if (contractId != null) {
+                const signerRowsForPrefill = signerRoles.map((r) => ({
+                    role: String(r.signerRole || "").trim() || "Receiver",
+                    name: String(r.signerName || "").trim(),
+                    email: String(r.signerEmail || "").trim(),
+                }));
+                const prefillBase =
+                    (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides ?? null;
+                const contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
+                    prefillBase,
+                    signerRowsForPrefill,
+                );
+                try {
+                    const updated = await dispatch(
+                        updateContract({
+                            id: contractId,
+                            data: { contractPrefillOverrides },
+                        }),
+                    ).unwrap();
+                    const payload = (updated as { data?: unknown })?.data ?? updated;
+                    if (payload && typeof payload === "object") {
+                        setResolvedContract((prev) =>
+                            prev && typeof prev === "object"
+                                ? {
+                                      ...prev,
+                                      ...(payload as Record<string, unknown>),
+                                      contractPrefillOverrides,
+                                  }
+                                : (payload as Record<string, unknown>),
+                        );
+                    }
+                } catch {
+                    /* non-blocking — send still uses in-memory signerRoles */
+                }
             }
 
             const funderName = String(selectedFunder || selectedFunderProfile?.name || "").trim();
@@ -2054,7 +2118,7 @@ export default function ACHFormViewerModal({
                                     <div>
                                         <div className="flex items-center justify-between gap-2">
                                             <h3 className="text-sm font-bold tracking-tight text-slate-800 dark:text-slate-100">
-                                                ACH Signer
+                                                ACH Signers
                                             </h3>
                                             {!achSigner.email ? (
                                                 <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
@@ -2064,7 +2128,7 @@ export default function ACHFormViewerModal({
                                         </div>
                                         {canEditRecipients ? (
                                             <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                One person signs this form. Use the pencil to edit.
+                                                Both contract signers can initial the ACH form. Use the pencil to edit.
                                             </p>
                                         ) : null}
                                     </div>
@@ -2126,10 +2190,43 @@ export default function ACHFormViewerModal({
                                         ) : null}
                                     </div>
 
+                                    {achSecondSigner.email ? (
+                                        <div
+                                            className={cn(
+                                                "flex items-center gap-3 rounded-xl border p-3 transition-colors",
+                                                showAchSignerEditor
+                                                    ? "border-[var(--brand)]/40 bg-[var(--brand)]/5 ring-1 ring-[var(--brand)]/20"
+                                                    : "border-[var(--brand)]/10 bg-[var(--brand)]/5 hover:border-[var(--brand)]/25 dark:border-slate-600 dark:bg-[var(--brand)]/10",
+                                                canEditRecipients && "cursor-pointer",
+                                            )}
+                                            onClick={canEditRecipients ? openAchSignerEditor : undefined}
+                                            role={canEditRecipients ? "button" : undefined}
+                                            tabIndex={canEditRecipients ? 0 : undefined}
+                                        >
+                                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-white text-emerald-600 shadow-sm dark:border-emerald-500/30 dark:bg-slate-900">
+                                                <User className="h-4 w-4" />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                                    {achSecondSigner.role || "Owner 2"}
+                                                </p>
+                                                <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                    {achSecondSigner.name.trim() || "Second signer"}
+                                                </p>
+                                                <p className="truncate text-xs text-slate-600 dark:text-slate-400">
+                                                    {achSecondSigner.email}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    ) : null}
+
                                     {showAchSignerEditor && canEditRecipients ? (
                                         <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-600 dark:bg-slate-900/60">
                                             <p className="text-[11px] text-slate-600 dark:text-slate-400">
-                                                Role, name, and email for the DocuSign envelope.
+                                                Role, name, and email for each DocuSign signer. Signer 2 is optional.
+                                            </p>
+                                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                                Signer 1
                                             </p>
                                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                                 <Input
@@ -2162,6 +2259,46 @@ export default function ACHFormViewerModal({
                                                     value={signerDraft.email}
                                                     onChange={(e) =>
                                                         setSignerDraft((prev) => ({
+                                                            ...prev,
+                                                            email: e.target.value,
+                                                        }))
+                                                    }
+                                                />
+                                            </div>
+                                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                                Signer 2
+                                            </p>
+                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                                <Input
+                                                    placeholder="Role"
+                                                    className="h-9 bg-white text-xs dark:bg-slate-950"
+                                                    value={secondSignerDraft.role}
+                                                    onChange={(e) =>
+                                                        setSecondSignerDraft((prev) => ({
+                                                            ...prev,
+                                                            role: e.target.value,
+                                                        }))
+                                                    }
+                                                />
+                                                <Input
+                                                    placeholder="Name"
+                                                    className="h-9 bg-white text-xs dark:bg-slate-950"
+                                                    value={secondSignerDraft.name}
+                                                    onChange={(e) =>
+                                                        setSecondSignerDraft((prev) => ({
+                                                            ...prev,
+                                                            name: e.target.value,
+                                                        }))
+                                                    }
+                                                />
+                                                <Input
+                                                    placeholder="Email (optional)"
+                                                    type="email"
+                                                    autoComplete="email"
+                                                    className="h-9 bg-white text-xs dark:bg-slate-950"
+                                                    value={secondSignerDraft.email}
+                                                    onChange={(e) =>
+                                                        setSecondSignerDraft((prev) => ({
                                                             ...prev,
                                                             email: e.target.value,
                                                         }))

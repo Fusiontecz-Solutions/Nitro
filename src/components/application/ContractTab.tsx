@@ -148,6 +148,7 @@ import {
 import { formatFunderNameWithDealIdPrefix } from "./contractdata/BALANCE_TRANSFER_SHEET_ADDENDUM";
 import { applyFunderDisclosureContactPrefill } from "./contractdata/funderDisclosureContact";
 import {
+    CONTRACT_SIGNER_OVERRIDES_KEY,
     parseContractSignerOverridesFromPrefill,
     parseBoldSignTemplateRolesFromRecipientsPayload,
     resolveDocuSignRolesForEnvelopeSend,
@@ -2213,16 +2214,10 @@ export default function ContractTab({
                 ? contractOwnerListState.data
                 : [];
             /** Manage Signers / send payload roles win — do not bump Owner 2 from stale Info Required owners. */
-            const ownerCountResolved = resolveActiveOwnerCount({
+            const ownerCount = resolveActiveOwnerCount({
                 owners: roles.length > 0 ? null : ownerRows,
                 signerRoles: roles,
             });
-            /** ACH Woodmere form is single-signer; Texas ACH (p11 coords) supports Owner 2. */
-            const achUsesTexasCoords = /ach_authorization_texas|texas_ach/i.test(
-                String(achDocumentRef || ""),
-            );
-            const ownerCount =
-                standaloneAchOnly && !achUsesTexasCoords ? 1 : ownerCountResolved;
             const secondOwnerNameBeforeCollapse = resolveSecondOwnerSignerName(
                 roles,
                 ownerCount,
@@ -3000,14 +2995,29 @@ export default function ContractTab({
             if (cid == null || !Number.isFinite(Number(cid))) return;
             const eid = String(envelopeId ?? "").trim();
             if (!eid) return;
-            const rawOverrides =
-                normalizeContractPrefillOverrides(
-                    (fetchedContract as { contractPrefillOverrides?: unknown } | null)
-                        ?.contractPrefillOverrides,
-                ) ?? {};
+
+            // Always load the latest contract row so envelope status updates cannot
+            // clobber a just-saved Signer 2 (stripDocumentTemplateBlob removes overrides).
+            let latestPrefill: unknown =
+                (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides;
+            try {
+                const res = await dispatch(getByIdContract(Number(cid))).unwrap();
+                const row = (res as { data?: unknown })?.data ?? res;
+                if (row && typeof row === "object") {
+                    setFetchedContract(row);
+                    latestPrefill = (row as { contractPrefillOverrides?: unknown })
+                        .contractPrefillOverrides;
+                }
+            } catch {
+                /* fall back to in-memory fetchedContract */
+            }
+
+            const rawOverrides = normalizeContractPrefillOverrides(latestPrefill) ?? {};
             const main = stripDocumentTemplateBlobFromPrefillOverrides(
                 rawOverrides,
             ) as Record<string, unknown>;
+            const preservedSigners = parseContractSignerOverridesFromPrefill(rawOverrides);
             const statusTrim = String(status ?? "").trim();
             const updatedAt = new Date().toISOString();
             const previousEnvelopeBlob = parseDocumentTemplateEnvelopeByMappingId(rawOverrides);
@@ -3081,6 +3091,9 @@ export default function ContractTab({
             const withCapsule = mergeAchAuthorizationDocuSignIntoPrefill(
                 {
                     ...main,
+                    ...(preservedSigners?.length
+                        ? { [CONTRACT_SIGNER_OVERRIDES_KEY]: preservedSigners }
+                        : {}),
                     ...(prefillBlob != null
                         ? {
                               [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: prefillBlob,

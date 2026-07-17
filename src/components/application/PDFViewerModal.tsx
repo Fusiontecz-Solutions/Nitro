@@ -256,7 +256,7 @@ import {
 } from "./contractdata/boldSignTemplateDocument";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 
-/** Fingerprint of saved prefill used to invalidate a reused DocuSign draft after edits. */
+/** Fingerprint of saved prefill — used to patch an open DocuSign draft after Edit Prefill saves. */
 function docuSignPrefillDraftFingerprint(input: {
     contractPrefillOverrides: Partial<BuildContractPrefillFieldsArgs> | null;
     documentTemplatePrefillByMappingId: Record<string, Record<string, string>>;
@@ -2334,13 +2334,6 @@ const PDFViewerModal = ({
         invalidateDocuSignDraftSession();
     }, [signerRolesDraftFingerprint, invalidateDocuSignDraftSession]);
 
-    /** Saved prefill changed after a draft was prepared — force a new envelope on next Review & send. */
-    useEffect(() => {
-        const prepared = draftPreparedPrefillFingerprintRef.current;
-        if (prepared == null || prepared === prefillDraftFingerprint) return;
-        invalidateDocuSignDraftSession();
-    }, [prefillDraftFingerprint, invalidateDocuSignDraftSession]);
-
     const sessionEnvelopeIdRef = useRef<string | null>(null);
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
@@ -3235,55 +3228,75 @@ const PDFViewerModal = ({
                     })),
                 });
                 const isResendAfterSigned = canResendMainContract(resolvedContract, sentAt);
-                /** Always rebuild so Sender View reflects current Deal Review prefill/signers. */
-                if (sessionEnv) {
-                    invalidateDocuSignPdfCache();
-                }
-                if (isResendAfterSigned) {
-                    toast.info("Creating a new DocuSign envelope to resend the contract.");
-                }
+                const canReuseSessionDraft =
+                    Boolean(sessionEnv) &&
+                    !isResendAfterSigned &&
+                    draftPreparedPackageFingerprintRef.current === sendPackageFingerprint &&
+                    draftPreparedSignerRolesRef.current === signerFingerprintForSend &&
+                    draftPreparedOwnerCountRef.current === currentOwnerCount &&
+                    draftPreparedAddendumIdRef.current === addendumTemplateId;
 
-                const prefillFieldsForDraft = buildDocuSignPrefillFieldsPayload().map((f) => ({
-                    id: f.id,
-                    value: f.value,
-                }));
-                const disclosureDocumentRef = packageSelection.includeDisclosure
-                    ? resolveDisclosureTemplateRefForDocuSignMerge()
-                    : null;
-                const prepared = await onPrepareDocuSignDraft({
-                    ccEmails: toSend,
-                    addendumDocumentRef: addendumTemplateId,
-                    disclosureDocumentRef,
-                    includeMainContract: packageSelection.includeMainContract,
-                    sendPackage: packageSelection,
-                    roles: signerRolesForSend,
-                    funderName: selectedFunder.trim() || null,
-                    funderProfileId:
-                        persistedFunderProfileIdForApi(selectedFunderProfile) || null,
-                    contractState: pickUsStateForSelect(selectedState) || null,
-                    mainContractLayoutKey: resolveLayoutKey(
-                        selectedFunder,
-                        selectedFunderProfile?.id,
-                    ),
-                    prefillFields: prefillFieldsForDraft,
-                });
-                let envelopeId = String(
-                    (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
-                ).trim() || null;
-                let preparedSenderUrl =
-                    String(
-                        (prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "",
-                    ).trim() || null;
-                if (envelopeId) {
-                    setSessionEnvelopeId(envelopeId);
-                    linkedEnvelopeIdRef.current = envelopeId;
-                    draftPreparedAddendumIdRef.current = addendumTemplateId;
-                    draftPreparedCcRef.current = [...toSend];
+                let envelopeId: string | null = null;
+                let preparedSenderUrl: string | null = null;
+
+                if (canReuseSessionDraft && sessionEnv) {
+                    /** Same draft package/signers — patch latest prefill and reopen Sender View. */
+                    invalidateDocuSignPdfCache();
+                    await syncPrefillToDraftEnvelope({ envelopeId: sessionEnv });
+                    envelopeId = sessionEnv;
                     draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
-                    draftPreparedSignerRolesRef.current = signerFingerprintForSend;
-                    draftPreparedOwnerCountRef.current = currentOwnerCount;
-                    draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
-                    await persistContractEnvelopeHistory(envelopeId, "draft");
+                    draftPreparedCcRef.current = [...toSend];
+                } else {
+                    if (sessionEnv) {
+                        invalidateDocuSignPdfCache();
+                    }
+                    if (isResendAfterSigned) {
+                        toast.info("Creating a new DocuSign envelope to resend the contract.");
+                    }
+
+                    const prefillFieldsForDraft = buildDocuSignPrefillFieldsPayload().map((f) => ({
+                        id: f.id,
+                        value: f.value,
+                    }));
+                    const disclosureDocumentRef = packageSelection.includeDisclosure
+                        ? resolveDisclosureTemplateRefForDocuSignMerge()
+                        : null;
+                    const prepared = await onPrepareDocuSignDraft({
+                        ccEmails: toSend,
+                        addendumDocumentRef: addendumTemplateId,
+                        disclosureDocumentRef,
+                        includeMainContract: packageSelection.includeMainContract,
+                        sendPackage: packageSelection,
+                        roles: signerRolesForSend,
+                        funderName: selectedFunder.trim() || null,
+                        funderProfileId:
+                            persistedFunderProfileIdForApi(selectedFunderProfile) || null,
+                        contractState: pickUsStateForSelect(selectedState) || null,
+                        mainContractLayoutKey: resolveLayoutKey(
+                            selectedFunder,
+                            selectedFunderProfile?.id,
+                        ),
+                        prefillFields: prefillFieldsForDraft,
+                    });
+                    envelopeId =
+                        String(
+                            (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
+                        ).trim() || null;
+                    preparedSenderUrl =
+                        String(
+                            (prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "",
+                        ).trim() || null;
+                    if (envelopeId) {
+                        setSessionEnvelopeId(envelopeId);
+                        linkedEnvelopeIdRef.current = envelopeId;
+                        draftPreparedAddendumIdRef.current = addendumTemplateId;
+                        draftPreparedCcRef.current = [...toSend];
+                        draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
+                        draftPreparedSignerRolesRef.current = signerFingerprintForSend;
+                        draftPreparedOwnerCountRef.current = currentOwnerCount;
+                        draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
+                        await persistContractEnvelopeHistory(envelopeId, "draft");
+                    }
                 }
 
                 if (!envelopeId) {
@@ -4451,31 +4464,61 @@ const PDFViewerModal = ({
         buildDocuSignRolesForSync,
     ]);
 
-    const syncPrefillToDraftEnvelope = useCallback(async () => {
-        const envelopeId = String(
-            sessionEnvelopeId || linkedEnvelopeId || "",
+    const syncPrefillToDraftEnvelope = useCallback(
+        async (options?: { envelopeId?: string | null }) => {
+            const envelopeId = String(
+                options?.envelopeId ||
+                    sessionEnvelopeIdRef.current ||
+                    linkedEnvelopeIdRef.current ||
+                    sessionEnvelopeId ||
+                    linkedEnvelopeId ||
+                    "",
+            ).trim();
+            if (!envelopeId) return;
+            const fields = buildDocuSignPrefillFieldsPayload();
+            if (!fields.length) return;
+            try {
+                const result = await patchDocuSignPrefillFields(envelopeId, fields);
+                docuSignPrefillSyncToast(result, { hasDraftEnvelope: true });
+                draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
+                invalidateDocuSignPdfCache();
+                void loadPrefilledPdfFromDocuSign(envelopeId, {
+                    manageLoading: false,
+                    maxAttempts: 3,
+                });
+            } catch (err) {
+                console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
+                toast.warning(
+                    "Prefill saved in CRM, but the DocuSign draft could not be updated. Use Review & send to refresh the draft.",
+                );
+            }
+        },
+        [
+            sessionEnvelopeId,
+            linkedEnvelopeId,
+            buildDocuSignPrefillFieldsPayload,
+            prefillDraftFingerprint,
+            invalidateDocuSignPdfCache,
+            loadPrefilledPdfFromDocuSign,
+        ],
+    );
+
+    /**
+     * After Deal Review / Edit Prefill saves, React state is fresh here — patch the open
+     * DocuSign draft in place so Review & open and the PDF preview show the new values.
+     */
+    useEffect(() => {
+        const prepared = draftPreparedPrefillFingerprintRef.current;
+        if (prepared == null || prepared === prefillDraftFingerprint) return;
+        const eid = String(
+            sessionEnvelopeIdRef.current || linkedEnvelopeIdRef.current || "",
         ).trim();
-        if (!envelopeId) return;
-        const fields = buildDocuSignPrefillFieldsPayload();
-        if (!fields.length) return;
-        try {
-            const result = await patchDocuSignPrefillFields(envelopeId, fields);
-            docuSignPrefillSyncToast(result, { hasDraftEnvelope: true });
-            invalidateDocuSignPdfCache();
-            void loadPrefilledPdfFromDocuSign(envelopeId, { manageLoading: false });
-        } catch (err) {
-            console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
-            toast.warning(
-                "Prefill saved in CRM, but the DocuSign draft could not be updated. Use Review & send to refresh the draft.",
-            );
+        if (!eid) {
+            draftPreparedPrefillFingerprintRef.current = null;
+            return;
         }
-    }, [
-        sessionEnvelopeId,
-        linkedEnvelopeId,
-        buildDocuSignPrefillFieldsPayload,
-        invalidateDocuSignPdfCache,
-        loadPrefilledPdfFromDocuSign,
-    ]);
+        void syncPrefillToDraftEnvelope({ envelopeId: eid });
+    }, [prefillDraftFingerprint, syncPrefillToDraftEnvelope]);
 
     const applyDisclosureCalculation = useCallback(
         async (args: {
@@ -4541,17 +4584,6 @@ const PDFViewerModal = ({
                 setResolvedContract((prev) =>
                     prev ? { ...prev, contractPrefillOverrides: fullSaved ?? null } : prev,
                 );
-                draftPreparedPrefillFingerprintRef.current = docuSignPrefillDraftFingerprint({
-                    contractPrefillOverrides:
-                        stripDocumentTemplateBlobFromPrefillOverrides(
-                            normalizeContractPrefillOverrides(fullSaved) ?? null,
-                        ) ?? null,
-                    documentTemplatePrefillByMappingId:
-                        parseDocumentTemplatePrefillByMappingId(fullSaved),
-                });
-                queueMicrotask(() => {
-                    void syncPrefillToDraftEnvelope();
-                });
                 toast.success("Disclosure calculation applied.");
                 setDisclosureCalcModalOpen(false);
             } catch (err: unknown) {
@@ -4574,7 +4606,6 @@ const PDFViewerModal = ({
             resolvedContract,
             applicationData,
             dispatch,
-            syncPrefillToDraftEnvelope,
         ],
     );
 
@@ -4622,15 +4653,6 @@ const PDFViewerModal = ({
                           }
                         : prev,
                 );
-                draftPreparedPrefillFingerprintRef.current = docuSignPrefillDraftFingerprint({
-                    contractPrefillOverrides: main,
-                    documentTemplatePrefillByMappingId:
-                        parseDocumentTemplatePrefillByMappingId(result.fullSaved) ??
-                        documentTemplatePrefillByMappingId,
-                });
-                queueMicrotask(() => {
-                    void syncPrefillToDraftEnvelope();
-                });
                 toast.success(`Specified percentage calculated and saved: ${spa}%`);
                 setSpaCalcModalOpen(false);
             } catch (err: unknown) {
@@ -4653,7 +4675,6 @@ const PDFViewerModal = ({
             contractPrefillLoaded,
             contractPrefillFromDb,
             documentTemplatePrefillByMappingId,
-            syncPrefillToDraftEnvelope,
         ],
     );
 
@@ -8741,7 +8762,6 @@ const PDFViewerModal = ({
                                                 }
                                                 onPersistedPrefillChange={(next) => {
                                                     setContractPrefillFromDb(next ?? null);
-                                                    invalidateDocuSignDraftSession();
                                                 }}
                                                 onPersistedPrefillFullChange={(full) => {
                                                     setDocumentTemplatePrefillByMappingId(
@@ -8752,7 +8772,6 @@ const PDFViewerModal = ({
                                                             ? { ...prev, contractPrefillOverrides: full ?? null }
                                                             : prev,
                                                     );
-                                                    invalidateDocuSignDraftSession();
                                                 }}
                                                 onDraftInvalidate={invalidateDocuSignDraftSession}
                                             />
@@ -9726,10 +9745,6 @@ const PDFViewerModal = ({
                               }
                             : prev,
                     );
-                    invalidateDocuSignDraftSession();
-                    queueMicrotask(() => {
-                        void syncPrefillToDraftEnvelope();
-                    });
                 }}
                 onPersistedPrefillFullChange={(main, mappingMap) => {
                     setDocumentTemplatePrefillByMappingId(mappingMap);
@@ -9755,13 +9770,6 @@ const PDFViewerModal = ({
                               }
                             : prev,
                     );
-                    invalidateDocuSignDraftSession();
-                    queueMicrotask(() => {
-                        void syncPrefillToDraftEnvelope();
-                    });
-                }}
-                onAfterPrefillSaved={() => {
-                    void syncPrefillToDraftEnvelope();
                 }}
                 contractRecords={contractPrefillRecords}
                 resolvedContract={resolvedContract}
@@ -9792,7 +9800,6 @@ const PDFViewerModal = ({
                 documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
                 mainPrefillOverrides={mainPrefillOverridesForTemplateDialog}
                 onSaved={() => {
-                    invalidateDocuSignDraftSession();
                     void fetchTemplateMappings();
                     void reloadContractPrefillSnapshots();
                 }}
