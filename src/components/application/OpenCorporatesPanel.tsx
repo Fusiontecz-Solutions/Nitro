@@ -1,12 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
-import { ChevronDown, ExternalLink, Loader2, Search } from "lucide-react";
-import { useSelector } from "react-redux";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ExternalLink,
+  Loader2,
+  MinusCircle,
+  RefreshCw,
+  Search,
+  XCircle,
+} from "lucide-react";
+import { useDispatch, useSelector } from "react-redux";
 import { toast } from "react-toastify";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { RootState } from "@/redux/store";
-import { importOpenCorporatesForApplication } from "@/redux/actions/opencorporates-actions";
+import type { AppDispatch, RootState } from "@/redux/store";
+import {
+  getApplicationByApplicationId,
+  getApplicationById,
+} from "@/redux/actions/applicationActions";
+import {
+  importOpenCorporatesForApplication,
+  syncOpenCorporatesToApplication,
+} from "@/redux/actions/opencorporates-actions";
+import {
+  buildOpenCorporatesComparisonRows,
+  buildSyncConfirmationLines,
+  canSyncComparisonRow,
+  extractApplicationBusinessSnapshot,
+  syncFieldsForComparisonRow,
+  syncFieldsFromComparisonRows,
+  type ComparisonRow,
+  type OpenCorporatesSyncFieldKey,
+} from "./opencorporatesComparison";
 import {
   buildOpenCorporatesQueryKey,
   buildOpenCorporatesSearchUrl,
@@ -96,8 +122,58 @@ function OpenCorporatesClientSummary({
   );
 }
 
-function OpenCorporatesCompanyCard({ company }: { company: OpenCorporatesCompanyHit }) {
+function ComparisonStatusIcon({ status }: { status: ComparisonRow["status"] }) {
+  if (status === "match") {
+    return (
+      <CheckCircle2
+        className="h-4 w-4 shrink-0 text-emerald-600"
+        aria-label="Matches application"
+      />
+    );
+  }
+  if (status === "mismatch") {
+    return (
+      <XCircle
+        className="h-4 w-4 shrink-0 text-red-600"
+        aria-label="Does not match application"
+      />
+    );
+  }
+  return (
+    <MinusCircle
+      className="h-4 w-4 shrink-0 text-[#9CA3AF]"
+      aria-label="Not enough data to compare"
+    />
+  );
+}
+
+function OpenCorporatesCompanyCard({
+  company,
+  applicationSnapshot,
+  syncingKey,
+  onSync,
+}: {
+  company: OpenCorporatesCompanyHit;
+  applicationSnapshot: ReturnType<typeof extractApplicationBusinessSnapshot>;
+  syncingKey: string | null;
+  onSync: (
+    company: OpenCorporatesCompanyHit,
+    fields?: OpenCorporatesSyncFieldKey[],
+    rowsForConfirm?: ComparisonRow[],
+  ) => void;
+}) {
   const location = [company.jurisdictionCode, company.companyNumber].filter(Boolean).join(" / ");
+  const companyKey = `${company.jurisdictionCode}-${company.companyNumber}`;
+  const comparisonRows = useMemo(
+    () => buildOpenCorporatesComparisonRows(company, applicationSnapshot),
+    [company, applicationSnapshot],
+  );
+  const syncFields = useMemo(
+    () => syncFieldsFromComparisonRows(comparisonRows),
+    [comparisonRows],
+  );
+  const companyBusy =
+    syncingKey === companyKey || syncingKey?.startsWith(`${companyKey}::`) === true;
 
   return (
     <div className="rounded-md border border-[#E5E7EB] bg-white px-3 py-3 space-y-2">
@@ -109,6 +185,71 @@ function OpenCorporatesCompanyCard({ company }: { company: OpenCorporatesCompany
             {company.currentStatus ? ` · ${company.currentStatus}` : ""}
           </p>
         </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 text-xs"
+          disabled={syncFields.length === 0 || companyBusy}
+          onClick={() => onSync(company)}
+        >
+          {syncingKey === companyKey ? (
+            <Loader2 className="mr-1.5 h-3 w-3 animate-spin" aria-hidden />
+          ) : (
+            <RefreshCw className="mr-1.5 h-3 w-3" aria-hidden />
+          )}
+          Sync all
+        </Button>
+      </div>
+      <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-2.5 py-2 space-y-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-[#6B7280]">
+          Application match
+        </p>
+        {comparisonRows.map((row) => {
+          const rowFields = syncFieldsForComparisonRow(row);
+          const rowSyncKey = `${companyKey}::${row.key}`;
+          return (
+            <div
+              key={row.key}
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-2 gap-y-0.5 text-xs"
+            >
+              <ComparisonStatusIcon status={row.status} />
+              <div className="min-w-0">
+                <p className="font-medium text-[#111827]">{row.label}</p>
+                <p className="text-[#6B7280]">
+                  <span className="font-medium text-[#374151]">App:</span>{" "}
+                  {row.applicationValue}
+                </p>
+                <p className="text-[#6B7280]">
+                  <span className="font-medium text-[#374151]">OC:</span>{" "}
+                  {row.openCorporatesValue}
+                </p>
+              </div>
+              {canSyncComparisonRow(row) ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[11px]"
+                  disabled={companyBusy}
+                  onClick={() => onSync(company, rowFields, [row])}
+                >
+                  {syncingKey === rowSyncKey ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+                  ) : (
+                    <RefreshCw className="mr-1 h-3 w-3" aria-hidden />
+                  )}
+                  Sync
+                </Button>
+              ) : null}
+            </div>
+          );
+        })}
+        {syncFields.length === 0 ? (
+          <p className="text-[11px] text-[#6B7280]">
+            No syncable fields. Officers/owners are comparison-only.
+          </p>
+        ) : null}
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B7280]">
         {company.incorporationDate ? <span>Incorporated {company.incorporationDate}</span> : null}
@@ -208,6 +349,7 @@ export default function OpenCorporatesPanel({
   embedded = false,
   onApplyToNotes,
 }: OpenCorporatesPanelProps) {
+  const dispatch = useDispatch<AppDispatch>();
   const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>();
   const applicationData = useSelector(
     (state: RootState) => state.applicationDetail.data as Record<string, unknown> | null,
@@ -223,6 +365,11 @@ export default function OpenCorporatesPanel({
     [applicationData],
   );
 
+  const applicationSnapshot = useMemo(
+    () => extractApplicationBusinessSnapshot(applicationData),
+    [applicationData],
+  );
+
   const queryKey = useMemo(
     () => buildOpenCorporatesQueryKey(dealClient.businessName, dealClient.state),
     [dealClient.businessName, dealClient.state],
@@ -234,8 +381,22 @@ export default function OpenCorporatesPanel({
   const [resultsExpanded, setResultsExpanded] = useState(true);
   const [waitingForImport, setWaitingForImport] = useState(false);
   const [savingImport, setSavingImport] = useState(false);
+  const [syncingCompanyKey, setSyncingCompanyKey] = useState<string | null>(null);
   const popupRef = useRef<Window | null>(null);
   const importTimeoutRef = useRef<number | null>(null);
+  const resultRef = useRef<OpenCorporatesLookupData | null>(null);
+  const searchedAtRef = useRef<string | null>(null);
+  const resultsExpandedRef = useRef(true);
+
+  useEffect(() => {
+    resultRef.current = result;
+  }, [result]);
+  useEffect(() => {
+    searchedAtRef.current = searchedAt;
+  }, [searchedAt]);
+  useEffect(() => {
+    resultsExpandedRef.current = resultsExpanded;
+  }, [resultsExpanded]);
 
   const canSearch = Boolean(applicationId) && Boolean(dealClient.businessName);
 
@@ -432,6 +593,112 @@ export default function OpenCorporatesPanel({
     toast.success("OpenCorporates summary applied to notes.");
   };
 
+  const refetchApplicationDetail = useCallback(async () => {
+    const uuid = String(applicationData?.id ?? applicationData?._id ?? "").trim();
+    const numeric =
+      applicationData?.applicationId ?? applicationData?.dealId ?? routeApplicationId;
+    if (uuid && /^[0-9a-f-]{36}$/i.test(uuid)) {
+      await dispatch(getApplicationById(uuid));
+      return;
+    }
+    if (numeric != null && String(numeric).trim()) {
+      await dispatch(getApplicationByApplicationId(String(numeric).trim()));
+    }
+  }, [applicationData, dispatch, routeApplicationId]);
+
+  const handleSyncToApplication = useCallback(
+    async (
+      company: OpenCorporatesCompanyHit,
+      fieldsOverride?: OpenCorporatesSyncFieldKey[],
+      rowsForConfirm?: ComparisonRow[],
+    ) => {
+      if (!applicationId) {
+        toast.error("Application id is required to sync OpenCorporates data.");
+        return;
+      }
+
+      const rows = buildOpenCorporatesComparisonRows(company, applicationSnapshot);
+      const fields =
+        fieldsOverride && fieldsOverride.length > 0
+          ? fieldsOverride
+          : syncFieldsFromComparisonRows(rows);
+      const confirmRows =
+        rowsForConfirm && rowsForConfirm.length > 0
+          ? rowsForConfirm
+          : rows.filter(canSyncComparisonRow);
+      if (fields.length === 0) {
+        toast.info("No syncable fields for this selection.");
+        return;
+      }
+
+      const singleField = Boolean(fieldsOverride?.length);
+      const confirmed = window.confirm(
+        [
+          singleField
+            ? "Sync this OpenCorporates value into the application?"
+            : "Sync OpenCorporates values into this application's business profile?",
+          "",
+          ...buildSyncConfirmationLines(confirmRows),
+          "",
+          "Officers/owners will not be changed.",
+        ].join("\n"),
+      );
+      if (!confirmed) return;
+
+      const companyKey = `${company.jurisdictionCode}-${company.companyNumber}`;
+      const syncKey =
+        singleField && rowsForConfirm?.[0]
+          ? `${companyKey}::${rowsForConfirm[0].key}`
+          : companyKey;
+      setSyncingCompanyKey(syncKey);
+      try {
+        const response = await syncOpenCorporatesToApplication(applicationId, {
+          company,
+          fields,
+        });
+        if (!response.success) {
+          toast.error(response.message);
+          return;
+        }
+
+        const nextBusinessName =
+          String(response.data?.updatedFields?.businessName ?? "").trim() ||
+          (fields.includes("businessName") ? company.name : dealClient.businessName);
+        const nextState =
+          String(response.data?.updatedFields?.state ?? "").trim() || dealClient.state;
+        const currentLookup = resultRef.current;
+        if (currentLookup) {
+          saveOpenCorporatesCache(applicationId, {
+            queryKey: buildOpenCorporatesQueryKey(nextBusinessName, nextState),
+            searchedAt: searchedAtRef.current ?? new Date().toISOString(),
+            resultsExpanded: resultsExpandedRef.current,
+            result: currentLookup,
+          });
+        }
+
+        await refetchApplicationDetail();
+        toast.success(
+          singleField
+            ? `${confirmRows[0]?.label ?? "Field"} synced to application.`
+            : response.message || "Application business fields synced.",
+        );
+      } catch (error: unknown) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to sync OpenCorporates data.",
+        );
+      } finally {
+        setSyncingCompanyKey(null);
+      }
+    },
+    [
+      applicationId,
+      applicationSnapshot,
+      dealClient.businessName,
+      dealClient.state,
+      refetchApplicationDetail,
+    ],
+  );
+
   const toggleResultsExpanded = () => {
     setResultsExpanded((current) => {
       const next = !current;
@@ -585,6 +852,9 @@ export default function OpenCorporatesPanel({
                 <OpenCorporatesCompanyCard
                   key={`${company.jurisdictionCode}-${company.companyNumber}-${index}`}
                   company={company}
+                  applicationSnapshot={applicationSnapshot}
+                  syncingKey={syncingCompanyKey}
+                  onSync={handleSyncToApplication}
                 />
               ))}
             </div>

@@ -6,6 +6,7 @@ export const PLATFORM_LAYOUT_KEYS = {
     contract: "contract",
     texasFundingGroupContract: "texas_funding_group_contract",
     flexAddendum: "flex_addendum",
+    prePaymentAddendum: "pre_payment_addendum",
     balanceTransfer: "balance_transfer",
     achAuthorization: "ach_authorization",
     achAuthorizationTexas: "ach_authorization_texas",
@@ -33,6 +34,10 @@ export type SupplementalDocumentOption = {
 
 export const SUPPLEMENTAL_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [
     { layoutKey: PLATFORM_LAYOUT_KEYS.flexAddendum, label: "Flex Addendum" },
+    {
+        layoutKey: PLATFORM_LAYOUT_KEYS.prePaymentAddendum,
+        label: "Pre-Payment Addendum",
+    },
     { layoutKey: PLATFORM_LAYOUT_KEYS.balanceTransfer, label: "Balance Transfer Sheet" },
     { layoutKey: PLATFORM_LAYOUT_KEYS.achAuthorization, label: "ACH Authorization" },
 ];

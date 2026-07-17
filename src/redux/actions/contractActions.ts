@@ -47,6 +47,15 @@ export interface UpdateContractData {
     reverseDisbursementEnabled?: boolean;
     reverseDisbursementSchedule?: {
         fixedDailyDebit?: string;
+        summary?: {
+            totalFundingAmount?: string;
+            netFundingAmount?: string;
+            dailyDebit?: string;
+            totalTermLength?: string;
+            reductionOnDailyRate?: string;
+            originationFeePercent?: string;
+            factorRate?: string;
+        };
         rows?: Array<Record<string, unknown>>;
     } | null;
 

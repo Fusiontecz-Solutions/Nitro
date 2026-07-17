@@ -2009,7 +2009,7 @@ const PDFViewerModal = ({
             row("Decision", od.decision),
             row("Position", od.position),
             row("Offer amount", firstOf("offer", "approvedAmount")),
-            row("Specific Percentage", od.rate),
+            row("Factor rate", od.rate),
             row("Term", firstOf("term", "termLength")),
             row("Frequency", od.frequency),
             row("Repay per period", firstOf("repayPerPeriod", "paymentAmount")),

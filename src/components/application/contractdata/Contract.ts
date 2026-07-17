@@ -1896,7 +1896,8 @@ const PLATFORM_LABEL = {
     offerAmount: "Offer amount",
     paybackAmount: "Payback amount",
     totalRemit: "Total remit (payment amount)",
-    rate: "Specific Percentage",
+    /** OfferDecision.rate / terms factor — not SPA / purchasePercent. */
+    rate: "Factor rate",
     specificPercentage: "Specific Percentage",
     term: "Term",
     frequency: "Frequency",

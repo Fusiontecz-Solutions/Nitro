@@ -64,6 +64,7 @@ import {
 } from "@/lib/bankDetailUtils";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
+import ReverseDisbursementScheduleSection from "./ReverseDisbursementScheduleSection";
 import ACHFormViewerModal from "./ACHFormViewerModal";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 // import { US_STATES } from "@/constants/usStates";
@@ -2428,7 +2429,9 @@ export default function ContractTab({
                         } | null;
                     }>;
                     const mergedLayoutKeysForPrefill = supplementalDocumentRefs.filter((ref) =>
-                        /balance_transfer|flex_addendum|ach_authorization/i.test(ref),
+                        /balance_transfer|flex_addendum|pre_payment_addendum|ach_authorization/i.test(
+                            ref,
+                        ),
                     );
                     prefillFieldsPayload = applyDocumentTemplateMappingPrefillOverrides({
                         prefillFieldsPayload,
@@ -3652,6 +3655,18 @@ export default function ContractTab({
                 </div>
 
             </div>
+
+            <ReverseDisbursementScheduleSection
+                contractId={selectedContractId}
+                fetchedContract={
+                    fetchedContract && typeof fetchedContract === "object"
+                        ? (fetchedContract as Record<string, unknown>)
+                        : null
+                }
+                readOnly={isReadOnly}
+                isDark={isDark}
+                onSaved={reloadFetchedContract}
+            />
 
             {/* Final Calculations - White background */}
             <div

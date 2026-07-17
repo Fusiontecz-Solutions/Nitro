@@ -101,10 +101,12 @@ export async function deleteDocuSignAccountProfile(id: string): Promise<void> {
 
 export type FunderProfileFiles = {
   contractFile?: File | null;
+  logoFile?: File | null;
 };
 
 function appendFunderFiles(formData: FormData, files?: FunderProfileFiles | null) {
   if (files?.contractFile) formData.append("contract", files.contractFile);
+  if (files?.logoFile) formData.append("logo", files.logoFile);
 }
 
 export type FunderDocumentTemplateRow = import("@/utils/funderLayoutKeys").FunderDocumentTemplateRow;
@@ -148,7 +150,7 @@ export async function createFunderProfile(
     files && files instanceof File
       ? { contractFile: files }
       : (files as FunderProfileFiles | null | undefined);
-  const hasUploads = normalizedFiles?.contractFile;
+  const hasUploads = normalizedFiles?.contractFile || normalizedFiles?.logoFile;
   if (hasUploads) {
     const formData = new FormData();
     appendFunderFormFields(formData, payload);
@@ -169,7 +171,7 @@ export async function updateFunderProfile(
     files && files instanceof File
       ? { contractFile: files }
       : (files as FunderProfileFiles | null | undefined);
-  const hasUploads = normalizedFiles?.contractFile;
+  const hasUploads = normalizedFiles?.contractFile || normalizedFiles?.logoFile;
   if (hasUploads) {
     const formData = new FormData();
     appendFunderFormFields(formData, payload as FunderProfileInput);

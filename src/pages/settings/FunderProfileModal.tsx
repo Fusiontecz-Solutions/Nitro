@@ -89,6 +89,7 @@ const emptyForm: FunderProfileInput = {
 
 const ADDENDUM_PRESETS = [
   { name: "Flex Addendum", type: "flex_addendum" },
+  { name: "Pre-Payment Addendum", type: "pre_payment_addendum" },
   { name: "Balance Transfer", type: "balance_transfer" },
   { name: "ACH Authorization", type: "ach_authorization" },
 ] as const;
@@ -154,6 +155,8 @@ export default function FunderProfileModal({
   const [statesText, setStatesText] = useState("");
   const [excludedStatesText, setExcludedStatesText] = useState("");
   const [contractFile, setContractFile] = useState<File | null>(null);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
 
   const [documents, setDocuments] = useState<FunderDocumentTemplateRow[]>([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
@@ -170,6 +173,7 @@ export default function FunderProfileModal({
   const [addendumUploading, setAddendumUploading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const disclosureInputRef = useRef<HTMLInputElement>(null);
   const addendumInputRef = useRef<HTMLInputElement>(null);
   /** Tracks DB-persisted document sources so upload can auto-save without requiring Setup → Save. */
@@ -199,6 +203,7 @@ export default function FunderProfileModal({
     setActiveTab("setup");
     setShowStateRules(false);
     setContractFile(null);
+    setLogoFile(null);
     setDisclosureFile(null);
     setAddendumFile(null);
     setAddendumName("Flex Addendum");
@@ -250,6 +255,16 @@ export default function FunderProfileModal({
       persistedDocSourcesRef.current = null;
     }
   }, [open, initial, loadDocuments]);
+
+  useEffect(() => {
+    if (!logoFile) {
+      setLogoPreviewUrl(initial?.logoUrl ?? null);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(logoFile);
+    setLogoPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [logoFile, initial?.logoUrl]);
 
   const set = (key: keyof FunderProfileInput, value: string | number | boolean | null) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -342,7 +357,7 @@ export default function FunderProfileModal({
       payload.sortOrder = initial.sortOrder;
     }
 
-    await onSave(payload, { contractFile });
+    await onSave(payload, { contractFile, logoFile });
   };
 
   /** Upload APIs enforce the *saved* DB source; UI only reflects the form. Persist first. */
@@ -486,6 +501,54 @@ export default function FunderProfileModal({
                   onChange={(e) => set("name", e.target.value)}
                   placeholder="e.g. Woodmere Financial, TEXAS FUNDING GROUP"
                 />
+              </div>
+
+              <div className="grid gap-2">
+                <Label>Funder logo</Label>
+                <input
+                  ref={logoInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    if (file && file.size > 5 * 1024 * 1024) {
+                      toast.error("Funder logo must be 5 MB or smaller.");
+                      e.target.value = "";
+                      setLogoFile(null);
+                      return;
+                    }
+                    setLogoFile(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => logoInputRef.current?.click()}
+                  className="flex w-full items-center gap-3 rounded-lg border border-dashed px-4 py-3 text-left transition-colors hover:bg-muted/50"
+                >
+                  {logoPreviewUrl ? (
+                    <img
+                      src={logoPreviewUrl}
+                      alt={`${form.name || "Funder"} logo`}
+                      className="h-12 w-20 shrink-0 rounded border bg-white object-contain p-1"
+                    />
+                  ) : (
+                    <div className="flex h-12 w-20 shrink-0 items-center justify-center rounded border bg-muted">
+                      <Upload className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">
+                      {logoFile ? "Change selected logo" : "Choose funder logo"}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {logoFile?.name || (initial?.logoUrl ? "Current uploaded logo" : "PNG, JPG, WebP, or SVG · max 5 MB")}
+                    </p>
+                  </div>
+                </button>
+                <p className="text-xs text-muted-foreground">
+                  Used on the reverse disbursement schedule and other funder-branded generated pages.
+                </p>
               </div>
 
               <div className="rounded-lg border border-[var(--brand)]/25 bg-[var(--brand)]/5 p-4 space-y-2">
@@ -715,7 +778,7 @@ export default function FunderProfileModal({
           <TabsContent value="documents" className="space-y-5 mt-2">
             <UploadCard
               title="Addendum source"
-              description="Choose where this funder gets flex / balance-transfer / ACH addendum PDFs. Independent from disclosures. The main contract PDF is always per funder."
+              description="Choose where this funder gets flex / pre-payment / balance-transfer / ACH addendum PDFs. Independent from disclosures. The main contract PDF is always per funder."
             >
               <div className="space-y-2">
                 {FUNDER_ADDENDUM_SOURCE_OPTIONS.map((opt) => (
@@ -991,7 +1054,7 @@ export default function FunderProfileModal({
               <>
             <UploadCard
               title="Addendum PDFs"
-              description="Upload flex addendum, balance transfer, or ACH PDFs for this funder."
+              description="Upload flex, pre-payment, balance transfer, or ACH addendum PDFs for this funder."
             >
               <div className="flex flex-wrap gap-2">
                 {ADDENDUM_PRESETS.map((preset) => (

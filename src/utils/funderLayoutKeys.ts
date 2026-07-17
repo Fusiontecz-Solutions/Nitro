@@ -27,6 +27,7 @@ export function funderNamedAddendumLayoutKey(funderId: string, slug: string): st
 
 export const FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS = [
   { value: "flex_addendum", label: "Flex addendum" },
+  { value: "pre_payment_addendum", label: "Pre-payment addendum" },
   { value: "balance_transfer", label: "Balance transfer" },
   { value: "ach_authorization", label: "ACH authorization (Woodmere)" },
   {
@@ -62,6 +63,7 @@ export function isFunderAddendumRow(row: FunderDocumentTemplateRow): boolean {
   return (
     key.includes("_addendum_") ||
     key.endsWith("_flex_addendum") ||
+    key.endsWith("_pre_payment_addendum") ||
     key.endsWith("_balance_transfer") ||
     key.endsWith("_ach_authorization") ||
     key.endsWith("_ach_authorization_texas") ||

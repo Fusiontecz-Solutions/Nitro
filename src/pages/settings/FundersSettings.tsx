@@ -116,7 +116,16 @@ export default function FundersSettings() {
             <Card key={row.id} className={!row.isActive ? "opacity-70" : undefined}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-2">
-                  <CardTitle className="text-base">{row.name}</CardTitle>
+                  <div className="flex min-w-0 items-center gap-3">
+                    {row.logoUrl ? (
+                      <img
+                        src={row.logoUrl}
+                        alt={`${row.name} logo`}
+                        className="h-10 w-16 shrink-0 rounded border bg-white object-contain p-1"
+                      />
+                    ) : null}
+                    <CardTitle className="truncate text-base">{row.name}</CardTitle>
+                  </div>
                   <div className="flex gap-1">
                     <Button
                       variant="ghost"

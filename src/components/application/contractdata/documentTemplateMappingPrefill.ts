@@ -42,6 +42,10 @@ import {
     type DiscoverAdvanceEpoAddendumContractPrefillFields,
 } from "./Discover_Advance_EPO_ADDENDUM";
 import {
+    buildPrePaymentAddendumContractPrefillFields,
+    type PrePaymentAddendumContractPrefillFields,
+} from "./PRE_PAYMENT_ADDENDUM";
+import {
     buildDiscoverRefiBalanceTransferAddendumContractPrefillFields,
     type DiscoverRefiBalanceTransferAddendumContractPrefillFields,
 } from "./DISCOVER_REFI_BALANCE_TRANSFER_ADDENDUM";
@@ -639,6 +643,52 @@ function dotWoodmereFlex(): WoodmereFlexAddendumContractPrefillFields {
     };
 }
 
+function currentUsDate(): string {
+    return new Intl.DateTimeFormat("en-US", {
+        month: "2-digit",
+        day: "2-digit",
+        year: "numeric",
+    }).format(new Date());
+}
+
+function buildPrePaymentAddendumComputed(
+    contract: Record<string, unknown> | null,
+    application: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const sellerName =
+        resolveContractBusinessLegalNameForPrefill(c, application) ||
+        sctx.recipientName ||
+        "";
+    const guarantorName =
+        str(c.owner1GuarantorName) ||
+        str(c.guarantorName) ||
+        str(c.customerName) ||
+        str(c.clientName) ||
+        getApplicationPrimaryRecipientName(application) ||
+        "";
+    return buildPrePaymentAddendumContractPrefillFields({
+        agreementDate: currentUsDate(),
+        sellerName,
+        guarantorName,
+        businessDays: str(c.prePaymentBusinessDays),
+        discountPercentage: str(c.prePaymentDiscountPercentage),
+        printedName: guarantorName,
+    });
+}
+
+function dotPrePaymentAddendum(): PrePaymentAddendumContractPrefillFields {
+    return {
+        agreementDate: DUMMY,
+        sellerName: DUMMY,
+        guarantorName: DUMMY,
+        businessDays: DUMMY,
+        discountPercentage: DUMMY,
+        printedName: DUMMY,
+    };
+}
+
 function buildBalanceTransferComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
@@ -906,6 +956,7 @@ function matches(norm: string, ...needles: string[]): boolean {
 type AddendumKind =
     | "balance_transfer_sheet"
     | "woodmere_flex"
+    | "pre_payment_addendum"
     | "woodmere_buyout_blank"
     | "woodmere_flex_dated"
     | "discover_epo"
@@ -930,6 +981,12 @@ function resolveAddendumKind(
         return "woodmere_flex";
     }
     if (
+        key === PLATFORM_LAYOUT_KEYS.prePaymentAddendum ||
+        key.endsWith("_pre_payment_addendum")
+    ) {
+        return "pre_payment_addendum";
+    }
+    if (
         key === PLATFORM_LAYOUT_KEYS.balanceTransfer ||
         key.endsWith("_balance_transfer")
     ) {
@@ -943,6 +1000,11 @@ function resolveAddendumKind(
         return "woodmere_flex_dated";
     if (normName.includes("woodmere") && normName.includes("flex")) return "woodmere_flex";
     if (normName.includes("flex") && !normName.includes("dated")) return "woodmere_flex";
+    if (
+        (normName.includes("pre_payment") || normName.includes("prepayment")) &&
+        normName.includes("addendum")
+    )
+        return "pre_payment_addendum";
     if (normName.includes("buyout") && normName.includes("blank")) return "woodmere_buyout_blank";
     if (normName.includes("discover") && normName.includes("epo")) return "discover_epo";
     if (normName.includes("discover") && (normName.includes("refi") || normName.includes("balance_transfer")))
@@ -1025,6 +1087,8 @@ function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
             return buildBalanceTransferSheetContractPrefillFields(dotBalanceTransfer());
         case "woodmere_flex":
             return buildWoodmereFlexAddendumContractPrefillFields(dotWoodmereFlex());
+        case "pre_payment_addendum":
+            return buildPrePaymentAddendumContractPrefillFields(dotPrePaymentAddendum());
         case "woodmere_buyout_blank":
             return buildWoodmereBuyoutBlankAddendumContractPrefillFields(dotWoodmereBuyout());
         case "woodmere_flex_dated":
@@ -1049,6 +1113,8 @@ function addendumComputed(
             return buildBalanceTransferComputed(contract, sctx, application);
         case "woodmere_flex":
             return buildWoodmereFlexComputed(contract, sctx, application);
+        case "pre_payment_addendum":
+            return buildPrePaymentAddendumComputed(contract, application, sctx);
         case "woodmere_buyout_blank":
             return buildWoodmereBuyoutComputed(contract, sctx);
         case "woodmere_flex_dated":

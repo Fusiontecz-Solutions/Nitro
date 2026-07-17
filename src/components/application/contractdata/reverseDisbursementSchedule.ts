@@ -65,6 +65,11 @@ export const EMPTY_REVERSE_DISBURSEMENT_ROW = (): ReverseDisbursementScheduleRow
 /** Matches $1,234.56, $ 1,234.56, ($ 1,234.56), etc. */
 const CURRENCY_TOKEN_REGEX = /(?:\(\s*)?\$\s*([\d,]+(?:\.\d{1,2})?)\s*\)?/g;
 
+/** Matches "Day 1" / "Week 1" schedule period rows. */
+const PERIOD_ROW_START_REGEX = /^(?:day|week)\s/i;
+const PERIOD_RANGE_SPLIT_REGEX =
+    /\s+(?=(?:Day|Week)\s+\d+\s*-\s*(?:Day|Week)\s+\d+)/gi;
+
 function formatCurrencyToken(raw: string, digits: string): string {
     const negative = /\(/.test(raw);
     return negative ? `($ ${digits})` : `$ ${digits}`;
@@ -84,7 +89,7 @@ function extractCurrencyTokens(line: string): { values: string[]; firstIndex: nu
 
 function isHeaderOrSummaryLine(line: string): boolean {
     const trimmed = line.trim();
-    if (/^day\s/i.test(trimmed)) return false;
+    if (PERIOD_ROW_START_REGEX.test(trimmed)) return false;
 
     const lower = trimmed.toLowerCase();
     if (
@@ -110,10 +115,10 @@ function isHeaderOrSummaryLine(line: string): boolean {
     return summaryKeywords.some((keyword) => lower.includes(keyword));
 }
 
-/** PDF copy: "Day 1 - Day 16. $ 1,530.35 $1,700.39 ..." */
+/** PDF copy: "Day 1 - Day 16. $ 1,530.35 …" or "Week 1 - Week 10. $ …" */
 function parsePdfStyleDisbursementLine(line: string): ReverseDisbursementScheduleRow | null {
     const trimmed = line.trim();
-    if (!/^day\s/i.test(trimmed)) return null;
+    if (!PERIOD_ROW_START_REGEX.test(trimmed)) return null;
 
     const { values, firstIndex } = extractCurrencyTokens(trimmed);
     if (values.length < 4 || firstIndex < 0) return null;
@@ -206,16 +211,16 @@ export function parseReverseDisbursementSummaryFromPaste(
 }
 
 /**
- * When copied from a PDF, each "Day X - Day Y ..." row is sometimes pasted as one
+ * When copied from a PDF, each "Day/Week X - Day/Week Y ..." row is sometimes pasted as one
  * continuous line/paragraph instead of separate lines. Insert a line break before
- * every "Day N - Day N" marker so each row can be parsed independently.
+ * every period range marker so each row can be parsed independently.
  */
-function splitConcatenatedDayRows(text: string): string {
-    return String(text || "").replace(/\s+(?=Day\s+\d+\s*-\s*Day\s+\d+)/gi, "\n");
+function splitConcatenatedPeriodRows(text: string): string {
+    return String(text || "").replace(PERIOD_RANGE_SPLIT_REGEX, "\n");
 }
 
 export function parsePastedReverseDisbursementTable(text: string): ReverseDisbursementScheduleRow[] {
-    const lines = splitConcatenatedDayRows(text)
+    const lines = splitConcatenatedPeriodRows(text)
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
@@ -237,7 +242,7 @@ export function parsePastedReverseDisbursementTable(text: string): ReverseDisbur
         }
 
         const fallback = parseDelimitedDisbursementLine(line);
-        if (fallback && /^day\s/i.test(fallback.period)) {
+        if (fallback && PERIOD_ROW_START_REGEX.test(fallback.period)) {
             rows.push(fallback);
         }
     }

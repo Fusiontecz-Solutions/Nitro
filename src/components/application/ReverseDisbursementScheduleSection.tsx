@@ -94,7 +94,7 @@ export default function ReverseDisbursementScheduleSection({
 
         if (!parsed.length && !hasSummary) {
             toast.error(
-                "Could not parse rows. Paste the schedule table from the PDF (lines starting with Day 1…) or copy cells from Google Sheets.",
+                "Could not parse rows. Paste the schedule table from the PDF (lines starting with Day 1… or Week 1…) or copy cells from Google Sheets.",
             );
             return;
         }
@@ -268,7 +268,7 @@ export default function ReverseDisbursementScheduleSection({
                             <Textarea
                                 value={pasteText}
                                 onChange={(e) => setPasteText(e.target.value)}
-                                placeholder="Paste from PDF (Day 1 - Day 16…) or copy rows from Google Sheets."
+                                placeholder="Paste from PDF (Day 1 - Day 16… or Week 1 - Week 10…) or copy rows from Google Sheets."
                                 rows={4}
                             />
                             <Button

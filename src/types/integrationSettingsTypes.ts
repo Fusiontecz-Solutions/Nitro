@@ -23,6 +23,7 @@ export type FunderProfile = {
   assignsDealId: boolean;
   mainContractLayoutKey: string;
   contractPdfFileName?: string | null;
+  logoUrl?: string | null;
   allowedStates: string[];
   excludedStates: string[];
   organization?: string | null;

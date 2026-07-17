@@ -312,15 +312,13 @@ export function buildOfferDecisionUpsertFromPrefill(
     const repayPerPeriod = parseMoney(prefill.remittance);
     const frequency = sanitizePaymentFrequencyForPersist(prefill.frequency);
     const fees = parseMoney(prefill.appendixUnderwritingFees);
-    const rate = parseMoney(prefill.purchasePercent);
 
     if (
         offer == null &&
         totalRemit == null &&
         repayPerPeriod == null &&
         !frequency &&
-        fees == null &&
-        rate == null
+        fees == null
     ) {
         return null;
     }
@@ -335,10 +333,11 @@ export function buildOfferDecisionUpsertFromPrefill(
     if (repayPerPeriod != null) payload.repayPerPeriod = repayPerPeriod;
     if (frequency) payload.frequency = frequency;
     if (fees != null) payload.fees = fees;
-    if (rate != null) payload.rate = rate;
 
     if ("position" in existing && existing.position != null) payload.position = existing.position;
-    if (!("rate" in payload) && "rate" in existing && existing.rate != null) {
+    // Factor rate (`OfferDecision.rate`) must stay independent of Specific Percentage /
+    // SPA (`purchasePercent`). Never write SPA back onto application rate.
+    if ("rate" in existing && existing.rate != null) {
         payload.rate = existing.rate;
     }
     if ("term" in existing && existing.term != null) payload.term = existing.term;
