@@ -2,7 +2,6 @@
   "layoutVersion": 1,
   "key": "ach_authorization_standalone",
   "name": "Woodmere Financial ACH Authorization (standalone)",
-  "skipOwner2InitialMirror": true,
   "legacyDocuSignTemplateId": "15a61a5b-af2f-41cb-aaad-68bded7ffa3e",
   "document": {
     "documentId": "1",
@@ -13,6 +12,10 @@
     {
       "roleName": "Client",
       "routingOrder": 1
+    },
+    {
+      "roleName": "Owner 2",
+      "routingOrder": 2
     }
   ],
   "variables": [
@@ -462,7 +465,7 @@
       "sourceTabLabel": "ach_authorization_concent_account_holder_name"
     }
   ],
-  "description": "ACH authorization sent alone — owner 1 initials only (no owner 2 initial mirror).",
+  "description": "ACH authorization sent alone — mirrors initial tabs for owner 2 when a second signer is present.",
   "pdf": {
     "source": "boldSignTemplate",
     "fileName": "WOODMERE FINANCIAL ACH - BLANK FILLABLE.pdf"

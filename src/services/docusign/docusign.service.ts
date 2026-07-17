@@ -1408,15 +1408,15 @@ export class DocusignService {
   }
 
   private async resolveEnvelopeEmailSubject(
-    client: AxiosInstance,
-    accountId: string,
-    envelopeId: string,
+    _client: AxiosInstance,
+    _accountId: string,
+    _envelopeId: string,
     applicationId?: string | null,
     titleOverride?: string,
   ): Promise<string> {
     const override = String(titleOverride || '').trim();
     if (override) return override;
-    // Prefer CRM — avoid GET /envelopes/{id} (counts as envelope polling).
+    // CRM-only — never GET /envelopes/{id} just for a subject (counts as envelope polling).
     const appId = String(applicationId || '').trim();
     if (appId) {
       const ctx = await this.resolveApplicationContractEmailContext(appId);
@@ -1425,25 +1425,10 @@ export class DocusignService {
       }
     }
     const clientName = await this.resolveClientDisplayNameForApplication(applicationId);
-    if (clientName && clientName !== 'Client') {
-      return buildContractEnvelopeEmailSubject(clientName, null);
-    }
-    try {
-      const cached = getCachedEnvelopeStatus(accountId, envelopeId);
-      if (cached) {
-        /* status cache alone has no subject — fall through only if needed */
-      }
-      const res = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}`,
-      );
-      const status = String(res.data?.status || '').toLowerCase();
-      if (status) setCachedEnvelopeStatus(accountId, envelopeId, status);
-      const subject = String(res.data?.emailSubject || '').trim();
-      if (subject) return subject;
-    } catch {
-      /* fall through */
-    }
-    return buildContractEnvelopeEmailSubject(clientName || 'Client', null);
+    return buildContractEnvelopeEmailSubject(
+      clientName && clientName !== 'Client' ? clientName : 'Client',
+      null,
+    );
   }
 
   private buildEnvelopeTextCustomFields(
@@ -3590,6 +3575,15 @@ export class DocusignService {
         throw new BadRequestException('DocuSign did not return envelopeId');
       }
 
+      // Seed custom_fields cache from create payload — avoids GET on first CC notify.
+      const seededCustomFields = (
+        (envelopeDefinition as { customFields?: { textCustomFields?: Array<{ name?: string; value?: string; show?: string }> } })
+          ?.customFields?.textCustomFields || []
+      ) as Array<{ name?: string; value?: string; show?: string }>;
+      if (seededCustomFields.length) {
+        setCachedEnvelopeCustomFields(accountId, String(envelopeId), seededCustomFields);
+      }
+
       await this.assertEnvelopeHasSigners(client, accountId, envelopeId);
 
       const result = await this.finalizeEnvelopeFlow(userId, envelopeId, {
@@ -4477,12 +4471,30 @@ export class DocusignService {
     existingDoc?: { userId?: number | null } | null,
     ccEmailsOverride?: string[],
     titleOverride?: string,
+    knownEnvelopeKind?: string | null,
   ): Promise<{ emailed: string[]; skippedReason?: string }> {
     const eid = String(envelopeId || '').trim();
     if (!eid) return { emailed: [], skippedReason: 'missing_envelope' };
 
     if (this.shouldSkipCcNotify(eid)) {
       return { emailed: [], skippedReason: 'already_attempted_or_in_flight' };
+    }
+
+    const appIdHint = String(applicationId || '').trim();
+    let knownKind = String(knownEnvelopeKind || '').trim().toLowerCase() || null;
+    if (!knownKind && appIdHint) {
+      if (await this.isAchStandaloneEnvelopeOnContract(appIdHint, eid)) {
+        knownKind = 'standalone_ach';
+      }
+    }
+
+    // Standalone ACH: no default CC and usually no CRM CC list — skip before any DocuSign GET.
+    if (knownKind === 'standalone_ach') {
+      const earlyCc = this.normalizeCcEmails(ccEmailsOverride, { includeDefault: false });
+      if (!earlyCc.length) {
+        this.markCcNotifyAttempted(eid);
+        return { emailed: [], skippedReason: 'standalone_ach_no_cc' };
+      }
     }
 
     this.ccNotifyInFlight.add(eid);
@@ -4518,7 +4530,7 @@ export class DocusignService {
       // Claim this envelope before PDF downloads so concurrent webhooks bail out.
       this.markCcNotifyAttempted(eid);
 
-      const envelopeKind = this.crmKindFromFields(customFields);
+      const envelopeKind = this.crmKindFromFields(customFields) || knownKind;
       const includeDefaultCc = this.includeDefaultCcForEnvelopeKind(envelopeKind);
       let ccEmails = this.normalizeCcEmails(ccEmailsOverride, { includeDefault: includeDefaultCc });
       if (!ccEmails.length) {
@@ -4736,12 +4748,27 @@ export class DocusignService {
       const eventLower = String(eventName || '').trim().toLowerCase();
       const isRecipientEvent = eventLower.startsWith('recipient-');
       const alreadySentLike = this.isSentLikeEnvelopeStatus(priorStatus);
-      if (!isRecipientEvent && !alreadySentLike && !this.shouldSkipCcNotify(String(envelopeId))) {
+      const isStandaloneAch =
+        String(envelopeKind || '').trim().toLowerCase() === 'standalone_ach' ||
+        (Boolean(applicationId) &&
+          (await this.isAchStandaloneEnvelopeOnContract(
+            String(applicationId),
+            String(envelopeId),
+          )));
+      if (
+        !isRecipientEvent &&
+        !alreadySentLike &&
+        !isStandaloneAch &&
+        !this.shouldSkipCcNotify(String(envelopeId))
+      ) {
         await this.notifyCcRecipientsOnEnvelopeSent(
           '',
           envelopeId,
           applicationId,
           existingDoc,
+          undefined,
+          undefined,
+          envelopeKind,
         );
       }
     }
