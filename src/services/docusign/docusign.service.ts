@@ -1771,47 +1771,36 @@ export class DocusignService {
     }
   }
 
+  /** CRM primary signer from platform layout slots — no DocuSign template API. */
+  private async buildCrmRolesFromPlatformSlots(
+    applicationId?: string,
+  ): Promise<SignerRoleInput[]> {
+    const resolved = await this.resolveSignerEmailForApplication(applicationId);
+    const clientEmail = resolved?.email || '';
+    const clientName = resolved?.name || clientEmail.split('@')[0] || 'Signer';
+    if (!clientEmail) return [];
+    return [
+      {
+        signerEmail: clientEmail,
+        signerName: clientName,
+        roleName: DOCUSIGN_DEFAULT_ROLE_NAME,
+        signerRole: DOCUSIGN_DEFAULT_ROLE_NAME,
+        signerOrder: 1,
+      },
+    ];
+  }
+
+  /** @deprecated Prefer buildCrmRolesFromPlatformSlots — DocuSign Admin templates are unused. */
   private async buildCrmRolesForEnvelope(
     client: AxiosInstance,
     accountId: string,
     templateId: string,
     applicationId?: string,
   ): Promise<SignerRoleInput[]> {
-    const fromTemplate = await this.getTemplateSignerDefaults(
-      client,
-      accountId,
-      templateId,
-    );
-    const resolved = await this.resolveSignerEmailForApplication(applicationId);
-    const clientEmail = resolved?.email || '';
-    const clientName = resolved?.name || clientEmail.split('@')[0] || 'Signer';
-
-    if (!fromTemplate.length) {
-      if (!clientEmail) return [];
-      return [
-        {
-          signerEmail: clientEmail,
-          signerName: clientName,
-          roleName: DOCUSIGN_DEFAULT_ROLE_NAME,
-          signerRole: DOCUSIGN_DEFAULT_ROLE_NAME,
-          signerOrder: 1,
-        },
-      ];
-    }
-
-    return fromTemplate
-      .map((row, idx) => {
-        const email = row.email || (idx === 0 ? clientEmail : '');
-        const name = row.name || (idx === 0 ? clientName : `Signer ${idx + 1}`);
-        return {
-          signerEmail: email,
-          signerName: name,
-          roleName: row.roleName,
-          signerRole: row.roleName,
-          signerOrder: parseInt(row.routingOrder, 10) || idx + 1,
-        };
-      })
-      .filter((r) => String(r.signerEmail || '').trim());
+    void client;
+    void accountId;
+    void templateId;
+    return this.buildCrmRolesFromPlatformSlots(applicationId);
   }
 
   /**
@@ -2082,21 +2071,9 @@ export class DocusignService {
       contractState: authHints?.contractState,
     });
 
+    // Platform layouts: never look up DocuSign Admin templates for roles.
+    // Prefer CRM-passed roles, then signerEmail arg, then application primary email.
     let rolesToApply: SignerRoleInput[] = Array.isArray(roles) ? roles : [];
-    if (!rolesToApply.length) {
-      const templateId =
-        (await this.getTemplateIdFromEnvelope(client, accountId, eid)) ||
-        DOCUSIGN_DEFAULT_TEMPLATE_ID;
-      if (templateId) {
-        rolesToApply = await this.buildCrmRolesForEnvelope(
-          client,
-          accountId,
-          templateId,
-          applicationId,
-        );
-      }
-    }
-
     const primaryEmail = String(signerEmail || '').trim();
     if (primaryEmail && !rolesToApply.length) {
       rolesToApply = [
@@ -2108,6 +2085,9 @@ export class DocusignService {
           signerOrder: 1,
         },
       ];
+    }
+    if (!rolesToApply.length) {
+      rolesToApply = await this.buildCrmRolesFromPlatformSlots(applicationId);
     }
 
     let { updated, missingRoles } = await this.applyCrmRolesToEnvelopeSigners(
@@ -2134,8 +2114,8 @@ export class DocusignService {
     }
     if (missingRoles.length) {
       throw new BadRequestException(
-        `DocuSign template requires email for signer role(s): ${missingRoles.join(', ')}. ` +
-          'Set default signer emails on the template in DocuSign Admin, or add them in CRM.',
+        `Envelope requires email for signer role(s): ${missingRoles.join(', ')}. ` +
+          'Add signer emails in CRM before opening Sender View or sending.',
       );
     }
     const textCustomFields = this.buildEnvelopeTextCustomFields(
@@ -2210,9 +2190,15 @@ export class DocusignService {
     }
 
     const templateRoleNames =
-      preloadedRoleNames?.length ?
-        preloadedRoleNames
-      : await this.getTemplateSignerRoleNames(client, accountId, templateId);
+      preloadedRoleNames?.length
+        ? preloadedRoleNames
+        : (
+            await import('./platform-document-registry')
+          ).PLATFORM_SIGNER_SLOTS.map((s) => s.roleName);
+
+    void client;
+    void accountId;
+    void templateId;
 
     return signers.map((s, idx) => {
       const crmRole = String(s.roleName || '').trim();
@@ -3397,23 +3383,48 @@ export class DocusignService {
     if (['voided', 'declined', 'deleted'].includes(crmDsStatus)) {
       return;
     }
-    if (crmDsStatus === 'created') {
-      await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
-        status: 'deleted',
+
+    /**
+     * Envelope PUT status may only be: created | sent | voided | correct.
+     * Drafts cannot be voided — move them to recyclebin via Folders API.
+     * Never PUT status "deleted" (invalid parameter; causes INVALID_REQUEST_PARAMETER).
+     */
+    const moveEnvelopeToRecycleBin = async () => {
+      await client.put(`/v2.1/accounts/${accountId}/folders/recyclebin`, {
+        envelopeIds: [envelopeId],
       });
-      return;
-    }
-    try {
+    };
+    const voidEnvelope = async () => {
       await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
         status: 'voided',
         voidedReason: voidReason,
       });
+    };
+
+    if (crmDsStatus === 'created') {
+      try {
+        await moveEnvelopeToRecycleBin();
+      } catch (deleteErr: unknown) {
+        // CRM may mis-label a sent envelope as created — try void as fallback.
+        try {
+          await voidEnvelope();
+        } catch {
+          throw deleteErr;
+        }
+      }
+      return;
+    }
+
+    try {
+      await voidEnvelope();
     } catch (voidErr: unknown) {
       const voidMsg = formatDocusignApiErrorMessage(voidErr).toLowerCase();
-      if (voidMsg.includes('created') || voidMsg.includes('draft')) {
-        await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
-          status: 'deleted',
-        });
+      if (
+        voidMsg.includes('created') ||
+        voidMsg.includes('draft') ||
+        (voidMsg.includes('invalid_request_parameter') && voidMsg.includes('status'))
+      ) {
+        await moveEnvelopeToRecycleBin();
         return;
       }
       throw voidErr;
@@ -3972,7 +3983,12 @@ export class DocusignService {
 
     const existingDoc = await prisma.document.findFirst({
       where: { envelopeId },
-      select: { applicationId: true },
+      select: {
+        applicationId: true,
+        sentAt: true,
+        completedAt: true,
+        status: true,
+      },
     });
     await prisma.document.updateMany({
       where: { envelopeId },
@@ -3983,6 +3999,29 @@ export class DocusignService {
       : '';
     if (appId) {
       await this.syncContractSigningStatus(appId, 'revoked');
+      // Keep voided send in Contracts Generated history (do not reset Contract to DRAFT).
+      const alreadyArchived = await updateArchivedContractSendHistoryStatus(
+        appId,
+        envelopeId,
+        'revoked',
+        {
+          sentAt: existingDoc?.sentAt
+            ? new Date(existingDoc.sentAt).toISOString()
+            : null,
+          completedAt: existingDoc?.completedAt
+            ? new Date(existingDoc.completedAt).toISOString()
+            : null,
+        },
+      );
+      if (!alreadyArchived) {
+        await archiveMainContractEnvelopeToHistory(appId, {
+          envelopeId,
+          status: 'revoked',
+          sentAt: existingDoc?.sentAt,
+          completedAt: existingDoc?.completedAt,
+          resetContractToDraft: false,
+        });
+      }
     }
     return { success: true, achAuthorization: false, docusignStatus: crmDsStatus || 'voided' };
   }
@@ -3992,59 +4031,70 @@ export class DocusignService {
     const eid = String(envelopeId || '').trim();
     if (!eid) return '';
 
+    const resolvePackageOrAchStatus = async (): Promise<string | null> => {
+      const achContracts = await prisma.contract.findMany({
+        where: {
+          contractPrefillOverrides: {
+            path: [ACH_AUTHORIZATION_DOCUSIGN_KEY, 'envelopeId'],
+            equals: eid,
+          },
+        },
+        select: { contractPrefillOverrides: true },
+        take: 1,
+      });
+      for (const row of achContracts) {
+        const ach = parseAchAuthorizationDocuSignFromPrefill(row.contractPrefillOverrides);
+        if (ach?.envelopeId === eid) {
+          if (ach.status === 'SIGNED') return 'completed';
+          if (ach.status === 'VIEWED') return 'viewed';
+          if (ach.status === 'SENT') return 'sent';
+          if (ach.status === 'VOIDED') return 'revoked';
+          return 'draft';
+        }
+      }
+
+      const packageContracts = await prisma.contract.findMany({
+        where: {
+          contractPrefillOverrides: {
+            path: [STANDALONE_PACKAGE_DOCUSIGN_KEY, 'envelopeId'],
+            equals: eid,
+          },
+        },
+        select: { contractPrefillOverrides: true },
+        take: 1,
+      });
+      for (const row of packageContracts) {
+        const raw = row.contractPrefillOverrides;
+        if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const blob = (raw as Record<string, unknown>)[STANDALONE_PACKAGE_DOCUSIGN_KEY];
+        if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) continue;
+        const o = blob as Record<string, unknown>;
+        if (String(o.envelopeId ?? '').trim() !== eid) continue;
+        const statusRaw = String(o.status ?? 'DRAFT').trim().toUpperCase();
+        if (statusRaw === 'SIGNED') return 'completed';
+        if (statusRaw === 'VIEWED') return 'viewed';
+        if (statusRaw === 'SENT') return 'sent';
+        if (statusRaw === 'VOIDED') return 'revoked';
+        return 'draft';
+      }
+      return null;
+    };
+
     const doc = await prisma.document.findFirst({
       where: { envelopeId: eid },
       select: { status: true },
     });
-    if (doc?.status) return String(doc.status).trim().toLowerCase();
-
-    const achContracts = await prisma.contract.findMany({
-      where: {
-        contractPrefillOverrides: {
-          path: [ACH_AUTHORIZATION_DOCUSIGN_KEY, 'envelopeId'],
-          equals: eid,
-        },
-      },
-      select: { contractPrefillOverrides: true },
-      take: 1,
-    });
-    for (const row of achContracts) {
-      const ach = parseAchAuthorizationDocuSignFromPrefill(row.contractPrefillOverrides);
-      if (ach?.envelopeId === eid) {
-        if (ach.status === 'SIGNED') return 'completed';
-        if (ach.status === 'VIEWED') return 'viewed';
-        if (ach.status === 'SENT') return 'sent';
-        if (ach.status === 'VOIDED') return 'revoked';
-        return 'draft';
-      }
+    const docStatus = doc?.status ? String(doc.status).trim().toLowerCase() : '';
+    // Prefer package/ACH capsule when Document is missing or still draft — supplemental
+    // envelopes are often tracked only on contractPrefillOverrides.
+    if (!docStatus || docStatus === 'draft' || docStatus === 'created') {
+      const fromCapsule = await resolvePackageOrAchStatus();
+      if (fromCapsule && fromCapsule !== 'draft') return fromCapsule;
+      if (docStatus) return docStatus;
+      if (fromCapsule) return fromCapsule;
+      return '';
     }
-
-    const packageContracts = await prisma.contract.findMany({
-      where: {
-        contractPrefillOverrides: {
-          path: [STANDALONE_PACKAGE_DOCUSIGN_KEY, 'envelopeId'],
-          equals: eid,
-        },
-      },
-      select: { contractPrefillOverrides: true },
-      take: 1,
-    });
-    for (const row of packageContracts) {
-      const raw = row.contractPrefillOverrides;
-      if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const blob = (raw as Record<string, unknown>)[STANDALONE_PACKAGE_DOCUSIGN_KEY];
-      if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) continue;
-      const o = blob as Record<string, unknown>;
-      if (String(o.envelopeId ?? '').trim() !== eid) continue;
-      const statusRaw = String(o.status ?? 'DRAFT').trim().toUpperCase();
-      if (statusRaw === 'SIGNED') return 'completed';
-      if (statusRaw === 'VIEWED') return 'viewed';
-      if (statusRaw === 'SENT') return 'sent';
-      if (statusRaw === 'VOIDED') return 'revoked';
-      return 'draft';
-    }
-
-    return '';
+    return docStatus;
   }
 
   private mapCrmInternalToDocuSignEnvelopeStatus(crmStatus: string): string {
@@ -4330,41 +4380,17 @@ export class DocusignService {
     return res.data;
   }
 
-  async getTemplateRecipients(userId: string, templateId?: string) {
-    const tid = String(templateId || DOCUSIGN_DEFAULT_TEMPLATE_ID || '').trim();
-    if (!tid) {
-      const roles = [
-        { roleIndex: 1, roleName: 'Client', signerName: '', signerEmail: '', signerOrder: 1 },
-        { roleIndex: 2, roleName: 'Owner', signerName: '', signerEmail: '', signerOrder: 2 },
-        { roleIndex: 3, roleName: 'Owner 2', signerName: '', signerEmail: '', signerOrder: 3 },
-      ];
-      return {
-        success: true,
-        templateId: null,
-        roles,
-        raw: null,
-        source: 'platform-layout',
-      };
-    }
-
-    const { client, accountId } = await this.getAuthContext(userId);
-    const res = await client.get(
-      `/v2.1/accounts/${accountId}/templates/${tid}/recipients`,
-    );
-    const signers = res.data?.signers || [];
-    const roles = signers.map((s: any, idx: number) => ({
-      roleIndex: idx + 1,
-      roleName: s.roleName || `Role-${idx + 1}`,
-      signerName: s.name || '',
-      signerEmail: s.email || '',
-      signerOrder: s.routingOrder ? Number(s.routingOrder) : idx + 1,
-    }));
-
+  /**
+   * Signer roles for UI / send — always from platform layout slots.
+   * Does not call DocuSign Admin templates (envelopes are code-built).
+   */
+  async getTemplateRecipients(_userId: string, templateId?: string) {
+    const { getPlatformTemplateRecipients } = await import('./platform-document-registry');
+    const platform = getPlatformTemplateRecipients();
+    const tid = String(templateId || '').trim();
     return {
-      success: true,
-      templateId: tid,
-      roles,
-      raw: res.data,
+      ...platform,
+      templateId: tid || null,
     };
   }
 

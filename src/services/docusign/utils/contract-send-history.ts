@@ -191,17 +191,24 @@ export function appendContractSendHistoryEntry(
   const prior = parseContractSendHistoryFromPrefill(base);
   const envelopeId = String(entry.envelopeId ?? '').trim();
   if (!envelopeId) return base;
-  if (prior.some((row) => row.envelopeId === envelopeId)) return base;
-
+  const upsert = prior.find((row) => row.envelopeId === envelopeId);
   const next: ContractSendHistoryEntry = {
     envelopeId,
     status: String(entry.status ?? 'draft').trim().toLowerCase(),
-    sentAt: entry.sentAt ?? null,
-    completedAt: entry.completedAt ?? null,
-    archivedAt: entry.archivedAt ?? new Date().toISOString(),
-    termsSnapshot: entry.termsSnapshot ?? null,
-    package: entry.package ?? null,
+    sentAt: entry.sentAt !== undefined ? entry.sentAt : (upsert?.sentAt ?? null),
+    completedAt: entry.completedAt !== undefined ? entry.completedAt : (upsert?.completedAt ?? null),
+    archivedAt: entry.archivedAt ?? upsert?.archivedAt ?? new Date().toISOString(),
+    termsSnapshot: entry.termsSnapshot !== undefined ? entry.termsSnapshot : (upsert?.termsSnapshot ?? null),
+    package: entry.package !== undefined ? entry.package : (upsert?.package ?? null),
   };
+  if (upsert) {
+    return {
+      ...base,
+      [CONTRACT_SEND_HISTORY_KEY]: prior.map((row) =>
+        row.envelopeId === envelopeId ? next : row,
+      ),
+    };
+  }
 
   return {
     ...base,
@@ -283,6 +290,11 @@ export async function archiveMainContractEnvelopeToHistory(
     completedAt?: Date | string | null;
     termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
     package?: ContractSendHistoryEntry['package'];
+    /**
+     * When true (default), reset Contract.status to DRAFT for a replacement draft.
+     * When false (void), keep Contract.status so Contracts Generated still shows Voided.
+     */
+    resetContractToDraft?: boolean;
   },
 ): Promise<boolean> {
   const appId = String(applicationId || '').trim();
@@ -309,11 +321,12 @@ export async function archiveMainContractEnvelopeToHistory(
     package: packageMeta,
   });
 
+  const resetToDraft = snapshot.resetContractToDraft !== false;
   await prisma.contract.update({
     where: { id: contract.id },
     data: {
       contractPrefillOverrides: merged as Prisma.InputJsonValue,
-      status: 'DRAFT',
+      ...(resetToDraft ? { status: 'DRAFT' as const } : {}),
     },
   });
   return true;

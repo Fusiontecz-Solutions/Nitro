@@ -24,6 +24,7 @@ import {
   normalizeReverseDisbursementScheduleData,
   renderReverseDisbursementSchedulePdf,
 } from './pdf/reverseDisbursementSchedule.service';
+import { mergePreservingDocuSignEnvelopeMeta } from './docusign/utils/preserve-docusign-prefill-meta';
 
 async function resolvePaymentBankDetailForContract(
   prismaClient: typeof prisma | any,
@@ -1341,12 +1342,24 @@ class ContractService {
     if (data.state !== undefined) updateData.state = data.state;
     if (data.funderName !== undefined) updateData.funderName = data.funderName;
     if (data.contractPrefillOverrides !== undefined) {
-      updateData.contractPrefillOverrides =
-        data.contractPrefillOverrides === null
-          ? Prisma.DbNull
-          : (decryptEncryptedStringsInJson(
-              data.contractPrefillOverrides,
-            ) as Prisma.InputJsonValue);
+      if (data.contractPrefillOverrides === null) {
+        updateData.contractPrefillOverrides = Prisma.DbNull;
+      } else {
+        // FE prefill saves often rebuild the JSON blob and omit DocuSign history keys.
+        // Preserve voided/sent/completed history + ACH/package capsules from existing.
+        const existing = await prisma.contract.findUnique({
+          where: { id },
+          select: { contractPrefillOverrides: true },
+        });
+        const merged =
+          mergePreservingDocuSignEnvelopeMeta(
+            existing?.contractPrefillOverrides,
+            data.contractPrefillOverrides,
+          ) ?? data.contractPrefillOverrides;
+        updateData.contractPrefillOverrides = decryptEncryptedStringsInJson(
+          merged,
+        ) as Prisma.InputJsonValue;
+      }
     }
     if (data.reverseDisbursementEnabled !== undefined) {
       updateData.reverseDisbursementEnabled = data.reverseDisbursementEnabled === true;

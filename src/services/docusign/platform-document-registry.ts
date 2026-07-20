@@ -7,6 +7,10 @@ import {
   type DocumentLayoutKey,
 } from './layouts/document-layout.registry';
 import { downloadLegacyDocuSignTemplatePdfBase64 } from './utils/download-legacy-docusign-template-pdf';
+import {
+  DOCUSIGN_DEFAULT_ROLE_NAME,
+  DOCUSIGN_SECONDARY_ROLE_NAME,
+} from './utils/docusign-client';
 
 export type PlatformDocumentDefinition = {
   layoutKey: DocumentLayoutKey;
@@ -14,9 +18,10 @@ export type PlatformDocumentDefinition = {
   type: string;
 };
 
+/** Envelope signer slots for code-built layouts — not DocuSign Admin templates. */
 export const PLATFORM_SIGNER_SLOTS = [
-  { roleIndex: 1, roleName: 'Client', signerOrder: 1 },
-  { roleIndex: 2, roleName: 'Owner 2', signerOrder: 2 },
+  { roleIndex: 1, roleName: DOCUSIGN_DEFAULT_ROLE_NAME, signerOrder: 1 },
+  { roleIndex: 2, roleName: DOCUSIGN_SECONDARY_ROLE_NAME, signerOrder: 2 },
 ] as const;
 
 export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefinition> = {
