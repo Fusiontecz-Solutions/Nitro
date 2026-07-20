@@ -33,7 +33,7 @@
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
-import { createOAuth2Client } from '../config/gmail';
+import { createOAuth2Client, invalidateAccessTokenCache } from '../config/gmail';
 import prisma from '../config/prismaClient';
 
 // ==============================
@@ -204,15 +204,14 @@ export const googleCallback = async (req: Request, res: Response) => {
       },
     });
 
-    console.log('ACCESS TOKEN:', tokens.access_token);
-    console.log('REFRESH TOKEN:', tokens.refresh_token);
-    console.log(`Saved googleRefreshToken for user: ${user.email}`);
+    invalidateAccessTokenCache(user.id);
+    console.log(`[gmail] connected user=${user.email}`);
 
     return res.send(
       `✅ Google connected successfully for ${user.email}. Refresh token saved.`
     );
   } catch (error: any) {
-    console.error('Google callback error:', error);
+    console.error(`[gmail] callback failed: ${error?.message || error}`);
     return res.status(500).json({
       success: false,
       message: error?.message || 'OAuth failed',

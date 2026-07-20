@@ -44,8 +44,6 @@ async function runGmailPdfInboxSweep(): Promise<void> {
       return;
     }
 
-    console.log('[gmail-auto-create] checking Gmail PDF emails', new Date().toISOString());
-
     for (const user of gmailUsers) {
       const refreshToken = String(user.googleRefreshToken || '').trim();
       if (!refreshToken) continue;
@@ -59,7 +57,11 @@ async function runGmailPdfInboxSweep(): Promise<void> {
           );
         }
       } catch (userError) {
-        console.error(`[gmail-auto-create] failed for user=${user.email || user.id}:`, userError);
+        const msg =
+          userError instanceof Error ? userError.message : String(userError);
+        console.error(
+          `[gmail-auto-create] failed for user=${user.email || user.id}: ${msg}`,
+        );
       }
     }
   } finally {
@@ -72,7 +74,8 @@ export function startCronJob(): void {
   console.log(`[gmail-auto-create] cron scheduled: "${expression}"`);
   cron.schedule(expression, () => {
     void runGmailPdfInboxSweep().catch((err) => {
-      console.error('[gmail-auto-create] cron promise rejected (would otherwise crash the process):', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[gmail-auto-create] cron promise rejected: ${msg}`);
     });
   });
 }

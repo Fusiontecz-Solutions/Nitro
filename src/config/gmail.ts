@@ -25,12 +25,37 @@ type CachedAccessToken = { token: string; expiresAt: number };
 const accessTokenCache = new Map<string, CachedAccessToken>();
 const TOKEN_CACHE_TTL_MS = 50 * 60 * 1000;
 
+/** Avoid spamming the same invalid_grant warn on every cron tick. */
+const invalidGrantWarned = new Set<string>();
+
+function getOAuthErrorCode(error: unknown): string | undefined {
+  const err = error as {
+    response?: { data?: { error?: string } };
+    code?: string | number;
+    message?: string;
+  };
+  return (
+    err?.response?.data?.error ||
+    (typeof err?.code === 'string' ? err.code : undefined) ||
+    undefined
+  );
+}
+
+function getSafeErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  const code = getOAuthErrorCode(error);
+  if (code) return code;
+  return 'unknown error';
+}
+
 export function invalidateAccessTokenCache(cacheKey?: string): void {
   if (cacheKey) {
     accessTokenCache.delete(cacheKey);
+    invalidGrantWarned.delete(cacheKey);
     return;
   }
   accessTokenCache.clear();
+  invalidGrantWarned.clear();
 }
 
 /** Mint a short-lived access token using an isolated client (safe for concurrent use). */
@@ -56,6 +81,7 @@ export async function getAccessTokenForRefreshToken(
         token,
         expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
       });
+      invalidGrantWarned.delete(cacheKey);
     }
 
     return token;
@@ -63,10 +89,20 @@ export async function getAccessTokenForRefreshToken(
     if (cacheKey) {
       accessTokenCache.delete(cacheKey);
     }
-    const err = error as { response?: { data?: { error?: string } } };
-    if (err?.response?.data?.error === 'invalid_grant') {
-      console.warn(`[gmail] refresh token invalid for cacheKey=${cacheKey || 'unknown'}`);
+
+    const oauthError = getOAuthErrorCode(error);
+    if (oauthError === 'invalid_grant') {
+      const key = cacheKey || 'unknown';
+      if (!invalidGrantWarned.has(key)) {
+        invalidGrantWarned.add(key);
+        console.warn(
+          `[gmail] refresh token invalid for cacheKey=${key}; reconnect Google to restore inbox sync`,
+        );
+      }
+      // Dead refresh tokens are expected until reconnect — don't throw GaxiosError (leaks tokens in logs).
+      return null;
     }
-    throw error;
+
+    throw new Error(`[gmail] access token refresh failed: ${getSafeErrorMessage(error)}`);
   }
 }
