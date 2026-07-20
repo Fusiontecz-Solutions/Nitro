@@ -16,6 +16,8 @@ declare global {
         actorId?: string;
         actorEmail?: string;
         actorName?: string;
+        /** SUPER_ADMIN | SCRUBBING | UNDERWRITER — from SA panel actor. */
+        actorRole?: string;
       };
     }
   }
@@ -33,6 +35,7 @@ const LEGACY_TENANT_CODE_HEADER = 'x-super-admin-book-code';
 const ACTOR_ID_HEADER = 'x-super-admin-actor-id';
 const ACTOR_EMAIL_HEADER = 'x-super-admin-actor-email';
 const ACTOR_NAME_HEADER = 'x-super-admin-actor-name';
+const ACTOR_ROLE_HEADER = 'x-super-admin-actor-role';
 
 const pickHeader = (req: Request, name: string): string | undefined => {
   const raw = req.headers[name];
@@ -112,6 +115,7 @@ export function verifySuperAdminProxy(
     actorId: pickHeader(req, ACTOR_ID_HEADER),
     actorEmail: pickHeader(req, ACTOR_EMAIL_HEADER),
     actorName: pickHeader(req, ACTOR_NAME_HEADER),
+    actorRole: pickHeader(req, ACTOR_ROLE_HEADER),
   };
 
   next();

@@ -19,32 +19,35 @@ declare global {
 }
 
 /**
- * Sentinel identity used when a request was authenticated via the trusted
- * Super Admin proxy path (signed headers) rather than a tenant JWT.
- *
- * The tenant DB knows nothing about Super Admin users — they live in a
- * separate centralized backend — so we never attempt to look them up here.
- * We just construct a synthetic principal with SUPER_ADMIN role so existing
- * role gates (requireRoles / requireAdmin) keep working.
+ * Trusted Super Admin → tenant proxy principal.
+ * When the SA panel forwards an actor (SCRUBBING / UNDERWRITER / SUPER_ADMIN),
+ * we honor that role so tenant list filters (`underwriterClaim`) and role gates
+ * (`requireRoles('SCRUBBING')`) behave like a native tenant login.
+ * If the actor email matches a tenant User row, we use that id for claim FKs.
  */
 const SUPER_ADMIN_PROXY_SENTINEL_ID = '00000000-0000-0000-0000-000000000000';
 
-const buildSuperAdminProxyUser = (req: Request) => {
-    const ctx = req.superAdminContext || {};
-    return {
-        id: ctx.actorId || SUPER_ADMIN_PROXY_SENTINEL_ID,
-        name: ctx.actorName || 'Super Admin (proxy)',
-        email: ctx.actorEmail || 'super-admin@proxy.internal',
-        role: 'SUPER_ADMIN',
-    };
-};
+const PROXY_ACTOR_ROLES = new Set(['SUPER_ADMIN', 'SCRUBBING', 'UNDERWRITER', 'OPERATIONS', 'ADMIN']);
+
+function normalizeProxyActorRole(raw?: string | null): string {
+    const role = String(raw ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/-/g, '_');
+    if (PROXY_ACTOR_ROLES.has(role)) return role;
+    return 'SUPER_ADMIN';
+}
 
 /**
  * User id safe for tenant DB foreign keys (e.g. Application.createdById).
- * Super Admin proxy principals are synthetic and have no row in User — return null.
+ * Super Admin proxy principals are synthetic unless mapped to a tenant User by email.
  */
 export function resolveTenantUserId(req: Request): string | null {
-    if (req.isSuperAdminProxy) return null;
+    if (req.isSuperAdminProxy) {
+        const id = req.user?.id;
+        if (!id || id === SUPER_ADMIN_PROXY_SENTINEL_ID) return null;
+        return id;
+    }
     return req.user?.id ?? null;
 }
 
@@ -203,7 +206,44 @@ export const authenticateToken = async (
         // (constant-time compared against SUPER_ADMIN_SECRET) before this
         // middleware runs, so we MUST NOT try to validate a tenant JWT here.
         if (req.isSuperAdminProxy) {
-            req.user = buildSuperAdminProxyUser(req);
+            const ctx = req.superAdminContext || {};
+            const actorRole = normalizeProxyActorRole(ctx.actorRole);
+            const actorEmail = String(ctx.actorEmail || '')
+                .trim()
+                .toLowerCase();
+            let tenantUserId: string | null = null;
+            let displayName = ctx.actorName || 'Super Admin (proxy)';
+
+            if (actorEmail) {
+                const tenantUser = await withDbRetry(
+                    () =>
+                        prisma.user.findFirst({
+                            where: {
+                                email: { equals: actorEmail, mode: 'insensitive' },
+                                isActive: true,
+                            },
+                            select: {
+                                id: true,
+                                firstName: true,
+                                lastName: true,
+                                email: true,
+                            },
+                        }),
+                    { label: 'authenticateToken proxy actor email lookup' },
+                );
+                if (tenantUser) {
+                    tenantUserId = tenantUser.id;
+                    const name = `${tenantUser.firstName || ''} ${tenantUser.lastName || ''}`.trim();
+                    if (name) displayName = name;
+                }
+            }
+
+            req.user = {
+                id: tenantUserId || ctx.actorId || SUPER_ADMIN_PROXY_SENTINEL_ID,
+                name: displayName,
+                email: ctx.actorEmail || 'super-admin@proxy.internal',
+                role: actorRole,
+            };
             return next();
         }
 

@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { CANONICAL_WORKFLOW_QUEUES } from '../utils/workflowQueueStorage';
+import { excludeSoftDeletedWhere } from './operationsStatusFilter';
 
 /** Canonical labels persisted on `Application.underwriterAction`. */
 export const UNDERWRITER_ACTION_APPROVED = 'Approved By UW' as const;
@@ -122,7 +123,12 @@ export async function countUnderwriterPipelineDeals(
     const entries = await Promise.all(
         UNDERWRITER_PIPELINE_FILTERS.map(async (pipeline) => {
             const count = await prisma.application.count({
-                where: buildUnderwriterPipelineWhere(pipeline, viewerId),
+                where: {
+                    AND: [
+                        buildUnderwriterPipelineWhere(pipeline, viewerId),
+                        excludeSoftDeletedWhere(),
+                    ],
+                },
             });
             return [pipeline, count] as const;
         }),

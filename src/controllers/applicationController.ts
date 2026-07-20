@@ -4414,27 +4414,47 @@ class ApplicationController {
                 return res.status(401).json({ success: false, message: 'Unauthorized' });
             }
             const targetUnderwriterId = String(underwriterId ?? '').trim();
-            if (!targetUnderwriterId) {
+            const underwriterEmail = String(
+                (req.body as { underwriterEmail?: unknown } | undefined)
+                    ?.underwriterEmail ?? '',
+            )
+                .trim()
+                .toLowerCase();
+            if (!targetUnderwriterId && !underwriterEmail) {
                 return res.status(400).json({
                     success: false,
                     message: 'Underwriter is required',
                 });
             }
 
-            const targetUser = await prisma.user.findFirst({
-                where: {
-                    id: targetUnderwriterId,
-                    role: 'UNDERWRITER',
-                    isActive: true,
-                },
-                select: { id: true, firstName: true, lastName: true, email: true },
-            });
+            let targetUser = targetUnderwriterId
+                ? await prisma.user.findFirst({
+                      where: {
+                          id: targetUnderwriterId,
+                          role: 'UNDERWRITER',
+                          isActive: true,
+                      },
+                      select: { id: true, firstName: true, lastName: true, email: true },
+                  })
+                : null;
+            // Super Admin panel may send its own user UUID; fall back to email.
+            if (!targetUser && underwriterEmail) {
+                targetUser = await prisma.user.findFirst({
+                    where: {
+                        email: underwriterEmail,
+                        role: 'UNDERWRITER',
+                        isActive: true,
+                    },
+                    select: { id: true, firstName: true, lastName: true, email: true },
+                });
+            }
             if (!targetUser) {
                 return res.status(400).json({
                     success: false,
                     message: 'Selected Underwriter was not found or is inactive',
                 });
             }
+            const resolvedUnderwriterId = targetUser.id;
 
             const idStr = String(id ?? '');
             const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
@@ -4474,7 +4494,7 @@ class ApplicationController {
                 data: {
                     currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
                     currentState: 'Sent to Underwriter',
-                    assignedUnderwriter: { connect: { id: targetUnderwriterId } },
+                    assignedUnderwriter: { connect: { id: resolvedUnderwriterId } },
                 },
                 include,
             });
@@ -4488,7 +4508,7 @@ class ApplicationController {
                     actionDescription: `${actorName} assigned application to Underwriter ${targetName}.`,
                     previousStatus: `${previousQueue} / ${previousState}`,
                     currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
-                    metadata: { assignedUnderwriterId: targetUnderwriterId },
+                    metadata: { assignedUnderwriterId: resolvedUnderwriterId },
                 });
             } catch (logErr) {
                 console.error('Failed to log underwriter assignment:', logErr);
@@ -4497,7 +4517,7 @@ class ApplicationController {
             try {
                 await notifyAdminAssignedApplicationToUnderwriter({
                     application: refreshed as any,
-                    recipientId: targetUnderwriterId,
+                    recipientId: resolvedUnderwriterId,
                     actorId: String(actorId),
                     actorName,
                 });
