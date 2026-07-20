@@ -339,7 +339,8 @@ export class DocusignService {
 
   /**
    * Cached GET /envelopes/{id}/recipients — DocuSign counts each call toward the 250/hour
-   * envelope polling budget. Mutating recipient lists must call invalidate after.
+   * envelope polling budget. After local mutations, prefer patching the cache (see
+   * `rememberEnvelopeRecipients`) instead of invalidate + refetch.
    */
   private async getEnvelopeRecipients(
     client: AxiosInstance,
@@ -357,6 +358,20 @@ export class DocusignService {
     );
     setCachedEnvelopeRecipients(accountId, eid, res.data);
     return res.data;
+  }
+
+  /** Keep recipients in cache in sync after PUT/DELETE so the send flow needs one GET. */
+  private rememberEnvelopeRecipients(
+    accountId: string,
+    envelopeId: string,
+    data: unknown,
+  ): void {
+    if (data == null) return;
+    setCachedEnvelopeRecipients(accountId, envelopeId, data);
+  }
+
+  private cloneRecipientsData<T>(data: T): T {
+    return JSON.parse(JSON.stringify(data ?? {})) as T;
   }
 
   private async getJwtAuthContext() {
@@ -683,6 +698,8 @@ export class DocusignService {
             merged.push(t);
           }
         } catch (docErr) {
+          // Never keep polling after DocuSign's 250/hour envelope GET budget is exhausted.
+          if (isDocuSignPollingLimitError(docErr)) throw docErr;
           console.warn(
             `[DocuSign] fetchEnvelopeDocumentTextTabs document ${docId} failed:`,
             docErr,
@@ -690,6 +707,7 @@ export class DocusignService {
         }
       }
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) throw err;
       console.warn('[DocuSign] fetchEnvelopeDocumentTextTabs failed:', err);
     }
 
@@ -754,6 +772,7 @@ export class DocusignService {
       );
       return (tabsRes.data?.textTabs || []) as DocusignTextTabRef[];
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) throw err;
       console.warn('[DocuSign] fetchEnvelopeSignerTextTabs failed:', err);
       return [];
     }
@@ -840,7 +859,31 @@ export class DocusignService {
         })),
       },
     );
-    invalidateCachedEnvelopeRecipients(accountId, envelopeId);
+    // Patch cache instead of invalidate — avoids a fresh GETRecipient for CC/finalize.
+    const cached = getCachedEnvelopeRecipients(accountId, envelopeId) as
+      | { signers?: Array<Record<string, unknown>>; [k: string]: unknown }
+      | null;
+    if (cached && Array.isArray(cached.signers)) {
+      const byId = new Map(
+        signerUpdates.map((s) => [String(s.recipientId), s] as const),
+      );
+      const next = this.cloneRecipientsData(cached);
+      next.signers = (cached.signers || []).map((s) => {
+        const rid = String(s.recipientId || '');
+        const u = byId.get(rid);
+        if (!u) return s;
+        return {
+          ...s,
+          email: u.email,
+          name: u.name,
+          roleName: u.roleName ?? s.roleName,
+          routingOrder: u.routingOrder ?? s.routingOrder,
+        };
+      });
+      this.rememberEnvelopeRecipients(accountId, envelopeId, next);
+    } else {
+      invalidateCachedEnvelopeRecipients(accountId, envelopeId);
+    }
   }
 
   /** Decrypt CRM `enc:v1:` values and drop empty fields before sending to DocuSign. */
@@ -893,6 +936,8 @@ export class DocusignService {
 
   /**
    * Post-create prefill: map CRM ids → envelope tabIds, update via recipient tabs API only.
+   * One cached GETRecipient; per-signer tabs GETs (required for multi-signer Data Labels);
+   * one document-tabs pass for leftover labels. Aborts immediately on polling 429.
    */
   private async applyPrefillToEnvelope(
     _userId: string,
@@ -916,9 +961,8 @@ export class DocusignService {
       return { applied: 0, attempted: fields.length };
     }
 
-    let envelopeDocTabs: DocusignTextTabRef[] = [];
-    // Single fetch — retrying document tabs doubles envelope GET polling for no gain.
-    envelopeDocTabs = await this.fetchEnvelopeDocumentTextTabs(
+    // Document tab catalog once — needed so leftover Data Labels still map correctly.
+    const envelopeDocTabs = await this.fetchEnvelopeDocumentTextTabs(
       client,
       accountId,
       envelopeId,
@@ -975,6 +1019,7 @@ export class DocusignService {
           `[DocuSign] prefill recipient ${recipientId}: ${n} tab(s) on envelope ${envelopeId}`,
         );
       } catch (recipientErr) {
+        if (isDocuSignPollingLimitError(recipientErr)) throw recipientErr;
         this.logDocusignApiError(`recipient ${recipientId} tabs`, recipientErr);
       }
     }
@@ -1004,6 +1049,7 @@ export class DocusignService {
             `[DocuSign] prefill recipient ${recipientId} (doc tab catalog): ${n} tab(s) on envelope ${envelopeId}`,
           );
         } catch (recipientErr) {
+          if (isDocuSignPollingLimitError(recipientErr)) throw recipientErr;
           this.logDocusignApiError(`recipient ${recipientId} doc-tab fallback`, recipientErr);
         }
       }
@@ -1607,16 +1653,18 @@ export class DocusignService {
   ): Promise<{ synced: number }> {
     const list = this.normalizeCcEmails(ccEmails);
 
-    const recData = (await this.getEnvelopeRecipients(
-      client,
-      accountId,
-      envelopeId,
-    )) as Record<string, unknown>;
+    const recData = this.cloneRecipientsData(
+      (await this.getEnvelopeRecipients(
+        client,
+        accountId,
+        envelopeId,
+      )) as Record<string, unknown>,
+    );
     const signers = (recData.signers || []) as Array<{
       email?: string;
       routingOrder?: string;
     }>;
-    const existingCc = (recData.carbonCopies || []) as Array<{
+    let existingCc = (recData.carbonCopies || []) as Array<{
       email?: string;
       recipientId?: string;
     }>;
@@ -1627,7 +1675,7 @@ export class DocusignService {
     const desired = list.filter((e) => !signerEmails.has(e.toLowerCase()));
     const desiredSet = new Set(desired.map((e) => e.toLowerCase()));
 
-    let removedAny = false;
+    const removedIds = new Set<string>();
     for (const cc of existingCc) {
       const email = String(cc.email || '').trim().toLowerCase();
       const rid = String(cc.recipientId || '').trim();
@@ -1637,26 +1685,28 @@ export class DocusignService {
           await client.delete(
             `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${rid}`,
           );
-          removedAny = true;
-          invalidateCachedEnvelopeRecipients(accountId, envelopeId);
+          removedIds.add(rid);
         } catch (delErr) {
+          if (isDocuSignPollingLimitError(delErr)) throw delErr;
           this.logDocusignApiError('applyEnvelopeCarbonCopies remove', delErr);
         }
       }
     }
 
-    // Reuse first GET when nothing was deleted — second recipients GET burns polling quota.
-    const recAfterData = (removedAny
-      ? await this.getEnvelopeRecipients(client, accountId, envelopeId, {
-          forceRefresh: true,
-        })
-      : recData) as Record<string, unknown>;
-    const signersAfter = (recAfterData.signers || []) as Array<{
+    if (removedIds.size) {
+      existingCc = existingCc.filter(
+        (cc) => !removedIds.has(String(cc.recipientId || '').trim()),
+      );
+      recData.carbonCopies = existingCc;
+      this.rememberEnvelopeRecipients(accountId, envelopeId, recData);
+    }
+
+    // Reuse in-memory recipients — never forceRefresh GET after CC deletes.
+    const signersAfter = (recData.signers || []) as Array<{
       routingOrder?: string;
     }>;
-    const existingAfter = (recAfterData.carbonCopies || []) as Array<{ email?: string }>;
     const existingEmails = new Set(
-      existingAfter.map((cc) => String(cc.email || '').trim().toLowerCase()).filter(Boolean),
+      existingCc.map((cc) => String(cc.email || '').trim().toLowerCase()).filter(Boolean),
     );
     const toAdd = desired.filter((e) => !existingEmails.has(e.toLowerCase()));
     if (!toAdd.length) {
@@ -1668,7 +1718,7 @@ export class DocusignService {
       1,
     );
     const ccRoutingOrder = String(maxSignerOrder + 1);
-    let nextRecipientId = this.getMaxRecipientIdFromRecipientsData(recAfterData) + 1;
+    let nextRecipientId = this.getMaxRecipientIdFromRecipientsData(recData) + 1;
     const carbonCopies = toAdd.map((email) => ({
       email,
       name: email.split('@')[0],
@@ -1681,7 +1731,8 @@ export class DocusignService {
         `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
         { carbonCopies },
       );
-      invalidateCachedEnvelopeRecipients(accountId, envelopeId);
+      recData.carbonCopies = [...existingCc, ...carbonCopies];
+      this.rememberEnvelopeRecipients(accountId, envelopeId, recData);
     } catch (err) {
       throw new BadRequestException(formatDocusignApiErrorMessage(err));
     }
@@ -1696,11 +1747,17 @@ export class DocusignService {
     accountId: string,
     envelopeId: string,
   ): Promise<number> {
-    const data = await this.getEnvelopeRecipients(client, accountId, envelopeId);
-    const existingCc = (data?.carbonCopies || []) as Array<{
+    const data = this.cloneRecipientsData(
+      await this.getEnvelopeRecipients(client, accountId, envelopeId),
+    ) as {
+      carbonCopies?: Array<{ recipientId?: string }>;
+      [k: string]: unknown;
+    };
+    const existingCc = (data.carbonCopies || []) as Array<{
       recipientId?: string;
     }>;
     let removed = 0;
+    const removedIds = new Set<string>();
     for (const cc of existingCc) {
       const rid = String(cc.recipientId || '').trim();
       if (!rid) continue;
@@ -1709,12 +1766,17 @@ export class DocusignService {
           `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${rid}`,
         );
         removed++;
+        removedIds.add(rid);
       } catch (delErr) {
+        if (isDocuSignPollingLimitError(delErr)) throw delErr;
         this.logDocusignApiError('removeEnvelopeCarbonCopies', delErr);
       }
     }
     if (removed) {
-      invalidateCachedEnvelopeRecipients(accountId, envelopeId);
+      data.carbonCopies = existingCc.filter(
+        (cc) => !removedIds.has(String(cc.recipientId || '').trim()),
+      );
+      this.rememberEnvelopeRecipients(accountId, envelopeId, data);
       console.log(
         `[DocuSign] removed ${removed} carbon copy slot(s) on ${envelopeId} (CRM emails CC when sent)`,
       );
@@ -2002,6 +2064,7 @@ export class DocusignService {
         `[DocuSign] primary signer on ${envelopeId} set to ${email} (was ${current || 'empty'})`,
       );
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) throw err;
       this.logDocusignApiError('ensurePrimarySignerOnEnvelope', err);
     }
   }
@@ -2097,12 +2160,24 @@ export class DocusignService {
       rolesToApply,
     );
 
-    const envelopeKind = await this.getEnvelopeCrmKindFromApi(client, accountId, eid);
+    // Prefer CRM envelope kind — avoid custom_fields GET (counts toward polling budget).
+    let envelopeKind: string | null = null;
+    const appIdHint = String(applicationId || '').trim();
+    if (appIdHint) {
+      if (await this.isAchStandaloneEnvelopeOnContract(appIdHint, eid)) {
+        envelopeKind = 'standalone_ach';
+      } else {
+        envelopeKind = 'contract';
+      }
+    } else {
+      envelopeKind = await this.getEnvelopeCrmKindFromApi(client, accountId, eid);
+    }
     const includeDefaultCc = this.includeDefaultCcForEnvelopeKind(envelopeKind);
     const list = this.normalizeCcEmails(ccEmails, { includeDefault: includeDefaultCc });
 
     await this.removeEnvelopeCarbonCopies(client, accountId, eid);
 
+    // Cache should already hold patched signers/CCs from roles + remove — no forceRefresh.
     const recAfterData = await this.getEnvelopeRecipients(client, accountId, eid);
     const signersAfter = ((recAfterData?.signers || []) as Array<{ email?: string }>).filter(
       (s) => String(s.email || '').trim(),
@@ -3148,6 +3223,7 @@ export class DocusignService {
 
     let envelopeSigners: Array<{ roleName?: string; email?: string; name?: string }> = [];
     try {
+      // Expect cache hit after assert/prefill/remove CC — no extra GETRecipient HTTP.
       const recData = await this.getEnvelopeRecipients(
         options.client,
         options.accountId,
@@ -3158,8 +3234,9 @@ export class DocusignService {
         email: s.email,
         name: s.name,
       }));
-    } catch {
-      /* omit */
+    } catch (err) {
+      if (isDocuSignPollingLimitError(err)) throw err;
+      /* omit non-fatal signer summary failures */
     }
 
     let envelopeStatus: 'created' | 'sent' = 'created';

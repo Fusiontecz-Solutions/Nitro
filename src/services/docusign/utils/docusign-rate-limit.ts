@@ -1,5 +1,5 @@
-/** Reuse GET /recipients within a single send / finalize flow. */
-const RECIPIENTS_CACHE_TTL_MS = 2 * 60_000;
+/** Reuse GET /recipients within a single send / finalize flow (and short draft edits). */
+const RECIPIENTS_CACHE_TTL_MS = 5 * 60_000;
 /** Reuse GET /envelopes/{id} status within short windows. */
 const ENVELOPE_STATUS_CACHE_TTL_MS = 60_000;
 /** Reuse GET /custom_fields within a send / CC notify flow. */

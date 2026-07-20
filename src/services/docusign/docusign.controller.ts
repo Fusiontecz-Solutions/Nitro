@@ -103,8 +103,9 @@ export const sendTemplate = async (req: Request, res: Response) => {
 
     return res.json(result);
   } catch (error: any) {
-    return res.status(error.status || 500).json({
-      message: error?.message || 'Failed to send template',
+    const { status, message } = formatDocusignRouteError(error);
+    return res.status(status).json({
+      message: message || 'Failed to send template',
     });
   }
 };
@@ -414,8 +415,9 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
 
     return res.json(result);
   } catch (error: any) {
-    return res.status(error.status || 500).json({
-      message: error?.message || 'Failed to merge and send templates',
+    const { status, message } = formatDocusignRouteError(error);
+    return res.status(status).json({
+      message: message || 'Failed to merge and send templates',
     });
   }
 };
