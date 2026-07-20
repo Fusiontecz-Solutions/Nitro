@@ -25,6 +25,26 @@ import {
   renderReverseDisbursementSchedulePdf,
 } from './pdf/reverseDisbursementSchedule.service';
 import { mergePreservingDocuSignEnvelopeMeta } from './docusign/utils/preserve-docusign-prefill-meta';
+import { resolveApplicationWhere } from './applicationService';
+
+const APPLICATION_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Accept Application UUID `id` or numeric display `applicationId` (e.g. "1115"). */
+async function resolveContractApplicationUuid(applicationRef: string): Promise<string | null> {
+  const ref = String(applicationRef ?? '').trim();
+  if (!ref) return null;
+  if (APPLICATION_UUID_RE.test(ref)) return ref;
+
+  const where = resolveApplicationWhere(ref);
+  if (!where) return null;
+
+  const app = await prisma.application.findUnique({
+    where,
+    select: { id: true },
+  });
+  return app?.id ?? null;
+}
 
 async function resolvePaymentBankDetailForContract(
   prismaClient: typeof prisma | any,
@@ -1256,8 +1276,11 @@ class ContractService {
   }
 
   async getByApplicationIdContract(applicationId: string) {
+    const applicationUuid = await resolveContractApplicationUuid(applicationId);
+    if (!applicationUuid) return null;
+
     const row = await (prisma as any).contract.findUnique({
-      where: { applicationId },
+      where: { applicationId: applicationUuid },
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
         application: {
