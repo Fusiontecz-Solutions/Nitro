@@ -11,6 +11,7 @@ import {
     updateApplication,
 } from "@/redux/actions/applicationActions";
 import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
+import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
 import {
     createContract,
     getBoldSignTemplates,
@@ -497,8 +498,19 @@ export default function ContractTab({
         applicationId ??
         (applicationData as { _id?: string; id?: string })?.id ??
         (applicationData as { _id?: string })?._id;
-    const applicationUuid =
-        (applicationData as any)?._id ?? (applicationData as any)?.id ?? appId;
+    // Prefer Application.id (UUID). URL `:applicationId` is often the display Int (e.g. 1115).
+    const applicationUuid = useMemo(() => {
+        const fromData = String(
+            (applicationData as { _id?: string; id?: string } | null)?._id ??
+                (applicationData as { id?: string } | null)?.id ??
+                "",
+        ).trim();
+        if (fromData && isApplicationUuid(fromData)) return fromData;
+        const fromRoute = String(applicationId ?? "").trim();
+        if (fromRoute && isApplicationUuid(fromRoute)) return fromRoute;
+        // Backend now accepts numeric display ids; keep as fallback for early loads.
+        return fromData || fromRoute || (appId ? String(appId) : null);
+    }, [applicationData, applicationId, appId]);
     useEffect(() => {
         const termsApplicationKey = applicationUuid ?? appId;
         if (termsApplicationKey) {

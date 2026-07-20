@@ -141,6 +141,7 @@ import KycExtractionReviewCard from "./contractdata/KycExtractionReviewCard";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
+import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import RequestedDocumentUploadRows, {
     getRequestedDocumentLabel,
@@ -1757,10 +1758,13 @@ const PDFViewerModal = ({
     });
 
     const applicationIdForLookup = useMemo(() => {
-        const fromProp = applicationId?.trim();
-        if (fromProp) return fromProp;
         const d = applicationData as { _id?: string; id?: string } | undefined;
-        return String(d?._id ?? d?.id ?? "").trim() || null;
+        const fromData = String(d?._id ?? d?.id ?? "").trim();
+        if (fromData && isApplicationUuid(fromData)) return fromData;
+        const fromProp = applicationId?.trim() || "";
+        if (fromProp && isApplicationUuid(fromProp)) return fromProp;
+        // Backend accepts numeric display applicationId as fallback.
+        return fromData || fromProp || null;
     }, [applicationId, applicationData]);
 
     const applicationMongoId = useMemo(() => {
