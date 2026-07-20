@@ -338,11 +338,9 @@ export const getBoldSignTemplateRecipients = createAsyncThunk(
   "boldSign/getTemplateRecipients",
   async (templateId: string | undefined, { rejectWithValue }) => {
     try {
-      const tid = String(templateId ?? "").trim();
-      const url = tid
-        ? `/docusign/template/recipients?templateId=${encodeURIComponent(tid)}`
-        : `/docusign/template/recipients`;
-      const response = await axiosGet(url);
+      // Always request without DocuSign template GUID — backend returns platform layout slots.
+      void templateId;
+      const response = await axiosGet(`/docusign/template/recipients`);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(

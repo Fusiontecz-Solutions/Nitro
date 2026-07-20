@@ -798,6 +798,14 @@ function pickPreservedContractPrefillMeta(
             CONTRACT_SIGNER_OVERRIDES_KEY,
             DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
             DOCUMENT_SEND_HISTORY_KEY,
+            // Keep voided/sent/signed/completed rows in Contracts Generated after resend.
+            "contractSendHistory",
+            "mainContractSendPackage",
+            "achAuthorizationDocuSign",
+            "achSendHistory",
+            "standalonePackageDocuSign",
+            "standalonePackageSendHistory",
+            "lastAchSentFunder",
         ] as const) {
             if (o[key] !== undefined) preserved[key] = o[key];
         }

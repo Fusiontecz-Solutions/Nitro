@@ -25,7 +25,6 @@ import {
 } from "@/redux/actions/contractActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import {
-    getDocuSignTemplateRecipients,
     mergeAndSendDocuSignEnvelope,
     voidBoldSignDocument,
 } from "@/redux/actions/boldSignActions";
@@ -123,6 +122,7 @@ import {
     isContractVoidedOrTerminal,
     mergeMainContractSendPackageIntoPrefill,
     pickContractEnvelopeDocument,
+    pickPreservedDocuSignEnvelopeMetaFromPrefill,
     resolveContractSendRowFunderAuth,
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
@@ -189,6 +189,7 @@ import {
     getBoldSignTemplateMappingRef,
 } from "./contractdata/boldSignTemplateDocument";
 import {
+    getPlatformSignerRoleRows,
     isAchAuthorizationLayoutKey,
     PLATFORM_LAYOUT_KEYS,
 } from "./contractdata/platformDocumentConfig";
@@ -2139,13 +2140,15 @@ export default function ContractTab({
             if (cachedRolesEarly.length > 0) {
                 recipientsPayload = cachedRecipients;
             } else {
-                try {
-                    recipientsPayload = await dispatch(
-                        getDocuSignTemplateRecipients(undefined),
-                    ).unwrap();
-                } catch {
-                    // Fall back to application-only signers if the role list is unavailable.
-                }
+                // Platform layouts: roles from code — no DocuSign /templates/.../recipients.
+                const ownerRowsForSlots = Array.isArray(contractOwnerListState.data)
+                    ? contractOwnerListState.data
+                    : [];
+                recipientsPayload = {
+                    success: true,
+                    source: "platform-layout",
+                    roles: getPlatformSignerRoleRows(Math.max(1, ownerRowsForSlots.length || 1)),
+                };
             }
 
             let templateRoles =
@@ -2228,7 +2231,7 @@ export default function ContractTab({
 
             if (roles.length === 0) {
                 failDocuSignEnvelope(
-                    "Could not resolve any DocuSign signers. Add a client email on this application or configure default signer emails on the DocuSign template.",
+                    "Could not resolve any DocuSign signers. Add a client email on this application.",
                 );
             }
 
@@ -2239,11 +2242,11 @@ export default function ContractTab({
                 .filter((i) => i >= 0);
             if (missingEmailIndexes.length > 0) {
                 failDocuSignEnvelope(
-                    `DocuSign template has signer role(s) without an email (roles ${missingEmailIndexes
+                    `Signer role(s) missing email (roles ${missingEmailIndexes
                         .map((i) => i + 1)
                         .join(
                             ", ",
-                        )}). Set default signer emails on the template in DocuSign, or add a client email on this application for the first signer.`,
+                        )}). Add signer emails in CRM (Manage Signers) or a client email on this application.`,
                 );
             }
 
@@ -2547,10 +2550,13 @@ export default function ContractTab({
                             normalizeContractPrefillOverrides(rawOverrides) ?? {},
                         ) as Record<string, unknown>;
                         const columnUpdate = contractPrefillToContractColumnUpdate(syncedPartial);
-                        const nextOverrides = mergeContractPrefillOverrideLayers(
-                            mainOverrides as Partial<BuildContractPrefillFieldsArgs>,
-                            syncedPartial,
-                        );
+                        const nextOverrides = {
+                            ...pickPreservedDocuSignEnvelopeMetaFromPrefill(rawOverrides),
+                            ...mergeContractPrefillOverrideLayers(
+                                mainOverrides as Partial<BuildContractPrefillFieldsArgs>,
+                                syncedPartial,
+                            ),
+                        };
                         await dispatch(
                             updateContract({
                                 id: contractNumericIdPersist,
@@ -2955,6 +2961,7 @@ export default function ContractTab({
                             id: cid,
                             data: {
                                 contractPrefillOverrides: {
+                                    ...pickPreservedDocuSignEnvelopeMetaFromPrefill(raw),
                                     ...main,
                                     ...(prefillBlob != null
                                         ? {
@@ -3093,6 +3100,7 @@ export default function ContractTab({
                 : undefined;
             const withCapsule = mergeAchAuthorizationDocuSignIntoPrefill(
                 {
+                    ...pickPreservedDocuSignEnvelopeMetaFromPrefill(rawOverrides),
                     ...main,
                     ...(preservedSigners?.length
                         ? { [CONTRACT_SIGNER_OVERRIDES_KEY]: preservedSigners }
@@ -4007,7 +4015,9 @@ export default function ContractTab({
                                     >
                                         No DocuSign sends yet. Rows appear here after a
                                         contract, addendum, disclosure, or ACH form is sent
-                                        (each document listed separately; drafts are hidden).
+                                        (each document listed separately). Sent, viewed,
+                                        signed, completed, and voided stays visible; drafts
+                                        are hidden.
                                     </TableCell>
                                 </TableRow>
                             ) : (

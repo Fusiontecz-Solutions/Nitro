@@ -160,7 +160,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 const DOCUSIGN_PRIMARY_BTN_CLASS =
     "h-9 shrink-0 cursor-pointer border-0 bg-[image:var(--brand-gradient)] px-6 text-white shadow-sm hover:opacity-90 focus-visible:ring-[var(--brand)]/40";
 import {
-    getBoldSignTemplateRecipients,
     voidBoldSignDocument,
 } from "@/redux/actions/boldSignActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
@@ -209,7 +208,13 @@ import {
     shouldFallbackPollDocuSign,
 } from "./contractdata/docusignPolling";
 import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
-import { isPlatformLayoutKey, PLATFORM_LAYOUT_KEYS, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
+import {
+    getPlatformSignerRoleRows,
+    isPlatformLayoutKey,
+    PLATFORM_LAYOUT_KEYS,
+    PLATFORM_PRIMARY_SIGNER_ROLE,
+    supplementalOptionLabel,
+} from "./contractdata/platformDocumentConfig";
 import {
     contractSendPackageFingerprint,
     canSendWithoutMainContract,
@@ -222,6 +227,7 @@ import {
     canVoidContractSendTableRow,
     getContractSendTableRowStatusLabel,
     isContractSendTableRowFullySigned,
+    pickPreservedDocuSignEnvelopeMetaFromPrefill,
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -1529,9 +1535,19 @@ const PDFViewerModal = ({
     );
     const templateRecipients = boldSignState?.templateRecipients;
 
+    /** Platform layout slots from code — never DocuSign Admin template recipients. */
+    const platformSignerRoleRows = useMemo(
+        () => getPlatformSignerRoleRows(Math.max(1, ownerEntries.length || 1)),
+        [ownerEntries.length],
+    );
+
     const templateRoleRowsForSigner = useMemo(
-        () => parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients),
-        [templateRecipients],
+        () =>
+            parseBoldSignTemplateRolesFromRecipientsPayload({
+                roles: platformSignerRoleRows,
+                source: "platform-layout",
+            }),
+        [platformSignerRoleRows],
     );
 
     /** Signing email for DocuSign (includes template default when CRM client email is blank). */
@@ -1581,7 +1597,9 @@ const PDFViewerModal = ({
                 roleIndex: idx + 1,
             }));
         }
-        const parsed = parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients);
+        const parsed = platformSignerRoleRows.length
+            ? platformSignerRoleRows
+            : parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients);
         if (parsed.length > 0) {
             const merged = mergeApplicationDataIntoSignerRoles(
                 buildBoldSignRolesFromTemplateRecipients(
@@ -1611,7 +1629,7 @@ const PDFViewerModal = ({
         if (!signerEmail) return [];
         return [
             {
-                roleName: "Client",
+                roleName: PLATFORM_PRIMARY_SIGNER_ROLE,
                 signerEmail: signerEmail,
                 signerName: getApplicationPrimaryRecipientName(applicationData),
                 roleIndex: 1,
@@ -1620,6 +1638,7 @@ const PDFViewerModal = ({
     }, [
         contractSignerOverrides,
         templateRecipients,
+        platformSignerRoleRows,
         docuSignSignerEmail.email,
         applicationData,
         applicationSignerRowsForMerge,
@@ -2058,6 +2077,7 @@ const PDFViewerModal = ({
             draftPreparedAddendumIdRef.current = undefined;
             draftPreparedCcRef.current = null;
             draftPreparedPrefillFingerprintRef.current = null;
+            lastPrefillSyncFailureToastKeyRef.current = null;
             draftPreparedSignerRolesRef.current = null;
             prefilledPdfCachedForEnvelopeRef.current = null;
             prefilledBoldSignPdfUrlRef.current = null;
@@ -2275,6 +2295,8 @@ const PDFViewerModal = ({
     const draftPreparedAddendumIdRef = useRef<string | null | undefined>(undefined);
     const draftPreparedCcRef = useRef<string[] | null>(null);
     const draftPreparedPrefillFingerprintRef = useRef<string | null>(null);
+    /** Avoid repeating the same draft-sync failure toast for one fingerprint. */
+    const lastPrefillSyncFailureToastKeyRef = useRef<string | null>(null);
     const draftPreparedSignerRolesRef = useRef<string | null>(null);
     const draftPreparedOwnerCountRef = useRef<number | null>(null);
     const draftPreparedPackageFingerprintRef = useRef<string | null>(null);
@@ -2322,6 +2344,7 @@ const PDFViewerModal = ({
         draftPreparedAddendumIdRef.current = undefined;
         draftPreparedCcRef.current = null;
         draftPreparedPrefillFingerprintRef.current = null;
+        lastPrefillSyncFailureToastKeyRef.current = null;
         draftPreparedSignerRolesRef.current = null;
         draftPreparedOwnerCountRef.current = null;
         draftPreparedPackageFingerprintRef.current = null;
@@ -2340,7 +2363,6 @@ const PDFViewerModal = ({
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
     const linkedDisclosureMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
     const disclosureAutoLinkKeyRef = useRef("");
-    const templateRecipientsFetchedForIdRef = useRef<string | null>(null);
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
     ccEmailsRef.current = ccEmails;
@@ -3102,6 +3124,7 @@ const PDFViewerModal = ({
                 syncDocuSign: false,
                 forceDocuSignSync: false,
             });
+            onContractDocumentsChanged?.();
             if (activeStepRef.current === "sent") {
                 setActiveStep("summary");
             }
@@ -4481,6 +4504,7 @@ const PDFViewerModal = ({
                 const result = await patchDocuSignPrefillFields(envelopeId, fields);
                 docuSignPrefillSyncToast(result, { hasDraftEnvelope: true });
                 draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
+                lastPrefillSyncFailureToastKeyRef.current = null;
                 invalidateDocuSignPdfCache();
                 void loadPrefilledPdfFromDocuSign(envelopeId, {
                     manageLoading: false,
@@ -4488,9 +4512,16 @@ const PDFViewerModal = ({
                 });
             } catch (err) {
                 console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
-                toast.warning(
-                    "Prefill saved in CRM, but the DocuSign draft could not be updated. Use Review & send to refresh the draft.",
-                );
+                // Still mark this fingerprint handled so the auto-sync effect does not
+                // re-fire (and toast) on every callback identity change.
+                draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
+                const toastKey = `${envelopeId}:${prefillDraftFingerprint}`;
+                if (lastPrefillSyncFailureToastKeyRef.current !== toastKey) {
+                    lastPrefillSyncFailureToastKeyRef.current = toastKey;
+                    toast.warning(
+                        "Prefill saved in CRM, but the DocuSign draft could not be updated. Use Review & send to refresh the draft.",
+                    );
+                }
             }
         },
         [
@@ -4502,6 +4533,9 @@ const PDFViewerModal = ({
             loadPrefilledPdfFromDocuSign,
         ],
     );
+
+    const syncPrefillToDraftEnvelopeRef = useRef(syncPrefillToDraftEnvelope);
+    syncPrefillToDraftEnvelopeRef.current = syncPrefillToDraftEnvelope;
 
     /**
      * After Deal Review / Edit Prefill saves, React state is fresh here — patch the open
@@ -4517,8 +4551,11 @@ const PDFViewerModal = ({
             draftPreparedPrefillFingerprintRef.current = null;
             return;
         }
-        void syncPrefillToDraftEnvelope({ envelopeId: eid });
-    }, [prefillDraftFingerprint, syncPrefillToDraftEnvelope]);
+        // Claim before the async call so effect re-runs from unstable callback deps
+        // cannot stack the same sync + toast while a request is in flight / failed.
+        draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
+        void syncPrefillToDraftEnvelopeRef.current({ envelopeId: eid });
+    }, [prefillDraftFingerprint]);
 
     const applyDisclosureCalculation = useCallback(
         async (args: {
@@ -4937,6 +4974,7 @@ const PDFViewerModal = ({
                 updatedAt: new Date().toISOString(),
             });
             const contractPrefillOverrides = {
+                ...pickPreservedDocuSignEnvelopeMetaFromPrefill(rawOverrides),
                 ...main,
                 ...(signerRows?.length
                     ? { [CONTRACT_SIGNER_OVERRIDES_KEY]: signerRows }
@@ -5308,28 +5346,6 @@ const PDFViewerModal = ({
         if (tid) setEffectiveTemplateId(tid);
     }, [effectiveTemplateId, boldSignTemplates]);
 
-    useEffect(() => {
-        if (!isOpen) {
-            templateRecipientsFetchedForIdRef.current = null;
-            return;
-        }
-        if (!effectiveTemplateId) return;
-        if (activeStep !== "summary" && activeStep !== "info") return;
-        if (templateRecipientsFetchedForIdRef.current === effectiveTemplateId) return;
-        const cachedRoles = parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients);
-        const cachedTemplateId = String(
-            (templateRecipients as { templateId?: string } | null)?.templateId ?? "",
-        ).trim();
-        if (
-            cachedRoles.length > 0 &&
-            (!cachedTemplateId || cachedTemplateId === effectiveTemplateId)
-        ) {
-            templateRecipientsFetchedForIdRef.current = effectiveTemplateId;
-            return;
-        }
-        templateRecipientsFetchedForIdRef.current = effectiveTemplateId;
-        void dispatch(getBoldSignTemplateRecipients(effectiveTemplateId));
-    }, [isOpen, effectiveTemplateId, activeStep, dispatch, templateRecipients]);
     useEffect(() => {
         if (!isOpen || !applicationIdForLookup) return;
         dispatch(getBankDetails({ application: applicationIdForLookup }));

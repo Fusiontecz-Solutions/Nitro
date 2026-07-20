@@ -108,7 +108,7 @@ export function parseStandalonePackageDocuSignFromPrefill(
     };
 }
 
-/** One label per included document — never merges addendum + disclosure. */
+/** Per-document labels; table rows combine them with formatStandalonePackageSendLabel. */
 export function listStandalonePackageDocumentLabels(
     packageMeta?: StandalonePackageDocuSignMeta["package"],
 ): string[] {

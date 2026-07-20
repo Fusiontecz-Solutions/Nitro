@@ -6,6 +6,7 @@ import {
     type AchAuthorizationDocuSignCapsuleStatus,
 } from "./achAuthorizationDocuSign";
 import {
+    formatStandalonePackageSendLabel,
     formatStandalonePackageTableStatusLabel,
     listStandalonePackageDocumentLabels,
     parseStandalonePackageDocuSignFromPrefill,
@@ -26,6 +27,34 @@ export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
 
 /** Documents included in the current main-contract DocuSign envelope (for separate table rows). */
 export const MAIN_CONTRACT_SEND_PACKAGE_KEY = "mainContractSendPackage";
+
+/** Prefill JSON keys that must survive FE rebuilds so Contracts Generated keeps history. */
+export const DOCUSIGN_ENVELOPE_PREFILL_META_KEYS = [
+    CONTRACT_SEND_HISTORY_KEY,
+    MAIN_CONTRACT_SEND_PACKAGE_KEY,
+    "achAuthorizationDocuSign",
+    "achSendHistory",
+    "standalonePackageDocuSign",
+    "standalonePackageSendHistory",
+    "documentSendHistory",
+    "documentTemplateEnvelopeByMappingId",
+    "documentTemplatePrefillByMappingId",
+    "lastAchSentFunder",
+    "contractSignerOverrides",
+] as const;
+
+/** Copy DocuSign history / capsule keys from an existing prefill blob. */
+export function pickPreservedDocuSignEnvelopeMetaFromPrefill(
+    raw: unknown,
+): Record<string, unknown> {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const o = raw as Record<string, unknown>;
+    const preserved: Record<string, unknown> = {};
+    for (const key of DOCUSIGN_ENVELOPE_PREFILL_META_KEYS) {
+        if (o[key] !== undefined) preserved[key] = o[key];
+    }
+    return preserved;
+}
 
 export type MainContractSendPackageMeta = {
     envelopeId: string;
@@ -342,31 +371,69 @@ export function mergeMainContractSendPackageIntoPrefill(
     };
 }
 
-/** Contracts Generated table — only envelopes that left DocuSign draft. */
+/**
+ * Contracts Generated — only real DocuSign outcomes:
+ * Sent / Viewed / Signed / Completed / Voided (plus declined/expired).
+ * Do not show draft/created rows (those used to surface as "Pending" via sentAt fallbacks
+ * when older archives stored status incorrectly).
+ */
 function isContractRowVisibleInSendTable(
     contractStatus: unknown,
     documentStatus?: unknown,
     envelopeId?: string | null,
+    _sentAt?: unknown,
 ): boolean {
     if (!String(envelopeId ?? "").trim()) return false;
     const ds = String(documentStatus ?? "").trim().toLowerCase();
     const cs = String(contractStatus ?? "").trim().toUpperCase();
-    if (ds === "draft" || ds === "created" || cs === "DRAFT") return false;
-    if (!ds && (cs === "DRAFT" || cs === "GENERATED" || !cs)) return false;
-    return true;
+
+    // Envelope/document status is the source of truth. Do NOT hide just because
+    // Contract.status is still DRAFT (common after void/resend races).
+    if (
+        ds === "sent" ||
+        ds === "delivered" ||
+        ds === "viewed" ||
+        ds === "signed" ||
+        ds === "completed" ||
+        ds === "revoked" ||
+        ds === "voided" ||
+        ds === "declined" ||
+        ds === "expired"
+    ) {
+        return true;
+    }
+
+    // No usable document status — fall back to contract status only.
+    if (
+        cs === "SENT" ||
+        cs === "VIEWED" ||
+        cs === "SIGNED" ||
+        cs === "COMPLETED" ||
+        cs === "REVOKED" ||
+        cs === "VOIDED" ||
+        cs === "DECLINED" ||
+        cs === "EXPIRED"
+    ) {
+        return true;
+    }
+
+    return false;
 }
 
 function isAchRowVisibleInSendTable(
     status: AchAuthorizationDocuSignCapsuleStatus | undefined,
     envelopeId?: string | null,
+    _sentAt?: unknown,
 ): boolean {
     if (!String(envelopeId ?? "").trim()) return false;
+    // SENT / VIEWED / SIGNED / VOIDED only — never draft-as-Pending.
     return Boolean(status && status !== "DRAFT");
 }
 
 function isPackageRowVisibleInSendTable(
     status: StandalonePackageDocuSignCapsuleStatus | undefined,
     envelopeId?: string | null,
+    _sentAt?: unknown,
 ): boolean {
     if (!String(envelopeId ?? "").trim()) return false;
     return Boolean(status && status !== "DRAFT");
@@ -389,26 +456,32 @@ function documentKindFromPackageLabel(label: string): ContractSendTableDocumentK
     return "package";
 }
 
-/** Separate Contract / Addendum / Disclosure rows for one main envelope (statuses stay per-envelope). */
+/**
+ * One Contracts Generated row per envelope.
+ * Addendum + disclosure (and optional contract) that share an envelope stay combined.
+ */
 function listMainEnvelopeDocumentParts(
     packageMeta?: MainContractSendPackageMeta | StandalonePackageDocuSignMeta["package"] | null,
 ): Array<{ documentKind: ContractSendTableDocumentKind; label: string }> {
     if (!packageMeta) {
         return [{ documentKind: "contract", label: "Contract" }];
     }
-    const parts: Array<{ documentKind: ContractSendTableDocumentKind; label: string }> = [];
+    const labels: string[] = [];
     const includeMain =
         (packageMeta as MainContractSendPackageMeta).includeMainContract !== false;
-    if (includeMain) {
-        parts.push({ documentKind: "contract", label: "Contract" });
+    if (includeMain) labels.push("Contract");
+    if (packageMeta.includeAddendum) labels.push("Addendum");
+    if (packageMeta.includeDisclosure) labels.push("State disclosure");
+    if (!labels.length) {
+        return [{ documentKind: "contract", label: "Contract" }];
     }
-    if (packageMeta.includeAddendum) {
-        parts.push({ documentKind: "addendum", label: "Addendum" });
+    let documentKind: ContractSendTableDocumentKind = "contract";
+    if (!includeMain && labels.length === 1) {
+        documentKind = documentKindFromPackageLabel(labels[0]!);
+    } else if (!includeMain) {
+        documentKind = "package";
     }
-    if (packageMeta.includeDisclosure) {
-        parts.push({ documentKind: "disclosure", label: "State disclosure" });
-    }
-    return parts.length > 0 ? parts : [{ documentKind: "contract", label: "Contract" }];
+    return [{ documentKind, label: labels.join(" & ") }];
 }
 
 function pushMainEnvelopeDocumentRows(
@@ -426,26 +499,24 @@ function pushMainEnvelopeDocumentRows(
     },
 ): void {
     const parts = listMainEnvelopeDocumentParts(args.packageMeta);
-    parts.forEach((part, index) => {
-        let label = part.label;
-        if (!args.isCurrent && args.historyCount != null && args.sendNumber != null) {
-            label =
-                args.historyCount > 1
-                    ? `${part.label} (send ${args.sendNumber})`
-                    : `${part.label} (prior send)`;
-        }
-        rows.push({
-            rowType: "contract",
-            key: `${args.keyPrefix}-${part.documentKind}-${args.envelopeId}-${index}`,
-            label,
-            envelopeId: args.envelopeId,
-            contractStatus: args.contractStatus,
-            documentStatus: args.documentStatus,
-            sentAt: args.sentAt,
-            // Only the first document of a shared envelope owns void / "current" actions.
-            isCurrent: args.isCurrent && index === 0,
-            documentKind: part.documentKind,
-        });
+    const part = parts[0]!;
+    let label = part.label;
+    if (!args.isCurrent && args.historyCount != null && args.sendNumber != null) {
+        label =
+            args.historyCount > 1
+                ? `${part.label} (send ${args.sendNumber})`
+                : `${part.label} (prior send)`;
+    }
+    rows.push({
+        rowType: "contract",
+        key: `${args.keyPrefix}-${part.documentKind}-${args.envelopeId}`,
+        label,
+        envelopeId: args.envelopeId,
+        contractStatus: args.contractStatus,
+        documentStatus: args.documentStatus,
+        sentAt: args.sentAt,
+        isCurrent: args.isCurrent,
+        documentKind: part.documentKind,
     });
 }
 
@@ -462,31 +533,31 @@ function pushPackageDocumentRows(
         sendNumber?: number;
     },
 ): void {
-    const labels = listStandalonePackageDocumentLabels(args.packageMeta);
-    labels.forEach((documentLabel, index) => {
-        const documentKind = documentKindFromPackageLabel(documentLabel);
-        const label =
-            args.isCurrent || args.historyCount == null || args.sendNumber == null
-                ? documentLabel
-                : buildStandalonePackageHistoryLabel(
-                      args.packageMeta,
-                      documentLabel,
-                      args.historyCount,
-                      args.sendNumber,
-                  );
-        rows.push({
-            rowType: "package",
-            key: `${args.keyPrefix}-${documentKind}-${args.envelopeId}-${index}`,
-            label,
-            envelopeId: args.envelopeId,
-            contractStatus: args.status,
-            documentStatus: args.status,
-            sentAt: args.sentAt,
-            // Only the first document of a shared package envelope owns void actions.
-            isCurrent: args.isCurrent && index === 0,
-            packageStatus: args.status,
-            documentKind,
-        });
+    const combinedLabel = formatStandalonePackageSendLabel(args.packageMeta);
+    const documentKind =
+        listStandalonePackageDocumentLabels(args.packageMeta).length > 1
+            ? "package"
+            : documentKindFromPackageLabel(combinedLabel);
+    let label = combinedLabel;
+    if (!args.isCurrent && args.historyCount != null && args.sendNumber != null) {
+        label = buildStandalonePackageHistoryLabel(
+            args.packageMeta,
+            combinedLabel,
+            args.historyCount,
+            args.sendNumber,
+        );
+    }
+    rows.push({
+        rowType: "package",
+        key: `${args.keyPrefix}-${documentKind}-${args.envelopeId}`,
+        label,
+        envelopeId: args.envelopeId,
+        contractStatus: args.status,
+        documentStatus: args.status,
+        sentAt: args.sentAt,
+        isCurrent: args.isCurrent,
+        packageStatus: args.status,
+        documentKind,
     });
 }
 
@@ -507,8 +578,6 @@ export function getContractSendTableRowStatusLabel(row: ContractSendTableRow): s
     if (ds === "signed" || cs === "SIGNED") return "Signed";
     if (ds === "viewed" || ds === "delivered" || cs === "VIEWED") return "Viewed";
     if (ds === "sent" || cs === "SENT") return "Sent";
-    // Drafts are filtered from the table; never surface Draft as a visible label here.
-    if (ds === "draft" || ds === "created" || cs === "DRAFT") return "Pending";
     if (
         ds === "revoked" ||
         ds === "voided" ||
@@ -519,7 +588,8 @@ export function getContractSendTableRowStatusLabel(row: ContractSendTableRow): s
     ) {
         return "Voided";
     }
-    return cs || ds || "Pending";
+    // Draft/unknown rows are filtered out of Contracts Generated.
+    return cs || ds || "Sent";
 }
 
 export function isContractSendTableRowFullySigned(row: ContractSendTableRow): boolean {
@@ -617,6 +687,7 @@ export function buildContractSendTableRows(
                 (contract as { status?: unknown }).status,
                 doc?.status,
                 mainEnvelopeId,
+                doc?.sentAt ?? doc?.updatedAt,
             )
         ) {
             seenEnvelopeIds.add(mainEnvelopeId);
@@ -635,7 +706,14 @@ export function buildContractSendTableRows(
     const contractHistoryNewestFirst = [...contractHistory].reverse();
     contractHistoryNewestFirst.forEach((entry, index) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
-        if (!isContractRowVisibleInSendTable(entry.status, entry.status, entry.envelopeId)) {
+        if (
+            !isContractRowVisibleInSendTable(
+                entry.status,
+                entry.status,
+                entry.envelopeId,
+                entry.sentAt ?? entry.archivedAt,
+            )
+        ) {
             return;
         }
         seenEnvelopeIds.add(entry.envelopeId);
@@ -680,7 +758,7 @@ export function buildContractSendTableRows(
 
     if (achEnvelopeId && !seenEnvelopeIds.has(achEnvelopeId)) {
         const status = resolveAchDisplayCapsuleStatus(achEnvelopeId, achCurrent?.status);
-        if (isAchRowVisibleInSendTable(status, achEnvelopeId)) {
+        if (isAchRowVisibleInSendTable(status, achEnvelopeId, achCurrent?.sentAt ?? achCurrent?.updatedAt)) {
             seenEnvelopeIds.add(achEnvelopeId);
             rows.push({
                 rowType: "ach",
@@ -707,7 +785,7 @@ export function buildContractSendTableRows(
             achAliasEnvelopeId,
             achAliasMeta?.status,
         );
-        if (isAchRowVisibleInSendTable(status, achAliasEnvelopeId)) {
+        if (isAchRowVisibleInSendTable(status, achAliasEnvelopeId, achAliasMeta?.updatedAt)) {
             seenEnvelopeIds.add(achAliasEnvelopeId);
             rows.push({
                 rowType: "ach",
@@ -733,7 +811,13 @@ export function buildContractSendTableRows(
             packageEnvelopeId,
             fromDoc?.status ?? packageCurrent?.status ?? "DRAFT",
         );
-        if (isAchRowVisibleInSendTable(status, packageEnvelopeId)) {
+        if (
+            isAchRowVisibleInSendTable(
+                status,
+                packageEnvelopeId,
+                packageCurrent?.sentAt ?? packageCurrent?.updatedAt ?? fromDoc?.updatedAt,
+            )
+        ) {
             seenEnvelopeIds.add(packageEnvelopeId);
             rows.push({
                 rowType: "ach",
@@ -759,7 +843,13 @@ export function buildContractSendTableRows(
         !packageEnvelopeIsAch &&
         !seenEnvelopeIds.has(packageEnvelopeId)
     ) {
-        if (isPackageRowVisibleInSendTable(packageCurrent?.status, packageEnvelopeId)) {
+        if (
+            isPackageRowVisibleInSendTable(
+                packageCurrent?.status,
+                packageEnvelopeId,
+                packageCurrent?.sentAt ?? packageCurrent?.updatedAt,
+            )
+        ) {
             seenEnvelopeIds.add(packageEnvelopeId);
             pushPackageDocumentRows(rows, {
                 envelopeId: packageEnvelopeId,
@@ -776,7 +866,14 @@ export function buildContractSendTableRows(
     packageHistoryNewestFirst.forEach((entry, index) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
         if (documentAchEnvelopeIds.has(entry.envelopeId)) return;
-        if (!isPackageRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
+        if (
+            !isPackageRowVisibleInSendTable(
+                entry.status,
+                entry.envelopeId,
+                entry.sentAt ?? entry.archivedAt,
+            )
+        )
+            return;
         seenEnvelopeIds.add(entry.envelopeId);
         const sendNumber = packageHistory.length - index;
         pushPackageDocumentRows(rows, {
@@ -794,7 +891,14 @@ export function buildContractSendTableRows(
     const achHistoryNewestFirst = [...achHistory].reverse();
     achHistoryNewestFirst.forEach((entry, index) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
-        if (!isAchRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
+        if (
+            !isAchRowVisibleInSendTable(
+                entry.status,
+                entry.envelopeId,
+                entry.sentAt ?? entry.archivedAt,
+            )
+        )
+            return;
         seenEnvelopeIds.add(entry.envelopeId);
         const sendNumber = achHistory.length - index;
         rows.push({
@@ -823,7 +927,7 @@ export function buildContractSendTableRows(
         const envelopeId = String(entry.envelopeId ?? "").trim();
         if (!envelopeId || seenEnvelopeIds.has(envelopeId)) return;
         const status = mapInternalEnvelopeStatusToAchCapsule(entry.status);
-        if (!isAchRowVisibleInSendTable(status, envelopeId)) return;
+        if (!isAchRowVisibleInSendTable(status, envelopeId, entry.updatedAt)) return;
         seenEnvelopeIds.add(envelopeId);
         const treatAsCurrent = !hasCurrentAchRow;
         if (treatAsCurrent) hasCurrentAchRow = true;
