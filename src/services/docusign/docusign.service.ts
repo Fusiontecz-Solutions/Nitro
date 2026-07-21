@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance } from '../../types/http';
+import { createHash } from 'crypto';
 import type { DocuSignUserInfoResponse, OAuthTokenResponse } from '../../types/oauth-api';
 import dotenv from 'dotenv';
 import prisma from '../../config/prismaClient';
@@ -27,14 +28,18 @@ import {
 } from './utils/docusign-client';
 import {
   getCachedEnvelopeCustomFields,
+  getCachedEnvelopeDocumentTabs,
   getCachedEnvelopeRecipients,
+  getCachedEnvelopeRecipientTabs,
   getCachedEnvelopeStatus,
   getEnvelopeStatusSyncCache,
   invalidateCachedEnvelopeRecipients,
   invalidateCachedEnvelopeStatus,
   rememberEnvelopeWebhook,
   setCachedEnvelopeCustomFields,
+  setCachedEnvelopeDocumentTabs,
   setCachedEnvelopeRecipients,
+  setCachedEnvelopeRecipientTabs,
   setCachedEnvelopeStatus,
   setEnvelopeStatusSyncCache,
   shouldSkipDocuSignPollForWebhook,
@@ -197,6 +202,27 @@ export class DocusignService {
   private readonly recipientsInFlight = new Map<string, Promise<any>>();
   /** Negative cache after DocuSign 429 so callers cannot hammer a limited envelope. */
   private readonly recipientsCooldownUntil = new Map<string, number>();
+  /** Coalesce cold document/recipient tab reads used by draft prefill. */
+  private readonly envelopeDocumentTabsInFlight = new Map<
+    string,
+    Promise<DocusignTextTabRef[]>
+  >();
+  private readonly envelopeRecipientTabsInFlight = new Map<
+    string,
+    Promise<DocusignTextTabRef[]>
+  >();
+  /** Serialize and dedupe prefill mutations for each envelope. */
+  private readonly prefillQueue = new Map<string, Promise<void>>();
+  private readonly successfulPrefill = new Map<
+    string,
+    {
+      signature: string;
+      result: { applied: number; attempted: number };
+      expiresAt: number;
+    }
+  >();
+  private readonly prefillCooldownUntil = new Map<string, number>();
+  private static readonly PREFILL_DEDUPE_TTL_MS = 5 * 60_000;
 
   // ─── OAuth ───────────────────────────────────────────────────────────────────
 
@@ -724,46 +750,68 @@ export class DocusignService {
     accountId: string,
     envelopeId: string,
   ): Promise<DocusignTextTabRef[]> {
-    const merged: DocusignTextTabRef[] = [];
-    const seen = new Set<string>();
+    const cached = getCachedEnvelopeDocumentTabs<DocusignTextTabRef[]>(
+      accountId,
+      envelopeId,
+    );
+    if (cached) return cached;
 
-    try {
-      const docsRes = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents`,
-      );
-      const docs = docsRes.data?.envelopeDocuments || docsRes.data?.documents || [];
-      const contentDocs = this.filterEnvelopeContentDocuments(
-        docs.length ? docs : [{ documentId: '1' }],
-      );
-      const toFetch = contentDocs.length ? contentDocs : [{ documentId: '1' }];
+    const requestKey = `${String(accountId).trim().toLowerCase()}::${String(envelopeId).trim()}`;
+    const existing = this.envelopeDocumentTabsInFlight.get(requestKey);
+    if (existing) return existing;
 
-      for (const doc of toFetch) {
-        const docId = String(doc?.documentId ?? '1');
-        try {
-          const tabsRes = await client.get(
-            `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/${docId}/tabs`,
-          );
-          for (const t of (tabsRes.data?.textTabs || []) as DocusignTextTabRef[]) {
-            const key = String(t.tabId || t.tabLabel || '').trim();
-            if (!key || seen.has(key)) continue;
-            seen.add(key);
-            merged.push(t);
+    const request = (async () => {
+      const merged: DocusignTextTabRef[] = [];
+      const seen = new Set<string>();
+
+      try {
+        const docsRes = await client.get(
+          `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents`,
+        );
+        const docs = docsRes.data?.envelopeDocuments || docsRes.data?.documents || [];
+        const contentDocs = this.filterEnvelopeContentDocuments(
+          docs.length ? docs : [{ documentId: '1' }],
+        );
+        const toFetch = contentDocs.length ? contentDocs : [{ documentId: '1' }];
+
+        for (const doc of toFetch) {
+          const docId = String(doc?.documentId ?? '1');
+          try {
+            const tabsRes = await client.get(
+              `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/${docId}/tabs`,
+            );
+            for (const t of (tabsRes.data?.textTabs || []) as DocusignTextTabRef[]) {
+              const key = String(t.tabId || t.tabLabel || '').trim();
+              if (!key || seen.has(key)) continue;
+              seen.add(key);
+              merged.push(t);
+            }
+          } catch (docErr) {
+            // Never keep polling after DocuSign's 250/hour envelope GET budget is exhausted.
+            if (isDocuSignPollingLimitError(docErr)) throw docErr;
+            console.warn(
+              `[DocuSign] fetchEnvelopeDocumentTextTabs document ${docId} failed:`,
+              docErr,
+            );
           }
-        } catch (docErr) {
-          // Never keep polling after DocuSign's 250/hour envelope GET budget is exhausted.
-          if (isDocuSignPollingLimitError(docErr)) throw docErr;
-          console.warn(
-            `[DocuSign] fetchEnvelopeDocumentTextTabs document ${docId} failed:`,
-            docErr,
-          );
         }
+      } catch (err) {
+        if (isDocuSignPollingLimitError(err)) throw err;
+        console.warn('[DocuSign] fetchEnvelopeDocumentTextTabs failed:', err);
       }
-    } catch (err) {
-      if (isDocuSignPollingLimitError(err)) throw err;
-      console.warn('[DocuSign] fetchEnvelopeDocumentTextTabs failed:', err);
-    }
 
-    return merged;
+      setCachedEnvelopeDocumentTabs(accountId, envelopeId, merged);
+      return merged;
+    })();
+
+    this.envelopeDocumentTabsInFlight.set(requestKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.envelopeDocumentTabsInFlight.get(requestKey) === request) {
+        this.envelopeDocumentTabsInFlight.delete(requestKey);
+      }
+    }
   }
 
   private async getTemplateSignerRoleNames(
@@ -818,15 +866,41 @@ export class DocusignService {
     envelopeId: string,
     recipientId: string,
   ): Promise<DocusignTextTabRef[]> {
+    const cached = getCachedEnvelopeRecipientTabs<DocusignTextTabRef[]>(
+      accountId,
+      envelopeId,
+      recipientId,
+    );
+    if (cached) return cached;
+
+    const requestKey =
+      `${String(accountId).trim().toLowerCase()}::${String(envelopeId).trim()}` +
+      `::${String(recipientId).trim()}`;
+    const existing = this.envelopeRecipientTabsInFlight.get(requestKey);
+    if (existing) return existing;
+
+    const request = (async () => {
+      try {
+        const tabsRes = await client.get(
+          `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${recipientId}/tabs`,
+        );
+        const tabs = (tabsRes.data?.textTabs || []) as DocusignTextTabRef[];
+        setCachedEnvelopeRecipientTabs(accountId, envelopeId, recipientId, tabs);
+        return tabs;
+      } catch (err) {
+        if (isDocuSignPollingLimitError(err)) throw err;
+        console.warn('[DocuSign] fetchEnvelopeSignerTextTabs failed:', err);
+        return [];
+      }
+    })();
+
+    this.envelopeRecipientTabsInFlight.set(requestKey, request);
     try {
-      const tabsRes = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${recipientId}/tabs`,
-      );
-      return (tabsRes.data?.textTabs || []) as DocusignTextTabRef[];
-    } catch (err) {
-      if (isDocuSignPollingLimitError(err)) throw err;
-      console.warn('[DocuSign] fetchEnvelopeSignerTextTabs failed:', err);
-      return [];
+      return await request;
+    } finally {
+      if (this.envelopeRecipientTabsInFlight.get(requestKey) === request) {
+        this.envelopeRecipientTabsInFlight.delete(requestKey);
+      }
     }
   }
 
@@ -992,6 +1066,92 @@ export class DocusignService {
    * one document-tabs pass for leftover labels. Aborts immediately on polling 429.
    */
   private async applyPrefillToEnvelope(
+    userId: string,
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    templateId: string | undefined,
+    prefillFields?: PrefillField[],
+  ): Promise<{ applied: number; attempted: number }> {
+    const fields = this.sanitizePrefillFieldsForDocuSign(prefillFields);
+    if (!fields.length) return { applied: 0, attempted: 0 };
+
+    const queueKey = `${String(accountId).trim().toLowerCase()}::${String(envelopeId).trim()}`;
+    const signature = createHash('sha256')
+      .update(
+        JSON.stringify(
+          [...fields].sort(
+            (a, b) => a.id.localeCompare(b.id) || a.value.localeCompare(b.value),
+          ),
+        ),
+      )
+      .digest('hex');
+    const readSuccessfulResult = () => {
+      const hit = this.successfulPrefill.get(queueKey);
+      if (!hit) return null;
+      if (Date.now() >= hit.expiresAt) {
+        this.successfulPrefill.delete(queueKey);
+        return null;
+      }
+      return hit.signature === signature ? hit.result : null;
+    };
+
+    const cached = readSuccessfulResult();
+    if (cached) return cached;
+
+    const previous = this.prefillQueue.get(queueKey) || Promise.resolve();
+    const request = previous.catch(() => undefined).then(async () => {
+      const blockedUntil = this.prefillCooldownUntil.get(queueKey) || 0;
+      if (blockedUntil > Date.now()) {
+        throw new DocusignCooldownException(blockedUntil - Date.now());
+      }
+      if (blockedUntil) this.prefillCooldownUntil.delete(queueKey);
+
+      const queuedCacheHit = readSuccessfulResult();
+      if (queuedCacheHit) return queuedCacheHit;
+
+      try {
+        const result = await this.applyPrefillToEnvelopeNow(
+          userId,
+          client,
+          accountId,
+          envelopeId,
+          templateId,
+          fields,
+        );
+        this.successfulPrefill.set(queueKey, {
+          signature,
+          result,
+          expiresAt: Date.now() + DocusignService.PREFILL_DEDUPE_TTL_MS,
+        });
+        this.prefillCooldownUntil.delete(queueKey);
+        return result;
+      } catch (err) {
+        if (isDocuSignPollingLimitError(err)) {
+          this.prefillCooldownUntil.set(
+            queueKey,
+            Date.now() + getDocusignRetryAfterMs(err),
+          );
+        }
+        throw err;
+      }
+    });
+    const queueTail = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.prefillQueue.set(queueKey, queueTail);
+
+    try {
+      return await request;
+    } finally {
+      if (this.prefillQueue.get(queueKey) === queueTail) {
+        this.prefillQueue.delete(queueKey);
+      }
+    }
+  }
+
+  private async applyPrefillToEnvelopeNow(
     _userId: string,
     client: AxiosInstance,
     accountId: string,

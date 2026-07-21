@@ -4,6 +4,8 @@ const RECIPIENTS_CACHE_TTL_MS = 5 * 60_000;
 const ENVELOPE_STATUS_CACHE_TTL_MS = 60_000;
 /** Reuse GET /custom_fields within a send / CC notify flow. */
 const CUSTOM_FIELDS_CACHE_TTL_MS = 2 * 60_000;
+/** Reuse envelope document/recipient tab catalogs while a draft is being edited. */
+const ENVELOPE_TABS_CACHE_TTL_MS = 5 * 60_000;
 /** After Connect fires, trust CRM and skip DocuSign GET unless force (default 45 min). */
 const WEBHOOK_TRUST_SKIP_POLL_MS = Math.max(
   60_000,
@@ -23,6 +25,8 @@ const customFieldsCache = new Map<
   string,
   CacheEntry<Array<{ name?: string; value?: string; show?: string }>>
 >();
+const envelopeDocumentTabsCache = new Map<string, CacheEntry<unknown>>();
+const envelopeRecipientTabsCache = new Map<string, CacheEntry<unknown>>();
 const envelopeLastWebhookAt = new Map<string, number>();
 const envelopeStatusSyncCache = new Map<
   string,
@@ -35,6 +39,27 @@ function normalizeAccountId(accountId?: string | null): string {
 
 function cacheKey(accountId: string, envelopeId: string): string {
   return `${normalizeAccountId(accountId)}::${String(envelopeId).trim()}`;
+}
+
+function recipientTabsCacheKey(
+  accountId: string,
+  envelopeId: string,
+  recipientId: string,
+): string {
+  return `${cacheKey(accountId, envelopeId)}::${String(recipientId).trim()}`;
+}
+
+function getUnexpiredCacheValue<T>(
+  cache: Map<string, CacheEntry<unknown>>,
+  key: string,
+): T | null {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return hit.value as T;
 }
 
 export function getCachedEnvelopeRecipients(
@@ -140,6 +165,62 @@ export function invalidateCachedEnvelopeCustomFields(
   envelopeId: string,
 ): void {
   customFieldsCache.delete(cacheKey(accountId, envelopeId));
+}
+
+export function getCachedEnvelopeDocumentTabs<T>(
+  accountId: string,
+  envelopeId: string,
+): T | null {
+  return getUnexpiredCacheValue<T>(
+    envelopeDocumentTabsCache,
+    cacheKey(accountId, envelopeId),
+  );
+}
+
+export function setCachedEnvelopeDocumentTabs<T>(
+  accountId: string,
+  envelopeId: string,
+  value: T,
+): void {
+  const key = cacheKey(accountId, envelopeId);
+  if (!normalizeAccountId(accountId) || !String(envelopeId || '').trim()) return;
+  envelopeDocumentTabsCache.set(key, {
+    value,
+    expiresAt: Date.now() + ENVELOPE_TABS_CACHE_TTL_MS,
+  });
+}
+
+export function getCachedEnvelopeRecipientTabs<T>(
+  accountId: string,
+  envelopeId: string,
+  recipientId: string,
+): T | null {
+  return getUnexpiredCacheValue<T>(
+    envelopeRecipientTabsCache,
+    recipientTabsCacheKey(accountId, envelopeId, recipientId),
+  );
+}
+
+export function setCachedEnvelopeRecipientTabs<T>(
+  accountId: string,
+  envelopeId: string,
+  recipientId: string,
+  value: T,
+): void {
+  if (
+    !normalizeAccountId(accountId) ||
+    !String(envelopeId || '').trim() ||
+    !String(recipientId || '').trim()
+  ) {
+    return;
+  }
+  envelopeRecipientTabsCache.set(
+    recipientTabsCacheKey(accountId, envelopeId, recipientId),
+    {
+      value,
+      expiresAt: Date.now() + ENVELOPE_TABS_CACHE_TTL_MS,
+    },
+  );
 }
 
 export function rememberEnvelopeWebhook(envelopeId?: string): void {
