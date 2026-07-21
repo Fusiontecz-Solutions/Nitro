@@ -22,6 +22,7 @@ import {
   DOCUSIGN_SENDER_RETURN_URL,
   DOCUSIGN_DEFAULT_CC_EMAIL,
   formatDocusignApiErrorMessage,
+  getDocusignRetryAfterMs,
   isDocuSignPollingLimitError,
 } from './utils/docusign-client';
 import {
@@ -159,6 +160,20 @@ class ServiceConfigException extends Error {
   }
 }
 
+class DocusignCooldownException extends Error {
+  status = 429;
+  retryAfterSeconds: number;
+
+  constructor(retryAfterMs: number) {
+    const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+    super(
+      `DocuSign rate-limit cooldown is active for this envelope. Retry after ${seconds} seconds.`,
+    );
+    this.name = 'DocusignCooldownException';
+    this.retryAfterSeconds = seconds;
+  }
+}
+
 type PrefillField = PrefillFieldInput;
 
 type SignerRoleInput = Record<string, unknown> & {
@@ -178,6 +193,10 @@ export class DocusignService {
   private readonly ccNotifyAttemptedAt = new Map<string, number>();
   private readonly ccNotifyInFlight = new Set<string>();
   private static readonly CC_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
+  /** Coalesce simultaneous cold-cache recipient reads for the same account/envelope. */
+  private readonly recipientsInFlight = new Map<string, Promise<any>>();
+  /** Negative cache after DocuSign 429 so callers cannot hammer a limited envelope. */
+  private readonly recipientsCooldownUntil = new Map<string, number>();
 
   // ─── OAuth ───────────────────────────────────────────────────────────────────
 
@@ -349,15 +368,48 @@ export class DocusignService {
     options?: { forceRefresh?: boolean },
   ): Promise<any> {
     const eid = String(envelopeId || '').trim();
+    const key = `${String(accountId || '').trim().toLowerCase()}::${eid}`;
+    const blockedUntil = this.recipientsCooldownUntil.get(key) || 0;
+    if (blockedUntil > Date.now()) {
+      throw new DocusignCooldownException(blockedUntil - Date.now());
+    }
+    if (blockedUntil) this.recipientsCooldownUntil.delete(key);
+
     if (!options?.forceRefresh) {
       const cached = getCachedEnvelopeRecipients(accountId, eid);
       if (cached != null) return cached;
     }
-    const res = await client.get(
-      `/v2.1/accounts/${accountId}/envelopes/${eid}/recipients`,
-    );
-    setCachedEnvelopeRecipients(accountId, eid, res.data);
-    return res.data;
+
+    const existing = this.recipientsInFlight.get(key);
+    if (existing) return existing;
+
+    const request = (async () => {
+      try {
+        const res = await client.get(
+          `/v2.1/accounts/${accountId}/envelopes/${eid}/recipients`,
+        );
+        setCachedEnvelopeRecipients(accountId, eid, res.data);
+        this.recipientsCooldownUntil.delete(key);
+        return res.data;
+      } catch (err) {
+        if (isDocuSignPollingLimitError(err)) {
+          const retryAfterMs = getDocusignRetryAfterMs(err);
+          this.recipientsCooldownUntil.set(key, Date.now() + retryAfterMs);
+          console.warn(
+            `[DocuSign] GetRecipients cooldown ${Math.ceil(retryAfterMs / 1000)}s for envelope ${eid}`,
+          );
+        }
+        throw err;
+      }
+    })();
+    this.recipientsInFlight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (this.recipientsInFlight.get(key) === request) {
+        this.recipientsInFlight.delete(key);
+      }
+    }
   }
 
   /** Keep recipients in cache in sync after PUT/DELETE so the send flow needs one GET. */
@@ -1734,6 +1786,7 @@ export class DocusignService {
       recData.carbonCopies = [...existingCc, ...carbonCopies];
       this.rememberEnvelopeRecipients(accountId, envelopeId, recData);
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) throw err;
       throw new BadRequestException(formatDocusignApiErrorMessage(err));
     }
     console.log(
@@ -3110,6 +3163,7 @@ export class DocusignService {
       if (!url) throw new BadRequestException('DocuSign did not return sender view URL');
       return url;
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) throw err;
       throw new BadRequestException(formatDocusignApiErrorMessage(err));
     }
   }

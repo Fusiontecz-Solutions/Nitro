@@ -144,33 +144,89 @@ export function formatDocusignApiErrorMessage(err: unknown): string {
   return msg;
 }
 
+export function isDocuSignEnvelopeUpdateLimitError(err: unknown): boolean {
+  const ax = err as {
+    response?: { data?: { errorCode?: string; message?: string } };
+  };
+  const code = String(ax?.response?.data?.errorCode || '').trim();
+  if (/^(?:HOURLY|BURST)_APIINVOCATION_ENVELOPE_LIMIT$/i.test(code)) return true;
+  return /(?:HOURLY|BURST)_APIINVOCATION_ENVELOPE_LIMIT|APIINVOCATION.*ENVELOPE.*LIMIT/i.test(
+    formatDocusignApiErrorMessage(err),
+  );
+}
+
 export function isDocuSignPollingLimitError(err: unknown): boolean {
-  const ax = err as { response?: { data?: { errorCode?: string; message?: string } } };
+  const ax = err as {
+    status?: number;
+    response?: { status?: number; data?: { errorCode?: string; message?: string } };
+  };
+  if (ax?.status === 429 || ax?.response?.status === 429) return true;
+  if (isDocuSignEnvelopeUpdateLimitError(err)) return true;
   const code = String(ax?.response?.data?.errorCode || '');
   if (
-    /HOURLY_APIINVOCATION|BURST_ENVELOPE_POLLING|HOURLY_ENVELOPE_POLLING|APIINVOCATION_LIMIT/i.test(
+    /(?:HOURLY|BURST)_APIINVOCATION(?:_ENVELOPE)?_LIMIT|(?:BURST|HOURLY)_ENVELOPE_POLLING|APIINVOCATION.*LIMIT/i.test(
       code,
     )
   ) {
     return true;
   }
   const msg = formatDocusignApiErrorMessage(err);
-  return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit/i.test(
+  return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.*limit|api.?invocation.*limit|rate.?limit|too many requests/i.test(
     msg,
   );
+}
+
+/** Respect DocuSign Retry-After/reset headers; use safe defaults when they are omitted. */
+export function getDocusignRetryAfterMs(err: unknown): number {
+  const ax = err as {
+    retryAfterSeconds?: number;
+    response?: {
+      headers?: Record<string, unknown>;
+      data?: { errorCode?: string; message?: string };
+    };
+  };
+  if (Number.isFinite(ax?.retryAfterSeconds) && Number(ax.retryAfterSeconds) > 0) {
+    return Math.ceil(Number(ax.retryAfterSeconds) * 1000);
+  }
+
+  const headers = ax?.response?.headers || {};
+  const header = (name: string): unknown =>
+    headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+  const retryAfter = header('retry-after');
+  if (retryAfter != null) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds > 0) return Math.ceil(seconds * 1000);
+    const at = Date.parse(String(retryAfter));
+    if (Number.isFinite(at) && at > Date.now()) return at - Date.now();
+  }
+
+  const reset = Number(header('x-ratelimit-reset'));
+  if (Number.isFinite(reset) && reset > 0) {
+    const resetMs = reset > 10_000_000_000 ? reset : reset * 1000;
+    if (resetMs > Date.now()) return resetMs - Date.now();
+  }
+
+  const code = String(ax?.response?.data?.errorCode || '');
+  const message = `${code} ${String(ax?.response?.data?.message || '')}`;
+  return /hourly/i.test(message) ? 60 * 60_000 : 60_000;
 }
 
 export function formatDocusignRouteError(err: unknown): {
   status: number;
   message: string;
+  retryAfterSeconds?: number;
 } {
   const e = err as { status?: number; message?: string };
   const message = formatDocusignApiErrorMessage(err);
   if (isDocuSignPollingLimitError(err)) {
+    const retryAfterSeconds = Math.max(1, Math.ceil(getDocusignRetryAfterMs(err) / 1000));
     return {
       status: 429,
+      retryAfterSeconds,
       message:
-        /hourly_apiinvocation|apiinvocation.?limit/i.test(message)
+        isDocuSignEnvelopeUpdateLimitError(err)
+          ? `DocuSign envelope update limit reached. Retry after ${retryAfterSeconds} seconds; repeated retries will continue to fail.`
+          : /hourly_apiinvocation|apiinvocation.?limit/i.test(message)
           ? 'DocuSign hourly API limit exceeded (3000/hour). Wait about an hour before sending or syncing again — status still updates via webhook.'
           : /hourly_envelope_polling|burst_envelope_polling|polling.?limit/i.test(message)
             ? 'DocuSign envelope polling limit exceeded (250 GET/hour). Status updates via webhook — wait about an hour before Refresh/sync. Do not keep retrying.'

@@ -4,6 +4,21 @@ import { formatDocusignRouteError } from './utils/docusign-client';
 
 const docusignService = new DocusignService();
 
+function sendDocusignRouteError(
+  res: Response,
+  error: unknown,
+  fallbackMessage: string,
+) {
+  const { status, message, retryAfterSeconds } = formatDocusignRouteError(error);
+  if (retryAfterSeconds != null) {
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+  }
+  return res.status(status).json({
+    message: message || fallbackMessage,
+    ...(retryAfterSeconds != null ? { retryAfterSeconds } : {}),
+  });
+}
+
 export const getDocusignAuthStatus = async (_req: Request, res: Response) => {
   try {
     return res.json(docusignService.getConnectionStatus());
@@ -164,10 +179,8 @@ export const prefillFormFields = async (req: Request, res: Response) => {
 
     const result = await docusignService.prefillFormFields(userId, documentId, fields);
     return res.json(result);
-  } catch (error: any) {
-    return res.status(error.status || 500).json({
-      message: error?.message || 'Failed to prefill form fields',
-    });
+  } catch (error: unknown) {
+    return sendDocusignRouteError(res, error, 'Failed to prefill form fields');
   }
 };
 
@@ -508,9 +521,9 @@ export const getSenderView = async (req: Request, res: Response) => {
     });
     return res.json(result);
   } catch (error: unknown) {
-    const { status, message } = formatDocusignRouteError(error);
+    const { message } = formatDocusignRouteError(error);
     console.error('[DocuSign] sender-view failed:', message);
-    return res.status(status).json({ message });
+    return sendDocusignRouteError(res, error, 'Failed to create sender view');
   }
 };
 
