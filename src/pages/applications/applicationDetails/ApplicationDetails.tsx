@@ -37,6 +37,7 @@ import {
   buildDetailHydrationPayload,
   findApplicationListRowForRoute,
   getCachedApplicationDetail,
+  isApplicationDetailFetchFresh,
 } from "@/lib/applicationDetailCache";
 import type { Application } from "@/types/applicationTypes";
 import { isFinalUnderwriterWorkflowQueue, isUnderwriterWorkflowDecisionStage } from "@/lib/applicationWorkflowState";
@@ -679,6 +680,7 @@ const ApplicationDetails = () => {
     // Fetch application data when in edit mode.
     // Guard against redundant network calls (helps refresh/navigation latency).
     const applicationDetailRef = useRef(applicationData);
+    const initialDetailRequestRef = useRef<string | null>(null);
     useEffect(() => {
         applicationDetailRef.current = applicationData;
     }, [applicationData]);
@@ -725,12 +727,27 @@ const ApplicationDetails = () => {
             }
         }
 
-        if (isNumericApplicationRouteParam(applicationId)) {
-            dispatch(getApplicationByApplicationId(applicationId));
-        } else {
-            dispatch(getApplicationById(applicationId));
-        }
     }, [applicationId, applicationsListRows, dispatch, location.state]);
+
+    // Fetch separately from cache/list hydration. A fulfilled request patches the applications
+    // list, so including that list in this effect would create a request -> list update loop.
+    useEffect(() => {
+        if (!applicationId) return;
+        const requestKey = String(applicationId).trim();
+        if (
+            initialDetailRequestRef.current === requestKey ||
+            isApplicationDetailFetchFresh(requestKey)
+        ) {
+            return;
+        }
+        initialDetailRequestRef.current = requestKey;
+
+        if (isNumericApplicationRouteParam(requestKey)) {
+            void dispatch(getApplicationByApplicationId(requestKey));
+        } else {
+            void dispatch(getApplicationById(requestKey));
+        }
+    }, [applicationId, dispatch]);
 
     const handleSendToUnderwriter = async () => {
         if (!queueUpdateApplicationRef) {

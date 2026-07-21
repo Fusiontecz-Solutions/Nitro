@@ -9,6 +9,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { Check, Trash2, Pencil, Loader2 } from "lucide-react";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { createPosition, getPositions, updatePosition, deletePosition } from "@/redux/actions/positionActions";
+import { POSITIONS_CACHE_TTL_MS } from "@/redux/slices/positionSlice";
 import type { CreatePositionPayload, UpdatePositionPayload } from "@/types/positionTypes";
 import { toast } from "react-toastify";
 import {
@@ -930,6 +931,10 @@ export default function PositionTableCalculator({
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAutoSavedRowsSigRef = useRef<string>("");
   const rowsAutoSaveBootstrappedRef = useRef(false);
+  const lastPositionsFetchAttemptRef = useRef<{
+    key: string;
+    at: number;
+  } | null>(null);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const [allocationModal, setAllocationModal] = useState<{
@@ -1009,18 +1014,42 @@ export default function PositionTableCalculator({
     });
   }, [effectiveApplicationId, isScopedToThisApp, positionsState.data]);
 
-  // If only applicationId is provided, fetch positions for that application
+  const hasProvidedPositions = Array.isArray(positions);
+  const hasFreshStoreResult =
+    normalizedCurrentScopeId === normalizedEffectiveApplicationId &&
+    positionsState.lastFetchedAt != null &&
+    Date.now() - positionsState.lastFetchedAt < POSITIONS_CACHE_TTL_MS;
+
+  // Fallback fetch for consumers that do not preload positions. A successful empty response is
+  // still a loaded result; otherwise replacing [] in Redux retriggers this effect indefinitely.
   useEffect(() => {
     if (!effectiveApplicationId) return;
-    const hasPropPositions =
-      Array.isArray(positions) && positions.length > 0;
-    const hasStorePositions =
-      Array.isArray(positionsFromStore) && positionsFromStore.length > 0;
+    const lastAttempt = lastPositionsFetchAttemptRef.current;
+    const recentlyRequested =
+      lastAttempt?.key === normalizedEffectiveApplicationId &&
+      Date.now() - lastAttempt.at < POSITIONS_CACHE_TTL_MS;
+    if (
+      hasProvidedPositions ||
+      hasFreshStoreResult ||
+      positionsState.loading ||
+      recentlyRequested
+    ) {
+      return;
+    }
 
-    if (hasPropPositions || hasStorePositions) return;
-
-    dispatch(getPositions({ application: effectiveApplicationId }));
-  }, [effectiveApplicationId, positions, positionsFromStore, dispatch]);
+    lastPositionsFetchAttemptRef.current = {
+      key: normalizedEffectiveApplicationId,
+      at: Date.now(),
+    };
+    void dispatch(getPositions({ application: effectiveApplicationId }));
+  }, [
+    effectiveApplicationId,
+    normalizedEffectiveApplicationId,
+    hasProvidedPositions,
+    hasFreshStoreResult,
+    positionsState.loading,
+    dispatch,
+  ]);
 
   // When positions (prop or store) are loaded/updated from API, seed or refresh local rows.
   // Note: we intentionally exclude avgBankNetCredit from deps to avoid an update loop,

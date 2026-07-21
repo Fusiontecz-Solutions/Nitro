@@ -18,6 +18,8 @@ const IDB_NAMESPACE = "application-detail.v1";
 type CacheEntry = { at: number; data: unknown };
 
 const memory = new Map<string, CacheEntry>();
+/** Tracks only completed detail API requests; list-row cache entries do not count as fresh detail. */
+const detailFetchedAt = new Map<string, number>();
 
 function cacheKey(routeParam: string): string {
   return String(routeParam).trim();
@@ -84,10 +86,12 @@ export function invalidateApplicationDetailCache(routeParam?: string): void {
   if (routeParam) {
     const key = cacheKey(routeParam);
     memory.delete(key);
+    detailFetchedAt.delete(key);
     void idbDelete(IDB_NAMESPACE, key);
     return;
   }
   memory.clear();
+  detailFetchedAt.clear();
   void idbClearNamespace(IDB_NAMESPACE);
 }
 
@@ -157,4 +161,22 @@ export function writeApplicationDetailCache(app: Application): void {
   for (const key of keys) {
     setCachedApplicationDetail(key, app);
   }
+}
+
+/** Record a completed detail API response under every route identifier for TTL checks. */
+export function recordApplicationDetailResponse(payload: unknown): void {
+  const hydrated = buildDetailHydrationPayload(payload);
+  if (!hydrated) return;
+  const app = hydrated.data;
+  const now = Date.now();
+  writeApplicationDetailCache(app);
+  if (app.applicationId != null) detailFetchedAt.set(String(app.applicationId), now);
+  const id = app._id ?? (app as { id?: string }).id;
+  if (id != null) detailFetchedAt.set(String(id), now);
+}
+
+/** True only for a recent full detail response, never for a lightweight list-row seed. */
+export function isApplicationDetailFetchFresh(routeParam: string): boolean {
+  const fetchedAt = detailFetchedAt.get(cacheKey(routeParam));
+  return fetchedAt != null && Date.now() - fetchedAt < TTL_MS;
 }

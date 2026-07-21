@@ -7,6 +7,7 @@ import {
     invalidateApplicationsListCache,
     setCachedApplicationsList,
 } from '@/lib/applicationsListCache';
+import { recordApplicationDetailResponse } from '@/lib/applicationDetailCache';
 import type {
     CreateApplicationPayload,
     UpdateApplicationPayload,
@@ -403,6 +404,7 @@ export const getApplicationById = createAsyncThunk(
     async (id: string, { rejectWithValue }) => {
         try {
             const response = await axiosGet(`/applications/${id}`);
+            recordApplicationDetailResponse(response.data);
             return response.data;
         } catch (error: any) {
             console.error('Get application by ID error:', error);
@@ -419,6 +421,7 @@ export const getApplicationByApplicationId = createAsyncThunk(
     async (applicationId: string | number, { rejectWithValue }) => {
         try {
             const response = await axiosGet(`/applications/applicationId/${applicationId}`);
+            recordApplicationDetailResponse(response.data);
             return response.data;
         } catch (error: any) {
             console.error('Get application by applicationId error:', error);

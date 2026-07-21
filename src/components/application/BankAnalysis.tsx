@@ -31,7 +31,10 @@ import {
     // bulkCreateTransactions
 } from "@/redux/actions/transactionActions";
 import { getPositions } from "@/redux/actions/positionActions";
-import { clearPositions } from "@/redux/slices/positionSlice";
+import {
+    clearPositions,
+    POSITIONS_CACHE_TTL_MS,
+} from "@/redux/slices/positionSlice";
 // import { toast } from "react-toastify";
 import type { BankDetail } from "@/types/bankDetailTypes";
 import type { Month } from "@/types/monthTypes";
@@ -375,13 +378,25 @@ const BankAnalysis = ({
     const lastSeededAppRef = useRef<string | null>(null);
     const livePositionsRef = useRef<any[]>([]);
     const lastFetchedApplicationScopeRef = useRef<string | null>(null);
+    const lastPositionsRequestRef = useRef<{ key: string; at: number } | null>(
+        null,
+    );
 
     const applicationScopeKey = useMemo(
         () => buildApplicationScopeKey(applicationData, resolvedApplicationId),
         [applicationData, resolvedApplicationId],
     );
+    const normalizedResolvedApplicationId =
+        resolvedApplicationId != null ? String(resolvedApplicationId) : "";
+    const positionsAreFresh =
+        normalizedResolvedApplicationId !== "" &&
+        String(positionsState.currentApplicationId ?? "") ===
+            normalizedResolvedApplicationId &&
+        positionsState.lastFetchedAt != null &&
+        Date.now() - positionsState.lastFetchedAt < POSITIONS_CACHE_TTL_MS;
 
-    // Fetch bank details, months, and positions for this application only (application-scoped)
+    // Fetch application-scoped bank data. Position fetching is separate so its TTL/loading
+    // guards do not cause bank and month requests to repeat when position state changes.
     useEffect(() => {
         if (!resolvedApplicationId || !applicationScopeKey) {
             if (!resolvedApplicationId) {
@@ -406,8 +421,35 @@ const BankAnalysis = ({
         }
         dispatch(getBankDetails({ application: resolvedApplicationId as string }));
         dispatch(getMonths({ application: resolvedApplicationId as string }));
-        dispatch(getPositions({ application: resolvedApplicationId as string }));
     }, [resolvedApplicationId, applicationScopeKey, dispatch]);
+
+    useEffect(() => {
+        const lastRequest = lastPositionsRequestRef.current;
+        const recentlyRequested =
+            lastRequest?.key === normalizedResolvedApplicationId &&
+            Date.now() - lastRequest.at < POSITIONS_CACHE_TTL_MS;
+        if (
+            !resolvedApplicationId ||
+            positionsState.loading ||
+            positionsAreFresh ||
+            recentlyRequested
+        ) {
+            return;
+        }
+        lastPositionsRequestRef.current = {
+            key: normalizedResolvedApplicationId,
+            at: Date.now(),
+        };
+        void dispatch(
+            getPositions({ application: resolvedApplicationId as string }),
+        );
+    }, [
+        resolvedApplicationId,
+        normalizedResolvedApplicationId,
+        positionsState.loading,
+        positionsAreFresh,
+        dispatch,
+    ]);
 
     // Load persisted offer decision so holdings visibility survives refresh/reopen.
     useEffect(() => {

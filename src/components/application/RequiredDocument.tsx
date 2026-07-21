@@ -351,11 +351,14 @@ const RequiredDocument = ({
         // so skip heavy data fetching (positions/terms/months/transactions).
         if (publicMode) return;
         if (applicationIdentifier) {
-            dispatch(getPositions({ application: applicationIdentifier }));
             dispatch(getTermsOffers({ application: applicationIdentifier }));
-            dispatch(getMonths({ application: applicationIdentifier }));
+            // BankAnalysis owns these shared requests when both components are mounted together.
+            if (!isBankAnalysis) {
+                dispatch(getPositions({ application: applicationIdentifier }));
+                dispatch(getMonths({ application: applicationIdentifier }));
+            }
         }
-    }, [applicationIdentifier, dispatch]);
+    }, [applicationIdentifier, dispatch, isBankAnalysis, publicMode]);
 
     // Fetch transactions for each month when months data is available — role-independent; Agent and Scrubbing see same transactions for the same applicationId
     useEffect(() => {

@@ -9,12 +9,16 @@ import {
     deletePosition,
 } from '../actions/positionActions';
 
+export const POSITIONS_CACHE_TTL_MS = 5 * 60_000;
+
 // Positions List State
 interface PositionsState {
     loading: boolean;
   data: Position[];
   /** The application id these positions belong to (for scoping in views). */
   currentApplicationId: string | null;
+  /** Completion time of the latest successful scoped request, including an empty result. */
+  lastFetchedAt: number | null;
     pagination: {
         total: number;
         page: number;
@@ -28,6 +32,7 @@ const positionsInitialState: PositionsState = {
     loading: false,
     data: [],
   currentApplicationId: null,
+  lastFetchedAt: null,
     pagination: null,
     error: null,
 };
@@ -39,6 +44,7 @@ export const positionsSlice = createSlice({
         clearPositions: (state) => {
             state.data = [];
       state.currentApplicationId = null;
+      state.lastFetchedAt = null;
             state.pagination = null;
             state.error = null;
         },
@@ -55,6 +61,7 @@ export const positionsSlice = createSlice({
         const arg: any = action.meta?.arg ?? {};
         state.currentApplicationId =
           arg.application != null ? String(arg.application) : null;
+        state.lastFetchedAt = Date.now();
         state.data = action.payload.data || action.payload;
         state.pagination = action.payload.pagination || null;
             })
