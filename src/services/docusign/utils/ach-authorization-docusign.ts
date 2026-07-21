@@ -636,6 +636,87 @@ export async function updateAchAuthorizationDocuSignStatus(
 
   for (const contract of contracts) {
     const prior = parseAchAuthorizationDocuSignFromPrefill(contract.contractPrefillOverrides);
+    const isHistoricalEnvelope = prior?.envelopeId
+      ? prior.envelopeId !== eid
+      : parseAchSendHistoryFromPrefill(contract.contractPrefillOverrides).some(
+          (entry) => entry.envelopeId === eid,
+        );
+    if (isHistoricalEnvelope) {
+      const base =
+        contract.contractPrefillOverrides &&
+        typeof contract.contractPrefillOverrides === 'object' &&
+        !Array.isArray(contract.contractPrefillOverrides)
+          ? { ...(contract.contractPrefillOverrides as Record<string, unknown>) }
+          : {};
+      const history = parseAchSendHistoryFromPrefill(base);
+      const nextHistory = history.map((entry) => {
+        if (entry.envelopeId !== eid) return entry;
+        const mergedStatus = mergeWithExistingEnvelopeStatus(
+          achCapsuleToInternal(entry.status),
+          internalStatus,
+        );
+        return {
+          ...entry,
+          status: mapInternalEnvelopeStatusToAchCapsule(mergedStatus || internalStatus),
+        };
+      });
+
+      const documentHistoryRaw = base.documentSendHistory;
+      const documentSendHistory = Array.isArray(documentHistoryRaw)
+        ? documentHistoryRaw.map((item) => {
+            if (item == null || typeof item !== 'object' || Array.isArray(item)) return item;
+            const row = item as Record<string, unknown>;
+            if (
+              String(row.envelopeId ?? '').trim() !== eid ||
+              String(row.documentKind ?? '').trim().toLowerCase() !== 'ach'
+            ) {
+              return item;
+            }
+            const mergedStatus = mergeWithExistingEnvelopeStatus(
+              String(row.status ?? ''),
+              internalStatus,
+            );
+            return {
+              ...row,
+              status: mergedStatus || internalStatus,
+              updatedAt: now,
+            };
+          })
+        : [];
+
+      const envelopeMapRaw = base.documentTemplateEnvelopeByMappingId;
+      const envelopeMap =
+        envelopeMapRaw && typeof envelopeMapRaw === 'object' && !Array.isArray(envelopeMapRaw)
+          ? { ...(envelopeMapRaw as Record<string, unknown>) }
+          : {};
+      for (const [key, value] of Object.entries(envelopeMap)) {
+        if (value == null || typeof value !== 'object' || Array.isArray(value)) continue;
+        const row = value as Record<string, unknown>;
+        if (String(row.envelopeId ?? '').trim() !== eid) continue;
+        const mergedStatus = mergeWithExistingEnvelopeStatus(
+          String(row.status ?? ''),
+          internalStatus,
+        );
+        envelopeMap[key] = {
+          ...row,
+          status: mergedStatus || internalStatus,
+          updatedAt: now,
+        };
+      }
+
+      await prisma.contract.update({
+        where: { id: contract.id },
+        data: {
+          contractPrefillOverrides: {
+            ...base,
+            [ACH_SEND_HISTORY_KEY]: nextHistory,
+            documentSendHistory,
+            documentTemplateEnvelopeByMappingId: envelopeMap,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      continue;
+    }
     const priorInternal = prior ? achCapsuleToInternal(prior.status) : null;
     const mergedInternal = mergeWithExistingEnvelopeStatus(priorInternal, internalStatus);
     const status = mergedInternal
