@@ -128,6 +128,7 @@ import {
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import { isDocuSignPollingLimitError } from "./contractdata/docusignPolling";
 import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
 import { syncContractPrefillToSourceRecords } from "./contractdata/contractPrefillSourceSync";
 import {
@@ -3229,7 +3230,10 @@ export default function ContractTab({
                     rolesOverride,
                 );
                 if (result.url) return result;
-                if (result.error) lastError = result.error;
+                if (result.error) {
+                    lastError = result.error;
+                    if (isDocuSignPollingLimitError(result.error)) break;
+                }
             }
             return { url: null, error: lastError };
         },

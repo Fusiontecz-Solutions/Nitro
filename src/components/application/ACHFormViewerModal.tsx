@@ -614,6 +614,8 @@ export default function ACHFormViewerModal({
     const achCcEmailDeliveredRef = useRef(false);
     const lastAchStatusSyncAtRef = useRef(0);
     const lastAchCrmStatusChangeAtRef = useRef(Date.now());
+    const lastAchPrefillSyncKeyRef = useRef<string | null>(null);
+    const achPrefillSyncInFlightRef = useRef(new Map<string, Promise<boolean>>());
 
     const contractStateForFunders = useMemo(() => {
         const fromContract = String(
@@ -1421,18 +1423,37 @@ export default function ACHFormViewerModal({
             }
         }
 
-        try {
-            await axiosPatch("/docusign/prefill-fields", {
-                documentId: envelopeId,
-                fields: expandedFields,
-            });
-            if (pdfPaneTab === "docusign") {
-                void loadDocuSignPdf();
+        const payloadKey = JSON.stringify({
+            envelopeId,
+            fields: [...expandedFields].sort((a, b) => a.id.localeCompare(b.id)),
+        });
+        if (lastAchPrefillSyncKeyRef.current === payloadKey) return true;
+        const inFlight = achPrefillSyncInFlightRef.current.get(payloadKey);
+        if (inFlight) return inFlight;
+
+        const request = (async (): Promise<boolean> => {
+            try {
+                await axiosPatch("/docusign/prefill-fields", {
+                    documentId: envelopeId,
+                    fields: expandedFields,
+                });
+                lastAchPrefillSyncKeyRef.current = payloadKey;
+                if (pdfPaneTab === "docusign") {
+                    void loadDocuSignPdf();
+                }
+                return true;
+            } catch (err) {
+                console.warn("[DocuSign] ACH prefill sync to draft envelope failed:", err);
+                return false;
             }
-            return true;
-        } catch (err) {
-            console.warn("[DocuSign] ACH prefill sync to draft envelope failed:", err);
-            return false;
+        })();
+        achPrefillSyncInFlightRef.current.set(payloadKey, request);
+        try {
+            return await request;
+        } finally {
+            if (achPrefillSyncInFlightRef.current.get(payloadKey) === request) {
+                achPrefillSyncInFlightRef.current.delete(payloadKey);
+            }
         }
     }, [
         achEnvelopeId,
@@ -1872,13 +1893,15 @@ export default function ACHFormViewerModal({
                 return;
             }
 
-            const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
-                envelopeId,
-                toSend,
-                Boolean(preparedSenderUrl),
-                signerRoles,
-            );
-            const senderUrl = senderViewResult.url || preparedSenderUrl;
+            const senderViewResult = preparedSenderUrl
+                ? { url: preparedSenderUrl, error: null }
+                : await fetchDocuSignSenderViewUrlWithRetry(
+                      envelopeId,
+                      toSend,
+                      true,
+                      signerRoles,
+                  );
+            const senderUrl = senderViewResult.url;
             if (!senderUrl) {
                 const msg =
                     senderViewResult.error ||

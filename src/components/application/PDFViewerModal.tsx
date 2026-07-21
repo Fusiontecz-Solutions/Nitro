@@ -206,6 +206,7 @@ import {
     DOCUSIGN_CRM_STATUS_POLL_MS,
     DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS,
     DOCUSIGN_WEBHOOK_STALE_MS,
+    isDocuSignPollingLimitError,
     shouldFallbackPollDocuSign,
 } from "./contractdata/docusignPolling";
 import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
@@ -2697,7 +2698,10 @@ const PDFViewerModal = ({
                     rolesOverride,
                 );
                 if (result.url) return result;
-                if (result.error) lastError = result.error;
+                if (result.error) {
+                    lastError = result.error;
+                    if (isDocuSignPollingLimitError(result.error)) break;
+                }
             }
             return { url: null, error: lastError };
         },
@@ -3340,11 +3344,9 @@ const PDFViewerModal = ({
                     return;
                 }
 
-                const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
-                    envelopeId,
-                    toSend,
-                    Boolean(preparedSenderUrl),
-                );
+                const senderViewResult = preparedSenderUrl
+                    ? { url: preparedSenderUrl, error: null }
+                    : await fetchDocuSignSenderViewUrlWithRetry(envelopeId, toSend, true);
                 const senderUrl = senderViewResult.url;
                 if (!senderUrl) {
                     const msg =
