@@ -616,6 +616,7 @@ export default function ACHFormViewerModal({
     const lastAchCrmStatusChangeAtRef = useRef(Date.now());
     const lastAchPrefillSyncKeyRef = useRef<string | null>(null);
     const achPrefillSyncInFlightRef = useRef(new Map<string, Promise<boolean>>());
+    const automaticAchPrefillTriggerRef = useRef<string | null>(null);
 
     const contractStateForFunders = useMemo(() => {
         const fromContract = String(
@@ -1468,6 +1469,11 @@ export default function ACHFormViewerModal({
         pdfPaneTab,
         loadDocuSignPdf,
     ]);
+    const syncAchPrefillToDraftEnvelopeRef = useRef(syncAchPrefillToDraftEnvelope);
+
+    useEffect(() => {
+        syncAchPrefillToDraftEnvelopeRef.current = syncAchPrefillToDraftEnvelope;
+    }, [syncAchPrefillToDraftEnvelope]);
 
     const refreshAchSigningPreview = useCallback(
         async (silent = false) => {
@@ -1492,11 +1498,25 @@ export default function ACHFormViewerModal({
         void loadTemplatePdf();
     }, [isOpen, loadTemplatePdf]);
 
-    /** When the selected ACH entry changes, push updated prefill into a draft envelope. */
+    /**
+     * Push platform values once when an ACH draft/record is opened. Keep the latest sync
+     * callback in a ref so unrelated callback dependency changes cannot retrigger DocuSign.
+     * Explicit saves still call syncAchPrefillToDraftEnvelope directly.
+     */
     useEffect(() => {
-        if (!isOpen || !effectiveSelectedAchRecordId) return;
-        void syncAchPrefillToDraftEnvelope();
-    }, [isOpen, effectiveSelectedAchRecordId, syncAchPrefillToDraftEnvelope]);
+        if (!isOpen) {
+            automaticAchPrefillTriggerRef.current = null;
+            return;
+        }
+        const envelopeId = String(achEnvelopeId || "").trim();
+        const recordId = String(effectiveSelectedAchRecordId || "").trim();
+        if (!envelopeId || !recordId) return;
+
+        const triggerKey = `${envelopeId}::${recordId}`;
+        if (automaticAchPrefillTriggerRef.current === triggerKey) return;
+        automaticAchPrefillTriggerRef.current = triggerKey;
+        void syncAchPrefillToDraftEnvelopeRef.current();
+    }, [isOpen, effectiveSelectedAchRecordId, achEnvelopeId]);
 
     useEffect(() => {
         if (!isOpen) return;
