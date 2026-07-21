@@ -360,7 +360,7 @@ function canVoidAchEnvelope(status: string, envelopeId: string): boolean {
 
 function canResendAchEnvelope(status: string, envelopeId: string): boolean {
     const view = getAchEnvelopeView(status, envelopeId);
-    if (view.isOutForSignature) return false;
+    if (view.isOutForSignature) return true;
     if (view.isCompleted) return true;
     if (view.isTerminal) return true;
     return false;
@@ -369,7 +369,6 @@ function canResendAchEnvelope(status: string, envelopeId: string): boolean {
 function canReviewAndSendAchEnvelope(status: string, envelopeId: string): boolean {
     if (canResendAchEnvelope(status, envelopeId)) return true;
     const view = getAchEnvelopeView(status, envelopeId);
-    if (view.isOutForSignature) return false;
     return view.isDraft || !view.hasEnvelope;
 }
 
@@ -1545,9 +1544,9 @@ export default function ACHFormViewerModal({
     const canResendAch = canResendAchEnvelope(achStatus, achEnvelopeId);
     const canReviewAndSendAch = canReviewAndSendAchEnvelope(achStatus, achEnvelopeId);
     const achEnvelopeView = getAchEnvelopeView(achStatus, achEnvelopeId);
-    const canEditRecipients = !readOnly && !achEnvelopeView.isOutForSignature;
-    /** Funder can change before send/resend; locked while out for signature (matches Katan). */
-    const canEditAchFunder = !readOnly && !achEnvelopeView.isOutForSignature;
+    const canEditRecipients = !readOnly;
+    /** Changes apply to the next ACH envelope and never alter one already out for signature. */
+    const canEditAchFunder = !readOnly;
 
     const handleAchFunderChange = useCallback(
         (profileId: string) => {
@@ -1755,9 +1754,7 @@ export default function ACHFormViewerModal({
     const handleReviewAndSend = async () => {
         if (readOnly || !onPrepareDocuSignDraft || !achMapping) return;
         if (!canReviewAndSendAch) {
-            toast.info(
-                "This ACH form is already out for signature. Void it in DocuSign before sending again.",
-            );
+            toast.info("This ACH form cannot be sent in its current state.");
             return;
         }
         const hasAchTemplate =
@@ -1769,7 +1766,11 @@ export default function ACHFormViewerModal({
             return;
         }
         if (canResendAch) {
-            toast.info("Creating a new DocuSign envelope to resend the ACH form.");
+            toast.info(
+                achEnvelopeView.isOutForSignature
+                    ? "Creating another ACH envelope. The previous form will remain active."
+                    : "Creating a new DocuSign envelope to resend the ACH form.",
+            );
         }
 
         let docuSignTab: Window | null = null;
@@ -2641,7 +2642,9 @@ export default function ACHFormViewerModal({
                                         Preparing DocuSign…
                                     </>
                                 ) : (
-                                    "Resend ACH form"
+                                    achEnvelopeView.isOutForSignature
+                                        ? "Send another ACH form"
+                                        : "Resend ACH form"
                                 )}
                             </Button>
                         ) : null}

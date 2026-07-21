@@ -609,8 +609,9 @@ export function canVoidContractSendTableRow(
     row: ContractSendTableRow | null | undefined,
     sessionSentAt?: Date | null,
 ): boolean {
-    if (!row?.isCurrent || !String(row.envelopeId ?? "").trim()) return false;
+    if (!row || !String(row.envelopeId ?? "").trim()) return false;
     if (row.rowType === "contract") {
+        if (!row.isCurrent) return false;
         return canVoidMainContract(contract, sessionSentAt);
     }
     if (row.rowType === "ach") {
@@ -618,6 +619,7 @@ export function canVoidContractSendTableRow(
         return status === "DRAFT" || status === "SENT" || status === "VIEWED";
     }
     if (row.rowType === "package") {
+        if (!row.isCurrent) return false;
         const status = row.packageStatus ?? "DRAFT";
         return status === "DRAFT" || status === "SENT" || status === "VIEWED";
     }

@@ -2468,6 +2468,15 @@ export default function ContractTab({
                     const achSaved = resolveAchSavedMappingOverrides(achBlob, null);
                     const achFromCamel = achCamelPartialToTabValues(mainPrefillForTemplates);
                     const achTabs = { ...achFromCamel, ...achSaved };
+                    // These signature-block fields are canonical and must not be
+                    // replaced by stale manually saved ACH values.
+                    for (const id of [
+                        "authorization_client_signer_name",
+                        "authorization_client_name_print",
+                    ] as const) {
+                        const canonicalValue = String(achFromCamel[id] ?? "").trim();
+                        if (canonicalValue) achTabs[id] = canonicalValue;
+                    }
                     const byId = new Map(
                         prefillFieldsPayload.map((f) => [f.id, { ...f }]),
                     );
