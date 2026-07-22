@@ -3362,49 +3362,72 @@ export class DocusignService {
   }
 
   /**
-   * On Connect `completed`: download the signed package once, store under
-   * `ih-crm/signed-contracts/{funder}/`, and persist URL on Document.
+   * Archive envelope PDF under `ih-crm/signed-contracts/{funder}/` for CRM preview.
+   * - sent: prefilled package (try show_changes so field values are visible)
+   * - completed: replace with fully signed PDF
    */
-  private async archiveSignedPdfAfterCompleted(args: {
+  private async archiveEnvelopePdfToCloudinary(args: {
     envelopeId: string;
     applicationId?: string | null;
     userId?: string;
+    phase: 'sent' | 'completed';
   }): Promise<void> {
     const eid = String(args.envelopeId || '').trim();
+    const phase = args.phase === 'completed' ? 'completed' : 'sent';
     if (!eid) return;
 
-    const existingUrl = await getStoredSignedPdfUrl(eid);
-    if (existingUrl) return;
+    if (phase === 'sent') {
+      const existingUrl = await getStoredSignedPdfUrl(eid);
+      if (existingUrl) return;
+    }
 
     try {
       const userId = String(args.userId || '').trim() || 'system';
-      let buf =
-        getCachedEnvelopePdf(eid, 'completed') || getCachedEnvelopePdf(eid, 'preview');
-      if (!buf?.length) {
+      let buf: Buffer | null = null;
+
+      if (phase === 'sent') {
+        // Prefer show_changes so CRM preview shows prefilled / filled tab values.
         const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
-        buf = await this.downloadEnvelopeCombinedPdf(client, accountId, eid, false);
+        buf =
+          (await this.downloadEnvelopeCombinedPdf(client, accountId, eid, true)) ||
+          getCachedEnvelopePdf(eid, 'preview') ||
+          (await this.downloadEnvelopeCombinedPdf(client, accountId, eid, false));
+      } else {
+        buf =
+          getCachedEnvelopePdf(eid, 'completed') ||
+          getCachedEnvelopePdf(eid, 'preview');
+        if (!buf?.length) {
+          const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
+          buf = await this.downloadEnvelopeCombinedPdf(client, accountId, eid, false);
+        }
       }
+
       if (!buf?.length) {
         console.warn(
-          `[DocuSign] completed archive skipped: empty PDF for envelope ${eid}`,
+          `[DocuSign] ${phase} archive skipped: empty PDF for envelope ${eid}`,
         );
         return;
       }
-      setCachedEnvelopePdf(eid, 'completed', buf);
+      setCachedEnvelopePdf(eid, 'preview', buf);
+      if (phase === 'completed') {
+        setCachedEnvelopePdf(eid, 'completed', buf);
+      }
       await archiveSignedEnvelopePdf({
         envelopeId: eid,
         pdf: buf,
         applicationId: args.applicationId,
+        phase,
+        replaceExisting: phase === 'completed',
       });
     } catch (err) {
       if (isDocuSignPollingLimitError(err)) {
         this.rememberEnvelopePollingLimit(eid, err);
         console.warn(
-          `[DocuSign] completed archive aborted for ${eid}: DocuSign polling limit`,
+          `[DocuSign] ${phase} archive aborted for ${eid}: DocuSign polling limit`,
         );
         return;
       }
-      console.warn(`[DocuSign] completed archive failed for ${eid}:`, err);
+      console.warn(`[DocuSign] ${phase} archive failed for ${eid}:`, err);
     }
   }
 
@@ -3640,6 +3663,12 @@ export class DocusignService {
             options.title,
           );
         }
+        await this.archiveEnvelopePdfToCloudinary({
+          envelopeId: String(envelopeId),
+          applicationId: appId || undefined,
+          userId,
+          phase: 'sent',
+        });
       } catch (sendErr) {
         console.error('[DocuSign] auto-send failed:', sendErr);
       }
@@ -4611,13 +4640,22 @@ export class DocusignService {
       if (!buf?.length) {
         throw new BadRequestException('Could not download PDF from DocuSign');
       }
-      // Lazy backfill: first completed download also archives for future opens.
-      if (String(status || '').toLowerCase() === 'completed' && !storedUrl) {
+      // Lazy backfill: first sent/completed download also archives for future opens.
+      const statusLower = String(status || '').toLowerCase();
+      if (
+        !storedUrl &&
+        (statusLower === 'completed' ||
+          statusLower === 'sent' ||
+          statusLower === 'delivered')
+      ) {
+        const phase = statusLower === 'completed' ? 'completed' : 'sent';
         void archiveSignedEnvelopePdf({
           envelopeId: eid,
           pdf: buf,
+          phase,
+          replaceExisting: phase === 'completed',
         }).catch((err) =>
-          console.warn(`[DocuSign] lazy signed PDF archive failed for ${eid}:`, err),
+          console.warn(`[DocuSign] lazy ${phase} PDF archive failed for ${eid}:`, err),
         );
       }
       return buf;
@@ -5121,6 +5159,13 @@ export class DocusignService {
       options?.title,
     );
 
+    await this.archiveEnvelopePdfToCloudinary({
+      envelopeId: eid,
+      applicationId: appId || undefined,
+      userId,
+      phase: 'sent',
+    });
+
     return {
       envelopeId: eid,
       status: res.data?.status || 'sent',
@@ -5239,17 +5284,25 @@ export class DocusignService {
         );
       }
 
-      // Archive signed package once under ih-crm/signed-contracts/{funder}/…
-      if (
-        incomingResolved === 'completed' &&
-        priorStatus !== 'completed' &&
-        !isRecipientEvent &&
-        !isStandaloneAch
-      ) {
-        await this.archiveSignedPdfAfterCompleted({
-          envelopeId: String(envelopeId),
-          applicationId,
-        });
+      // Archive sent (prefilled) and completed (signed) packages under
+      // ih-crm/signed-contracts/{funder}/ so CRM preview skips DocuSign GETs.
+      if (!isRecipientEvent && !isStandaloneAch) {
+        if (incomingResolved === 'sent' && !alreadySentLike) {
+          await this.archiveEnvelopePdfToCloudinary({
+            envelopeId: String(envelopeId),
+            applicationId,
+            phase: 'sent',
+          });
+        } else if (
+          incomingResolved === 'completed' &&
+          priorStatus !== 'completed'
+        ) {
+          await this.archiveEnvelopePdfToCloudinary({
+            envelopeId: String(envelopeId),
+            applicationId,
+            phase: 'completed',
+          });
+        }
       }
     }
 

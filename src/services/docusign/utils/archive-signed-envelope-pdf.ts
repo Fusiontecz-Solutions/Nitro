@@ -5,6 +5,8 @@ import { resolveEnvelopeFunderAuthHints } from './envelope-funder-auth';
 
 const SIGNED_CONTRACTS_ROOT = 'ih-crm/signed-contracts';
 
+export type EnvelopePdfArchivePhase = 'sent' | 'completed';
+
 export function buildSignedContractsFolder(args: {
   funderName?: string | null;
   funderProfileId?: string | null;
@@ -15,6 +17,7 @@ export function buildSignedContractsFolder(args: {
   return `${SIGNED_CONTRACTS_ROOT}/${segment}`;
 }
 
+/** Stored Cloudinary URL for sent or completed envelope package (same Document column). */
 export async function getStoredSignedPdfUrl(envelopeId: string): Promise<string | null> {
   const eid = String(envelopeId || '').trim();
   if (!eid) return null;
@@ -26,7 +29,7 @@ export async function getStoredSignedPdfUrl(envelopeId: string): Promise<string 
   return url || null;
 }
 
-/** Fetch a previously archived signed PDF (Cloudinary / HTTPS). */
+/** Fetch a previously archived envelope PDF (Cloudinary / HTTPS). */
 export async function fetchStoredSignedPdfBuffer(url: string): Promise<Buffer | null> {
   const href = String(url || '').trim();
   if (!href.startsWith('http://') && !href.startsWith('https://')) return null;
@@ -34,21 +37,22 @@ export async function fetchStoredSignedPdfBuffer(url: string): Promise<Buffer | 
     const res = await fetch(href);
     if (!res.ok) {
       console.warn(
-        `[DocuSign] stored signed PDF fetch failed (${res.status}) for ${href.slice(0, 120)}`,
+        `[DocuSign] stored envelope PDF fetch failed (${res.status}) for ${href.slice(0, 120)}`,
       );
       return null;
     }
     const buf = Buffer.from(await res.arrayBuffer());
     return buf.length ? buf : null;
   } catch (err) {
-    console.warn('[DocuSign] stored signed PDF fetch error:', err);
+    console.warn('[DocuSign] stored envelope PDF fetch error:', err);
     return null;
   }
 }
 
 /**
- * Upload a signed envelope PDF into `ih-crm/signed-contracts/{funder}/…`
- * and persist the URL on Document so later previews skip DocuSign.
+ * Upload envelope PDF into `ih-crm/signed-contracts/{funder}/…` and persist URL on Document.
+ * - `sent`: archive once so CRM can show prefilled package without DocuSign GETs
+ * - `completed`: replace sent archive with the fully signed PDF
  */
 export async function archiveSignedEnvelopePdf(args: {
   envelopeId: string;
@@ -56,9 +60,14 @@ export async function archiveSignedEnvelopePdf(args: {
   applicationId?: string | null;
   funderName?: string | null;
   funderProfileId?: string | null;
+  phase?: EnvelopePdfArchivePhase;
+  /** When true (completed), overwrite an existing sent archive. */
+  replaceExisting?: boolean;
 }): Promise<{ url: string; publicId: string } | null> {
   const eid = String(args.envelopeId || '').trim();
   const pdf = args.pdf;
+  const phase: EnvelopePdfArchivePhase = args.phase === 'completed' ? 'completed' : 'sent';
+  const replaceExisting = args.replaceExisting === true || phase === 'completed';
   if (!eid || !pdf?.length) return null;
 
   const existing = await prisma.document.findFirst({
@@ -71,7 +80,7 @@ export async function archiveSignedEnvelopePdf(args: {
     },
   });
   const existingUrl = String(existing?.signedPdfUrl || '').trim();
-  if (existingUrl) {
+  if (existingUrl && !replaceExisting) {
     return {
       url: existingUrl,
       publicId: String(existing?.signedPdfPublicId || '').trim(),
@@ -98,12 +107,13 @@ export async function archiveSignedEnvelopePdf(args: {
   const folder = buildSignedContractsFolder({ funderName, funderProfileId });
   const appPart = applicationId ? applicationId.slice(0, 8) : 'app';
   const envPart = eid.slice(0, 8);
-  const fileName = `${appPart}_${envPart}_signed.pdf`;
+  const suffix = phase === 'completed' ? 'signed' : 'sent';
+  const fileName = `${appPart}_${envPart}_${suffix}.pdf`;
 
   const uploaded = await uploadService.uploadBuffer(pdf, folder, fileName, { forcePdf: true });
   if (!uploaded.success || !uploaded.data?.secure_url) {
     console.error(
-      '[DocuSign] signed PDF Cloudinary upload failed:',
+      `[DocuSign] ${phase} PDF Cloudinary upload failed:`,
       uploaded.error || uploaded.message,
     );
     return null;
@@ -121,7 +131,7 @@ export async function archiveSignedEnvelopePdf(args: {
   const format = String(uploaded.data.format || '').toLowerCase();
   if (format && format !== 'pdf') {
     console.warn(
-      `[DocuSign] signed PDF uploaded with unexpected Cloudinary format="${format}" (expected pdf)`,
+      `[DocuSign] ${phase} PDF uploaded with unexpected Cloudinary format="${format}" (expected pdf)`,
     );
   }
 
@@ -135,32 +145,56 @@ export async function archiveSignedEnvelopePdf(args: {
 
   if (updated.count === 0) {
     console.warn(
-      `[DocuSign] signed PDF uploaded but no Document row for envelope ${eid} (url=${url})`,
+      `[DocuSign] ${phase} PDF uploaded but no Document row for envelope ${eid} (url=${url})`,
     );
   } else {
     console.info(
-      `[DocuSign] archived signed PDF for envelope ${eid} → ${folder}/${fileName}`,
+      `[DocuSign] archived ${phase} PDF for envelope ${eid} → ${folder}/${fileName}`,
     );
   }
 
-  // Best-effort: also surface in application files list.
+  // Best-effort: surface in application files list.
   if (applicationId) {
+    const slug = phase === 'completed' ? 'signed-contract' : 'sent-contract';
+    const label =
+      phase === 'completed'
+        ? `Signed contract (${envPart}).pdf`
+        : `Sent contract package (${envPart}).pdf`;
     try {
-      await prisma.applicationFile.create({
-        data: {
-          applicationId,
-          url,
-          publicId: publicId || url,
-          originalName: `Signed contract (${envPart}).pdf`,
-          mimeType: 'application/pdf',
-          size: pdf.length,
-          uploadedAt: new Date(),
-          requestedDocumentSlug: 'signed-contract',
-        },
+      const prior = await prisma.applicationFile.findFirst({
+        where: { applicationId, requestedDocumentSlug: slug },
+        select: { id: true },
+        orderBy: { uploadedAt: 'desc' },
       });
+      if (prior?.id) {
+        await prisma.applicationFile.update({
+          where: { id: prior.id },
+          data: {
+            url,
+            publicId: publicId || url,
+            originalName: label,
+            mimeType: 'application/pdf',
+            size: pdf.length,
+            uploadedAt: new Date(),
+          },
+        });
+      } else {
+        await prisma.applicationFile.create({
+          data: {
+            applicationId,
+            url,
+            publicId: publicId || url,
+            originalName: label,
+            mimeType: 'application/pdf',
+            size: pdf.length,
+            uploadedAt: new Date(),
+            requestedDocumentSlug: slug,
+          },
+        });
+      }
     } catch (err) {
       console.warn(
-        '[DocuSign] ApplicationFile create for signed PDF skipped:',
+        `[DocuSign] ApplicationFile upsert for ${phase} PDF skipped:`,
         (err as { message?: string })?.message || err,
       );
     }
