@@ -44,13 +44,16 @@ export function buildContractEnvelopeEmailSubject(
     return `${lender}: ${business} ${amount}`;
 }
 
-/** ACH / standalone envelope subject — same as contract: {FunderName}: BusinessName $Amount */
+/** ACH / standalone envelope subject / PDF name: {FunderName}: BusinessName - ACH */
 export function buildAchFormEnvelopeEmailSubject(
     businessName: string,
-    offerAmount?: number | string | null,
+    _offerAmount?: number | string | null,
     funderName?: string | null,
 ): string {
-    return buildContractEnvelopeEmailSubject(businessName, offerAmount, funderName);
+    const business = String(businessName || "").trim() || "Business";
+    const lender =
+        String(funderName || "").trim() || CONTRACT_ENVELOPE_LENDER_NAME;
+    return `${lender}: ${business} - ACH`;
 }
 
 /** DocuSign envelope email subject: fixed lender + per-deal client name. */
