@@ -184,6 +184,8 @@ import {
     extractMonthlyRevenuesFromBankAnalyses,
 } from "./contractdata/disclosureAprCalculator";
 import { mapDisclosureMetricsToEditorFieldOverrides } from "./contractdata/disclosureEditorFields";
+import { applyFunderDisclosureContactPrefill } from "./contractdata/funderDisclosureContact";
+import { formatFunderNameWithDealIdPrefix } from "./contractdata/BALANCE_TRANSFER_SHEET_ADDENDUM";
 import {
     applyDocumentTemplateMappingPrefillOverrides,
     buildExpandedDisclosurePrefillFieldsForMapping,
@@ -211,6 +213,7 @@ import {
 } from "./contractdata/docusignPolling";
 import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
 import {
+    CONTRACT_ADDENDUM_DOCUMENT_OPTIONS,
     getPlatformSignerRoleRows,
     isPlatformLayoutKey,
     PLATFORM_LAYOUT_KEYS,
@@ -259,6 +262,7 @@ import { resolveActiveOwnerCount, clearParty2PrefillFieldPayload, collapseDocuSi
 import { syncContractSignerRowsToCrm } from "./contractdata/contractSignerOwnersSync";
 import {
     boldSignTemplateIsPreviewable,
+    getAddendumDropdownRef,
     getBoldSignTemplateMappingRef,
     loadBoldSignTemplatePdfBlob,
 } from "./contractdata/boldSignTemplateDocument";
@@ -498,8 +502,14 @@ function isContractAddendumTemplateRow(template: {
     }
     if (
         key === "flex_addendum" ||
+        key === "pre_payment_addendum" ||
         key === "balance_transfer" ||
+        key === "case_takeover_addendum" ||
+        key === "case_takeover_balance_transfer" ||
         key.endsWith("_flex_addendum") ||
+        key.endsWith("_pre_payment_addendum") ||
+        key.endsWith("_case_takeover_addendum") ||
+        key.endsWith("_case_takeover_balance_transfer") ||
         key.endsWith("_balance_transfer") ||
         key.includes("_addendum_") ||
         key.endsWith("_addendum")
@@ -509,9 +519,13 @@ function isContractAddendumTemplateRow(template: {
     return (
         typeText.includes("addendum") ||
         typeText === "flex_addendum" ||
+        typeText === "pre_payment_addendum" ||
         typeText === "balance_transfer" ||
+        typeText === "case_takeover_addendum" ||
+        typeText === "case_takeover_balance_transfer" ||
         nameText.includes("addendum") ||
-        nameText.includes("balance transfer")
+        nameText.includes("balance transfer") ||
+        nameText.includes("case takeover")
     );
 }
 
@@ -532,6 +546,37 @@ function templateMatchesFunderDocuments(
         return key.startsWith(prefix);
     }
     return isPlatformScopedBoldSignTemplateRow({ layoutKey: key || null });
+}
+
+/** Whether an addendum dropdown ref is valid for the funder's current docs source scope. */
+function isAddendumRefValidForDocsFunder(
+    ref: string,
+    docsLayoutFunderId: string | null,
+    templates: Array<{
+        layoutKey?: string | null;
+        templateId?: string | null;
+        type?: string | null;
+        name?: string | null;
+    }>,
+): boolean {
+    const trimmed = String(ref || "").trim();
+    if (!trimmed) return false;
+    const inDb = templates.some(
+        (t) =>
+            isContractAddendumTemplateRow(t) &&
+            templateMatchesFunderDocuments(t, docsLayoutFunderId) &&
+            getAddendumDropdownRef(t) === trimmed,
+    );
+    if (inDb) return true;
+    // Platform defaults expose synthetic Flex / Pre-Payment / BT keys (not Case Takeover).
+    if (!docsLayoutFunderId) {
+        return CONTRACT_ADDENDUM_DOCUMENT_OPTIONS.some(
+            (opt) =>
+                opt.layoutKey !== PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum &&
+                opt.layoutKey === trimmed,
+        );
+    }
+    return false;
 }
 
 function disclosureMappingMatchesFunderDocuments(
@@ -1740,10 +1785,32 @@ const PDFViewerModal = ({
     disclosureDocsLayoutFunderIdRef.current = disclosureDocsLayoutFunderId;
 
     const addendumTemplateOptions = useMemo(() => {
-        return boldSignTemplates.filter((template: any) => {
+        const fromDb = boldSignTemplates.filter((template: any) => {
             if (!isContractAddendumTemplateRow(template)) return false;
             return templateMatchesFunderDocuments(template, docsLayoutFunderId);
         });
+
+        // Platform funders: expose code-backed addenda that already have platform PDFs.
+        // Case Takeover is funder-upload only (Settings → Funder profile) — never synthetic.
+        if (docsLayoutFunderId) return fromDb;
+
+        const existingKeys = new Set(
+            fromDb.map((t: any) => templateLayoutKeyToken(t)).filter(Boolean),
+        );
+        const platformSynthetic = CONTRACT_ADDENDUM_DOCUMENT_OPTIONS.filter(
+            (opt) =>
+                opt.layoutKey !== PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum &&
+                !existingKeys.has(opt.layoutKey),
+        ).map((opt) => ({
+            id: opt.layoutKey,
+            layoutKey: opt.layoutKey,
+            templateId: opt.layoutKey,
+            name: opt.label,
+            type: opt.layoutKey,
+            pdfUrl: `platform://${opt.layoutKey}`,
+        }));
+
+        return [...fromDb, ...platformSynthetic];
     }, [boldSignTemplates, docsLayoutFunderId]);
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
@@ -2528,7 +2595,11 @@ const PDFViewerModal = ({
         const opt = String(selectedAddendumOptionRef.current || "").trim();
         if (opt.startsWith("up:")) return null;
         if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
-        return getBoldSignTemplateMappingRef(linkedAddendumMappingRef.current?.template) || null;
+        return (
+            getAddendumDropdownRef(linkedAddendumMappingRef.current?.template) ||
+            getBoldSignTemplateMappingRef(linkedAddendumMappingRef.current?.template) ||
+            null
+        );
     }, []);
 
     const resolveDisclosureTemplateRefForDocuSignMerge = useCallback((): string | null => {
@@ -2540,14 +2611,23 @@ const PDFViewerModal = ({
     const resolveAddendumLayoutKeyForDocuSignMerge = useCallback((): string | null => {
         const opt = String(selectedAddendumOptionRef.current || "").trim();
         if (opt.startsWith("up:")) return null;
-        if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
+        if (opt.startsWith("bs:")) {
+            const ref = opt.slice(3).trim();
+            if (isPlatformLayoutKey(ref)) return ref;
+            // Funder-owned uploads (e.g. funder_{id}_case_takeover_addendum)
+            if (ref.startsWith("funder_")) return ref;
+            return ref || null;
+        }
         const fromMapping = String(
             linkedAddendumMappingRef.current?.template?.layoutKey ??
                 linkedAddendumMappingRef.current?.template?.templateId ??
                 linkedAddendumMappingRef.current?.templateId ??
                 "",
         ).trim();
-        return isPlatformLayoutKey(fromMapping) ? fromMapping : null;
+        if (!fromMapping) return null;
+        if (isPlatformLayoutKey(fromMapping)) return fromMapping;
+        if (fromMapping.startsWith("funder_")) return fromMapping;
+        return null;
     }, []);
 
     const getEffectiveSendPackage = useCallback((): ContractSendPackageSelection => {
@@ -4454,6 +4534,61 @@ const PDFViewerModal = ({
 
         let mergedPayload = mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
 
+        // Same as ContractTab send: selected funder wins for addendum tabs (Flex / BT / Case Takeover).
+        // Disclosure merge otherwise forces platform "Woodmere" onto shared `funder_name`.
+        const funderPlainName =
+            formatFunderSelectLabel(selectedFunderProfile ?? undefined) ||
+            String(selectedFunder || "").trim();
+        applyFunderDisclosureContactPrefill(mergedPayload, selectedFunderProfile, {
+            funderDisplayName: funderPlainName,
+        });
+        const funderNameWithDealPrefix = formatFunderNameWithDealIdPrefix(
+            selectedFunderProfile?.name ?? selectedFunder,
+            selectedFunderProfile?.dealIdPrefix,
+            selectedFunderProfile?.displayName,
+        );
+        if (funderNameWithDealPrefix) {
+            const existing = mergedPayload.find((f) => f.id === "funder_name_with_deal_prefix");
+            if (existing) {
+                existing.value = funderNameWithDealPrefix;
+            } else {
+                mergedPayload.push({
+                    id: "funder_name_with_deal_prefix",
+                    label: "Funder name (Deal ID prefix)",
+                    value: funderNameWithDealPrefix,
+                });
+            }
+        }
+        const addendumKey = String(
+            addendumRef || addendumLayoutKey || "",
+        )
+            .trim()
+            .toLowerCase();
+        if (funderPlainName && /case_takeover/i.test(addendumKey)) {
+            const existingScoped = mergedPayload.find(
+                (f) => f.id === "case_takeover_addendum_funder_name",
+            );
+            if (existingScoped) {
+                existingScoped.value = funderPlainName;
+            } else {
+                mergedPayload.push({
+                    id: "case_takeover_addendum_funder_name",
+                    label: "Funder Name",
+                    value: funderPlainName,
+                });
+            }
+            const existingShared = mergedPayload.find((f) => f.id === "funder_name");
+            if (existingShared) {
+                existingShared.value = funderPlainName;
+            } else {
+                mergedPayload.push({
+                    id: "funder_name",
+                    label: "Funder name",
+                    value: funderPlainName,
+                });
+            }
+        }
+
         if (activeOwnerCountForPrefill >= 2) {
             const firstOwner = contractPrefillRecords.owners?.[0] as
                 | Record<string, unknown>
@@ -4514,6 +4649,8 @@ const PDFViewerModal = ({
         contractPrefillRecords.owners,
         linkedDisclosureMapping,
         buildDocuSignRolesForSync,
+        selectedFunder,
+        selectedFunderProfile,
     ]);
 
     const syncPrefillToDraftEnvelope = useCallback(
@@ -5187,12 +5324,15 @@ const PDFViewerModal = ({
                 );
                 return;
             }
-            const mappingRef = getBoldSignTemplateMappingRef(row?.template);
+            const mappingRef = getAddendumDropdownRef(row?.template);
             try {
                 setPreviewingTemplateId(String(row.id));
                 const blob = await loadBoldSignTemplatePdfBlob({
                     template: row?.template,
                     axiosGet,
+                    funderName: selectedFunderRef.current || null,
+                    funderProfileId: selectedFunderProfileIdRef.current || null,
+                    state: pickUsStateForSelect(selectedStateRef.current) || null,
                 });
                 if (templatePreviewBlobUrlRef.current) {
                     URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
@@ -5222,6 +5362,7 @@ const PDFViewerModal = ({
                     error?.message ||
                     "Failed to load template PDF.";
                 setDocumentUploadMessage(apiMsg);
+                toast.error(apiMsg);
             } finally {
                 setPreviewingTemplateId(null);
             }
@@ -5246,6 +5387,7 @@ const PDFViewerModal = ({
     }, [contractPrefillFromDb]);
 
     // Legacy contracts may have multiple addendum rows — keep one linked to the dropdown.
+    // Also drop Woodmere/platform addendums when the selected funder uses own/shared docs.
     useEffect(() => {
         if (!isOpen || effectiveContractId == null || loadingTemplateMappings) return;
         if (addendumTemplateMappings.length <= 1) {
@@ -5256,8 +5398,18 @@ const PDFViewerModal = ({
                 }
                 return;
             }
-            const tid = getBoldSignTemplateMappingRef(row?.template);
+            const tid = getAddendumDropdownRef(row?.template);
             if (!tid) return;
+            if (
+                !isAddendumRefValidForDocsFunder(
+                    tid,
+                    docsLayoutFunderId,
+                    boldSignTemplates,
+                )
+            ) {
+                void setAddendumTemplateMapping(null);
+                return;
+            }
             const next = `bs:${tid}`;
             if (selectedAddendumOption !== next && !selectedAddendumOption.startsWith("up:")) {
                 setSelectedAddendumOption(next);
@@ -5265,7 +5417,7 @@ const PDFViewerModal = ({
             return;
         }
         const primary = linkedAddendumMapping;
-        const primaryRef = getBoldSignTemplateMappingRef(primary?.template);
+        const primaryRef = getAddendumDropdownRef(primary?.template);
         const extras = addendumTemplateMappings.filter((row) => row.id !== primary?.id);
         void (async () => {
             try {
@@ -5276,8 +5428,17 @@ const PDFViewerModal = ({
                         ),
                     ),
                 );
-                if (primaryRef) {
+                if (
+                    primaryRef &&
+                    isAddendumRefValidForDocsFunder(
+                        primaryRef,
+                        docsLayoutFunderId,
+                        boldSignTemplates,
+                    )
+                ) {
                     setSelectedAddendumOption(`bs:${primaryRef}`);
+                } else {
+                    await setAddendumTemplateMapping(null);
                 }
                 await fetchTemplateMappings();
             } catch {
@@ -5291,6 +5452,9 @@ const PDFViewerModal = ({
         addendumTemplateMappings,
         linkedAddendumMapping,
         fetchTemplateMappings,
+        docsLayoutFunderId,
+        boldSignTemplates,
+        setAddendumTemplateMapping,
     ]);
 
     const prevActiveStepRef = useRef<ContractWizardStep>(activeStep);
@@ -6918,9 +7082,8 @@ const PDFViewerModal = ({
                                                 <option value="">Select addendum</option>
                                                 {addendumTemplateOptions.length > 0
                                                     ? addendumTemplateOptions.map((t: any) => {
-                                                        const tid =
-                                                            getBoldSignTemplateMappingRef(t);
-                                                        if (!boldSignTemplateIsPreviewable(t)) {
+                                                        const tid = getAddendumDropdownRef(t);
+                                                        if (!tid || !boldSignTemplateIsPreviewable(t)) {
                                                             return null;
                                                         }
                                                         return (
@@ -7098,18 +7261,10 @@ const PDFViewerModal = ({
                                                                 if (opt.startsWith("bs:")) {
                                                                     const ref = opt.slice(3).trim();
                                                                     const stillValid =
-                                                                        boldSignTemplates.some(
-                                                                            (t: any) =>
-                                                                                isContractAddendumTemplateRow(
-                                                                                    t,
-                                                                                ) &&
-                                                                                templateMatchesFunderDocuments(
-                                                                                    t,
-                                                                                    nextDocsLayoutFunderId,
-                                                                                ) &&
-                                                                                getBoldSignTemplateMappingRef(
-                                                                                    t,
-                                                                                ) === ref,
+                                                                        isAddendumRefValidForDocsFunder(
+                                                                            ref,
+                                                                            nextDocsLayoutFunderId,
+                                                                            boldSignTemplates,
                                                                         );
                                                                     if (!stillValid) {
                                                                         void setAddendumTemplateMapping(
@@ -7192,18 +7347,10 @@ const PDFViewerModal = ({
                                                                 if (opt.startsWith("bs:")) {
                                                                     const ref = opt.slice(3).trim();
                                                                     const stillValid =
-                                                                        boldSignTemplates.some(
-                                                                            (t: any) =>
-                                                                                isContractAddendumTemplateRow(
-                                                                                    t,
-                                                                                ) &&
-                                                                                templateMatchesFunderDocuments(
-                                                                                    t,
-                                                                                    nextDocsLayoutFunderId,
-                                                                                ) &&
-                                                                                getBoldSignTemplateMappingRef(
-                                                                                    t,
-                                                                                ) === ref,
+                                                                        isAddendumRefValidForDocsFunder(
+                                                                            ref,
+                                                                            nextDocsLayoutFunderId,
+                                                                            boldSignTemplates,
                                                                         );
                                                                     if (!stillValid) {
                                                                         void setAddendumTemplateMapping(

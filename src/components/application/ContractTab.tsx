@@ -2668,6 +2668,25 @@ export default function ContractTab({
                     });
                 }
             }
+            const caseTakeoverInPackage = (supplementalDocumentRefs || []).some((ref) =>
+                /case_takeover/i.test(String(ref || "")),
+            );
+            if (caseTakeoverInPackage && (funderPlainName || resolvedFunderName)) {
+                const selectedLabel =
+                    String(funderPlainName || resolvedFunderName || "").trim();
+                for (const id of ["case_takeover_addendum_funder_name", "funder_name"] as const) {
+                    const existing = prefillFieldsPayload.find((f) => f.id === id);
+                    if (existing) {
+                        existing.value = selectedLabel;
+                    } else {
+                        prefillFieldsPayload.push({
+                            id,
+                            label: id === "funder_name" ? "Funder name" : "Funder Name",
+                            value: selectedLabel,
+                        });
+                    }
+                }
+            }
             const mergeRequest = {
                 ...(standaloneAchOnly
                     ? {

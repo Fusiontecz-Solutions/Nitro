@@ -13,6 +13,7 @@ export const DOCUSIGN_ADDENDUM_TEMPLATE_IDS = {
 /** Layout keys for code-driven addendum prefill. */
 export const DOCUSIGN_ADDENDUM_LAYOUT_KEYS = {
     BALANCE_TRANSFER_SHEET: PLATFORM_LAYOUT_KEYS.balanceTransfer,
+    CASE_TAKEOVER_ADDENDUM: PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum,
     FLEX_ADDENDUM: PLATFORM_LAYOUT_KEYS.flexAddendum,
     PRE_PAYMENT_ADDENDUM: PLATFORM_LAYOUT_KEYS.prePaymentAddendum,
     ACH_AUTHORIZATION: PLATFORM_LAYOUT_KEYS.achAuthorization,

@@ -8,6 +8,7 @@ export const PLATFORM_LAYOUT_KEYS = {
     flexAddendum: "flex_addendum",
     prePaymentAddendum: "pre_payment_addendum",
     balanceTransfer: "balance_transfer",
+    caseTakeoverAddendum: "case_takeover_addendum",
     achAuthorization: "ach_authorization",
     achAuthorizationTexas: "ach_authorization_texas",
 } as const;
@@ -40,6 +41,17 @@ export const SUPPLEMENTAL_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [
     },
     { layoutKey: PLATFORM_LAYOUT_KEYS.balanceTransfer, label: "Balance Transfer Sheet" },
     { layoutKey: PLATFORM_LAYOUT_KEYS.achAuthorization, label: "ACH Authorization" },
+];
+
+/**
+ * Upload-gated addendums — shown in Create Contract only after the funder
+ * uploads that PDF on their profile (Settings → Funder → Addendum PDFs).
+ */
+export const UPLOAD_GATED_ADDENDUM_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [
+    {
+        layoutKey: PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum,
+        label: "Case Takeover Balance Transfer",
+    },
 ];
 
 /** Addendum picker — ACH is managed in its own Info Required section. */

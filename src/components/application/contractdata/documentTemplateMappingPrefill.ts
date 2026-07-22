@@ -50,6 +50,10 @@ import {
     type DiscoverRefiBalanceTransferAddendumContractPrefillFields,
 } from "./DISCOVER_REFI_BALANCE_TRANSFER_ADDENDUM";
 import {
+    buildCaseTakeoverAddendumContractPrefillFields,
+    type CaseTakeoverAddendumContractPrefillFields,
+} from "./CASE_TAKEOVER_ADDENDUM";
+import {
     buildStateDisclosurePrefillContextFromContract,
     getStateDisclosureEditorFieldDefinitions,
     getStateDisclosurePrefillFieldsByName,
@@ -937,8 +941,47 @@ function buildDiscoverRefiComputed(contract: Record<string, unknown> | null, sct
     });
 }
 
+function buildCaseTakeoverAddendumComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const fromCtx = str(sctx.funderName);
+    const funderName =
+        str(c.funderName) ||
+        str(c["funder_name"]) ||
+        (fromCtx &&
+        fromCtx.toLowerCase() !== PLATFORM_DISCLOSURE_FUNDER_NAME.toLowerCase()
+            ? fromCtx
+            : "") ||
+        "";
+    return buildCaseTakeoverAddendumContractPrefillFields({
+        funderName,
+        loanAgreementDated: sctx.signatureDate,
+        borrowerName: sctx.recipientName,
+        borrowerPay: sctx.estimatedPayment,
+        financialDate: sctx.signatureDate,
+        previousFinancingDirectlyTo: "",
+        borrowerName1: str(c.clientName) || sctx.recipientName,
+        borrowerTitle1: str(c["ownerTitle"]),
+    });
+}
+
 function dotDiscoverRefi(): DiscoverRefiBalanceTransferAddendumContractPrefillFields {
     return {
+        loanAgreementDated: DUMMY,
+        borrowerName: DUMMY,
+        borrowerPay: DUMMY,
+        financialDate: DUMMY,
+        previousFinancingDirectlyTo: DUMMY,
+        borrowerName1: DUMMY,
+        borrowerTitle1: DUMMY,
+    };
+}
+
+function dotCaseTakeoverAddendum(): CaseTakeoverAddendumContractPrefillFields {
+    return {
+        funderName: DUMMY,
         loanAgreementDated: DUMMY,
         borrowerName: DUMMY,
         borrowerPay: DUMMY,
@@ -955,6 +998,7 @@ function matches(norm: string, ...needles: string[]): boolean {
 
 type AddendumKind =
     | "balance_transfer_sheet"
+    | "case_takeover_addendum"
     | "woodmere_flex"
     | "pre_payment_addendum"
     | "woodmere_buyout_blank"
@@ -986,6 +1030,15 @@ function resolveAddendumKind(
     ) {
         return "pre_payment_addendum";
     }
+    // Must run before balance_transfer — legacy key ends with `_balance_transfer`.
+    if (
+        key === PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum ||
+        key.endsWith("_case_takeover_addendum") ||
+        key === "case_takeover_balance_transfer" ||
+        key.endsWith("_case_takeover_balance_transfer")
+    ) {
+        return "case_takeover_addendum";
+    }
     if (
         key === PLATFORM_LAYOUT_KEYS.balanceTransfer ||
         key.endsWith("_balance_transfer")
@@ -994,6 +1047,7 @@ function resolveAddendumKind(
     }
     if (tid === ADDENDUM_GUID.WOODMERE_FLEX) return "woodmere_flex";
     if (tid === ADDENDUM_GUID.WOODMERE_BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
+    if (matches(normName, "case", "takeover")) return "case_takeover_addendum";
     if (matches(normName, "balance", "transfer") && !normName.includes("discover") && !normName.includes("refi"))
         return "balance_transfer_sheet";
     if (normName.includes("woodmere") && normName.includes("flex") && (normName.includes("dated") || normName.includes("agreement")))
@@ -1085,6 +1139,8 @@ function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
     switch (kind) {
         case "balance_transfer_sheet":
             return buildBalanceTransferSheetContractPrefillFields(dotBalanceTransfer());
+        case "case_takeover_addendum":
+            return buildCaseTakeoverAddendumContractPrefillFields(dotCaseTakeoverAddendum());
         case "woodmere_flex":
             return buildWoodmereFlexAddendumContractPrefillFields(dotWoodmereFlex());
         case "pre_payment_addendum":
@@ -1111,6 +1167,8 @@ function addendumComputed(
     switch (kind) {
         case "balance_transfer_sheet":
             return buildBalanceTransferComputed(contract, sctx, application);
+        case "case_takeover_addendum":
+            return buildCaseTakeoverAddendumComputed(contract, sctx);
         case "woodmere_flex":
             return buildWoodmereFlexComputed(contract, sctx, application);
         case "pre_payment_addendum":
@@ -1520,8 +1578,10 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             String(row.documentType || "").toLowerCase() === "disclosure";
         const editorValues: Record<string, string> = {};
         for (const field of computedRows) {
+            // Only force platform disclosure funder name on disclosure PDFs —
+            // Case Takeover / other addenda must keep the selected funder.
             const v =
-                field.id === "funder_name"
+                isDisclosureRow && field.id === "funder_name"
                     ? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase()
                     : String(field.value ?? "").trim();
             if (!v) continue;
@@ -1566,18 +1626,52 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             Boolean(templateRowId && mergedSet.has(templateRowId))
         );
     });
+    const caseTakeoverMerged = args.templateMappingRows.some((row) => {
+        const layoutKey = String(row.template?.layoutKey ?? row.template?.templateId ?? "")
+            .trim()
+            .toLowerCase();
+        const templateRowId = String(row.template?.id ?? "").trim();
+        const included =
+            (layoutKey && mergedSet.has(String(row.template?.layoutKey ?? "").trim())) ||
+            (layoutKey && mergedSet.has(layoutKey)) ||
+            (templateRowId && mergedSet.has(templateRowId)) ||
+            [...mergedSet].some((k) => String(k).toLowerCase().includes("case_takeover"));
+        return included && layoutKey.includes("case_takeover");
+    }) || [...mergedSet].some((k) => String(k).toLowerCase().includes("case_takeover"));
+
     if (disclosureMerged) {
-        upsertPrefillFieldValue(
-            byId,
-            "funder_name",
-            PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
-        );
+        // Do not overwrite shared `funder_name` with Woodmere when Case Takeover is
+        // also merged — that addendum needs the selected funder (e.g. EJM).
+        if (!caseTakeoverMerged) {
+            upsertPrefillFieldValue(
+                byId,
+                "funder_name",
+                PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+            );
+        }
         const merchant = resolveMainContractBusinessNameFromPrefill(byId);
         if (merchant) {
             upsertPrefillFieldValue(byId, "client_name", merchant);
             upsertPrefillFieldValue(byId, "recipient_name", merchant);
             upsertPrefillFieldValue(byId, "disclosure_name", merchant);
             upsertPrefillFieldValue(byId, "disclosure_merchant_name", merchant);
+        }
+    }
+
+    if (caseTakeoverMerged) {
+        const selectedFunder = String(
+            (args.contract as Record<string, unknown> | null | undefined)?.funderName ??
+                (args.mainPrefillOverrides as Record<string, unknown> | null | undefined)
+                    ?.funderName ??
+                "",
+        ).trim();
+        if (selectedFunder) {
+            upsertPrefillFieldValue(byId, "funder_name", selectedFunder);
+            upsertPrefillFieldValue(
+                byId,
+                "case_takeover_addendum_funder_name",
+                selectedFunder,
+            );
         }
     }
 
@@ -1653,11 +1747,18 @@ export function mergeStateDisclosurePrefillFallback(args: {
                 : { id: field.id, value: v, label: String(field.label ?? "").trim() },
         );
     }
-    upsertPrefillFieldValue(
-        byId,
-        "funder_name",
-        PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+    const hasCaseTakeover = supplementalIds.some((ref) =>
+        /case_takeover/i.test(ref),
     );
+    // Case Takeover needs the selected funder on shared `funder_name` — do not
+    // overwrite with the platform disclosure name (Woodmere).
+    if (!hasCaseTakeover) {
+        upsertPrefillFieldValue(
+            byId,
+            "funder_name",
+            PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        );
+    }
     const merchant =
         resolveMainContractBusinessNameFromPrefill(byId) ||
         resolveContractBusinessLegalNameForPrefill(
@@ -1779,6 +1880,17 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
         if (
             (idNorm === "frequency" || idNorm === "paymentterms") &&
             /%/.test(v)
+        ) {
+            continue;
+        }
+        // Disclosure must not overwrite shared `funder_name` when Case Takeover (or
+        // another addendum) already set the selected funder via its scoped CRM key.
+        if (
+            id === "funder_name" &&
+            (byId.has("case_takeover_addendum_funder_name") ||
+                [...byId.keys()].some((k) =>
+                    String(k).toLowerCase().includes("case_takeover"),
+                ))
         ) {
             continue;
         }

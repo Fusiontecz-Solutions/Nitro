@@ -91,6 +91,7 @@ const ADDENDUM_PRESETS = [
   { name: "Flex Addendum", type: "flex_addendum" },
   { name: "Pre-Payment Addendum", type: "pre_payment_addendum" },
   { name: "Balance Transfer", type: "balance_transfer" },
+  { name: "Case Takeover Balance Transfer", type: "case_takeover_addendum" },
   { name: "ACH Authorization", type: "ach_authorization" },
 ] as const;
 
