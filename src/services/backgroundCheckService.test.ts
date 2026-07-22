@@ -93,6 +93,45 @@ describe('updateItem — cannot complete without a result', () => {
             backgroundCheckService.updateItem('it1', { status: 'COMPLETE' }, UW),
         ).rejects.toThrow(/without a result/i);
     });
+
+    it('merges provider metadata without discarding existing item metadata', async () => {
+        db.backgroundCheckItem.findUnique.mockResolvedValue({
+            id: 'it1',
+            backgroundCheckId: 'bc1',
+            checkType: 'TLO',
+            status: 'IN_PROGRESS',
+            result: null,
+            metadata: { existing: true },
+        });
+        db.backgroundCheckItem.update.mockResolvedValue({
+            id: 'it1',
+            backgroundCheckId: 'bc1',
+            status: 'IN_PROGRESS',
+            result: null,
+        });
+        db.backgroundCheck.findUnique.mockResolvedValue({
+            id: 'bc1',
+            status: 'IN_PROGRESS',
+            items: [],
+            decision: null,
+        });
+
+        await backgroundCheckService.updateItem(
+            'it1',
+            { metadata: { provider: 'Thomson Reuters CLEAR' } },
+            UW,
+        );
+
+        expect(db.backgroundCheckItem.update).toHaveBeenCalledWith({
+            where: { id: 'it1' },
+            data: {
+                metadata: {
+                    existing: true,
+                    provider: 'Thomson Reuters CLEAR',
+                },
+            },
+        });
+    });
 });
 
 describe('isContractEligible — the contract gate', () => {

@@ -1,4 +1,10 @@
 import prisma from '../config/prismaClient';
+import { runCheck } from './backgroundCheckRunners';
+import type {
+    ClearBusinessSearchSubject,
+    ClearPersonSearchSubject,
+} from './backgroundCheckRunners';
+import { resolveClientOwners } from '../utils/clientMapper';
 
 /**
  * Background Check module — due-diligence checks on a deal (Application) that
@@ -13,7 +19,7 @@ export const CHECK_TYPES = ['TLO', 'OPENCORPORATES', 'SOS', 'NY_COURT', 'DATAMER
 export type CheckType = (typeof CHECK_TYPES)[number];
 
 /** Roles allowed to record a decision. */
-export const DECIDER_ROLES = ['UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
+export const DECIDER_ROLES = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
 /** Roles allowed to override a FAIL and to reopen/configure. */
 export const OVERRIDE_ROLES = ['ADMIN', 'SUPER_ADMIN'];
 
@@ -118,7 +124,14 @@ async function updateItem(
     }
     if (body.notes !== undefined) data.notes = String(body.notes);
     if (body.required !== undefined) data.required = Boolean(body.required);
-    if (body.metadata !== undefined) data.metadata = body.metadata;
+    if (body.metadata !== undefined) {
+        data.metadata = body.metadata === null
+            ? null
+            : {
+                ...(item.metadata && typeof item.metadata === 'object' ? item.metadata : {}),
+                ...body.metadata,
+            };
+    }
     if (body.status !== undefined) {
         const s = String(body.status).trim().toUpperCase();
         if (!ITEM_STATUSES.includes(s)) throw new BackgroundCheckError(`Invalid status. Allowed: ${ITEM_STATUSES.join(', ')}`);
@@ -148,6 +161,127 @@ async function updateItem(
     });
     await recomputeStatus(item.backgroundCheckId, actor?.id);
     return getCheck(item.backgroundCheckId);
+}
+
+async function runAutomatedItem(itemId: string, actor: Actor) {
+    const item = await db.backgroundCheckItem.findUnique({
+        where: { id: itemId },
+        include: {
+            backgroundCheck: {
+                include: {
+                    decision: true,
+                    application: {
+                        include: {
+                            client: { include: { owners: true } },
+                        },
+                    },
+                },
+            },
+        },
+    });
+    if (!item) throw new BackgroundCheckError('Check item not found', 404);
+    if (item.checkType !== 'TLO') {
+        throw new BackgroundCheckError('This background check does not support automated execution.');
+    }
+    if (item.backgroundCheck?.decision) {
+        throw new BackgroundCheckError('Reopen the background check before running CLEAR.', 409);
+    }
+
+    const application = item.backgroundCheck?.application;
+    const client = application?.client;
+    if (!application || !client) {
+        throw new BackgroundCheckError('Application owner data is unavailable for CLEAR Person Search.');
+    }
+
+    const owners = resolveClientOwners(client);
+    if (!owners.length) {
+        throw new BackgroundCheckError('No application owners are available for CLEAR Person Search.');
+    }
+    const subjects: ClearPersonSearchSubject[] = owners.map((owner: any, index: number) => ({
+        firstName: owner.firstName,
+        middleName: owner.middleName,
+        lastName: owner.lastName,
+        dateOfBirth: owner.dateOfBirth,
+        ssn: owner.ssn,
+        phoneNumber: owner.mobileNumber,
+        emailAddress: owner.email,
+        driverLicenseNumber: index === 0 ? client.driverLicense : undefined,
+        address: {
+            street: [owner.address?.address1, owner.address?.address2].filter(Boolean).join(' '),
+            city: owner.address?.city,
+            state: owner.address?.state,
+            zipCode: owner.address?.zipCode,
+            country: 'USA',
+        },
+    }));
+    const primaryOwner = owners[0];
+    const businessSubject: ClearBusinessSearchSubject = {
+        businessName: client.businessName,
+        fein: client.businessEinNumber,
+        phoneNumber: client.businessNumber,
+        ownerFirstName: primaryOwner?.firstName,
+        ownerMiddleName: primaryOwner?.middleName,
+        ownerLastName: primaryOwner?.lastName,
+        address: {
+            street: [client.businessAddress1, client.businessAddress2].filter(Boolean).join(' '),
+            city: client.businessCity,
+            state: client.businessState,
+            zipCode: client.businessZipCode,
+            country: 'USA',
+        },
+    };
+
+    await db.backgroundCheckItem.update({
+        where: { id: itemId },
+        data: { status: 'IN_PROGRESS' },
+    });
+    await logEvent(item.backgroundCheckId, 'automated_check_started', {
+        itemId,
+        detail: { checkType: item.checkType, provider: 'Thomson Reuters CLEAR' },
+        actorId: actor?.id,
+    });
+
+    try {
+        const runnerResult = await runCheck(item.checkType, {
+            applicationId: application.id,
+            businessSubject,
+            subjects,
+        });
+        await updateItem(itemId, {
+            status: 'COMPLETE',
+            result: runnerResult.result,
+            notes: runnerResult.notes,
+            metadata: runnerResult.raw as Record<string, unknown>,
+        }, actor);
+        await logEvent(item.backgroundCheckId, 'automated_check_completed', {
+            itemId,
+            fromStatus: item.status,
+            toStatus: 'COMPLETE',
+            detail: {
+                checkType: item.checkType,
+                result: runnerResult.result,
+                provider: 'Thomson Reuters CLEAR',
+            },
+            actorId: actor?.id,
+        });
+        return getCheck(item.backgroundCheckId);
+    } catch (error: any) {
+        await logEvent(item.backgroundCheckId, 'automated_check_failed', {
+            itemId,
+            fromStatus: item.status,
+            toStatus: 'IN_PROGRESS',
+            detail: {
+                checkType: item.checkType,
+                provider: 'Thomson Reuters CLEAR',
+                message: String(error?.message || 'CLEAR request failed').slice(0, 500),
+            },
+            actorId: actor?.id,
+        });
+        throw new BackgroundCheckError(
+            error?.message || 'Thomson Reuters CLEAR request failed.',
+            502,
+        );
+    }
 }
 
 async function getCheck(backgroundCheckId: string) {
@@ -278,6 +412,7 @@ export const backgroundCheckService = {
     getOrCreateForApplication,
     getCheck,
     updateItem,
+    runAutomatedItem,
     addAttachment,
     removeAttachment,
     setRequiredFlags,
