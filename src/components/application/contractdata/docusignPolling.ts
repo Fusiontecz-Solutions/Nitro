@@ -13,7 +13,7 @@ export const DOCUSIGN_WEBHOOK_STALE_MS = Number.POSITIVE_INFINITY;
 export const DOCUSIGN_CRM_STATUS_POLL_MS = 2 * 60_000;
 
 export function isDocuSignPollingLimitError(message: string): boolean {
-    return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit|rate.?limit|too many requests/i.test(
+    return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit|rate.?limit|cooldown is active|too many requests|status code 429|\b429\b/i.test(
         message,
     );
 }

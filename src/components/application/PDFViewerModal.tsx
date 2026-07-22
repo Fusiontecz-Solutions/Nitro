@@ -2296,6 +2296,8 @@ const PDFViewerModal = ({
     const applicationIdForLookupRef = useRef<string | null>(null);
     const prefilledPdfCachedForEnvelopeRef = useRef<string | null>(null);
     const prefilledBoldSignPdfUrlRef = useRef<string | null>(null);
+    /** After DocuSign 429 for an envelope, block auto PDF reloads for ~1 hour. */
+    const rateLimitedEnvelopeUntilRef = useRef<Record<string, number>>({});
     const docuSignPdfCacheSuffixRef = useRef(docuSignPdfCacheSuffix);
     const draftPreparedAddendumIdRef = useRef<string | null | undefined>(undefined);
     const draftPreparedCcRef = useRef<string[] | null>(null);
@@ -2422,7 +2424,7 @@ const PDFViewerModal = ({
             });
 
         const isRateLimitError = (message: string) =>
-            /hourly_envelope_polling_limit|burst_envelope_polling|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit|polling.?limit|rate.?limit|too many requests/i.test(
+            /hourly_envelope_polling_limit|burst_envelope_polling|hourly_apiinvocation|apiinvocation.?limit|api.?invocation.?limit|polling.?limit|rate.?limit|cooldown is active|too many requests|status code 429|\b429\b/i.test(
                 message,
             );
 
@@ -2441,7 +2443,22 @@ const PDFViewerModal = ({
             return;
         }
 
-        const maxAttempts = options?.maxAttempts ?? 1;
+        if (
+            envelopeId &&
+            rateLimitedEnvelopeUntilRef.current[envelopeId] &&
+            rateLimitedEnvelopeUntilRef.current[envelopeId]! > Date.now()
+        ) {
+            if (manageLoading && prefilledActiveLoadIdRef.current === loadId) {
+                setPrefilledBoldSignPdfLoading(false);
+            }
+            setPrefilledBoldSignPdfHint(
+                "DocuSign envelope polling limit exceeded (250 GET/hour). Wait before reloading this PDF — status still updates via webhook.",
+            );
+            return;
+        }
+
+        // Auto-loads must not multiply DocuSign GETs (per-envelope 250/hour poll budget).
+        const maxAttempts = Math.min(options?.maxAttempts ?? 1, 2);
 
         try {
             for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -2478,7 +2495,13 @@ const PDFViewerModal = ({
                     return;
                 } catch (err: unknown) {
                     lastError = await parseApiErrorMessageFromAxios(err);
-                    if (isRateLimitError(lastError)) break;
+                    if (isRateLimitError(lastError)) {
+                        if (envelopeId) {
+                            rateLimitedEnvelopeUntilRef.current[envelopeId] =
+                                Date.now() + 60 * 60_000;
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -4197,7 +4220,7 @@ const PDFViewerModal = ({
                     setPdfRightPaneTabRef.current("docusign");
                     prefilledPdfCachedForEnvelopeRef.current = null;
                     prefilledBoldSignPdfUrlRef.current = null;
-                    void loadPrefilledPdfRef.current(undefined, { maxAttempts: 3 });
+                    void loadPrefilledPdfRef.current(undefined, { maxAttempts: 1 });
                     if (!silent) {
                         toast.success(
                             "Contract sent in DocuSign. Step 4 shows signing status and the envelope PDF.",
@@ -4219,7 +4242,7 @@ const PDFViewerModal = ({
                 ) {
                     prefilledPdfCachedForEnvelopeRef.current = null;
                     prefilledBoldSignPdfUrlRef.current = null;
-                    void loadPrefilledPdfRef.current(undefined, { maxAttempts: 3 });
+                    void loadPrefilledPdfRef.current(undefined, { maxAttempts: 1 });
                     if (!silent) {
                         toast.success("Contract fully signed. PDF updated with signatures.");
                     }
@@ -4514,7 +4537,7 @@ const PDFViewerModal = ({
                 invalidateDocuSignPdfCache();
                 void loadPrefilledPdfFromDocuSign(envelopeId, {
                     manageLoading: false,
-                    maxAttempts: 3,
+                    maxAttempts: 1,
                 });
             } catch (err) {
                 console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
@@ -4726,7 +4749,7 @@ const PDFViewerModal = ({
         if (pdfRightPaneTab !== "docusign") {
             return;
         }
-        void loadPrefilledPdfFromDocuSign(undefined, { maxAttempts: 3 });
+        void loadPrefilledPdfFromDocuSign(undefined, { maxAttempts: 1 });
     }, [
         invalidateDocuSignPdfCache,
         pdfRightPaneTab,
@@ -9011,7 +9034,7 @@ const PDFViewerModal = ({
                                                             setPdfRightPaneTab("docusign");
                                                             void loadPrefilledPdfFromDocuSign(
                                                                 row.envelopeId,
-                                                                { maxAttempts: 3 },
+                                                                { maxAttempts: 1 },
                                                             );
                                                         }
                                                     }}
