@@ -90,21 +90,39 @@ class UploadToCloudinaryService {
         }
     }
 
-    /** Upload a buffer (e.g. PDF) as a raw asset — used when the file is only in memory. */
-    async uploadBuffer(buffer: Buffer, folder: string, fileName: string): Promise<UploadResult> {
+    /**
+     * Upload an in-memory buffer. PDFs are stored as Cloudinary `image` + format `pdf`
+     * (not `raw`) so they open as PDFs in viewers.
+     */
+    async uploadBuffer(
+        buffer: Buffer,
+        folder: string,
+        fileName: string,
+        options?: { forcePdf?: boolean },
+    ): Promise<UploadResult> {
         try {
             const safeBase = String(fileName || 'document.pdf').replace(/[^\w.\-]+/g, '_');
             const withoutExt = safeBase.replace(/\.[^/.]+$/, '');
             const publicId = `${Date.now()}_${withoutExt || 'document'}`;
-            const resourceType = resolveCloudinaryResourceType({ name: safeBase });
+            const isPdf =
+                options?.forcePdf === true || safeBase.toLowerCase().endsWith('.pdf');
+
+            const uploadOptions: Record<string, unknown> = {
+                folder,
+                public_id: publicId,
+            };
+
+            if (isPdf) {
+                // PDF as image resource (Cloudinary convention) — never raw.
+                uploadOptions.resource_type = 'image';
+                uploadOptions.format = 'pdf';
+            } else {
+                uploadOptions.resource_type = resolveCloudinaryResourceType({ name: safeBase });
+            }
 
             return await new Promise<UploadResult>((resolve) => {
                 const uploadStream = cloudinary.uploader.upload_stream(
-                    {
-                        resource_type: resourceType,
-                        folder,
-                        public_id: publicId,
-                    },
+                    uploadOptions as any,
                     (error: any, cloudinaryResult: any) => {
                         if (error) {
                             console.error('Error uploading buffer to Cloudinary:', error);
@@ -118,7 +136,11 @@ class UploadToCloudinaryService {
                                 success: true,
                                 message: 'File uploaded successfully',
                                 data: cloudinaryResult,
-                                fileName: safeBase,
+                                fileName: isPdf
+                                    ? safeBase.toLowerCase().endsWith('.pdf')
+                                        ? safeBase
+                                        : `${withoutExt || 'document'}.pdf`
+                                    : safeBase,
                             });
                         }
                     }

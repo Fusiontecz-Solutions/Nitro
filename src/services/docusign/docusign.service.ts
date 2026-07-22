@@ -27,20 +27,26 @@ import {
   isDocuSignPollingLimitError,
 } from './utils/docusign-client';
 import {
+  clearEnvelopePollingCooldown,
   getCachedEnvelopeCustomFields,
   getCachedEnvelopeDocumentTabs,
+  getCachedEnvelopePdf,
   getCachedEnvelopeRecipients,
   getCachedEnvelopeRecipientTabs,
   getCachedEnvelopeStatus,
+  getEnvelopePollingCooldownRemainingMs,
   getEnvelopeStatusSyncCache,
+  invalidateCachedEnvelopePdf,
   invalidateCachedEnvelopeRecipients,
   invalidateCachedEnvelopeStatus,
   rememberEnvelopeWebhook,
   setCachedEnvelopeCustomFields,
   setCachedEnvelopeDocumentTabs,
+  setCachedEnvelopePdf,
   setCachedEnvelopeRecipients,
   setCachedEnvelopeRecipientTabs,
   setCachedEnvelopeStatus,
+  setEnvelopePollingCooldown,
   setEnvelopeStatusSyncCache,
   shouldSkipDocuSignPollForWebhook,
 } from './utils/docusign-rate-limit';
@@ -121,6 +127,11 @@ import {
   resolveEnvelopeFunderAuthHints,
   type EnvelopeFunderAuthHints,
 } from './utils/envelope-funder-auth';
+import {
+  archiveSignedEnvelopePdf,
+  fetchStoredSignedPdfBuffer,
+  getStoredSignedPdfUrl,
+} from './utils/archive-signed-envelope-pdf';
 
 /** Contract signing status labels for notifications */
 const CONTRACT_STATUS_LABELS: Record<string, string> = {
@@ -223,6 +234,20 @@ export class DocusignService {
   >();
   private readonly prefillCooldownUntil = new Map<string, number>();
   private static readonly PREFILL_DEDUPE_TTL_MS = 5 * 60_000;
+  /** Coalesce concurrent PDF preview downloads for the same envelope. */
+  private readonly envelopePdfDownloadInFlight = new Map<string, Promise<Buffer | null>>();
+
+  private assertEnvelopePollingAllowed(envelopeId: string): void {
+    const remaining = getEnvelopePollingCooldownRemainingMs(envelopeId);
+    if (remaining > 0) {
+      throw new DocusignCooldownException(remaining);
+    }
+  }
+
+  private rememberEnvelopePollingLimit(envelopeId: string, err: unknown): void {
+    if (!isDocuSignPollingLimitError(err)) return;
+    setEnvelopePollingCooldown(envelopeId, getDocusignRetryAfterMs(err));
+  }
 
   // ─── OAuth ───────────────────────────────────────────────────────────────────
 
@@ -421,6 +446,7 @@ export class DocusignService {
         if (isDocuSignPollingLimitError(err)) {
           const retryAfterMs = getDocusignRetryAfterMs(err);
           this.recipientsCooldownUntil.set(key, Date.now() + retryAfterMs);
+          this.rememberEnvelopePollingLimit(eid, err);
           console.warn(
             `[DocuSign] GetRecipients cooldown ${Math.ceil(retryAfterMs / 1000)}s for envelope ${eid}`,
           );
@@ -765,9 +791,11 @@ export class DocusignService {
       const seen = new Set<string>();
 
       try {
+        this.assertEnvelopePollingAllowed(envelopeId);
         const docsRes = await client.get(
           `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents`,
         );
+        clearEnvelopePollingCooldown(envelopeId);
         const docs = docsRes.data?.envelopeDocuments || docsRes.data?.documents || [];
         const contentDocs = this.filterEnvelopeContentDocuments(
           docs.length ? docs : [{ documentId: '1' }],
@@ -777,6 +805,7 @@ export class DocusignService {
         for (const doc of toFetch) {
           const docId = String(doc?.documentId ?? '1');
           try {
+            this.assertEnvelopePollingAllowed(envelopeId);
             const tabsRes = await client.get(
               `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/${docId}/tabs`,
             );
@@ -788,7 +817,10 @@ export class DocusignService {
             }
           } catch (docErr) {
             // Never keep polling after DocuSign's 250/hour envelope GET budget is exhausted.
-            if (isDocuSignPollingLimitError(docErr)) throw docErr;
+            if (isDocuSignPollingLimitError(docErr)) {
+              this.rememberEnvelopePollingLimit(envelopeId, docErr);
+              throw docErr;
+            }
             console.warn(
               `[DocuSign] fetchEnvelopeDocumentTextTabs document ${docId} failed:`,
               docErr,
@@ -796,7 +828,10 @@ export class DocusignService {
           }
         }
       } catch (err) {
-        if (isDocuSignPollingLimitError(err)) throw err;
+        if (isDocuSignPollingLimitError(err)) {
+          this.rememberEnvelopePollingLimit(envelopeId, err);
+          throw err;
+        }
         console.warn('[DocuSign] fetchEnvelopeDocumentTextTabs failed:', err);
       }
 
@@ -1132,6 +1167,7 @@ export class DocusignService {
             queueKey,
             Date.now() + getDocusignRetryAfterMs(err),
           );
+          this.rememberEnvelopePollingLimit(envelopeId, err);
         }
         throw err;
       }
@@ -1227,6 +1263,7 @@ export class DocusignService {
         );
         totalApplied += n;
         for (const t of pending) updatedTabIds.add(t.tabId);
+        invalidateCachedEnvelopePdf(envelopeId);
         console.log(
           `[DocuSign] prefill recipient ${recipientId}: ${n} tab(s) on envelope ${envelopeId}`,
         );
@@ -3079,14 +3116,21 @@ export class DocusignService {
   ): Promise<string> {
     const cached = getCachedEnvelopeStatus(accountId, envelopeId);
     if (cached != null) return cached;
+    if (getEnvelopePollingCooldownRemainingMs(envelopeId) > 0) {
+      return '';
+    }
     try {
       const res = await client.get(
         `/v2.1/accounts/${accountId}/envelopes/${envelopeId}`,
       );
+      clearEnvelopePollingCooldown(envelopeId);
       const status = String(res.data?.status || '').toLowerCase();
       if (status) setCachedEnvelopeStatus(accountId, envelopeId, status);
       return status;
-    } catch {
+    } catch (err) {
+      if (isDocuSignPollingLimitError(err)) {
+        this.rememberEnvelopePollingLimit(envelopeId, err);
+      }
       return '';
     }
   }
@@ -3098,6 +3142,7 @@ export class DocusignService {
     showChanges: boolean,
   ): Promise<Buffer | null> {
     try {
+      this.assertEnvelopePollingAllowed(envelopeId);
       const res = await client.get(
         `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/combined`,
         {
@@ -3105,16 +3150,24 @@ export class DocusignService {
           params: showChanges ? { show_changes: 'true' } : undefined,
         },
       );
+      clearEnvelopePollingCooldown(envelopeId);
       const buf = Buffer.from(res.data);
       return buf?.length ? buf : null;
     } catch (err) {
-      if (isDocuSignPollingLimitError(err)) throw err;
+      if (isDocuSignPollingLimitError(err)) {
+        this.rememberEnvelopePollingLimit(envelopeId, err);
+        throw err;
+      }
       console.warn('[DocuSign] download combined PDF failed:', err);
       return null;
     }
   }
 
-  /** Fallback when combined PDF is unavailable — first content document only. */
+  /**
+   * Fallback when combined PDF is unavailable — first content document only.
+   * Skips GET /documents (list) which burns the per-envelope 250/hour polling budget;
+   * DocuSign content docs almost always use documentId "1".
+   */
   private async downloadEnvelopeFirstContentPdf(
     client: AxiosInstance,
     accountId: string,
@@ -3122,42 +3175,31 @@ export class DocusignService {
     showChanges: boolean,
   ): Promise<Buffer | null> {
     try {
-      const docsRes = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents`,
-      );
-      const docs = docsRes.data?.envelopeDocuments || docsRes.data?.documents || [];
-      const contentDocs = this.filterEnvelopeContentDocuments(
-        docs.length ? docs : [{ documentId: '1' }],
-      );
-      const docId = String(
-        (contentDocs[0] || { documentId: '1' }).documentId ?? '1',
-      );
+      this.assertEnvelopePollingAllowed(envelopeId);
       const res = await client.get(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/${docId}`,
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/1`,
         {
           responseType: 'arraybuffer',
           params: showChanges ? { show_changes: 'true' } : undefined,
         },
       );
+      clearEnvelopePollingCooldown(envelopeId);
       const buf = Buffer.from(res.data);
       return buf?.length ? buf : null;
     } catch (err) {
+      if (isDocuSignPollingLimitError(err)) {
+        this.rememberEnvelopePollingLimit(envelopeId, err);
+        throw err;
+      }
       console.warn('[DocuSign] download first content PDF failed:', err);
       return null;
     }
   }
 
-  /** Pick the larger of two PDF buffers (heuristic when DocuSign embeds more data in one variant). */
-  private pickLargerPdfBuffer(a: Buffer | null, b: Buffer | null): Buffer | null {
-    const lenA = a?.length ?? 0;
-    const lenB = b?.length ?? 0;
-    if (lenA >= lenB) return lenA ? a : b;
-    return b;
-  }
-
   /**
-   * Download envelope PDF (combined, then first content doc as fallback).
-   * Completed envelopes use a clean PDF; draft/sent try show_changes and plain, return the larger file.
+   * Download envelope PDF (combined, then document 1 as fallback).
+   * One GET for completed; at most two for draft/sent (show_changes then plain) — never both
+   * variants plus list-documents (that pattern burned the 250/hour per-envelope poll budget).
    */
   private async downloadEnvelopePdfBuffer(
     client: AxiosInstance,
@@ -3165,6 +3207,16 @@ export class DocusignService {
     envelopeId: string,
     knownStatus?: string,
   ): Promise<Buffer | null> {
+    const status =
+      knownStatus || (await this.getEnvelopeStatus(client, accountId, envelopeId));
+    const cacheVariant = status === 'completed' ? 'completed' : 'preview';
+    const cached = getCachedEnvelopePdf(envelopeId, cacheVariant);
+    if (cached?.length) return cached;
+
+    const inFlightKey = `${String(accountId).trim().toLowerCase()}::${envelopeId}::${cacheVariant}`;
+    const existing = this.envelopePdfDownloadInFlight.get(inFlightKey);
+    if (existing) return existing;
+
     const downloadPdf = async (showChanges: boolean) =>
       (await this.downloadEnvelopeCombinedPdf(
         client,
@@ -3179,15 +3231,36 @@ export class DocusignService {
         showChanges,
       ));
 
-    const status =
-      knownStatus || (await this.getEnvelopeStatus(client, accountId, envelopeId));
-    if (status === 'completed') {
-      return downloadPdf(false);
-    }
+    const request = (async () => {
+      try {
+        let buf: Buffer | null;
+        if (status === 'completed') {
+          buf = await downloadPdf(false);
+        } else {
+          // Prefer show_changes once; only fall back to plain if empty (do not fetch both always).
+          buf = await downloadPdf(true);
+          if (!buf?.length) {
+            buf = await downloadPdf(false);
+          }
+        }
+        if (buf?.length) {
+          setCachedEnvelopePdf(envelopeId, cacheVariant, buf);
+        }
+        return buf;
+      } catch (err) {
+        this.rememberEnvelopePollingLimit(envelopeId, err);
+        throw err;
+      }
+    })();
 
-    const withChanges = await downloadPdf(true);
-    const plain = await downloadPdf(false);
-    return this.pickLargerPdfBuffer(withChanges, plain);
+    this.envelopePdfDownloadInFlight.set(inFlightKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.envelopePdfDownloadInFlight.get(inFlightKey) === request) {
+        this.envelopePdfDownloadInFlight.delete(inFlightKey);
+      }
+    }
   }
 
   /**
@@ -3223,6 +3296,8 @@ export class DocusignService {
           console.log(
             `[DocuSign] CC PDF ready for ${envelopeId}: ${buf.length} bytes (attempt ${attempt + 1})`,
           );
+          setCachedEnvelopePdf(envelopeId, 'preview', buf);
+          setCachedEnvelopePdf(envelopeId, 'completed', buf);
           return buf;
         }
       } catch (err) {
@@ -3253,6 +3328,53 @@ export class DocusignService {
     // Single download attempt — the caller / frontend already retries, so we must not
     // multiply DocuSign API calls here (prefill sample polling was purely informational).
     return this.downloadEnvelopePdfBuffer(client, accountId, envelopeId, status);
+  }
+
+  /**
+   * On Connect `completed`: download the signed package once, store under
+   * `ih-crm/signed-contracts/{funder}/`, and persist URL on Document.
+   */
+  private async archiveSignedPdfAfterCompleted(args: {
+    envelopeId: string;
+    applicationId?: string | null;
+    userId?: string;
+  }): Promise<void> {
+    const eid = String(args.envelopeId || '').trim();
+    if (!eid) return;
+
+    const existingUrl = await getStoredSignedPdfUrl(eid);
+    if (existingUrl) return;
+
+    try {
+      const userId = String(args.userId || '').trim() || 'system';
+      let buf =
+        getCachedEnvelopePdf(eid, 'completed') || getCachedEnvelopePdf(eid, 'preview');
+      if (!buf?.length) {
+        const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
+        buf = await this.downloadEnvelopeCombinedPdf(client, accountId, eid, false);
+      }
+      if (!buf?.length) {
+        console.warn(
+          `[DocuSign] completed archive skipped: empty PDF for envelope ${eid}`,
+        );
+        return;
+      }
+      setCachedEnvelopePdf(eid, 'completed', buf);
+      await archiveSignedEnvelopePdf({
+        envelopeId: eid,
+        pdf: buf,
+        applicationId: args.applicationId,
+      });
+    } catch (err) {
+      if (isDocuSignPollingLimitError(err)) {
+        this.rememberEnvelopePollingLimit(eid, err);
+        console.warn(
+          `[DocuSign] completed archive aborted for ${eid}: DocuSign polling limit`,
+        );
+        return;
+      }
+      console.warn(`[DocuSign] completed archive failed for ${eid}:`, err);
+    }
   }
 
   private async emailPrefilledContractPdfToCcRecipients(
@@ -4431,13 +4553,41 @@ export class DocusignService {
     if (!eid) {
       throw new BadRequestException('envelopeId is required');
     }
-    const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
-    const status = await this.getEnvelopeStatus(client, accountId, eid);
-    const buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
-    if (!buf?.length) {
-      throw new BadRequestException('Could not download PDF from DocuSign');
+
+    // Prefer durable Cloudinary archive (per-funder folder) — zero DocuSign GETs.
+    const storedUrl = await getStoredSignedPdfUrl(eid);
+    if (storedUrl) {
+      const cached = getCachedEnvelopePdf(eid, 'completed');
+      if (cached?.length) return cached;
+      const fromCloud = await fetchStoredSignedPdfBuffer(storedUrl);
+      if (fromCloud?.length) {
+        setCachedEnvelopePdf(eid, 'completed', fromCloud);
+        return fromCloud;
+      }
     }
-    return buf;
+
+    this.assertEnvelopePollingAllowed(eid);
+    const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
+    try {
+      const status = await this.getEnvelopeStatus(client, accountId, eid);
+      const buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
+      if (!buf?.length) {
+        throw new BadRequestException('Could not download PDF from DocuSign');
+      }
+      // Lazy backfill: first completed download also archives for future opens.
+      if (String(status || '').toLowerCase() === 'completed' && !storedUrl) {
+        void archiveSignedEnvelopePdf({
+          envelopeId: eid,
+          pdf: buf,
+        }).catch((err) =>
+          console.warn(`[DocuSign] lazy signed PDF archive failed for ${eid}:`, err),
+        );
+      }
+      return buf;
+    } catch (err) {
+      this.rememberEnvelopePollingLimit(eid, err);
+      throw err;
+    }
   }
 
   /**
@@ -5050,6 +5200,19 @@ export class DocusignService {
           undefined,
           envelopeKind,
         );
+      }
+
+      // Archive signed package once under ih-crm/signed-contracts/{funder}/…
+      if (
+        incomingResolved === 'completed' &&
+        priorStatus !== 'completed' &&
+        !isRecipientEvent &&
+        !isStandaloneAch
+      ) {
+        await this.archiveSignedPdfAfterCompleted({
+          envelopeId: String(envelopeId),
+          applicationId,
+        });
       }
     }
 

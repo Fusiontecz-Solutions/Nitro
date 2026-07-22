@@ -265,3 +265,74 @@ export function setEnvelopeStatusSyncCache(
 export function getEnvelopeStatusSyncMinIntervalMs(): number {
   return ENVELOPE_STATUS_SYNC_MIN_INTERVAL_MS;
 }
+
+/**
+ * DocuSign enforces a separate per-envelope polling budget (~250 GET/hour on
+ * envelope + documents/recipients/tabs). After a 429, block further poll GETs
+ * for that envelope until Retry-After (account-wide 3000/hr is a different limit).
+ */
+const envelopePollingCooldownUntil = new Map<string, number>();
+
+export function getEnvelopePollingCooldownRemainingMs(envelopeId: string): number {
+  const eid = String(envelopeId || '').trim();
+  if (!eid) return 0;
+  const until = envelopePollingCooldownUntil.get(eid) || 0;
+  const remaining = until - Date.now();
+  if (remaining <= 0) {
+    if (until) envelopePollingCooldownUntil.delete(eid);
+    return 0;
+  }
+  return remaining;
+}
+
+export function setEnvelopePollingCooldown(envelopeId: string, retryAfterMs: number): void {
+  const eid = String(envelopeId || '').trim();
+  if (!eid) return;
+  const ms = Math.max(60_000, Math.ceil(retryAfterMs || 60 * 60_000));
+  const until = Date.now() + ms;
+  const prev = envelopePollingCooldownUntil.get(eid) || 0;
+  if (until > prev) envelopePollingCooldownUntil.set(eid, until);
+}
+
+export function clearEnvelopePollingCooldown(envelopeId: string): void {
+  envelopePollingCooldownUntil.delete(String(envelopeId || '').trim());
+}
+
+/** Short-lived PDF buffer cache so preview / refresh does not re-GET the same envelope. */
+const ENVELOPE_PDF_CACHE_TTL_MS = Math.max(
+  30_000,
+  parseInt(String(process.env.DOCUSIGN_PDF_CACHE_MS || ''), 10) || 10 * 60_000,
+);
+const envelopePdfCache = new Map<string, CacheEntry<Buffer>>();
+
+export function getCachedEnvelopePdf(envelopeId: string, variant: string): Buffer | null {
+  const key = `${String(envelopeId || '').trim()}::${variant}`;
+  const hit = envelopePdfCache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    envelopePdfCache.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+export function setCachedEnvelopePdf(
+  envelopeId: string,
+  variant: string,
+  value: Buffer,
+): void {
+  const eid = String(envelopeId || '').trim();
+  if (!eid || !value?.length) return;
+  envelopePdfCache.set(`${eid}::${variant}`, {
+    value,
+    expiresAt: Date.now() + ENVELOPE_PDF_CACHE_TTL_MS,
+  });
+}
+
+export function invalidateCachedEnvelopePdf(envelopeId: string): void {
+  const eid = String(envelopeId || '').trim();
+  if (!eid) return;
+  for (const key of envelopePdfCache.keys()) {
+    if (key.startsWith(`${eid}::`)) envelopePdfCache.delete(key);
+  }
+}

@@ -816,16 +816,19 @@ model GoogleOAuth {
 }
 
 model Document {
-  id            Int         @id @default(autoincrement())
-  applicationId String      @unique @db.Uuid
-  envelopeId    String      @unique
-  status        String
-  sentAt        DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  userId        Int
-  application   Application @relation(fields: [applicationId], references: [id])
+  id                Int         @id @default(autoincrement())
+  applicationId     String      @unique @db.Uuid
+  envelopeId        String      @unique
+  status            String
+  sentAt            DateTime?
+  completedAt       DateTime?
+  /// Cloudinary URL for the signed combined PDF (avoids re-hitting DocuSign after complete).
+  signedPdfUrl      String?
+  signedPdfPublicId String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  userId            Int
+  application       Application @relation(fields: [applicationId], references: [id])
 }
 
 model Addendum {

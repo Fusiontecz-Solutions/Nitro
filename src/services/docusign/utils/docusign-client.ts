@@ -158,9 +158,13 @@ export function isDocuSignEnvelopeUpdateLimitError(err: unknown): boolean {
 export function isDocuSignPollingLimitError(err: unknown): boolean {
   const ax = err as {
     status?: number;
+    name?: string;
+    message?: string;
     response?: { status?: number; data?: { errorCode?: string; message?: string } };
   };
-  if (ax?.status === 429 || ax?.response?.status === 429) return true;
+  if (ax?.name === 'DocusignCooldownException' || ax?.status === 429 || ax?.response?.status === 429) {
+    return true;
+  }
   if (isDocuSignEnvelopeUpdateLimitError(err)) return true;
   const code = String(ax?.response?.data?.errorCode || '');
   if (
@@ -170,8 +174,8 @@ export function isDocuSignPollingLimitError(err: unknown): boolean {
   ) {
     return true;
   }
-  const msg = formatDocusignApiErrorMessage(err);
-  return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.*limit|api.?invocation.*limit|rate.?limit|too many requests/i.test(
+  const msg = `${formatDocusignApiErrorMessage(err)} ${String(ax?.message || '')}`;
+  return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|hourly_apiinvocation|apiinvocation.*limit|api.?invocation.*limit|rate.?limit|cooldown is active|too many requests|status code 429/i.test(
     msg,
   );
 }
@@ -216,10 +220,18 @@ export function formatDocusignRouteError(err: unknown): {
   message: string;
   retryAfterSeconds?: number;
 } {
-  const e = err as { status?: number; message?: string };
+  const e = err as {
+    status?: number;
+    message?: string;
+    retryAfterSeconds?: number;
+    response?: { status?: number };
+  };
   const message = formatDocusignApiErrorMessage(err);
   if (isDocuSignPollingLimitError(err)) {
-    const retryAfterSeconds = Math.max(1, Math.ceil(getDocusignRetryAfterMs(err) / 1000));
+    const retryAfterSeconds = Math.max(
+      1,
+      e?.retryAfterSeconds || Math.ceil(getDocusignRetryAfterMs(err) / 1000),
+    );
     return {
       status: 429,
       retryAfterSeconds,
@@ -228,15 +240,21 @@ export function formatDocusignRouteError(err: unknown): {
           ? `DocuSign envelope update limit reached. Retry after ${retryAfterSeconds} seconds; repeated retries will continue to fail.`
           : /hourly_apiinvocation|apiinvocation.?limit/i.test(message)
           ? 'DocuSign hourly API limit exceeded (3000/hour). Wait about an hour before sending or syncing again — status still updates via webhook.'
-          : /hourly_envelope_polling|burst_envelope_polling|polling.?limit/i.test(message)
-            ? 'DocuSign envelope polling limit exceeded (250 GET/hour). Status updates via webhook — wait about an hour before Refresh/sync. Do not keep retrying.'
+          : /hourly_envelope_polling|burst_envelope_polling|polling.?limit|cooldown is active|status code 429/i.test(
+                `${message} ${String(e?.message || '')}`,
+              )
+            ? 'DocuSign envelope polling limit exceeded (250 GET/hour per envelope). Status updates via webhook — wait about an hour before Refresh/sync. Do not keep retrying.'
             : message,
     };
   }
   const status =
     typeof e?.status === 'number' && e.status >= 400 && e.status < 600
       ? e.status
-      : 500;
+      : typeof e?.response?.status === 'number' &&
+          e.response.status >= 400 &&
+          e.response.status < 600
+        ? e.response.status
+        : 500;
   return { status, message };
 }
 

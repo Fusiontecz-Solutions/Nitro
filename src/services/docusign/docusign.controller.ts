@@ -278,9 +278,7 @@ export const downloadPrefilledPdfByApplication = async (req: Request, res: Respo
     );
     return res.send(pdfBuffer);
   } catch (error: any) {
-    return res.status(error.status || 500).json({
-      message: error.message || 'Failed to fetch prefilled PDF',
-    });
+    return sendDocusignRouteError(res, error, 'Failed to fetch prefilled PDF');
   }
 };
 
@@ -330,9 +328,7 @@ export const downloadSignedPdf = async (req: Request, res: Response) => {
     );
     return res.send(pdfBuffer);
   } catch (error: any) {
-    return res.status(error.status || 500).json({
-      message: error.message || 'Failed to fetch PDF',
-    });
+    return sendDocusignRouteError(res, error, 'Failed to fetch PDF');
   }
 };
 
