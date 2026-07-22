@@ -5,6 +5,7 @@ export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [
   'flex_addendum',
   'pre_payment_addendum',
   'balance_transfer',
+  'case_takeover_addendum',
   'ach_authorization',
   'ach_authorization_texas',
 ] as const;
@@ -29,6 +30,8 @@ export function resolveFunderSupplementalStorageType(layoutKey: string): string 
   const key = String(layoutKey || '').trim();
   if (key === 'ach_authorization_standalone') return 'ach_authorization';
   if (key === 'ach_authorization_texas') return 'ach_authorization_texas';
+  // Legacy uploads used case_takeover_balance_transfer — map to the separate addendum type.
+  if (key === 'case_takeover_balance_transfer') return 'case_takeover_addendum';
   return key;
 }
 

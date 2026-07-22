@@ -1,4 +1,4 @@
-﻿import type { UploadedFile } from 'express-fileupload';
+import type { UploadedFile } from 'express-fileupload';
 import { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import uploadService from './uploadService';
@@ -527,6 +527,8 @@ async function upsertFunderSupplementalBoldSignTemplate(
         ? 'Pre-Payment Addendum'
       : supplementalType === 'balance_transfer'
         ? 'Balance Transfer'
+        : supplementalType === 'case_takeover_addendum'
+          ? 'Case Takeover Balance Transfer'
         : 'ACH Authorization';
   const templateData = {
     name: `${funderName} ${label}`,
@@ -755,7 +757,7 @@ export async function uploadFunderNamedAddendumPdf(
   const coordsKey = String(coordinateLayoutKey || '').trim();
   if (!coordsKey || !isDocumentLayoutKey(coordsKey)) {
     throw new Error(
-      'Select a valid coordinate layout (Flex Addendum, Pre-Payment Addendum, Balance Transfer, ACH Authorization, or Texas ACH).',
+      'Select a valid coordinate layout (Flex Addendum, Pre-Payment Addendum, Balance Transfer, Case Takeover Balance Transfer, ACH Authorization, or Texas ACH).',
     );
   }
 

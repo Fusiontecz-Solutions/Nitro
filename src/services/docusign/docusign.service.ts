@@ -4718,7 +4718,85 @@ export class DocusignService {
           `Failed to download CRM template PDF (${res.status}) for "${resolvedRef}"`,
         );
       }
-      return Buffer.from(await res.arrayBuffer());
+      const buf = Buffer.from(await res.arrayBuffer());
+      const stampKey = [resolvedRef, rawRef].find((k) =>
+        String(k || '').toLowerCase().includes('case_takeover'),
+      );
+      if (stampKey) {
+        try {
+          const { getDocumentLayout } = await import('./layouts/document-layout.registry');
+          const { stampFunderLogoOnPdfBase64 } = await import('./utils/stamp-funder-logo');
+          const { resolveFunderProfile } = await import('../funderProfileService');
+          const { isDocumentLayoutKey } = await import('./platform-document-registry');
+          const layoutKey = isDocumentLayoutKey(stampKey)
+            ? stampKey
+            : 'case_takeover_addendum';
+          const layout = getDocumentLayout(layoutKey as any);
+          const profile = await resolveFunderProfile({
+            funderProfileId: options?.funderProfileId,
+            funderName: options?.funderName,
+            state: options?.state,
+          });
+          const logoUrl = String(profile?.logoUrl || '').trim();
+          if (layout?.branding?.logo && logoUrl) {
+            const stamped = await stampFunderLogoOnPdfBase64(
+              buf.toString('base64'),
+              logoUrl,
+              layout.branding.logo,
+            );
+            return Buffer.from(stamped, 'base64');
+          }
+        } catch {
+          /* return unstamped */
+        }
+      }
+      return buf;
+    }
+
+    // Platform layout keys with bundled defaults (e.g. case_takeover_addendum).
+    try {
+      const { isDocumentLayoutKey, loadPlatformDocumentPdfBase64 } = await import(
+        './platform-document-registry'
+      );
+      const { getDocumentLayout } = await import('./layouts/document-layout.registry');
+      const { stampFunderLogoOnPdfBase64 } = await import('./utils/stamp-funder-logo');
+      const { resolveFunderProfile } = await import('../funderProfileService');
+
+      const stampCaseTakeoverLogo = async (b64: string, layoutKey: string): Promise<Buffer> => {
+        const layout = getDocumentLayout(layoutKey as any);
+        const logoBox = layout?.branding?.logo;
+        if (!logoBox) return Buffer.from(b64, 'base64');
+        const profile = await resolveFunderProfile({
+          funderProfileId: options?.funderProfileId,
+          funderName: options?.funderName,
+          state: options?.state,
+        });
+        const logoUrl = String(profile?.logoUrl || '').trim();
+        if (!logoUrl) return Buffer.from(b64, 'base64');
+        const stamped = await stampFunderLogoOnPdfBase64(b64, logoUrl, logoBox);
+        return Buffer.from(stamped, 'base64');
+      };
+
+      if (isDocumentLayoutKey(resolvedRef)) {
+        const b64 = await loadPlatformDocumentPdfBase64(resolvedRef);
+        if (b64) {
+          if (String(resolvedRef).includes('case_takeover')) {
+            return stampCaseTakeoverLogo(b64, resolvedRef);
+          }
+          return Buffer.from(b64, 'base64');
+        }
+      }
+      if (resolvedRef !== rawRef && isDocumentLayoutKey(rawRef)) {
+        const b64 = await loadPlatformDocumentPdfBase64(rawRef);
+        if (b64) {
+          if (String(rawRef).includes('case_takeover')) {
+            return stampCaseTakeoverLogo(b64, rawRef);
+          }
+          return Buffer.from(b64, 'base64');
+        }
+      }
+    } catch {
+      /* fall through */
     }
 
     // DocuSign template UUIDs only — layout keys like `contract` / `funder_*` are CRM-sourced.

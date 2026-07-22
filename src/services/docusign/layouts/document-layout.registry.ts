@@ -4,6 +4,7 @@ import achAuthorizationLayout from './ach_authorization.layout.json';
 import achAuthorizationStandaloneLayout from './ach_authorization_standalone.layout.json';
 import achAuthorizationTexasExport from './ach_authorization_texas.json';
 import balanceTransferLayout from './balance_transfer.layout.json';
+import caseTakeoverAddendumLayout from './case_takeover_addendum.layout.json';
 import contractLayout from './contract.layout.json';
 import flexAddendumLayout from './flex_addendum.layout.json';
 import prePaymentAddendumLayout from './pre_payment_addendum.layout.json';
@@ -14,6 +15,7 @@ export const DOCUMENT_LAYOUT_KEYS = {
   contract: 'contract',
   texasFundingGroupContract: 'texas_funding_group_contract',
   balanceTransfer: 'balance_transfer',
+  caseTakeoverAddendum: 'case_takeover_addendum',
   flexAddendum: 'flex_addendum',
   prePaymentAddendum: 'pre_payment_addendum',
   achAuthorization: 'ach_authorization',
@@ -30,6 +32,9 @@ export const BOLD_SIGN_TYPE_TO_LAYOUT_KEY: Record<string, DocumentLayoutKey> = {
   texas_funding_group_contract: DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
   texas_funding_group: DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
   balance_transfer: DOCUMENT_LAYOUT_KEYS.balanceTransfer,
+  case_takeover_addendum: DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum,
+  /** @deprecated legacy key — same layout as case_takeover_addendum */
+  case_takeover_balance_transfer: DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum,
   addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
   flex_addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
   pre_payment_addendum: DOCUMENT_LAYOUT_KEYS.prePaymentAddendum,
@@ -67,6 +72,8 @@ const REGISTRY: Record<DocumentLayoutKey, DocumentLayout> = {
   [DOCUMENT_LAYOUT_KEYS.contract]: contractLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract]: texasFundingGroupLayout,
   [DOCUMENT_LAYOUT_KEYS.balanceTransfer]: balanceTransferLayout as DocumentLayout,
+  [DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum]:
+    caseTakeoverAddendumLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.flexAddendum]: flexAddendumLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.prePaymentAddendum]: prePaymentAddendumLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.achAuthorization]: achAuthorizationLayout as DocumentLayout,

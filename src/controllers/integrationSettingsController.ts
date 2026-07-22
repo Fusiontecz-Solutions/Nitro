@@ -58,6 +58,8 @@ function getUploadedSupplementalFile(
 const SUPPLEMENTAL_UPLOAD_FIELDS: Record<string, FunderSupplementalLayoutType> = {
   flexAddendum: 'flex_addendum',
   balanceTransfer: 'balance_transfer',
+  caseTakeoverBalanceTransfer: 'case_takeover_addendum',
+  caseTakeoverAddendum: 'case_takeover_addendum',
   achAuthorization: 'ach_authorization',
 };
 
@@ -431,7 +433,7 @@ export const uploadFunderAddendum = async (req: Request, res: Response) => {
       return res.status(400).json({
         success: false,
         message:
-          'coordinateLayoutKey is required (flex_addendum, pre_payment_addendum, balance_transfer, ach_authorization).',
+          'coordinateLayoutKey is required (flex_addendum, pre_payment_addendum, balance_transfer, case_takeover_addendum, ach_authorization).',
       });
     }
 

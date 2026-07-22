@@ -50,6 +50,11 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
     name: 'Woodmere Financial Balance Transfer Sheet',
     type: 'balance_transfer',
   },
+  [DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum,
+    name: 'Case Takeover Balance Transfer',
+    type: 'case_takeover_addendum',
+  },
   [DOCUMENT_LAYOUT_KEYS.achAuthorization]: {
     layoutKey: DOCUMENT_LAYOUT_KEYS.achAuthorization,
     name: 'Woodmere Financial ACH Authorization',
@@ -218,6 +223,16 @@ export async function loadPlatformDocumentPdfBase64(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
   const def = PLATFORM_DOCUMENTS[layoutKey];
+
+  if (layoutKey === DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum) {
+    const dedicatedUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
+    if (dedicatedUrl) {
+      return fetchRemotePdfAsBase64(dedicatedUrl, def.name);
+    }
+    throw new Error(
+      `No PDF uploaded for "${def.name}". Upload it in Settings → Funder profile → Addendum PDFs (Case Takeover Balance Transfer).`,
+    );
+  }
 
   if (layoutKey === DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas) {
     const dedicatedUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);

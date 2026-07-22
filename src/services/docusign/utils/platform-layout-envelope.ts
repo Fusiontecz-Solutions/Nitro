@@ -52,10 +52,50 @@ import {
   resolveFunderSupplementalDocumentDisplayName,
 } from '../../../utils/funderDocumentSource';
 import { isTexasFundingGroupFunderProfile } from '../../../utils/funderProfileResolver';
+import { stampFunderLogoOnPdfBase64 } from './stamp-funder-logo';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
 
 export type DocumentLayoutWithBase64 = DocumentLayout & { documentBase64: string };
+
+async function applyFunderBrandingToLayoutPdf(
+  layout: DocumentLayoutWithBase64,
+  funder: SerializedFunderProfile | null,
+): Promise<DocumentLayoutWithBase64> {
+  const key = String(layout.key || '').trim().toLowerCase();
+  const isCaseTakeover =
+    key === 'case_takeover_addendum' ||
+    key.endsWith('_case_takeover_addendum') ||
+    key === 'case_takeover_balance_transfer' ||
+    key.endsWith('_case_takeover_balance_transfer');
+  if (!isCaseTakeover) return layout;
+
+  // Logo only — funder name is filled dynamically via prefill tabs (same as Flex / BT).
+  const logoBox =
+    layout.branding?.logo ||
+    ({
+      pageNumber: '1',
+      x: '217',
+      y: '8',
+      width: '178',
+      height: '100',
+    } as const);
+  const logoUrl = String(funder?.logoUrl || '').trim();
+  if (!logoUrl) {
+    console.warn(
+      '[case-takeover] No funder logoUrl available for branding stamp.',
+      funder?.id || funder?.name || 'no-funder',
+    );
+    return layout;
+  }
+  const stamped = await stampFunderLogoOnPdfBase64(
+    layout.documentBase64,
+    logoUrl,
+    logoBox,
+  );
+  if (!stamped || stamped === layout.documentBase64) return layout;
+  return { ...layout, documentBase64: stamped };
+}
 
 async function resolveCoordinateLayoutKeyForFunderPdf(
   funderLayoutKey: string,
@@ -164,6 +204,7 @@ export async function loadSupplementalLayoutPackage(
   const sourceRef = String(ref || '').trim();
   const funder = await resolveFunderLayoutContext(funderContext);
 
+  const pack = await (async (): Promise<DocumentLayoutWithBase64> => {
   if (isDocumentLayoutKey(sourceRef)) {
     const layout = getDocumentLayout(sourceRef);
     if (funder?.id) {
@@ -174,10 +215,22 @@ export async function loadSupplementalLayoutPackage(
         const storageType = resolveFunderSupplementalStorageType(sourceRef);
         const scopedKey = funderSupplementalLayoutKeyForDocument(docsFunderId, sourceRef);
         let scopedPdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(scopedKey);
+        if (!scopedPdfUrl && storageType === 'case_takeover_addendum') {
+          const legacyKey = funderSupplementalLayoutKeyForDocument(
+            docsFunderId,
+            'case_takeover_balance_transfer',
+          );
+          scopedPdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(legacyKey);
+        }
         if (!scopedPdfUrl) {
           const typedRow = await prisma.boldSignTemplate.findFirst({
             where: {
-              type: storageType,
+              type: {
+                in:
+                  storageType === 'case_takeover_addendum'
+                    ? ['case_takeover_addendum', 'case_takeover_balance_transfer']
+                    : [storageType],
+              },
               OR: [
                 { layoutKey: { startsWith: `funder_${docsFunderId}_` } },
                 { templateId: { startsWith: `funder_${docsFunderId}_` } },
@@ -268,6 +321,9 @@ export async function loadSupplementalLayoutPackage(
     throw new Error(`Supplemental document "${resolved.name || ref}" PDF could not be loaded.`);
   }
   return { ...layout, documentBase64 };
+  })();
+
+  return applyFunderBrandingToLayoutPdf(pack, funder);
 }
 
 export function signerRolesToLayoutSigners(
@@ -405,6 +461,10 @@ export function countGuarantorsFromRoles(roles: Array<Record<string, unknown>>):
 
 /** Normalize supplemental refs to platform layout keys or CRM template row ids (e.g. state disclosure). */
 export async function filterSupplementalRefs(refs: string[]): Promise<string[]> {
+  const isUuid = (value: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    );
   const out: string[] = [];
   for (const ref of refs) {
     const trimmed = String(ref || '').trim();
@@ -414,8 +474,32 @@ export async function filterSupplementalRefs(refs: string[]): Promise<string[]> 
       continue;
     }
 
+    // Funder-owned keys (`funder_{uuid}_case_takeover_addendum`) are not UUIDs —
+    // never query BoldSignTemplate.id with them (Postgres uuid cast fails).
+    if (isFunderSupplementalLayoutKey(trimmed)) {
+      const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(trimmed);
+      if (pdfUrl) {
+        out.push(trimmed);
+        continue;
+      }
+      const scopedRow = await prisma.boldSignTemplate.findFirst({
+        where: { OR: [{ layoutKey: trimmed }, { templateId: trimmed }] },
+        select: { id: true },
+      });
+      if (scopedRow?.id) out.push(trimmed);
+      continue;
+    }
+
+    const or: Array<{ id: string } | { templateId: string } | { layoutKey: string }> = [
+      { templateId: trimmed },
+      { layoutKey: trimmed },
+    ];
+    if (isUuid(trimmed)) {
+      or.unshift({ id: trimmed });
+    }
+
     const row = await prisma.boldSignTemplate.findFirst({
-      where: { OR: [{ id: trimmed }, { templateId: trimmed }, { layoutKey: trimmed }] },
+      where: { OR: or },
       select: { id: true, layoutKey: true, type: true, templateId: true, pdfUrl: true },
     });
     if (row?.id && String(row.pdfUrl || '').trim()) {
@@ -544,18 +628,20 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
       funderProfile.displayName || funderProfile.name || '',
     ).trim();
     if (funderPlainName) {
-      const existingFunderIdx = prefillFields.findIndex(
-        (f) => String(f.id || '').trim() === 'funder_name',
-      );
-      if (existingFunderIdx >= 0) {
-        prefillFields[existingFunderIdx] = {
-          ...prefillFields[existingFunderIdx],
-          id: 'funder_name',
-          value: funderPlainName,
-        };
-      } else {
+      const funderNameIds = [
+        'funder_name',
+        'case_takeover_addendum_funder_name',
+      ];
+      // Drop every prior funder_name entry (e.g. disclosure forced "Woodmere"), then set once.
+      const filtered = prefillFields.filter((f) => {
+        const id = String(f.id || '').trim();
+        return id !== 'funder_name' && id !== 'case_takeover_addendum_funder_name';
+      });
+      prefillFields.length = 0;
+      prefillFields.push(...filtered);
+      for (const id of funderNameIds) {
         prefillFields.push({
-          id: 'funder_name',
+          id,
           value: funderPlainName,
         });
       }

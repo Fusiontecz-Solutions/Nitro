@@ -39,6 +39,14 @@ export type DocumentLayoutPlacement = {
   fontSize?: string | number;
 };
 
+export type DocumentLayoutBrandingLogo = {
+  pageNumber?: string;
+  x: string;
+  y: string;
+  width: string;
+  height: string;
+};
+
 export type DocumentLayout = {
   layoutVersion: number;
   key: string;
@@ -47,6 +55,10 @@ export type DocumentLayout = {
   /** When true, do not mirror primary initials for owner 2 (standalone ACH send). */
   skipOwner2InitialMirror?: boolean;
   legacyDocuSignTemplateId?: string;
+  /** Optional runtime branding (e.g. selected funder logo stamp). */
+  branding?: {
+    logo?: DocumentLayoutBrandingLogo;
+  };
   pdf?: {
     source: 'contractTemplate' | 'boldSignTemplate';
     fileName?: string;

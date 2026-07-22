@@ -5,6 +5,7 @@ export const LAYOUT_CRM_PREFIX: Record<string, string> = {
   flex_addendum: 'flex_addendum_',
   pre_payment_addendum: 'pre_payment_addendum_',
   balance_transfer: 'balance_transfer_',
+  case_takeover_addendum: 'case_takeover_addendum_',
   ach_authorization: 'ach_form_',
   ach_authorization_standalone: 'ach_form_',
   ach_authorization_texas: 'ach_form_texas_',
@@ -76,6 +77,15 @@ export function resolveCanonicalSupplementalLayoutKey(layoutKey: string): string
   if (k === 'pre_payment_addendum' || k.endsWith('_pre_payment_addendum')) {
     return 'pre_payment_addendum';
   }
+  // Must run before balance_transfer — legacy key ends with `_balance_transfer`.
+  if (
+    k === 'case_takeover_addendum' ||
+    k.endsWith('_case_takeover_addendum') ||
+    k === 'case_takeover_balance_transfer' ||
+    k.endsWith('_case_takeover_balance_transfer')
+  ) {
+    return 'case_takeover_addendum';
+  }
   if (k === 'balance_transfer' || k.endsWith('_balance_transfer')) return 'balance_transfer';
   if (
     k === 'ach_authorization' ||
@@ -101,7 +111,7 @@ export function isMainContractLayoutKey(layoutKey: string): boolean {
     return true;
   }
   if (!k.startsWith('funder_')) return false;
-  return !/_flex_addendum|_pre_payment_addendum|_balance_transfer|_ach_|_disclosure|_addendum_/.test(k);
+  return !/_flex_addendum|_pre_payment_addendum|_case_takeover_addendum|_case_takeover_balance_transfer|_balance_transfer|_ach_|_disclosure|_addendum_/.test(k);
 }
 
 export function resolveCrmKeyForLayoutVariable(layoutKey: string, pdfVariable: string): string {
@@ -163,8 +173,14 @@ export function buildScopedValuesForLayout(
     if (prefix) {
       const crmKey = resolveCrmKeyForLayoutVariable(canonicalKey, pdfVar);
       let val = String(globalValues[crmKey] ?? '').trim();
-      // Prefer document-scoped CRM key; fall back to shared PDF variable for first send.
-      if (!val) val = String(globalValues[pdfVar] ?? '').trim();
+      // Case Takeover funder name must stay document-scoped. Shared `funder_name` is
+      // forced to platform disclosure "Woodmere" when a state disclosure is merged —
+      // same pattern as Flex/BT using their own CRM keys instead of bare funder_name.
+      const skipSharedFunderNameFallback =
+        canonicalKey === 'case_takeover_addendum' && pdfVar === 'funder_name';
+      if (!val && !skipSharedFunderNameFallback) {
+        val = String(globalValues[pdfVar] ?? '').trim();
+      }
       if (
         !val &&
         (placement.type === 'date' ||
