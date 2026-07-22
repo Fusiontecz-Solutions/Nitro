@@ -2,6 +2,7 @@ import { createSlice } from '@reduxjs/toolkit';
 import {
     getBackgroundCheck,
     updateCheckItem,
+    runAutomatedCheckItem,
     addCheckAttachment,
     removeCheckAttachment,
     setRequiredFlags,
@@ -80,6 +81,7 @@ export const backgroundCheckSlice = createSlice({
             });
         for (const thunk of [
             updateCheckItem,
+            runAutomatedCheckItem,
             addCheckAttachment,
             removeCheckAttachment,
             setRequiredFlags,

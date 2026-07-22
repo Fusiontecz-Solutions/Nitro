@@ -13,7 +13,7 @@ export type BackgroundCheckResource = {
 };
 
 /**
- * Background Check cards — DataMerch first, external links in the middle, TLO last.
+ * Background Check cards — DataMerch first, external links in the middle, CLEAR last.
  */
 export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
   {
@@ -58,8 +58,8 @@ export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
   },
   {
     id: "tlo",
-    title: "TLO",
-    description: "Identity & background (TLOxp)",
+    title: "Thomson Reuters CLEAR",
+    description: "Identity and background screening",
   },
 ];
 

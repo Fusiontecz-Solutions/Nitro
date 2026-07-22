@@ -7,6 +7,7 @@ import { toast } from "react-toastify";
 import {
     getBackgroundCheck,
     updateCheckItem,
+    runAutomatedCheckItem,
     addCheckAttachment,
     recordCheckDecision,
     reopenCheck,
@@ -26,7 +27,7 @@ import {
 } from "lucide-react";
 
 const CHECK_LABELS: Record<string, string> = {
-    TLO: "TLO",
+    TLO: "Thomson Reuters CLEAR",
     OPENCORPORATES: "OpenCorporates",
     SOS: "Secretary of State",
     NY_COURT: "NY Court",
@@ -34,7 +35,7 @@ const CHECK_LABELS: Record<string, string> = {
     GOOGLE: "Google",
 };
 const CHECK_SUB: Record<string, string> = {
-    TLO: "Identity & background (TLOxp)",
+    TLO: "Identity and background screening",
     OPENCORPORATES: "Entity registration & status",
     SOS: "State business registration",
     NY_COURT: "Civil / judgment search",
@@ -50,11 +51,9 @@ const RESULTS: { key: "PASS" | "FAIL" | "FLAG" | "NA"; label: string }[] = [
 const DECIDERS = ["UNDERWRITER", "FINAL_UNDERWRITER", "ADMIN", "SUPER_ADMIN"];
 const ADMINS = ["ADMIN", "SUPER_ADMIN"];
 
-const checkLink = (type: string, q: string): string => {
+const checkLink = (type: string, q: string): string | undefined => {
     const query = encodeURIComponent(q.trim());
     switch (type) {
-        case "TLO":
-            return "https://tloxp.tlo.com/";
         case "OPENCORPORATES":
             return q ? `https://opencorporates.com/companies?q=${query}&utf8=%E2%9C%93` : "https://opencorporates.com/";
         case "SOS":
@@ -66,7 +65,7 @@ const checkLink = (type: string, q: string): string => {
         case "GOOGLE":
             return q ? `https://www.google.com/search?q=${query}` : "https://www.google.com/";
         default:
-            return "#";
+            return undefined;
     }
 };
 
@@ -115,6 +114,7 @@ const BackgroundCheckPanel = ({ applicationId }: Props) => {
 
     const [reason, setReason] = useState("");
     const [overrideFail, setOverrideFail] = useState(false);
+    const [runningItemId, setRunningItemId] = useState<string | null>(null);
 
     useEffect(() => {
         if (applicationId) dispatch(getBackgroundCheck(applicationId));
@@ -140,6 +140,15 @@ const BackgroundCheckPanel = ({ applicationId }: Props) => {
                 setOverrideFail(false);
             })
             .catch((e: any) => toast.error(typeof e === "string" ? e : "Failed to record decision."));
+    };
+
+    const runClear = (itemId: string) => {
+        setRunningItemId(itemId);
+        dispatch(runAutomatedCheckItem(itemId))
+            .unwrap()
+            .then(() => toast.success("CLEAR Person Search completed."))
+            .catch((e: any) => toast.error(typeof e === "string" ? e : "CLEAR Person Search failed."))
+            .finally(() => setRunningItemId(null));
     };
 
     if (loading && !check) return <div className="text-sm text-muted-foreground py-6">Loading background check…</div>;
@@ -184,18 +193,35 @@ const BackgroundCheckPanel = ({ applicationId }: Props) => {
                         <div key={item.id} className={`rounded-lg border border-l-[3px] ${accentBar(item.result)} bg-card px-3.5 py-3`}>
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="min-w-0">
-                                    <a
-                                        href={checkLink(item.checkType, businessName)}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="inline-flex items-center gap-1 text-sm font-semibold text-[#2563EB] hover:underline"
-                                        title="Open the third-party site in a new tab"
-                                    >
-                                        {CHECK_LABELS[item.checkType]} <ExternalLink className="h-3.5 w-3.5" />
-                                    </a>
+                                    {checkLink(item.checkType, businessName) ? (
+                                        <a
+                                            href={checkLink(item.checkType, businessName)}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="inline-flex items-center gap-1 text-sm font-semibold text-[#2563EB] hover:underline"
+                                            title="Open the third-party site in a new tab"
+                                        >
+                                            {CHECK_LABELS[item.checkType]} <ExternalLink className="h-3.5 w-3.5" />
+                                        </a>
+                                    ) : (
+                                        <span className="text-sm font-semibold">
+                                            {CHECK_LABELS[item.checkType]}
+                                        </span>
+                                    )}
                                     <p className="text-[11px] text-muted-foreground">{CHECK_SUB[item.checkType]}</p>
                                 </div>
                                 <div className="flex items-center gap-2 shrink-0">
+                                    {item.checkType === "TLO" && canDecide && (
+                                        <button
+                                            type="button"
+                                            disabled={locked || runningItemId !== null}
+                                            onClick={() => runClear(item.id)}
+                                            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-[#276D9C] px-2.5 text-[11px] font-semibold text-white hover:bg-[#205b83] disabled:opacity-50"
+                                        >
+                                            {runningItemId === item.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                            {runningItemId === item.id ? "Running…" : "Run CLEAR"}
+                                        </button>
+                                    )}
                                     <div className="inline-flex rounded-lg border p-0.5">
                                         {RESULTS.map((r) => {
                                             const active = item.result === r.key;

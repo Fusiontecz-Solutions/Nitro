@@ -41,6 +41,18 @@ export const updateCheckItem = createAsyncThunk(
     },
 );
 
+export const runAutomatedCheckItem = createAsyncThunk(
+    'backgroundCheck/runItem',
+    async (itemId: string, { rejectWithValue }) => {
+        try {
+            const res = await axiosPost(`${BASE}/items/${itemId}/run`, {});
+            return res.data?.data;
+        } catch (e: any) {
+            return rejectWithValue(e.response?.data?.message || 'Failed to run automated background check');
+        }
+    },
+);
+
 export const addCheckAttachment = createAsyncThunk(
     'backgroundCheck/addAttachment',
     async (

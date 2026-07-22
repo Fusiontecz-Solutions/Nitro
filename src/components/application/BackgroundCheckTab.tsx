@@ -34,6 +34,7 @@ import type { DataMerchLookupData } from "@/redux/actions/datamerch-actions";
 import {
   addCheckAttachment,
   getBackgroundCheck,
+  runAutomatedCheckItem,
   updateCheckItem,
 } from "@/redux/actions/backgroundCheckActions";
 import type { BackgroundCheck } from "@/redux/slices/backgroundCheckSlice";
@@ -103,7 +104,7 @@ export default function BackgroundCheckTab() {
   );
   const loginUser = useSelector(
     (state: RootState) => state.login.data?.user as
-      | { firstName?: string; lastName?: string }
+      | { firstName?: string; lastName?: string; role?: string }
       | undefined,
   );
 
@@ -186,6 +187,18 @@ export default function BackgroundCheckTab() {
     const name = `${loginUser?.firstName ?? ""} ${loginUser?.lastName ?? ""}`.trim();
     return name || "User";
   }, [loginUser]);
+  const canRunClear = useMemo(() => {
+    const role = String(
+      loginUser?.role ||
+        (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
+        "",
+    )
+      .trim()
+      .toUpperCase()
+      .replace(/-/g, "_");
+    // Match Woodmere BE DECIDERS on POST /background-checks/items/:itemId/run
+    return ["UNDERWRITER", "FINAL_UNDERWRITER", "ADMIN", "SUPER_ADMIN"].includes(role);
+  }, [loginUser?.role]);
 
   const [checks, setChecks] = useState<BackgroundCheckFormState>(emptyChecks);
   const [savedAt, setSavedAt] = useState<string | null>(null);
@@ -193,6 +206,7 @@ export default function BackgroundCheckTab() {
   const [saving, setSaving] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [viewingPdf, setViewingPdf] = useState(false);
+  const [runningClear, setRunningClear] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [pdfPreviewName, setPdfPreviewName] = useState("Compliance-Report.pdf");
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
@@ -309,6 +323,27 @@ export default function BackgroundCheckTab() {
     },
     [checks, persistItem],
   );
+
+  const runClear = useCallback(async () => {
+    const itemId = itemIdByResource.current.tlo;
+    if (!itemId) {
+      toast.error("CLEAR background-check item was not found.");
+      return;
+    }
+
+    setRunningClear(true);
+    try {
+      const check = (await dispatch(runAutomatedCheckItem(itemId)).unwrap()) as BackgroundCheck;
+      itemIdByResource.current = buildItemIdMap(check);
+      setChecks(apiCheckToFormState(check));
+      setSavedAt(resolveLatestSavedAt(check));
+      toast.success("CLEAR business and owner searches completed.");
+    } catch (error) {
+      toast.error(typeof error === "string" ? error : "CLEAR search failed.");
+    } finally {
+      setRunningClear(false);
+    }
+  }, [dispatch]);
 
   const handleSaveAll = useCallback(async () => {
     const now = new Date().toISOString();
@@ -497,6 +532,7 @@ export default function BackgroundCheckTab() {
             const isDataMerch = resource.isApi === true;
             const isOpenCorporates = resource.hasPanel === true && resource.id === "opencorporates";
             const isNyCourt = resource.id === "nyscef";
+            const isClear = resource.id === "tlo";
 
             return (
               <BackgroundCheckItemCard
@@ -573,6 +609,25 @@ export default function BackgroundCheckTab() {
                     embedded
                     onApplyToNotes={(notes) => markCheckDirty(resource.id, { notes })}
                   />
+                ) : null}
+                {isClear && canRunClear ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs text-[#64748B]">
+                      Searches the business and every application owner, then flags possible matches for review.
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={runningClear || saving}
+                      onClick={() => void runClear()}
+                      className="shrink-0 bg-[#276D9C] text-white hover:bg-[#205b83]"
+                    >
+                      {runningClear ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+                      ) : null}
+                      {runningClear ? "Running CLEAR…" : "Run CLEAR"}
+                    </Button>
+                  </div>
                 ) : null}
               </BackgroundCheckItemCard>
             );
