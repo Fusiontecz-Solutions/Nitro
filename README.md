@@ -1,5 +1,36 @@
 # katan-inhouse-be
 
+## Thomson Reuters CLEAR S2S
+
+The persisted `TLO` background-check item runs Thomson Reuters CLEAR Business
+Search v2 once and Person Search v3 for every application owner. Possible
+public-record matches are saved as `FLAG` for manual review; they are not
+treated as an automatic failure.
+
+Configure these values only in the deployment secret store or an ignored local
+`.env` file:
+
+```text
+CLEAR_S2S_ENV=beta
+CLEAR_S2S_BASE_URL=
+CLEAR_S2S_USERNAME=
+CLEAR_S2S_PASSWORD=
+CLEAR_S2S_CERT_PATH=/absolute/or/project-relative/path/to/client.pfx
+CLEAR_S2S_CERT_PASSWORD=
+CLEAR_S2S_GLB_PURPOSE=
+CLEAR_S2S_DPPA_PURPOSE=
+CLEAR_S2S_VOTER_PURPOSE=
+CLEAR_S2S_TIMEOUT_MS=30000
+```
+
+`CLEAR_S2S_ENV` accepts `beta` or `production`; `CLEAR_S2S_BASE_URL` is an
+optional HTTPS override. The three permissible-purpose values are mandatory
+and must exactly match Woodmere's approved use. Never commit credentials,
+environment files, PKCS#12/PFX certificates, or certificate passwords.
+
+Authorized underwriter/admin users run the check with
+`POST /background-checks/items/:itemId/run`.
+
 
 
 ## Getting started

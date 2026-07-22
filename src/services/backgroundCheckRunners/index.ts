@@ -2,12 +2,38 @@
  * Adapter seam for automated background-check runs.
  *
  * THIS PASS IS MANUAL ENTRY ONLY — every runner throws. When wiring real
- * providers later (OpenCorporates, DataMerch, TLO, …), implement the matching
+ * providers later (OpenCorporates, DataMerch, CLEAR, …), implement the matching
  * runner and have the controller call `runCheck(checkType, item)` instead of
  * (or alongside) the manual update path. The return shape maps straight onto
  * a BackgroundCheckItem update: { result, notes, raw }.
  */
 import type { CheckType } from '../backgroundCheckService';
+import { createClearS2sRunner } from './clearS2sRunner';
+
+export {
+    CLEAR_S2S_BASE_URLS,
+    getClearS2sConfig,
+    getClearS2sClientConfig,
+    resolveClearS2sConfig,
+    resolveClearS2sClientConfig,
+} from './clearS2sConfig';
+export type {
+    ClearS2sClientConfig,
+    ClearS2sConfig,
+    ClearS2sEnvironment,
+} from './clearS2sConfig';
+export {
+    buildBusinessSearchXml,
+    buildPersonSearchXml,
+    searchClearBusiness,
+    searchClearPerson,
+} from './clearS2sClient';
+export type {
+    ClearBusinessSearchResult,
+    ClearBusinessSearchSubject,
+    ClearPersonSearchResult,
+    ClearPersonSearchSubject,
+} from './clearS2sClient';
 
 export type RunnerResult = {
     result: 'PASS' | 'FAIL' | 'FLAG' | 'NA';
@@ -27,7 +53,8 @@ const manualOnly = (provider: string): BackgroundCheckRunner => ({
 
 /** Registry keyed by checkType. Replace entries with real adapters later. */
 export const runners: Record<CheckType, BackgroundCheckRunner> = {
-    TLO: manualOnly('TLO'),
+    // Keep TLO as the persisted key so existing background-check records remain compatible.
+    TLO: createClearS2sRunner(),
     OPENCORPORATES: manualOnly('OpenCorporates'),
     SOS: manualOnly('Secretary of State'),
     NY_COURT: manualOnly('NY Court'),

@@ -5,7 +5,7 @@ import { requireRoles } from '../middleware/requireRoles';
 
 const router = express.Router();
 
-const DECIDERS = ['UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
+const DECIDERS = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
 const ADMINS = ['ADMIN', 'SUPER_ADMIN'];
 
 router.use(authenticateToken);
@@ -13,6 +13,7 @@ router.use(authenticateToken);
 // Read / lazy-create + run checks (any authenticated staff member)
 router.get('/application/:applicationId', backgroundCheck.getForApplication.bind(backgroundCheck));
 router.patch('/items/:itemId', backgroundCheck.updateItem.bind(backgroundCheck));
+router.post('/items/:itemId/run', requireRoles(...DECIDERS), backgroundCheck.runItem.bind(backgroundCheck));
 router.post('/items/:itemId/attachments', backgroundCheck.addAttachment.bind(backgroundCheck));
 router.delete('/attachments/:id', backgroundCheck.removeAttachment.bind(backgroundCheck));
 router.get('/:checkId/audit', backgroundCheck.audit.bind(backgroundCheck));

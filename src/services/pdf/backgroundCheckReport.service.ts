@@ -40,7 +40,7 @@ const CHECK_RESOURCES = [
   { id: 'sos', title: 'Secretary of State', description: 'State business registration' },
   { id: 'nyscef', title: 'NY Court', description: 'Civil / judgment search' },
   { id: 'google', title: 'Google Search', description: 'Open-web reputation' },
-  { id: 'tlo', title: 'TLO', description: 'Identity & background (TLOxp)' },
+  { id: 'tlo', title: 'Thomson Reuters CLEAR', description: 'Identity and background screening' },
 ] as const;
 
 type CheckStatus = 'completed' | 'pending';

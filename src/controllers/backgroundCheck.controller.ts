@@ -26,6 +26,11 @@ class BackgroundCheckController {
         return handle(res, () => backgroundCheckService.updateItem(req.params.itemId, req.body ?? {}, actor(req)));
     }
 
+    // POST /background-checks/items/:itemId/run
+    runItem(req: Request, res: Response) {
+        return handle(res, () => backgroundCheckService.runAutomatedItem(req.params.itemId, actor(req)));
+    }
+
     // POST /background-checks/items/:itemId/attachments  { url, publicId?, originalName? }
     addAttachment(req: Request, res: Response) {
         return handle(res, () => backgroundCheckService.addAttachment(req.params.itemId, req.body ?? {}, actor(req)), 201);

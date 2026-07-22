@@ -10,6 +10,10 @@ build/
 # Environment variables
 .env
 .env.*
+src/utils/CLEAR_Connection_Info/Credentials.txt
+src/utils/CLEAR_Connection_Info/*.pfx
+*.pfx
+*.p12
 
 # IDE specific files
 .vscode/
