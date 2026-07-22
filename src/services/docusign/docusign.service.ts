@@ -116,6 +116,7 @@ import {
   handleContractSigningStatusTransition,
 } from '../contractSigningStatusEffects';
 import {
+  buildAchFormEnvelopeEmailSubject,
   buildContractEnvelopeDocumentName,
   buildContractEnvelopeEmailSubject,
   buildContractEnvelopePdfFilename,
@@ -1663,6 +1664,36 @@ export class DocusignService {
 
     const clientName = await this.resolveClientDisplayNameForApplication(appId);
     return buildContractEnvelopeEmailSubject(clientName, fromPrefill.offerAmount, lenderName);
+  }
+
+  /** Standalone ACH subject / PDF name: {FunderName}: BusinessName - ACH */
+  private async resolveAchFormEnvelopeTitle(options: {
+    applicationId?: string;
+    title?: string;
+    prefillFields?: PrefillField[];
+    funderName?: string | null;
+  }): Promise<string> {
+    const override = String(options.title || '').trim();
+    if (override) return override;
+
+    const fromPrefill = this.resolveContractContextFromPrefillFields(options.prefillFields);
+    const appId = String(options.applicationId || '').trim();
+    const lenderName = String(options.funderName || '').trim() || undefined;
+
+    if (appId) {
+      const ctx = await this.resolveApplicationContractEmailContext(appId);
+      const businessName = ctx.businessName || fromPrefill.businessName;
+      if (businessName) {
+        return buildAchFormEnvelopeEmailSubject(businessName, null, lenderName);
+      }
+    }
+
+    if (fromPrefill.businessName) {
+      return buildAchFormEnvelopeEmailSubject(fromPrefill.businessName, null, lenderName);
+    }
+
+    const clientName = await this.resolveClientDisplayNameForApplication(appId);
+    return buildAchFormEnvelopeEmailSubject(clientName, null, lenderName);
   }
 
   private async resolveEnvelopeEmailSubject(
@@ -3907,15 +3938,21 @@ export class DocusignService {
     let built;
     try {
       const sendImmediately = options.autoSend === true;
+      const envelopeFunderLabel =
+        String(funderName || funderProfile?.name || funderProfile?.displayName || '').trim() ||
+        null;
       const envelopeSubject = isStandaloneOnly
-        ? String(options.title || '').trim() || 'ACH Authorization'
+        ? await this.resolveAchFormEnvelopeTitle({
+            applicationId: options.applicationId,
+            title: options.title,
+            prefillFields: options.prefillFields,
+            funderName: envelopeFunderLabel,
+          })
         : await this.resolveContractEnvelopeTitle({
             applicationId: options.applicationId,
             title: options.title,
             prefillFields: options.prefillFields,
-            funderName:
-              String(funderName || funderProfile?.name || funderProfile?.displayName || '').trim() ||
-              null,
+            funderName: envelopeFunderLabel,
           });
       const layoutKeyForSend = await resolveMainContractLayoutKeyForSend({
         mainContractLayoutKey: options.mainContractLayoutKey,
