@@ -13,6 +13,7 @@ import BackgroundCheckSidebar from "@/components/application/BackgroundCheckSide
 import NyCourtEvidenceSections from "@/components/application/NyCourtEvidenceSections";
 import DataMerchPanel from "@/components/application/DataMerchPanel";
 import OpenCorporatesPanel from "@/components/application/OpenCorporatesPanel";
+import ClearPanel from "@/components/application/ClearPanel";
 import NyCourtPanel from "@/components/application/NyCourtPanel";
 import {
   apiCheckToFormState,
@@ -196,7 +197,6 @@ export default function BackgroundCheckTab() {
       .trim()
       .toUpperCase()
       .replace(/-/g, "_");
-    // Match Woodmere BE DECIDERS on POST /background-checks/items/:itemId/run
     return ["UNDERWRITER", "FINAL_UNDERWRITER", "ADMIN", "SUPER_ADMIN"].includes(role);
   }, [loginUser?.role]);
 
@@ -610,24 +610,14 @@ export default function BackgroundCheckTab() {
                     onApplyToNotes={(notes) => markCheckDirty(resource.id, { notes })}
                   />
                 ) : null}
-                {isClear && canRunClear ? (
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs text-[#64748B]">
-                      Searches the business and every application owner, then flags possible matches for review.
-                    </p>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={runningClear || saving}
-                      onClick={() => void runClear()}
-                      className="shrink-0 bg-[#276D9C] text-white hover:bg-[#205b83]"
-                    >
-                      {runningClear ? (
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
-                      ) : null}
-                      {runningClear ? "Running CLEAR…" : "Run CLEAR"}
-                    </Button>
-                  </div>
+                {isClear ? (
+                  <ClearPanel
+                    embedded
+                    clearMetadata={state.clearMetadata}
+                    canRunClear={canRunClear}
+                    runningClear={runningClear || saving}
+                    onRunClear={() => void runClear()}
+                  />
                 ) : null}
               </BackgroundCheckItemCard>
             );
