@@ -34,6 +34,20 @@ export type {
     ClearPersonSearchResult,
     ClearPersonSearchSubject,
 } from './clearS2sClient';
+export {
+    buildBusinessReportXml,
+    buildPersonReportXml,
+    clearReportFileName,
+    createAndFetchBusinessReportPdf,
+    createAndFetchPersonReportPdf,
+    fetchClearReportPdfsForSearch,
+    selectClearReportGroupIds,
+} from './clearS2sReports';
+export type {
+    ClearReportFailure,
+    ClearReportPdfResult,
+    ClearReportsBatchResult,
+} from './clearS2sReports';
 
 export type RunnerResult = {
     result: 'PASS' | 'FAIL' | 'FLAG' | 'NA';

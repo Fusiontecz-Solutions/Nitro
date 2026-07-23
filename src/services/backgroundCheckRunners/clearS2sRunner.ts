@@ -33,16 +33,15 @@ export function createClearS2sRunner(
             const businessResponse = clearItem.businessSubject
                 ? await searchBusiness(
                       clearItem.businessSubject,
-                      `Woodmere ${applicationId} Business`,
+                      `Ocean ${applicationId} Business`,
                   )
                 : undefined;
             const personResponses = [];
             for (const [index, subject] of subjects.entries()) {
                 personResponses.push(
-                    await searchPerson(subject, `Woodmere ${applicationId} O${index + 1}`),
+                    await searchPerson(subject, `Ocean ${applicationId} O${index + 1}`),
                 );
             }
-
             const personGroupCount = personResponses.reduce(
                 (total, response) => total + response.groupCount,
                 0,
@@ -52,7 +51,8 @@ export function createClearS2sRunner(
             const hasMatches = groupCount > 0;
 
             return {
-                // A public-record match requires review; it is not an automatic failure.
+                // A public-record match is never treated as an automatic failure.
+                // It is flagged for an underwriter to review.
                 result: hasMatches ? 'FLAG' : 'PASS',
                 notes: hasMatches
                     ? `CLEAR returned ${businessGroupCount} possible business match${businessGroupCount === 1 ? '' : 'es'} and ${personGroupCount} possible owner match${personGroupCount === 1 ? '' : 'es'}; manual review is required.`
