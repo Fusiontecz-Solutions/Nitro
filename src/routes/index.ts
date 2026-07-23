@@ -58,6 +58,7 @@ import sendgridWebhookRoutes from './sendgridWebhookRoutes';
 import mailRoutes from './mailRoutes';
 import integrationSettingsRoutes from './integrationSettingsRoutes';
 import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
+import letterTemplateRoutes from './letterTemplateRoutes';
 
 router.use('/auth', authRoutes);
 router.use('/roles', roleRoutes);
@@ -112,6 +113,7 @@ router.use('/sendgrid', sendgridWebhookRoutes);
 router.use('/mail', mailRoutes);
 router.use('/integration-settings', integrationSettingsRoutes);
 router.use('/background-check-report', backgroundCheckReportRoutes);
+router.use('/letter-templates', letterTemplateRoutes);
 router.use('/integration-settings', integrationSettingsRoutes);
 
 // router.get('/google/test', async (req, res) => {

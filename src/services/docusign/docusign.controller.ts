@@ -316,23 +316,75 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Shared signed-PDF response for SuperAdmin proxy + CRM.
+ * Envelope ID must come from the path (`:envelopeId` or legacy `:documentId`).
+ */
+async function sendEnvelopeSignedPdf(
+  req: Request,
+  res: Response,
+  options: {
+    requireDocument: boolean;
+    contentDisposition: 'inline' | 'attachment';
+    filenamePrefix: string;
+  },
+) {
+  const userId = (req as any).user?.id;
+  const envelopeId = String(
+    req.params.envelopeId || req.params.documentId || '',
+  ).trim();
+
+  if (!envelopeId) {
+    return res.status(400).json({
+      message: 'envelopeId is required in the URL path',
+    });
+  }
+
+  const pdfBuffer = await docusignService.downloadSignedPdf(userId, envelopeId, {
+    requireDocument: options.requireDocument,
+  });
+
+  if (!pdfBuffer?.length) {
+    return res.status(502).json({
+      message: 'DocuSign returned an empty PDF for this envelope',
+    });
+  }
+
+  const filename = `${options.filenamePrefix}-${envelopeId}.pdf`;
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    `${options.contentDisposition}; filename="${filename}"`,
+  );
+  return res.send(pdfBuffer);
+}
+
+/** Legacy alias: GET /download/:envelopeId (param may still be named documentId). */
 export const downloadSignedPdf = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user.id;
-    const { documentId } = req.params;
-    const pdfBuffer = await docusignService.downloadSignedPdf(userId, documentId);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="signed-document-${documentId}.pdf"`,
-    );
-    return res.send(pdfBuffer);
+    return await sendEnvelopeSignedPdf(req, res, {
+      // ACH / standalone packages are not always Document rows — allow either.
+      requireDocument: false,
+      contentDisposition: 'inline',
+      filenamePrefix: 'signed-contract',
+    });
   } catch (error: any) {
     return sendDocusignRouteError(res, error, 'Failed to fetch PDF');
   }
 };
 
-export const getSignedPdf = downloadSignedPdf;
+/** GET /signed-pdf/:envelopeId — requires a tenant Document row for the envelope. */
+export const getSignedPdf = async (req: Request, res: Response) => {
+  try {
+    return await sendEnvelopeSignedPdf(req, res, {
+      requireDocument: true,
+      contentDisposition: 'inline',
+      filenamePrefix: 'signed-contract',
+    });
+  } catch (error: any) {
+    return sendDocusignRouteError(res, error, 'Failed to fetch signed contract PDF');
+  }
+};
 
 export const listDocuments = async (req: Request, res: Response) => {
   try {

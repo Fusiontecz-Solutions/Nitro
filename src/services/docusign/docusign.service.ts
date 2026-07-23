@@ -104,6 +104,7 @@ import {
 import {
   ACH_AUTHORIZATION_DOCUSIGN_KEY,
   clearAchAuthorizationIfMatchesMainContract,
+  findAchEnvelopeAuthHints,
   findApplicationIdByAchEnvelopeId,
   isStandaloneAchEnvelope,
   linkAchAuthorizationEnvelopeToContract,
@@ -165,6 +166,14 @@ class BadRequestException extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'BadRequestException';
+  }
+}
+
+class NotFoundException extends Error {
+  status = 404;
+  constructor(message: string) {
+    super(message);
+    this.name = 'NotFoundException';
   }
 }
 
@@ -4614,11 +4623,113 @@ export class DocusignService {
     return this.downloadDocumentPdfByEnvelopeId(userId, envelopeId);
   }
 
-  async downloadDocumentPdfByEnvelopeId(userId: string, envelopeId: string) {
+  /**
+   * Ensure the envelope is known to this tenant DB before calling DocuSign.
+   * Main contracts live on Document; ACH / standalone / archived sends may only be in prefill JSON.
+   */
+  private async assertTenantEnvelopeKnown(
+    envelopeId: string,
+    options?: { requireDocument?: boolean },
+  ): Promise<void> {
     const eid = String(envelopeId || '').trim();
     if (!eid) {
       throw new BadRequestException('envelopeId is required');
     }
+
+    const document = await prisma.document.findFirst({
+      where: { envelopeId: eid },
+      select: { id: true },
+    });
+    if (document) return;
+
+    if (options?.requireDocument) {
+      throw new NotFoundException(
+        `Unknown envelope: no Document record found for envelopeId "${eid}" in this tenant`,
+      );
+    }
+
+    const achHints = await findAchEnvelopeAuthHints(eid);
+    if (achHints) return;
+
+    const standalone = await prisma.contract.findFirst({
+      where: {
+        contractPrefillOverrides: {
+          path: [STANDALONE_PACKAGE_DOCUSIGN_KEY, 'envelopeId'],
+          equals: eid,
+        },
+      },
+      select: { id: true },
+    });
+    if (standalone) return;
+
+    // Archived main-contract / ACH history rows (envelope no longer on Document).
+    const historyCandidates = await prisma.contract.findMany({
+      where: {
+        OR: [
+          {
+            contractPrefillOverrides: {
+              path: ['contractSendHistory'],
+              not: Prisma.JsonNull,
+            },
+          },
+          {
+            contractPrefillOverrides: {
+              path: ['documentSendHistory'],
+              not: Prisma.JsonNull,
+            },
+          },
+          {
+            contractPrefillOverrides: {
+              path: ['standalonePackageSendHistory'],
+              not: Prisma.JsonNull,
+            },
+          },
+        ],
+      },
+      select: { contractPrefillOverrides: true },
+      orderBy: { id: 'desc' },
+      take: 80,
+    });
+    for (const row of historyCandidates) {
+      const raw = row.contractPrefillOverrides;
+      if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const o = raw as Record<string, unknown>;
+      for (const key of [
+        'contractSendHistory',
+        'documentSendHistory',
+        'standalonePackageSendHistory',
+      ]) {
+        const list = o[key];
+        if (!Array.isArray(list)) continue;
+        if (
+          list.some(
+            (entry) =>
+              entry &&
+              typeof entry === 'object' &&
+              String((entry as Record<string, unknown>).envelopeId ?? '').trim() === eid,
+          )
+        ) {
+          return;
+        }
+      }
+    }
+
+    throw new NotFoundException(
+      `Unknown envelope: "${eid}" is not linked to a Document or contract package in this tenant`,
+    );
+  }
+
+  async downloadDocumentPdfByEnvelopeId(
+    userId: string,
+    envelopeId: string,
+    options?: { requireDocument?: boolean },
+  ) {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) {
+      throw new BadRequestException('envelopeId is required');
+    }
+
+    await this.assertTenantEnvelopeKnown(eid, options);
 
     // Prefer durable Cloudinary archive (per-funder folder) — zero DocuSign GETs.
     const storedUrl = await getStoredSignedPdfUrl(eid);
@@ -4633,12 +4744,31 @@ export class DocusignService {
     }
 
     this.assertEnvelopePollingAllowed(eid);
-    const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
+    let client: AxiosInstance;
+    let accountId: string;
+    try {
+      ({ client, accountId } = await this.getAuthContextForEnvelope(userId, eid));
+    } catch (err: any) {
+      const msg = String(err?.message || '');
+      if (
+        err?.name === 'UnauthorizedException' ||
+        err?.status === 401 ||
+        /expired|refresh token|authorization/i.test(msg)
+      ) {
+        throw new UnauthorizedException(
+          msg || 'DocuSign authorization expired. Reconnect DocuSign or refresh credentials.',
+        );
+      }
+      throw err;
+    }
+
     try {
       const status = await this.getEnvelopeStatus(client, accountId, eid);
       const buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
       if (!buf?.length) {
-        throw new BadRequestException('Could not download PDF from DocuSign');
+        throw new BadRequestException(
+          'Could not download PDF from DocuSign (empty or unavailable combined document)',
+        );
       }
       // Lazy backfill: first sent/completed download also archives for future opens.
       const statusLower = String(status || '').toLowerCase();
@@ -4659,9 +4789,24 @@ export class DocusignService {
         );
       }
       return buf;
-    } catch (err) {
+    } catch (err: any) {
       this.rememberEnvelopePollingLimit(eid, err);
-      throw err;
+      const dsStatus = err?.response?.status;
+      const dsMsg = formatDocusignApiErrorMessage(err);
+      if (dsStatus === 401 || dsStatus === 403) {
+        throw new UnauthorizedException(
+          dsMsg || 'DocuSign authorization expired or was rejected for this envelope',
+        );
+      }
+      if (dsStatus === 404) {
+        throw new NotFoundException(
+          dsMsg || `DocuSign envelope "${eid}" was not found on the connected account`,
+        );
+      }
+      if (err?.status && err.status >= 400 && err.status < 600) {
+        throw err;
+      }
+      throw new BadRequestException(dsMsg || 'DocuSign PDF download failed');
     }
   }
 
@@ -4952,12 +5097,20 @@ export class DocusignService {
     return null;
   }
 
-  async downloadSignedPdf(userId: string, documentId: string) {
-    return this.downloadDocumentPdfByEnvelopeId(userId, documentId);
+  async downloadSignedPdf(
+    userId: string,
+    documentId: string,
+    options?: { requireDocument?: boolean },
+  ) {
+    return this.downloadDocumentPdfByEnvelopeId(userId, documentId, options);
   }
 
-  async fetchSignedDocumentPdf(userId: string, envelopeId: string) {
-    return this.downloadSignedPdf(userId, envelopeId);
+  async fetchSignedDocumentPdf(
+    userId: string,
+    envelopeId: string,
+    options?: { requireDocument?: boolean },
+  ) {
+    return this.downloadSignedPdf(userId, envelopeId, options);
   }
 
   async listDocuments(userId: string, page = 1, pageSize = 10) {

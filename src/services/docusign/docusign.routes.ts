@@ -49,7 +49,8 @@ router.get(
   downloadPrefilledPdfByApplication,
 );
 router.get('/template/:templateId/download', authenticateToken, downloadTemplatePdf);
-router.get('/download/:documentId', authenticateToken, downloadSignedPdf);
+/** Legacy + SuperAdmin: envelope ID in path (param name is envelopeId). */
+router.get('/download/:envelopeId', authenticateToken, downloadSignedPdf);
 router.get('/signed-pdf/:envelopeId', authenticateToken, getSignedPdf);
 router.get('/list', authenticateToken, listDocuments);
 

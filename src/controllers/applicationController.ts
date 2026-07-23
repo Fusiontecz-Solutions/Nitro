@@ -538,6 +538,17 @@ const APPLICATION_DETAIL_INCLUDE = {
     claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
     approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
     assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+    /** Latest active main-contract DocuSign Document (1:1 on application). */
+    document: {
+        select: {
+            id: true,
+            envelopeId: true,
+            status: true,
+            sentAt: true,
+            completedAt: true,
+            updatedAt: true,
+        },
+    },
 } as const satisfies Prisma.ApplicationInclude;
 
 const isUnderwriterApproverRole = (role?: string | null): boolean => {
