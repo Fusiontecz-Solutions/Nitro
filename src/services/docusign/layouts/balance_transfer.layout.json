@@ -1,25 +1,21 @@
 {
   "layoutVersion": 1,
   "key": "balance_transfer",
-  "name": "WOODMERE LLC -  BALANCE TRANSFER SHEET .",
-  "description": "Balance transfer — BoldSignTemplate type=balance_transfer.",
-  "legacyDocuSignTemplateId": "574ca299-5e72-4bbd-902c-e268831e20f1",
-  "pdf": {
-    "source": "boldSignTemplate",
-    "fileName": "WOODMERE LLC - BALANCE TRANSFER SHEET.pdf"
-  },
+  "name": "Balance Transfer",
+  "pageCount": 1,
   "document": {
-    "documentId": "1406",
-    "originalFileName": "WOODMERE LLC -  BALANCE TRANSFER SHEET ..pdf"
+    "originalFileName": "BALANCE TRANSFER.pdf",
+    "documentId": "1406"
   },
   "signers": [
     {
       "roleName": "Signer",
       "routingOrder": 1,
-      "legacyRecipientId": "1"
+      "legacyRecipientId": "41418135"
     }
   ],
   "variables": [
+    "agreement_date",
     "business_address",
     "business_address_city",
     "business_address_state",
@@ -38,7 +34,7 @@
     {
       "id": "p1",
       "type": "date",
-      "variable": "signature_date",
+      "variable": "agreement_date",
       "slot": "date_p1_97_274",
       "documentId": "1406",
       "pageNumber": "1",
@@ -204,7 +200,7 @@
       "y": "315",
       "width": "320",
       "height": "22",
-      "fontSize": "14",
+      "fontSize": "9",
       "signerRole": "Signer",
       "optional": true,
       "lockedForSigner": true,

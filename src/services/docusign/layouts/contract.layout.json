@@ -591,8 +591,8 @@
       "slot": "date_p13_82_624",
       "documentId": "1",
       "pageNumber": "13",
-      "x": "82",
-      "y": "624",
+      "x": "85",
+      "y": "627",
       "signerRole": "Signer",
       "optional": false,
       "sourceTabLabel": "Date Signed 0a93213d-bee6-43a8-924a-b35d8cc8e3ef"
@@ -678,8 +678,8 @@
       "variable": "state_of_inc",
       "documentId": "1",
       "pageNumber": "1",
-      "x": "475",
-      "y": "156",
+      "x": "478",
+      "y": "158",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "state_of_inc"
@@ -793,7 +793,7 @@
       "height": "19",
       "signerRole": "Signer",
       "optional": false,
-      "fillAtSigning": true,
+      "lockedForSigner": true,
       "sourceTabLabel": "authorized_business_phone_page14",
       "signerParty": "primary"
     },
@@ -991,7 +991,7 @@
       "height": "19",
       "signerRole": "Signer",
       "optional": true,
-      "fillAtSigning": true,
+      "lockedForSigner": true,
       "sourceTabLabel": "authorized_business_phone_page15"
     },
     {
@@ -1182,7 +1182,7 @@
       "variable": "business_address_contract",
       "documentId": "1",
       "pageNumber": "1",
-      "x": "97",
+      "x": "100",
       "y": "243",
       "signerRole": "Signer",
       "optional": true,
@@ -1194,8 +1194,8 @@
       "variable": "guarantor_address",
       "documentId": "1",
       "pageNumber": "1",
-      "x": "108",
-      "y": "265",
+      "x": "114",
+      "y": "268",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "guarantor_address"
@@ -1365,8 +1365,8 @@
       "variable": "security_business_name",
       "documentId": "1",
       "pageNumber": "9",
-      "x": "171",
-      "y": "51",
+      "x": "175",
+      "y": "54",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "security_business_name"
@@ -1464,8 +1464,8 @@
       "variable": "guaranty_guarantor1_name",
       "documentId": "1",
       "pageNumber": "11",
-      "x": "69",
-      "y": "177",
+      "x": "72",
+      "y": "181",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "guaranty_guarantor1_name"
@@ -1617,8 +1617,8 @@
       "variable": "authorization_client_name_print",
       "documentId": "1",
       "pageNumber": "13",
-      "x": "106",
-      "y": "571",
+      "x": "110",
+      "y": "575",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "authorization_client_name_print"

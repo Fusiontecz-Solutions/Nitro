@@ -11,6 +11,7 @@ import type { PrefillFieldInput } from './docusign-prefill';
 import { DOCUSIGN_DEFAULT_ROLE_NAME, DOCUSIGN_SECONDARY_ROLE_NAME } from './docusign-client';
 import {
   applyDocuSignPrefillTabStyle,
+  resolveDocuSignFontSizeToken,
   resolveDocuSignPrefillTabWidth,
 } from './docusign-tab-style';
 import { embedArialBoldPdfFont, embedArialPdfFont } from './embed-arial-pdf-font';
@@ -413,14 +414,26 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
 const OWNER2_INITIAL_OFFSET_X = 108;
 const OWNER2_INITIAL_OFFSET_Y = -6;
 
-/** Nudge contract tabs down (DocuSign Y-down) so prefilled text sits on form lines. */
+/**
+ * Nudge ONLY the main Woodmere `contract` layout tabs down by a few px
+ * (DocuSign Y top→bottom) so values sit on form underlines.
+ * Never apply to addendums, ACH, state disclosures, or other funder layouts.
+ */
 const CONTRACT_TAB_Y_OFFSET = Number(process.env.DOCUSIGN_CONTRACT_TAB_Y_OFFSET ?? 3) || 0;
+
+function isWoodmereMainContractLayoutKey(layoutKey?: string): boolean {
+  const key = String(layoutKey || '').trim();
+  // Strict: only the platform main contract — not addendum / disclosure / ACH / funder variants.
+  return key === 'contract' || key === DOCUMENT_LAYOUT_KEYS.contract;
+}
 
 function resolveTabYPosition(y: string | undefined, layoutKey?: string): string {
   const raw = String(y ?? '0').trim();
   const n = parseFloat(raw);
   if (!Number.isFinite(n)) return raw || '0';
-  if (layoutKey !== 'contract' || !CONTRACT_TAB_Y_OFFSET) return raw;
+  if (!CONTRACT_TAB_Y_OFFSET || !isWoodmereMainContractLayoutKey(layoutKey)) {
+    return raw;
+  }
   return String(Math.max(0, Math.round(n + CONTRACT_TAB_Y_OFFSET)));
 }
 
@@ -533,30 +546,13 @@ function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
   return FILL_AT_SIGNING_VARIABLES.has(variable);
 }
 
-/** Contract pages 14–15 authorized business phone (signer enters; never CRM). */
-function isAuthorizedBusinessPhoneFillAtSigningPlacement(
-  placement: DocumentLayoutPlacement,
-): boolean {
-  const page = String(placement.pageNumber || '').trim();
-  if (page !== '14' && page !== '15') return false;
-  const variable = String(placement.variable || '').trim().toLowerCase();
-  const label = String(placement.sourceTabLabel || '').trim().toLowerCase();
-  return (
-    variable === 'authorized_business_phone' ||
-    label === 'authorized_business_phone' ||
-    label === 'authorized_business_phone_page14' ||
-    label === 'authorized_business_phone_page15'
-  );
-}
-
 function isWoodmereContractFillAtSigningPlacement(
   layoutKey: string | undefined,
   placement: DocumentLayoutPlacement,
 ): boolean {
   if (!usesWoodmereStyleNonTexasContractLayout(layoutKey)) return false;
-  // Explicit fillAtSigning works on any page (e.g. page-14/15 business phone).
+  // Explicit fillAtSigning works on any page (portal / credentials stay signer-editable).
   if (placement.fillAtSigning === true) return true;
-  if (isAuthorizedBusinessPhoneFillAtSigningPlacement(placement)) return true;
   return (
     String(placement.pageNumber || '') === WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE &&
     isFillAtSigningPlacement(placement)
@@ -604,18 +600,12 @@ export function isFillAtSigningTabRef(tab: {
     .trim()
     .toLowerCase();
   const label = stripUnique(raw);
-  const page = String(tab.pageNumber ?? '').trim();
   if (
     label &&
     (OPTIONAL_SIGNER_EDITABLE_VARIABLES.has(label) ||
       REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label) ||
-      FILL_AT_SIGNING_VARIABLES.has(label) ||
-      label === 'authorized_business_phone_page14' ||
-      label === 'authorized_business_phone_page15')
+      FILL_AT_SIGNING_VARIABLES.has(label))
   ) {
-    return true;
-  }
-  if (label === 'authorized_business_phone' && (page === '14' || page === '15')) {
     return true;
   }
   return false;
@@ -1344,6 +1334,10 @@ function toTextTab(
   const tabName = clearsValueAtSend(layoutKey, placement)
     ? tabLabel || variable || undefined
     : variable || undefined;
+  const fontSize = resolveDocuSignFontSizeToken({
+    fontSize: placement.fontSize || '9',
+    height: placement.height,
+  });
   return applyDocuSignPrefillTabStyle(
     {
       tabLabel,
@@ -1356,13 +1350,14 @@ function toTextTab(
       ...(optionalTab ? { optional: 'true' } : { required: 'true', optional: 'false' }),
       ...(lockTab ? { locked: 'true' } : {}),
       ...(placement.bold ? { bold: 'true' } : {}),
-      // Prefill hangs on signer 1; Owner 2 uses initials/signatures only. Keep tabLabels unique
-      // across documents so DocuSign does not auto-group them (same label → green sync group).
       shared: 'false',
+      // Keep explicit size9 — DocuSign auto-size was shrinking short tabs to ~size7.
+      disableAutoSize: 'true',
+      fontSize,
       width,
-      ...(placement.height ? { height: placement.height } : {}),
+      ...(placement.height ? { height: String(placement.height) } : { height: '19' }),
     },
-    { height: placement.height, fontSize: placement.fontSize },
+    { height: placement.height || '19', fontSize },
   );
 }
 
@@ -1403,12 +1398,12 @@ export async function renderFlattenedLayoutPdf(
     const page = pages[pageIndex];
     if (!page) continue;
 
-    const tabHeight = parseFloat(String(placement.height || '19')) || 19;
-    const explicitFontSize = parseFloat(String(placement.fontSize ?? '').trim());
+    const fontSizeToken = resolveDocuSignFontSizeToken({
+      fontSize: placement.fontSize,
+      height: placement.height,
+    });
     const fontSize =
-      Number.isFinite(explicitFontSize) && explicitFontSize > 0
-        ? explicitFontSize
-        : Math.min(11, Math.max(7, Math.round(tabHeight * 0.55)));
+      parseFloat(String(fontSizeToken).replace(/^size/i, '')) || 9;
     const { height: pageHeight } = page.getSize();
     const x = parseFloat(String(placement.x || '0')) || 0;
     const yTop = parseFloat(resolveTabYPosition(placement.y, layout.key)) || 0;

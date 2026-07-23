@@ -1,46 +1,60 @@
 /** DocuSign prefill styling — contract, ACH, and addendum templates all use Arial. */
 export const DOCUSIGN_PREFILL_FONT = 'arial';
 export const DOCUSIGN_PREFILL_FONT_COLOR = 'black';
+/** Default prefill size across all docs (contract, addendum, ACH, disclosure). */
+export const DOCUSIGN_PREFILL_FONT_SIZE = 'size9';
 
-/** Map layout tab height (px) to DocuSign fontSize token (templates mostly use size9). */
-export function docuSignFontSizeFromTabHeight(height?: string | number): string {
-  const h = parseFloat(String(height ?? '19')) || 19;
-  if (h <= 14) return 'size7';
-  if (h <= 17) return 'size8';
-  return 'size9';
+const DOCUSIGN_SIZE_TOKEN_RE = /^size(\d+)$/i;
+
+/** Map a numeric pt or `sizeN` token to a DocuSign fontSize token. */
+export function toDocuSignFontSizeToken(fontSize?: string | number): string | null {
+  const raw = String(fontSize ?? '').trim();
+  if (!raw) return null;
+  const tokenMatch = DOCUSIGN_SIZE_TOKEN_RE.exec(raw);
+  if (tokenMatch) {
+    return `size${tokenMatch[1]}`;
+  }
+  const explicit = parseFloat(raw);
+  if (!Number.isFinite(explicit) || explicit <= 0) return null;
+  const rounded = Math.round(explicit);
+  if (rounded <= 7) return 'size7';
+  if (rounded === 8) return 'size8';
+  if (rounded === 9) return 'size9';
+  if (rounded === 10) return 'size10';
+  if (rounded === 11) return 'size11';
+  if (rounded === 12) return 'size12';
+  if (rounded <= 14) return 'size14';
+  if (rounded <= 16) return 'size16';
+  if (rounded <= 18) return 'size18';
+  if (rounded <= 22) return 'size22';
+  if (rounded <= 24) return 'size24';
+  if (rounded <= 26) return 'size26';
+  if (rounded <= 28) return 'size28';
+  if (rounded <= 32) return 'size32';
+  if (rounded <= 36) return 'size36';
+  if (rounded <= 42) return 'size42';
+  if (rounded <= 48) return 'size48';
+  if (rounded <= 54) return 'size54';
+  if (rounded <= 60) return 'size60';
+  if (rounded <= 66) return 'size66';
+  return 'size72';
 }
 
-/** Resolve DocuSign fontSize token from explicit pt size or tab height. */
+/**
+ * Resolve DocuSign fontSize token.
+ * Explicit layout fontSize (pt or `sizeN`) wins; otherwise default size9.
+ * Do not derive size7 from short tab heights — that made Case Takeover / BT look tiny.
+ */
 export function resolveDocuSignFontSizeToken(options?: {
   fontSize?: string | number;
   height?: string | number;
 }): string {
-  const explicit = parseFloat(String(options?.fontSize ?? '').trim());
-  if (Number.isFinite(explicit) && explicit > 0) {
-    const rounded = Math.round(explicit);
-    if (rounded <= 7) return 'size7';
-    if (rounded === 8) return 'size8';
-    if (rounded === 9) return 'size9';
-    if (rounded === 10) return 'size10';
-    if (rounded === 11) return 'size11';
-    if (rounded === 12) return 'size12';
-    if (rounded <= 14) return 'size14';
-    if (rounded <= 16) return 'size16';
-    if (rounded <= 18) return 'size18';
-    if (rounded <= 22) return 'size22';
-    if (rounded <= 24) return 'size24';
-    if (rounded <= 26) return 'size26';
-    if (rounded <= 28) return 'size28';
-    if (rounded <= 32) return 'size32';
-    if (rounded <= 36) return 'size36';
-    if (rounded <= 42) return 'size42';
-    if (rounded <= 48) return 'size48';
-    if (rounded <= 54) return 'size54';
-    if (rounded <= 60) return 'size60';
-    if (rounded <= 66) return 'size66';
-    return 'size72';
-  }
-  return docuSignFontSizeFromTabHeight(options?.height);
+  return toDocuSignFontSizeToken(options?.fontSize) || DOCUSIGN_PREFILL_FONT_SIZE;
+}
+
+/** @deprecated Prefer resolveDocuSignFontSizeToken — kept for callers; always size9. */
+export function docuSignFontSizeFromTabHeight(_height?: string | number): string {
+  return DOCUSIGN_PREFILL_FONT_SIZE;
 }
 
 export function applyDocuSignPrefillTabStyle<T extends Record<string, string | undefined>>(
@@ -55,6 +69,13 @@ export function applyDocuSignPrefillTabStyle<T extends Record<string, string | u
   };
 }
 
+/** Ensure tab height can fit size9 — short boxes cause DocuSign to visually shrink text. */
+export function resolveDocuSignPrefillTabHeight(height?: string | number): string {
+  const h = parseFloat(String(height ?? '').trim());
+  if (Number.isFinite(h) && h >= 19) return String(Math.round(h));
+  return '19';
+}
+
 /** Approximate DocuSign text-tab width (px) so the field hugs prefilled content. */
 export function docuSignTextTabWidthForValue(
   value: string,
@@ -63,12 +84,16 @@ export function docuSignTextTabWidthForValue(
 ): string {
   const text = String(value || '').trim();
   if (!text) return '12';
+  const token = toDocuSignFontSizeToken(fontSizePt);
+  const fromToken = token ? parseFloat(token.replace(/^size/i, '')) : NaN;
   const explicit = parseFloat(String(fontSizePt ?? '').trim());
   const h = parseFloat(String(height ?? '19')) || 19;
   const fontSize =
-    Number.isFinite(explicit) && explicit > 0
-      ? explicit
-      : Math.min(11, Math.max(7, Math.round(h * 0.55)));
+    Number.isFinite(fromToken) && fromToken > 0
+      ? fromToken
+      : Number.isFinite(explicit) && explicit > 0
+        ? explicit
+        : 9;
   // Tight fit to glyph width only — no padded “extra” tab width.
   const pxPerChar = fontSize * 0.55;
   const fit = Math.ceil(text.length * pxPerChar) + 1;

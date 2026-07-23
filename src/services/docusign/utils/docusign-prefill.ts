@@ -9,9 +9,8 @@ export type DocusignTextTabRef = {
 };
 
 /**
- * Tabs the signer fills blank (not CRM). Portal fields are label-only;
- * authorized business phone is only skipped on contract pages 14–15
- * (ACH form uses the same label on page 2 and may keep CRM phone).
+ * Tabs the signer fills blank (not CRM). Portal fields are label-only.
+ * Contract pages 14–15 authorized business phone are CRM-prefilled + locked.
  */
 const SIGNER_BLANK_PORTAL_LABELS = new Set([
   'ach_authorization_bank_portal_website',
@@ -33,25 +32,16 @@ const SIGNER_BLANK_PORTAL_LABELS = new Set([
   'ach_authorization_reference_name3',
   'ach_authorization_reference_number3',
   'ach_authorization_reference_relationship3',
-  'authorized_business_phone_page14',
-  'authorized_business_phone_page15',
 ]);
 
 function shouldSkipCrmPrefillForTab(tab: DocusignTextTabRef): boolean {
   const labels = [tab.tabLabel, tab.name]
     .map((s) => normalizeFieldKey(String(s || '')))
     .filter(Boolean);
-  const page = String(tab.pageNumber ?? '').trim();
   for (const raw of labels) {
     // Strip uniquify suffix (__p14_p45) added so DocuSign does not green-group tabs.
     const label = raw.replace(/__p\d+_[a-z0-9]+$/i, '').replace(/__page\d+$/i, '');
     if (SIGNER_BLANK_PORTAL_LABELS.has(label) || SIGNER_BLANK_PORTAL_LABELS.has(raw)) {
-      return true;
-    }
-    if (
-      (label === 'authorized_business_phone' || raw === 'authorized_business_phone') &&
-      (page === '14' || page === '15')
-    ) {
       return true;
     }
   }
