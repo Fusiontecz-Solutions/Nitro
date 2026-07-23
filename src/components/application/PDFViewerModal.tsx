@@ -875,7 +875,7 @@ function canReviewAndSendToDocuSign(
 
 /**
  * New envelope allowed after fully signed/voided, or while out for signature
- * (previous envelope is voided first in handleSend).
+ * (creates a new envelope without voiding the previous one).
  */
 function canResendMainContract(
     contract: Record<string, unknown> | null | undefined,
@@ -3281,7 +3281,7 @@ const PDFViewerModal = ({
 
         if (outForSignatureBeforeSend && packageIncludesMainContract) {
             const confirmed = window.confirm(
-                "Void the current DocuSign envelope and send a new contract? Signers will no longer be able to sign the previous one.",
+                "Create a new DocuSign envelope? The previous envelope will stay active in DocuSign (it is not voided). Use Void Contract if you want to cancel the old one.",
             );
             if (!confirmed) return;
         }
@@ -3300,29 +3300,17 @@ const PDFViewerModal = ({
             flushSync(() => setIsSending(true));
 
             if (outForSignatureBeforeSend && packageIncludesMainContract) {
-                const priorEnvelopeId = String(
-                    linkedEnvelopeIdRef.current || linkedEnvelopeId || "",
-                ).trim();
-                if (!priorEnvelopeId) {
-                    toast.error("No DocuSign envelope is linked to this contract.");
-                    return;
-                }
-                await voidLinkedContractEnvelope(
-                    priorEnvelopeId,
-                    "Superseded by new contract send from CRM",
-                );
+                // Start a fresh draft envelope without voiding the prior send.
                 invalidateDocuSignDraftSession();
                 setSessionEnvelopeId(null);
                 linkedEnvelopeIdRef.current = null;
-                setSentAt(null);
-                contractWasSentRef.current = false;
                 awaitingDocuSignSendRef.current = false;
                 pendingCcForSentRef.current = [];
                 ccEmailDeliveredRef.current = false;
                 invalidateDocuSignPdfCache();
                 setPrefilledBoldSignPdfUrl(null);
                 setPrefilledBoldSignPdfHint(null);
-                toast.info("Previous envelope voided. Creating a new DocuSign draft…");
+                toast.info("Creating a new DocuSign draft. Previous envelope was not voided.");
             }
             const draft = ccEmailDraft.trim();
             let userCc = [...ccEmails];
@@ -9276,7 +9264,7 @@ const PDFViewerModal = ({
                                                             isContractSendTableRowFullySigned(selectedSentRow)
                                                                 ? "All signers completed. The PDF on the right includes signatures."
                                                                 : canResendContract && isContractOutForSignature
-                                                                  ? "Signers have an open envelope. Void it, or send a new contract (the previous envelope is voided first)."
+                                                                  ? "Signers have an open envelope. You can void it, or send a new contract without voiding the previous one."
                                                                   : canResendContract
                                                                     ? "All signers completed. Use Resend contract below to start a new envelope, or view the signed PDF on the right."
                                                                     : "The DocuSign envelope was sent. Status and contract details refresh automatically."}

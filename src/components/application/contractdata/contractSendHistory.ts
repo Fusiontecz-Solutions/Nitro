@@ -282,7 +282,7 @@ export function canSendMainContract(
 
 /**
  * New envelope after fully signed, or while out for signature
- * (caller should void the open envelope before creating the next draft).
+ * (creates a new envelope without voiding the previous one).
  */
 export function canResendMainContract(
     contract: Record<string, unknown> | null | undefined,
