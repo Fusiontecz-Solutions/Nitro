@@ -230,8 +230,8 @@ export function isContractVoidedOrTerminal(
 }
 
 /**
- * Sent or viewed but not fully signed — void before sending again.
- * Optional sessionSentAt covers the modal session before webhook refresh.
+ * Sent or viewed but not fully signed — can void, or send a new envelope
+ * (send-new voids the open envelope first).
  */
 export function isContractOutForSignature(
     contract: Record<string, unknown> | null | undefined,
@@ -266,7 +266,7 @@ export function canVoidMainContract(
     return isContractOutForSignature(contract, sessionSentAt);
 }
 
-/** Draft, voided, or never sent — open Review & send (not while out for signature or signed). */
+/** Draft or never sent — open Review & send (not while out for signature or signed). */
 export function canSendMainContract(
     contract: Record<string, unknown> | null | undefined,
     sessionSentAt?: Date | null,
@@ -280,11 +280,16 @@ export function canSendMainContract(
     return true;
 }
 
-/** Resend only after the contract is fully signed. */
+/**
+ * New envelope after fully signed, or while out for signature
+ * (creates a new envelope without voiding the previous one).
+ */
 export function canResendMainContract(
     contract: Record<string, unknown> | null | undefined,
+    sessionSentAt?: Date | null,
 ): boolean {
     if (!contract) return false;
+    if (isContractOutForSignature(contract, sessionSentAt)) return true;
     const doc = pickContractEnvelopeDocument(contract);
     return isContractFullySigned(
         (contract as { status?: unknown }).status,
