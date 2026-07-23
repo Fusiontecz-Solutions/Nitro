@@ -1,8 +1,8 @@
 import { createClearS2sRunner } from './clearS2sRunner';
 
 describe('createClearS2sRunner', () => {
-    it('aggregates business and every owner search', async () => {
-        const searchPerson = jest
+    it('searches every owner and flags the item when any owner has matches', async () => {
+        const search = jest
             .fn()
             .mockResolvedValueOnce({
                 environment: 'beta',
@@ -15,13 +15,42 @@ describe('createClearS2sRunner', () => {
                 environment: 'beta',
                 statusCode: '200',
                 groupCount: 2,
-                groupIds: ['owner-group-1', 'owner-group-2'],
+                resultId: 'result-2',
+                groupIds: ['group-1', 'group-2'],
                 personEntityIds: [],
             });
+        const runner = createClearS2sRunner(search);
+
+        const result = await runner.runCheck({
+            checkType: 'TLO',
+            applicationId: 'application-1',
+            subjects: [
+                { firstName: 'Jane', lastName: 'One' },
+                { firstName: 'John', lastName: 'Two' },
+            ],
+        });
+
+        expect(search).toHaveBeenCalledTimes(2);
+        expect(result.result).toBe('FLAG');
+        expect(result.notes).toMatch(/0 possible business matches.*2 possible owner matches/i);
+        expect(result.raw).toEqual(
+            expect.objectContaining({ ownerCount: 2, groupCount: 2 }),
+        );
+    });
+
+    it('runs Business Search and includes business matches in the aggregate', async () => {
+        const searchPerson = jest.fn().mockResolvedValue({
+            environment: 'beta',
+            statusCode: '200',
+            groupCount: 0,
+            groupIds: [],
+            personEntityIds: [],
+        });
         const searchBusiness = jest.fn().mockResolvedValue({
             environment: 'beta',
             statusCode: '200',
             groupCount: 1,
+            resultId: 'business-result',
             groupIds: ['business-group'],
             companyEntityIds: ['company-1'],
         });
@@ -31,43 +60,12 @@ describe('createClearS2sRunner', () => {
             checkType: 'TLO',
             applicationId: 'application-1',
             businessSubject: { businessName: 'Example LLC' },
-            subjects: [
-                { firstName: 'Jane', lastName: 'One' },
-                { firstName: 'John', lastName: 'Two' },
-            ],
-        });
-
-        expect(searchBusiness).toHaveBeenCalledTimes(1);
-        expect(searchPerson).toHaveBeenCalledTimes(2);
-        expect(result.result).toBe('FLAG');
-        expect(result.notes).toMatch(/1 possible business match.*2 possible owner matches/i);
-        expect(result.raw).toEqual(
-            expect.objectContaining({ ownerCount: 2, groupCount: 3 }),
-        );
-    });
-
-    it('passes when business and owners have no matches', async () => {
-        const emptyPerson = jest.fn().mockResolvedValue({
-            environment: 'beta',
-            statusCode: '200',
-            groupCount: 0,
-            groupIds: [],
-            personEntityIds: [],
-        });
-        const emptyBusiness = jest.fn().mockResolvedValue({
-            environment: 'beta',
-            statusCode: '200',
-            groupCount: 0,
-            groupIds: [],
-            companyEntityIds: [],
-        });
-
-        const result = await createClearS2sRunner(emptyPerson, emptyBusiness).runCheck({
-            checkType: 'TLO',
-            businessSubject: { businessName: 'Example LLC' },
             subjects: [{ firstName: 'Jane', lastName: 'Owner' }],
         });
 
-        expect(result.result).toBe('PASS');
+        expect(searchBusiness).toHaveBeenCalledTimes(1);
+        expect(searchPerson).toHaveBeenCalledTimes(1);
+        expect(result.result).toBe('FLAG');
+        expect(result.notes).toMatch(/1 possible business match/i);
     });
 });

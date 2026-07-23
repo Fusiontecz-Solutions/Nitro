@@ -63,13 +63,13 @@ describe('resolveClearS2sClientConfig', () => {
         CLEAR_S2S_VOTER_PURPOSE: '7',
     };
 
-    it('requires explicit authentication and permissible-purpose settings', () => {
+    it('requires explicit permissible-purpose and authentication settings', () => {
         expect(() => resolveClearS2sClientConfig({})).toThrow(
             'CLEAR_S2S_USERNAME is required',
         );
     });
 
-    it('resolves Basic Auth and mTLS settings', () => {
+    it('resolves the classic Basic Auth and mTLS settings', () => {
         expect(resolveClearS2sClientConfig(required)).toEqual({
             environment: 'beta',
             baseUrl: CLEAR_S2S_BASE_URLS.beta,

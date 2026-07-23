@@ -4,7 +4,9 @@ import type {
     ClearBusinessSearchSubject,
     ClearPersonSearchSubject,
 } from './backgroundCheckRunners';
+import { fetchClearReportPdfsForSearch, selectClearReportGroupIds } from './backgroundCheckRunners/clearS2sReports';
 import { resolveClientOwners } from '../utils/clientMapper';
+import uploadService from './uploadService';
 
 /**
  * Background Check module — due-diligence checks on a deal (Application) that
@@ -172,7 +174,11 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
                     decision: true,
                     application: {
                         include: {
-                            client: { include: { owners: true } },
+                            client: {
+                                include: {
+                                    owners: true,
+                                },
+                            },
                         },
                     },
                 },
@@ -247,11 +253,89 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
             businessSubject,
             subjects,
         });
+
+        let notes = runnerResult.notes ?? '';
+        const metadata: Record<string, unknown> = {
+            ...((runnerResult.raw && typeof runnerResult.raw === 'object'
+                ? runnerResult.raw
+                : {}) as Record<string, unknown>),
+        };
+
+        // Best-effort CLEAR PDF reports — never fail the search FLAG/PASS outcome.
+        try {
+            const selected = selectClearReportGroupIds(metadata as any);
+            if (selected.businessGroupId || selected.personGroupIds.length > 0) {
+                const reportBatch = await fetchClearReportPdfsForSearch(
+                    metadata as any,
+                    application.id,
+                );
+                const reportMeta: {
+                    attached: Array<{
+                        kind: string;
+                        groupId: string;
+                        reportId: string;
+                        fileName: string;
+                    }>;
+                    errors: Array<{ kind: string; groupId: string; error: string }>;
+                } = { attached: [], errors: reportBatch.errors };
+
+                for (const report of reportBatch.attached) {
+                    const uploaded = await uploadService.uploadBuffer(
+                        report.pdf,
+                        'ih-crm/background-checks',
+                        report.fileName,
+                    );
+                    if (!uploaded.success || !uploaded.data) {
+                        reportMeta.errors.push({
+                            kind: report.kind,
+                            groupId: report.groupId,
+                            error: String(uploaded.error || uploaded.message || 'Upload failed').slice(0, 500),
+                        });
+                        continue;
+                    }
+                    await addAttachment(
+                        itemId,
+                        {
+                            url: uploaded.data.secure_url,
+                            publicId: uploaded.data.public_id,
+                            originalName: report.fileName,
+                        },
+                        actor,
+                    );
+                    reportMeta.attached.push({
+                        kind: report.kind,
+                        groupId: report.groupId,
+                        reportId: report.reportId,
+                        fileName: report.fileName,
+                    });
+                }
+
+                metadata.reports = reportMeta;
+                if (reportMeta.attached.length > 0) {
+                    notes = `${notes}${notes ? ' ' : ''}CLEAR PDF report(s) attached.`.trim();
+                }
+                if (reportMeta.errors.length > 0) {
+                    const firstError = String(reportMeta.errors[0]?.error || '').trim();
+                    notes = `${notes}${notes ? ' ' : ''}CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.${firstError ? ` ${firstError}` : ''}`.trim();
+                }
+            }
+        } catch (reportError: any) {
+            metadata.reports = {
+                attached: [],
+                errors: [{
+                    kind: 'batch',
+                    groupId: '',
+                    error: String(reportError?.message || reportError).slice(0, 500),
+                }],
+            };
+            notes = `${notes}${notes ? ' ' : ''}CLEAR PDF report generation failed; search result unchanged.`.trim();
+        }
+
         await updateItem(itemId, {
             status: 'COMPLETE',
             result: runnerResult.result,
-            notes: runnerResult.notes,
-            metadata: runnerResult.raw as Record<string, unknown>,
+            notes,
+            metadata,
         }, actor);
         await logEvent(item.backgroundCheckId, 'automated_check_completed', {
             itemId,

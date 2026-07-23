@@ -100,9 +100,10 @@ function parseTimeout(value: string | undefined): number {
 }
 
 /**
- * Resolves Basic Auth, PKCS#12 mTLS and approved permissible-purpose values.
- * Purpose values are required rather than defaulted because they must match
- * the organization's Thomson Reuters authorization.
+ * Resolves the credentials needed by the classic CLEAR S2S BETA/PROD service:
+ * HTTP Basic authentication plus the Thomson Reuters-issued PKCS#12 client
+ * certificate. Permissible-purpose values are deliberately required instead
+ * of defaulted because they must match the organization's approved use.
  */
 export function resolveClearS2sClientConfig(
     env: ClearS2sEnvironmentVariables = process.env,
