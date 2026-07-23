@@ -22,17 +22,21 @@ export type {
     ClearS2sConfig,
     ClearS2sEnvironment,
 } from './clearS2sConfig';
+export type {
+    ClearBusinessHit,
+    ClearBusinessSearchResult,
+    ClearBusinessSearchSubject,
+    ClearPersonHit,
+    ClearPersonSearchResult,
+    ClearPersonSearchSubject,
+} from './clearS2sClient';
 export {
     buildBusinessSearchXml,
     buildPersonSearchXml,
+    parseClearBusinessHits,
+    parseClearPersonHits,
     searchClearBusiness,
     searchClearPerson,
-} from './clearS2sClient';
-export type {
-    ClearBusinessSearchResult,
-    ClearBusinessSearchSubject,
-    ClearPersonSearchResult,
-    ClearPersonSearchSubject,
 } from './clearS2sClient';
 export {
     buildBusinessReportXml,

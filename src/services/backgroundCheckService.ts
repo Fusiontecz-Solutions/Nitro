@@ -212,6 +212,7 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
         phoneNumber: owner.mobileNumber,
         emailAddress: owner.email,
         driverLicenseNumber: index === 0 ? client.driverLicense : undefined,
+        ownerId: owner.id || owner._id || undefined,
         address: {
             street: [owner.address?.address1, owner.address?.address2].filter(Boolean).join(' '),
             city: owner.address?.city,
