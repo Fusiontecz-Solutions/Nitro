@@ -415,11 +415,12 @@ const OWNER2_INITIAL_OFFSET_X = 108;
 const OWNER2_INITIAL_OFFSET_Y = -6;
 
 /**
- * Nudge ONLY the main Woodmere `contract` layout tabs down by a few px
- * (DocuSign Y top→bottom) so values sit on form underlines.
+ * Optional extra nudge for main Woodmere `contract` only.
+ * Default 0 — layout JSON y values are already the DocuSign positions
+ * (including the +3px-from-top shift baked into contract.layout.json).
  * Never apply to addendums, ACH, state disclosures, or other funder layouts.
  */
-const CONTRACT_TAB_Y_OFFSET = Number(process.env.DOCUSIGN_CONTRACT_TAB_Y_OFFSET ?? 3) || 0;
+const CONTRACT_TAB_Y_OFFSET = Number(process.env.DOCUSIGN_CONTRACT_TAB_Y_OFFSET ?? 0) || 0;
 
 function isWoodmereMainContractLayoutKey(layoutKey?: string): boolean {
   const key = String(layoutKey || '').trim();
