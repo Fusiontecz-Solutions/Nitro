@@ -38,9 +38,17 @@ export function createClearS2sRunner(
                 : undefined;
             const personResponses = [];
             for (const [index, subject] of subjects.entries()) {
-                personResponses.push(
-                    await searchPerson(subject, `Ocean ${applicationId} O${index + 1}`),
+                const response = await searchPerson(
+                    subject,
+                    `Ocean ${applicationId} O${index + 1}`,
                 );
+                const ownerId = String(subject.ownerId ?? '').trim();
+                personResponses.push({
+                    ...response,
+                    ownerId: ownerId || undefined,
+                    ownerIndex: index,
+                    ownerName: `${subject.firstName} ${subject.lastName}`.trim(),
+                });
             }
             const personGroupCount = personResponses.reduce(
                 (total, response) => total + response.groupCount,

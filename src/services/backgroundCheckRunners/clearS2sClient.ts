@@ -19,6 +19,8 @@ export type ClearPersonSearchSubject = {
     phoneNumber?: string | null;
     emailAddress?: string | null;
     driverLicenseNumber?: string | null;
+    /** Linked ClientOwner id when available (for match/sync UI). */
+    ownerId?: string | null;
     address?: {
         street?: string | null;
         city?: string | null;
@@ -26,6 +28,23 @@ export type ClearPersonSearchSubject = {
         zipCode?: string | null;
         country?: string | null;
     };
+};
+
+export type ClearPersonHit = {
+    groupId: string;
+    personEntityId?: string;
+    firstName: string;
+    middleName: string;
+    lastName: string;
+    ssn: string;
+    dateOfBirth: string;
+    email: string;
+    phoneNumber: string;
+    address1: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    addressBlob: string;
 };
 
 export type ClearPersonSearchResult = {
@@ -36,6 +55,10 @@ export type ClearPersonSearchResult = {
     resultId?: string;
     groupIds: string[];
     personEntityIds: string[];
+    hits: ClearPersonHit[];
+    ownerId?: string;
+    ownerIndex?: number;
+    ownerName?: string;
 };
 
 export type ClearBusinessSearchSubject = {
@@ -54,6 +77,18 @@ export type ClearBusinessSearchSubject = {
     };
 };
 
+export type ClearBusinessHit = {
+    groupId: string;
+    companyEntityId?: string;
+    name: string;
+    fein: string;
+    address1: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    addressBlob: string;
+};
+
 export type ClearBusinessSearchResult = {
     environment: string;
     statusCode: string;
@@ -62,6 +97,7 @@ export type ClearBusinessSearchResult = {
     resultId?: string;
     groupIds: string[];
     companyEntityIds: string[];
+    hits: ClearBusinessHit[];
 };
 
 export function escapeXml(value: unknown): string {
@@ -185,6 +221,150 @@ export function extractOne(xml: string, tag: string): string | undefined {
     return extractAll(xml, tag)[0];
 }
 
+function firstTagValue(xml: string, tags: string[]): string {
+    for (const tag of tags) {
+        const value = extractOne(xml, tag);
+        if (value) return value;
+    }
+    return '';
+}
+
+function extractNamedBlocks(xml: string, tags: string[]): string[] {
+    for (const tag of tags) {
+        const pattern = new RegExp(
+            `<(?:[\\w.-]+:)?${tag}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${tag}>`,
+            'gi',
+        );
+        const blocks = Array.from(xml.matchAll(pattern), (match) => match[1]);
+        if (blocks.length > 0) return blocks;
+    }
+    return [];
+}
+
+/** Split result XML into segments around each GroupId when named result tags are absent. */
+export function splitXmlAroundGroupIds(xml: string): string[] {
+    const pattern = /<(?:[\w.-]+:)?GroupId\b[^>]*>[\s\S]*?<\/(?:[\w.-]+:)?GroupId>/gi;
+    const matches = Array.from(xml.matchAll(pattern));
+    if (matches.length === 0) return [];
+
+    const blocks: string[] = [];
+    for (let i = 0; i < matches.length; i += 1) {
+        const start = matches[i].index ?? 0;
+        const end = i + 1 < matches.length ? (matches[i + 1].index ?? xml.length) : xml.length;
+        blocks.push(xml.slice(Math.max(0, start - 400), end));
+    }
+    return blocks;
+}
+
+function buildAddressParts(block: string): {
+    address1: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    addressBlob: string;
+} {
+    const address1 = firstTagValue(block, [
+        'Street',
+        'StreetAddress',
+        'Address1',
+        'AddressLine1',
+        'Addr1',
+    ]);
+    const city = firstTagValue(block, ['City', 'AddressCity']);
+    const state = firstTagValue(block, ['State', 'StateProvince', 'AddressState']);
+    const zipCode = firstTagValue(block, ['ZipCode', 'Zip', 'PostalCode', 'AddressZip']);
+    const addressBlob = [address1, city, state, zipCode].filter(Boolean).join(', ');
+    return { address1, city, state, zipCode, addressBlob };
+}
+
+export function parseClearPersonHitBlock(block: string): ClearPersonHit | null {
+    const groupId = firstTagValue(block, ['GroupId']);
+    const firstName = firstTagValue(block, ['FirstName', 'PersonFirstName']);
+    const lastName = firstTagValue(block, ['LastName', 'PersonLastName']);
+    if (!groupId && !firstName && !lastName) return null;
+
+    const address = buildAddressParts(block);
+    return {
+        groupId,
+        personEntityId: firstTagValue(block, ['PersonEntityId']) || undefined,
+        firstName,
+        middleName: firstTagValue(block, ['MiddleName', 'MiddleInitial', 'PersonMiddleName']),
+        lastName,
+        ssn: firstTagValue(block, ['SSN', 'PersonSSN', 'SocialSecurityNumber']),
+        dateOfBirth: firstTagValue(block, [
+            'PersonBirthDate',
+            'DateOfBirth',
+            'DOB',
+            'BirthDate',
+        ]),
+        email: firstTagValue(block, ['EmailAddress', 'Email', 'PersonEmail']),
+        phoneNumber: firstTagValue(block, ['PhoneNumber', 'Phone', 'PersonPhone']),
+        ...address,
+    };
+}
+
+export function parseClearBusinessHitBlock(block: string): ClearBusinessHit | null {
+    const groupId = firstTagValue(block, ['GroupId']);
+    const name = firstTagValue(block, [
+        'BusinessName',
+        'CompanyName',
+        'OrganizationName',
+        'Name',
+    ]);
+    if (!groupId && !name) return null;
+
+    const address = buildAddressParts(block);
+    return {
+        groupId,
+        companyEntityId: firstTagValue(block, ['CompanyEntityId', 'BusinessEntityId']) || undefined,
+        name,
+        fein: firstTagValue(block, ['FEIN', 'EIN', 'TaxId', 'FederalTaxId']),
+        ...address,
+    };
+}
+
+export function parseClearPersonHits(resultXml: string): ClearPersonHit[] {
+    const blocks = extractNamedBlocks(resultXml, [
+        'PersonSearchResult',
+        'PersonResult',
+        'PersonGroup',
+        'PersonResponseDetail',
+    ]);
+    const source = blocks.length > 0 ? blocks : splitXmlAroundGroupIds(resultXml);
+    const hits: ClearPersonHit[] = [];
+    const seen = new Set<string>();
+    for (const block of source) {
+        const hit = parseClearPersonHitBlock(block);
+        if (!hit) continue;
+        const key = hit.groupId || `${hit.firstName}|${hit.lastName}|${hit.ssn}|${hits.length}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push(hit);
+    }
+    return hits;
+}
+
+export function parseClearBusinessHits(resultXml: string): ClearBusinessHit[] {
+    const blocks = extractNamedBlocks(resultXml, [
+        'BusinessSearchResult',
+        'BusinessResult',
+        'BusinessGroup',
+        'BusinessResponseDetail',
+    ]);
+    const source = blocks.length > 0 ? blocks : splitXmlAroundGroupIds(resultXml);
+    const hits: ClearBusinessHit[] = [];
+    const seen = new Set<string>();
+    for (const block of source) {
+        const hit = parseClearBusinessHitBlock(block);
+        if (!hit) continue;
+        const key = hit.groupId || `${hit.name}|${hit.fein}|${hits.length}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push(hit);
+    }
+    return hits;
+}
+
 function resultIdFromUri(uri: string): string {
     const parsed = new URL(uri);
     const match = parsed.pathname.match(/\/v3\/person\/searchResults\/([^/]+)$/i);
@@ -266,6 +446,7 @@ export async function searchClearPerson(
             groupCount,
             groupIds: [],
             personEntityIds: [],
+            hits: [],
         };
     }
     if (!uri) throw new Error('CLEAR Person Search returned matches without a result URI.');
@@ -277,13 +458,28 @@ export async function searchClearPerson(
     const resultXml = String(getResponse.data ?? '');
     assertClearSuccess(resultXml, 'Person Search result retrieval');
 
+    const hits = parseClearPersonHits(resultXml);
+    const groupIds = [
+        ...new Set([
+            ...extractAll(resultXml, 'GroupId'),
+            ...hits.map((hit) => hit.groupId).filter(Boolean),
+        ]),
+    ];
+    const personEntityIds = [
+        ...new Set([
+            ...extractAll(resultXml, 'PersonEntityId'),
+            ...hits.map((hit) => hit.personEntityId).filter((id): id is string => Boolean(id)),
+        ]),
+    ];
+
     return {
         environment: config.environment,
         ...status,
         groupCount,
         resultId,
-        groupIds: [...new Set(extractAll(resultXml, 'GroupId'))],
-        personEntityIds: [...new Set(extractAll(resultXml, 'PersonEntityId'))],
+        groupIds,
+        personEntityIds,
+        hits,
     };
 }
 
@@ -312,6 +508,7 @@ export async function searchClearBusiness(
             groupCount,
             groupIds: [],
             companyEntityIds: [],
+            hits: [],
         };
     }
     if (!uri) throw new Error('CLEAR Business Search returned matches without a result URI.');
@@ -324,12 +521,27 @@ export async function searchClearBusiness(
     const resultXml = String(getResponse.data ?? '');
     assertClearSuccess(resultXml, 'Business Search result retrieval');
 
+    const hits = parseClearBusinessHits(resultXml);
+    const groupIds = [
+        ...new Set([
+            ...extractAll(resultXml, 'GroupId'),
+            ...hits.map((hit) => hit.groupId).filter(Boolean),
+        ]),
+    ];
+    const companyEntityIds = [
+        ...new Set([
+            ...extractAll(resultXml, 'CompanyEntityId'),
+            ...hits.map((hit) => hit.companyEntityId).filter((id): id is string => Boolean(id)),
+        ]),
+    ];
+
     return {
         environment: config.environment,
         ...status,
         groupCount,
         resultId,
-        groupIds: [...new Set(extractAll(resultXml, 'GroupId'))],
-        companyEntityIds: [...new Set(extractAll(resultXml, 'CompanyEntityId'))],
+        groupIds,
+        companyEntityIds,
+        hits,
     };
 }
