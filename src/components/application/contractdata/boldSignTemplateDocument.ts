@@ -1,13 +1,13 @@
 /** BoldSign / DocuSign template row shape from `GET /contract/templates`. */
 export type BoldSignTemplateRow = {
-    id?: string;
-    name?: string;
-    type?: string;
-    templateId?: string;
-    template_id?: string;
-    pdfUrl?: string;
-    pdf_url?: string;
-    layoutKey?: string;
+    id?: string | null;
+    name?: string | null;
+    type?: string | null;
+    templateId?: string | null;
+    template_id?: string | null;
+    pdfUrl?: string | null;
+    pdf_url?: string | null;
+    layoutKey?: string | null;
 };
 
 export function getBoldSignTemplatePdfUrl(

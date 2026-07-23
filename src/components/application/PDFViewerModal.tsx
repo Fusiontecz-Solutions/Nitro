@@ -858,7 +858,7 @@ function getPrimaryContractEnvelopeView(
     };
 }
 
-/** Open DocuSign for the main contract — draft, after void, or resend after fully signed. */
+/** Open DocuSign for the main contract — draft, after void, resend after signed, or send-new while out for signature. */
 function canReviewAndSendToDocuSign(
     contract: Record<string, unknown> | null | undefined,
     sessionSentAt: Date | null,
@@ -874,8 +874,8 @@ function canReviewAndSendToDocuSign(
 }
 
 /**
- * Resend / new send allowed only after the previous envelope is fully signed or voided —
- * never while signers still have an open envelope.
+ * New envelope allowed after fully signed/voided, or while out for signature
+ * (previous envelope is voided first in handleSend).
  */
 function canResendMainContract(
     contract: Record<string, unknown> | null | undefined,
@@ -885,7 +885,7 @@ function canResendMainContract(
     const contractStatus = String(contract?.status ?? "").trim().toUpperCase();
     const docStatus = view.docStatus;
 
-    if (view.isOutForSignature) return false;
+    if (view.isOutForSignature) return true;
 
     if (view.isCompleted || contractStatus === "COMPLETED") return true;
     if (docStatus === "signed") return true;
@@ -2009,12 +2009,19 @@ const PDFViewerModal = ({
     );
 
     const docuSignPrimaryActionLabel = useMemo(() => {
-        if (showResendContractOnSentStep) return "Resend contract";
+        if (showResendContractOnSentStep) {
+            return isContractOutForSignature ? "Send new contract" : "Resend contract";
+        }
         if (!includeMainContractInSend && canSendWithoutContract) {
             return "Review & send documents in DocuSign";
         }
         return "Review & send in DocuSign";
-    }, [showResendContractOnSentStep, includeMainContractInSend, canSendWithoutContract]);
+    }, [
+        showResendContractOnSentStep,
+        isContractOutForSignature,
+        includeMainContractInSend,
+        canSendWithoutContract,
+    ]);
 
     /**
      * Full CRM → DocuSign prefill list (every field id). Must NOT run through
@@ -3187,6 +3194,29 @@ const PDFViewerModal = ({
         setCcEmailDraft("");
     };
 
+    const voidLinkedContractEnvelope = async (envelopeId: string, reason: string) => {
+        await dispatch(
+            voidBoldSignDocument({
+                documentId: envelopeId,
+                reason,
+                ...(applicationIdForLookup
+                    ? { applicationId: String(applicationIdForLookup) }
+                    : {}),
+                ...(resolvedContractId != null ? { contractId: resolvedContractId } : {}),
+                ...(resolvedContract && typeof resolvedContract === "object"
+                    ? {
+                          funderName: String(
+                              (resolvedContract as { funderName?: unknown }).funderName ?? "",
+                          ).trim(),
+                          contractState: String(
+                              (resolvedContract as { state?: unknown }).state ?? "",
+                          ).trim(),
+                      }
+                    : {}),
+            }),
+        ).unwrap();
+    };
+
     const handleCancelContract = async () => {
         const envelopeId = String(linkedEnvelopeIdRef.current || linkedEnvelopeId || "").trim();
         if (!envelopeId) {
@@ -3200,26 +3230,7 @@ const PDFViewerModal = ({
 
         setIsCancellingContract(true);
         try {
-            await dispatch(
-                voidBoldSignDocument({
-                    documentId: envelopeId,
-                    reason: "Cancelled by user from CRM",
-                    ...(applicationIdForLookup
-                        ? { applicationId: String(applicationIdForLookup) }
-                        : {}),
-                    ...(resolvedContractId != null ? { contractId: resolvedContractId } : {}),
-                    ...(resolvedContract && typeof resolvedContract === "object"
-                        ? {
-                              funderName: String(
-                                  (resolvedContract as { funderName?: unknown }).funderName ?? "",
-                              ).trim(),
-                              contractState: String(
-                                  (resolvedContract as { state?: unknown }).state ?? "",
-                              ).trim(),
-                          }
-                        : {}),
-                }),
-            ).unwrap();
+            await voidLinkedContractEnvelope(envelopeId, "Cancelled by user from CRM");
             invalidateDocuSignDraftSession();
             setDocuSignOpenUrl(null);
             setSentStepUnlocked(false);
@@ -3255,13 +3266,24 @@ const PDFViewerModal = ({
         if (!fileUrl) return;
         const packageIncludesMainContract =
             !canSendWithoutContract || includeMainContractInSendRef.current;
+        const outForSignatureBeforeSend = getPrimaryContractEnvelopeView(
+            resolvedContract,
+            sentAt,
+        ).isOutForSignature;
         if (!canReviewAndSendCurrentPackage) {
             toast.info(
                 packageIncludesMainContract
-                    ? "This contract is already out for signature. Void it in DocuSign before sending again."
+                    ? "This contract cannot be sent right now."
                     : "Cannot send this document package right now.",
             );
             return;
+        }
+
+        if (outForSignatureBeforeSend && packageIncludesMainContract) {
+            const confirmed = window.confirm(
+                "Void the current DocuSign envelope and send a new contract? Signers will no longer be able to sign the previous one.",
+            );
+            if (!confirmed) return;
         }
 
         let docuSignTab: Window | null = null;
@@ -3277,6 +3299,31 @@ const PDFViewerModal = ({
             }
             flushSync(() => setIsSending(true));
 
+            if (outForSignatureBeforeSend && packageIncludesMainContract) {
+                const priorEnvelopeId = String(
+                    linkedEnvelopeIdRef.current || linkedEnvelopeId || "",
+                ).trim();
+                if (!priorEnvelopeId) {
+                    toast.error("No DocuSign envelope is linked to this contract.");
+                    return;
+                }
+                await voidLinkedContractEnvelope(
+                    priorEnvelopeId,
+                    "Superseded by new contract send from CRM",
+                );
+                invalidateDocuSignDraftSession();
+                setSessionEnvelopeId(null);
+                linkedEnvelopeIdRef.current = null;
+                setSentAt(null);
+                contractWasSentRef.current = false;
+                awaitingDocuSignSendRef.current = false;
+                pendingCcForSentRef.current = [];
+                ccEmailDeliveredRef.current = false;
+                invalidateDocuSignPdfCache();
+                setPrefilledBoldSignPdfUrl(null);
+                setPrefilledBoldSignPdfHint(null);
+                toast.info("Previous envelope voided. Creating a new DocuSign draft…");
+            }
             const draft = ccEmailDraft.trim();
             let userCc = [...ccEmails];
             if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
@@ -3347,7 +3394,9 @@ const PDFViewerModal = ({
                 const addendumTemplateId = packageSelection.includeAddendum
                     ? resolveAddendumTemplateIdForDocuSignMerge()
                     : null;
-                const sessionEnv = String(sessionEnvelopeId || "").trim() || null;
+                const sessionEnv = outForSignatureBeforeSend
+                    ? null
+                    : String(sessionEnvelopeId || "").trim() || null;
                 const signerFingerprintForSend = contractSignerOverridesFingerprint(
                     signerRolesForSend.map((r) => ({
                         role: r.signerRole,
@@ -3361,7 +3410,9 @@ const PDFViewerModal = ({
                         signerEmail: r.signerEmail,
                     })),
                 });
-                const isResendAfterSigned = canResendMainContract(resolvedContract, sentAt);
+                const isResendAfterSigned =
+                    outForSignatureBeforeSend ||
+                    canResendMainContract(resolvedContract, sentAt);
                 const canReuseSessionDraft =
                     Boolean(sessionEnv) &&
                     !isResendAfterSigned &&
@@ -9224,10 +9275,10 @@ const PDFViewerModal = ({
                                                             {selectedSentRow &&
                                                             isContractSendTableRowFullySigned(selectedSentRow)
                                                                 ? "All signers completed. The PDF on the right includes signatures."
-                                                                : canResendContract
-                                                                  ? "All signers completed. Use Resend contract below to start a new envelope, or view the signed PDF on the right."
-                                                                  : isContractOutForSignature
-                                                                    ? "Signers have an open envelope. Void the contract to send again, or wait until signing completes."
+                                                                : canResendContract && isContractOutForSignature
+                                                                  ? "Signers have an open envelope. Void it, or send a new contract (the previous envelope is voided first)."
+                                                                  : canResendContract
+                                                                    ? "All signers completed. Use Resend contract below to start a new envelope, or view the signed PDF on the right."
                                                                     : "The DocuSign envelope was sent. Status and contract details refresh automatically."}
                                                         </p>
                                                     </div>
@@ -9849,7 +9900,7 @@ const PDFViewerModal = ({
                                     onClick={handleSend}
                                     disabled={isSending || isCancellingContract}
                                 >
-                                    {isSending ? "Preparing DocuSign…" : "Resend contract"}
+                                    {isSending ? "Preparing DocuSign…" : docuSignPrimaryActionLabel}
                                 </Button>
                             ) : activeStep === "sent" && !canCancelSentContract ? (
                                     <Button
