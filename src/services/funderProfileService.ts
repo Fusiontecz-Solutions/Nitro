@@ -73,6 +73,17 @@ export type FunderProfileInput = {
   disclosureDocumentsSource?: string | null;
   sharedAddendumFunderId?: string | null;
   sharedDisclosureFunderId?: string | null;
+  letterCompanyName?: string | null;
+  letterLogoUrl?: string | null;
+  letterWatermarkUrl?: string | null;
+  letterAccentStripLight?: string | null;
+  letterAccentStripDark?: string | null;
+  letterInfoTableIconBg?: string | null;
+  letterWireBankName?: string | null;
+  letterWireAddressLine1?: string | null;
+  letterWireCityStateZip?: string | null;
+  letterWireRoutingNumber?: string | null;
+  letterWireAccountNumber?: string | null;
 };
 
 function normalizeStateToken(state?: string | null): string {
@@ -167,6 +178,24 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
       row.sharedAddendumFunderName != null ? String(row.sharedAddendumFunderName) : null,
     sharedDisclosureFunderName:
       row.sharedDisclosureFunderName != null ? String(row.sharedDisclosureFunderName) : null,
+    letterCompanyName: row.letterCompanyName != null ? String(row.letterCompanyName) : null,
+    letterLogoUrl: row.letterLogoUrl != null ? String(row.letterLogoUrl) : null,
+    letterWatermarkUrl: row.letterWatermarkUrl != null ? String(row.letterWatermarkUrl) : null,
+    letterAccentStripLight:
+      row.letterAccentStripLight != null ? String(row.letterAccentStripLight) : null,
+    letterAccentStripDark:
+      row.letterAccentStripDark != null ? String(row.letterAccentStripDark) : null,
+    letterInfoTableIconBg:
+      row.letterInfoTableIconBg != null ? String(row.letterInfoTableIconBg) : null,
+    letterWireBankName: row.letterWireBankName != null ? String(row.letterWireBankName) : null,
+    letterWireAddressLine1:
+      row.letterWireAddressLine1 != null ? String(row.letterWireAddressLine1) : null,
+    letterWireCityStateZip:
+      row.letterWireCityStateZip != null ? String(row.letterWireCityStateZip) : null,
+    letterWireRoutingNumber:
+      row.letterWireRoutingNumber != null ? String(row.letterWireRoutingNumber) : null,
+    letterWireAccountNumber:
+      row.letterWireAccountNumber != null ? String(row.letterWireAccountNumber) : null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -888,6 +917,49 @@ export async function uploadFunderLogo(funderId: string, file: UploadedFile) {
   return enriched;
 }
 
+export async function uploadFunderLetterLogo(funderId: string, file: UploadedFile) {
+  const profile = await prisma.funderProfile.findUnique({
+    where: { id: funderId },
+    select: { id: true, letterLogoPublicId: true },
+  });
+  if (!profile) throw new Error('Funder profile not found.');
+
+  const mime = String(file.mimetype || '').toLowerCase();
+  if (!mime.startsWith('image/')) {
+    throw new Error('Letter logo must be an image file.');
+  }
+  if (Number(file.size || 0) > 5 * 1024 * 1024) {
+    throw new Error('Letter logo must be 5 MB or smaller.');
+  }
+
+  const result = await uploadService.uploadFile(
+    file,
+    `ih-crm/funder-letter-logos/${funderId}`,
+    file.name,
+  );
+  const letterLogoUrl = String(result.data?.secure_url || '').trim();
+  const letterLogoPublicId = String(result.data?.public_id || '').trim();
+  if (!result.success || !letterLogoUrl || !letterLogoPublicId) {
+    throw new Error(result.error || result.message || 'Failed to upload letter logo.');
+  }
+
+  const row = await prisma.funderProfile.update({
+    where: { id: funderId },
+    data: { letterLogoUrl, letterLogoPublicId },
+    include: { docusignAccountProfile: { select: { id: true, name: true } } },
+  });
+
+  const oldPublicId = String(profile.letterLogoPublicId || '').trim();
+  if (oldPublicId && oldPublicId !== letterLogoPublicId) {
+    void uploadService.deleteFile(oldPublicId, 'image');
+  }
+
+  const [enriched] = await enrichFunderProfilesWithSharedNames([
+    serializeFunderProfile(row as unknown as Record<string, unknown>),
+  ]);
+  return enriched;
+}
+
 export async function createFunderProfile(input: FunderProfileInput) {
   const contractDefaults = defaultContractFields(input);
   const row = await prisma.funderProfile.create({
@@ -941,6 +1013,37 @@ export async function createFunderProfile(input: FunderProfileInput) {
         : input.sharedDocumentsFunderId
           ? String(input.sharedDocumentsFunderId).trim()
           : null,
+      letterCompanyName: input.letterCompanyName
+        ? String(input.letterCompanyName).trim()
+        : null,
+      letterLogoUrl: input.letterLogoUrl ? String(input.letterLogoUrl).trim() : null,
+      letterWatermarkUrl: input.letterWatermarkUrl
+        ? String(input.letterWatermarkUrl).trim()
+        : null,
+      letterAccentStripLight: input.letterAccentStripLight
+        ? String(input.letterAccentStripLight).trim()
+        : null,
+      letterAccentStripDark: input.letterAccentStripDark
+        ? String(input.letterAccentStripDark).trim()
+        : null,
+      letterInfoTableIconBg: input.letterInfoTableIconBg
+        ? String(input.letterInfoTableIconBg).trim()
+        : null,
+      letterWireBankName: input.letterWireBankName
+        ? String(input.letterWireBankName).trim()
+        : null,
+      letterWireAddressLine1: input.letterWireAddressLine1
+        ? String(input.letterWireAddressLine1).trim()
+        : null,
+      letterWireCityStateZip: input.letterWireCityStateZip
+        ? String(input.letterWireCityStateZip).trim()
+        : null,
+      letterWireRoutingNumber: input.letterWireRoutingNumber
+        ? String(input.letterWireRoutingNumber).trim()
+        : null,
+      letterWireAccountNumber: input.letterWireAccountNumber
+        ? String(input.letterWireAccountNumber).trim()
+        : null,
     },
     include: { docusignAccountProfile: { select: { id: true, name: true } } },
   });
@@ -1043,6 +1146,67 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
       ? String(input.sharedDisclosureFunderId).trim()
       : null;
   }
+  if (input.letterCompanyName !== undefined) {
+    data.letterCompanyName = input.letterCompanyName
+      ? String(input.letterCompanyName).trim()
+      : null;
+  }
+  if (input.letterLogoUrl !== undefined) {
+    const nextUrl = input.letterLogoUrl ? String(input.letterLogoUrl).trim() : null;
+    data.letterLogoUrl = nextUrl;
+    if (!nextUrl) {
+      data.letterLogoPublicId = null;
+      const oldLetterPublicId = String(existing.letterLogoPublicId || '').trim();
+      if (oldLetterPublicId) {
+        void uploadService.deleteFile(oldLetterPublicId, 'image');
+      }
+    }
+  }
+  if (input.letterWatermarkUrl !== undefined) {
+    data.letterWatermarkUrl = input.letterWatermarkUrl
+      ? String(input.letterWatermarkUrl).trim()
+      : null;
+  }
+  if (input.letterAccentStripLight !== undefined) {
+    data.letterAccentStripLight = input.letterAccentStripLight
+      ? String(input.letterAccentStripLight).trim()
+      : null;
+  }
+  if (input.letterAccentStripDark !== undefined) {
+    data.letterAccentStripDark = input.letterAccentStripDark
+      ? String(input.letterAccentStripDark).trim()
+      : null;
+  }
+  if (input.letterInfoTableIconBg !== undefined) {
+    data.letterInfoTableIconBg = input.letterInfoTableIconBg
+      ? String(input.letterInfoTableIconBg).trim()
+      : null;
+  }
+  if (input.letterWireBankName !== undefined) {
+    data.letterWireBankName = input.letterWireBankName
+      ? String(input.letterWireBankName).trim()
+      : null;
+  }
+  if (input.letterWireAddressLine1 !== undefined) {
+    data.letterWireAddressLine1 = input.letterWireAddressLine1
+      ? String(input.letterWireAddressLine1).trim()
+      : null;
+  }
+  if (input.letterWireCityStateZip !== undefined) {
+    data.letterWireCityStateZip = input.letterWireCityStateZip
+      ? String(input.letterWireCityStateZip).trim()
+      : null;
+  }
+  if (input.letterWireRoutingNumber !== undefined) {
+    data.letterWireRoutingNumber = input.letterWireRoutingNumber
+      ? String(input.letterWireRoutingNumber).trim()
+      : null;
+  }
+  if (input.letterWireAccountNumber !== undefined) {
+    data.letterWireAccountNumber = input.letterWireAccountNumber
+      ? String(input.letterWireAccountNumber).trim()
+      : null;
+  }
 
   const row = await prisma.funderProfile.update({
     where: { id },
@@ -1058,12 +1222,16 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
 export async function deleteFunderProfile(id: string) {
   const existing = await prisma.funderProfile.findUnique({
     where: { id },
-    select: { logoPublicId: true },
+    select: { logoPublicId: true, letterLogoPublicId: true },
   });
   await prisma.funderProfile.delete({ where: { id } });
   const logoPublicId = String(existing?.logoPublicId || '').trim();
   if (logoPublicId) {
     void uploadService.deleteFile(logoPublicId, 'image');
+  }
+  const letterLogoPublicId = String(existing?.letterLogoPublicId || '').trim();
+  if (letterLogoPublicId) {
+    void uploadService.deleteFile(letterLogoPublicId, 'image');
   }
   return { success: true };
 }

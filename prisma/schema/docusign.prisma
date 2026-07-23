@@ -144,6 +144,20 @@ model FunderProfile {
   sharedAddendumFunderId    String?                 @db.Uuid
   /// When disclosureDocumentsSource is shared, layout keys use this funder's disclosure PDFs.
   sharedDisclosureFunderId  String?                 @db.Uuid
+  /// Payoff / zero-balance letter email branding (Letter Info tab).
+  letterCompanyName         String?
+  letterLogoUrl             String?
+  letterLogoPublicId        String?
+  letterWatermarkUrl        String?
+  letterAccentStripLight    String?
+  letterAccentStripDark     String?
+  letterInfoTableIconBg     String?
+  /// Wire / Payment Address block on payoff letters (Letter Info tab).
+  letterWireBankName        String?
+  letterWireAddressLine1    String?
+  letterWireCityStateZip    String?
+  letterWireRoutingNumber   String?
+  letterWireAccountNumber   String?
   createdAt                DateTime                @default(now())
   updatedAt                DateTime                @updatedAt
   docusignAccountProfile   DocuSignAccountProfile? @relation(fields: [docusignAccountProfileId], references: [id], onDelete: SetNull)

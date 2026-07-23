@@ -16,6 +16,7 @@ import {
   updateFunderProfile,
   uploadFunderContractPdf,
   uploadFunderLogo,
+  uploadFunderLetterLogo,
   uploadFunderSupplementalPdf,
   uploadFunderDisclosurePdf,
   uploadFunderNamedAddendumPdf,
@@ -42,6 +43,15 @@ function getUploadedLogoFile(req: Request): UploadedFile | null {
   const files = (req as Request & { files?: { logo?: UploadedFile | UploadedFile[] } }).files;
   if (!files?.logo) return null;
   const file = files.logo;
+  return Array.isArray(file) ? file[0] : file;
+}
+
+function getUploadedLetterLogoFile(req: Request): UploadedFile | null {
+  const files = (req as Request & {
+    files?: { letterLogo?: UploadedFile | UploadedFile[] };
+  }).files;
+  if (!files?.letterLogo) return null;
+  const file = files.letterLogo;
   return Array.isArray(file) ? file[0] : file;
 }
 
@@ -187,6 +197,38 @@ function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInp
         : String(body.sharedDisclosureFunderId);
   }
 
+  const optionalTrimmed = (
+    key:
+      | 'letterCompanyName'
+      | 'letterLogoUrl'
+      | 'letterWatermarkUrl'
+      | 'letterAccentStripLight'
+      | 'letterAccentStripDark'
+      | 'letterInfoTableIconBg'
+      | 'letterWireBankName'
+      | 'letterWireAddressLine1'
+      | 'letterWireCityStateZip'
+      | 'letterWireRoutingNumber'
+      | 'letterWireAccountNumber',
+  ) => {
+    if (body[key] === undefined) return;
+    payload[key] =
+      body[key] === null || body[key] === ''
+        ? null
+        : String(body[key]).trim() || null;
+  };
+  optionalTrimmed('letterCompanyName');
+  optionalTrimmed('letterLogoUrl');
+  optionalTrimmed('letterWatermarkUrl');
+  optionalTrimmed('letterAccentStripLight');
+  optionalTrimmed('letterAccentStripDark');
+  optionalTrimmed('letterInfoTableIconBg');
+  optionalTrimmed('letterWireBankName');
+  optionalTrimmed('letterWireAddressLine1');
+  optionalTrimmed('letterWireCityStateZip');
+  optionalTrimmed('letterWireRoutingNumber');
+  optionalTrimmed('letterWireAccountNumber');
+
   if (allowedStates !== undefined) {
     payload.allowedStates = allowedStates;
   }
@@ -203,6 +245,7 @@ async function saveFunderWithOptionalAssets(
 ) {
   const contractFile = getUploadedContractFile(req);
   const logoFile = getUploadedLogoFile(req);
+  const letterLogoFile = getUploadedLetterLogoFile(req);
   let data = await save();
 
   if (contractFile) {
@@ -220,6 +263,14 @@ async function saveFunderWithOptionalAssets(
       throw new Error('Funder id is required to upload a logo.');
     }
     data = await uploadFunderLogo(funderId, logoFile);
+  }
+
+  if (letterLogoFile) {
+    const funderId = String(data.id || '').trim();
+    if (!funderId) {
+      throw new Error('Funder id is required to upload a letter logo.');
+    }
+    data = await uploadFunderLetterLogo(funderId, letterLogoFile);
   }
 
   for (const [field, supplementalType] of Object.entries(SUPPLEMENTAL_UPLOAD_FIELDS)) {
