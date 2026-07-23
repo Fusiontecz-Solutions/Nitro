@@ -48,7 +48,8 @@ import {
 import { renderPayOffLetterEmailHtml } from "@/pages/templates/payOffLetterEmailHtml";
 import { renderZeroBalanceLetterEmailHtml } from "@/pages/templates/zeroBalanceLetterEmailHtml";
 import { resolveLetterEmailBrandingByFunderId } from "@/pages/templates/letterEmailBranding";
-import { useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { useFunderProfiles, findFunderProfileById } from "@/hooks/useFunderProfiles";
+import type { FunderProfile } from "@/types/integrationSettingsTypes";
 import { Download, FileText, Loader2, Mail, RotateCcw, Send } from "lucide-react";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 
@@ -412,10 +413,83 @@ const DEFAULT_PAYOFF_WIRE_DETAILS = {
   account_number: "210062956",
 } as const;
 
+type PayoffWireDetails = {
+  payment_company_name: string;
+  payment_address_line1: string;
+  payment_address_line2: string;
+  payment_routing_number: string;
+  payment_account_number: string;
+  bank_name: string;
+  bank_address_line1: string;
+  bank_city_state_zip: string;
+  routing_number: string;
+  account_number: string;
+  beneficiary_name: string;
+};
+
+function resolvePayoffWireDetails(
+  funder?: Pick<
+    FunderProfile,
+    | "letterWireBankName"
+    | "letterWireAddressLine1"
+    | "letterWireCityStateZip"
+    | "letterWireRoutingNumber"
+    | "letterWireAccountNumber"
+  > | null,
+): PayoffWireDetails {
+  const bankName =
+    String(funder?.letterWireBankName ?? "").trim() ||
+    DEFAULT_PAYOFF_WIRE_DETAILS.bank_name;
+  const address1 =
+    String(funder?.letterWireAddressLine1 ?? "").trim() ||
+    DEFAULT_PAYOFF_WIRE_DETAILS.bank_address_line1;
+  const cityStateZip =
+    String(funder?.letterWireCityStateZip ?? "").trim() ||
+    DEFAULT_PAYOFF_WIRE_DETAILS.bank_city_state_zip;
+  const routing =
+    String(funder?.letterWireRoutingNumber ?? "").trim() ||
+    DEFAULT_PAYOFF_WIRE_DETAILS.routing_number;
+  const account =
+    String(funder?.letterWireAccountNumber ?? "").trim() ||
+    DEFAULT_PAYOFF_WIRE_DETAILS.account_number;
+  const hasFunderWire = Boolean(
+    String(funder?.letterWireBankName ?? "").trim() ||
+      String(funder?.letterWireAddressLine1 ?? "").trim() ||
+      String(funder?.letterWireCityStateZip ?? "").trim() ||
+      String(funder?.letterWireRoutingNumber ?? "").trim() ||
+      String(funder?.letterWireAccountNumber ?? "").trim(),
+  );
+  const paymentCompany = hasFunderWire
+    ? bankName
+    : DEFAULT_PAYOFF_WIRE_DETAILS.beneficiary_name;
+
+  return {
+    beneficiary_name: paymentCompany,
+    bank_name: bankName,
+    bank_address_line1: address1,
+    bank_city_state_zip: cityStateZip,
+    routing_number: routing,
+    account_number: account,
+    payment_company_name: paymentCompany,
+    payment_address_line1: address1,
+    payment_address_line2: cityStateZip,
+    payment_routing_number: routing,
+    payment_account_number: account,
+  };
+}
+
 function buildDefaultValues(
   application: Application | null | undefined,
   dealLabel: string,
-  funding: LetterFundingSources = {}
+  funding: LetterFundingSources = {},
+  funder?: Pick<
+    FunderProfile,
+    | "letterWireBankName"
+    | "letterWireAddressLine1"
+    | "letterWireCityStateZip"
+    | "letterWireRoutingNumber"
+    | "letterWireAccountNumber"
+  > | null,
 ): Record<string, string> {
   const client = application?.client;
   const owner = typeof client === "object" ? client?.owner : undefined;
@@ -451,6 +525,7 @@ function buildDefaultValues(
     formatUsShortDate(application?.createdAt) || letterDate;
   const legalEntityName = (business?.name ?? merchantName).trim();
   const accountName = legalEntityName || merchantName;
+  const wire = resolvePayoffWireDetails(funder);
 
   return {
     merchant_name: merchantName,
@@ -478,7 +553,7 @@ function buildDefaultValues(
     outstanding_balance: payoff ? formatCurrency(payoff) : "",
     __recipient_email: email,
     customer_id: dealLabel,
-    ...DEFAULT_PAYOFF_WIRE_DETAILS,
+    ...wire,
     client_name: merchantName,
     letter_date: today,
     merchant_legal_name: legalEntityName,
@@ -488,11 +563,6 @@ function buildDefaultValues(
     account_name: accountName,
     salutation_name: merchantName || accountName,
     good_through_date: goodThroughDate,
-    payment_company_name: DEFAULT_PAYOFF_WIRE_DETAILS.beneficiary_name,
-    payment_address_line1: DEFAULT_PAYOFF_WIRE_DETAILS.bank_address_line1,
-    payment_address_line2: DEFAULT_PAYOFF_WIRE_DETAILS.bank_city_state_zip,
-    payment_routing_number: DEFAULT_PAYOFF_WIRE_DETAILS.routing_number,
-    payment_account_number: DEFAULT_PAYOFF_WIRE_DETAILS.account_number,
     sender_name: "Admin team",
     account_status: "Zero Balance",
   };
@@ -545,7 +615,6 @@ export default function Letters() {
     funders,
     funderSelectEntries,
     loading: fundersLoading,
-    findFunderById,
     resolveDefaultFunder,
   } = useFunderProfiles(contractState || null);
 
@@ -574,11 +643,6 @@ export default function Letters() {
         ? String(application.applicationId)
         : routeDealLabel,
     [application?.applicationId, routeDealLabel]
-  );
-
-  const defaults = useMemo(
-    () => buildDefaultValues(application, dealLabel, fundingSources),
-    [application, dealLabel, fundingSources]
   );
 
   const [templates, setTemplates] = useState<ApiTemplateItem[]>(
@@ -617,6 +681,17 @@ export default function Letters() {
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [funderProfileId, setFunderProfileId] = useState("");
 
+  const defaults = useMemo(
+    () =>
+      buildDefaultValues(
+        application,
+        dealLabel,
+        fundingSources,
+        findFunderProfileById(funders, funderProfileId),
+      ),
+    [application, dealLabel, fundingSources, funders, funderProfileId],
+  );
+
   useEffect(() => {
     if (!funderSelectEntries.length) return;
     const currentIsValid = funderSelectEntries.some(
@@ -643,10 +718,10 @@ export default function Letters() {
   );
 
   const selectedFunderLabel = useMemo(() => {
-    const profile = findFunderById(funderProfileId);
+    const profile = findFunderProfileById(funders, funderProfileId);
     if (!profile) return "";
     return profile.displayName?.trim() || profile.name;
-  }, [findFunderById, funderProfileId]);
+  }, [funders, funderProfileId]);
 
   const selectedTemplate = useMemo(
     () => templateSource.find((t) => t.id === templateId) ?? null,

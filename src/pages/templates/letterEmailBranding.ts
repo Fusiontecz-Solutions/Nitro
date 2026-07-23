@@ -31,6 +31,7 @@ export const DEFAULT_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
 /**
  * Paste Cloudinary / hosted logo URLs + colors for each funder below.
  * Matching uses funder name / displayName (not organization).
+ * Prefer Letter Info fields on the funder profile when set.
  */
 const FB_FUNDING_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
   companyName: "FB FUNDING LLC",
@@ -60,7 +61,6 @@ const TILDE_ADVANCE_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
   infoTableIconBg: "#27272a",
 };
 
-// TODO: paste hosted logo URL + brand colors for ATLAS ADVANCE LLC.
 const ATLAS_ADVANCE_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
   companyName: "ATLAS ADVANCE LLC",
   logoSrc: "https://res.cloudinary.com/dehrku8og/image/upload/v1784141929/ChatGPT_Image_Jul_15_2026_07_03_58_PM_lvvg6y.png",
@@ -70,7 +70,6 @@ const ATLAS_ADVANCE_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
   infoTableIconBg: "#15599F",
 };
 
-// TODO: paste hosted logo URL + brand colors for EJM VENTURES LLC.
 const EJM_VENTURES_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
   companyName: "EJM VENTURES LLC",
   logoSrc: "https://res.cloudinary.com/dehrku8og/image/upload/v1784122585/ChatGPT_Image_Jul_15_2026_07_06_14_PM_oe4oo8.png",
@@ -81,6 +80,21 @@ const EJM_VENTURES_LETTER_EMAIL_BRANDING: LetterEmailBranding = {
 };
 
 type FunderNameFields = Pick<FunderProfile, "name" | "displayName">;
+
+type FunderLetterFields = Pick<
+  FunderProfile,
+  | "name"
+  | "displayName"
+  | "organization"
+  | "legalName"
+  | "mainContractLayoutKey"
+  | "letterCompanyName"
+  | "letterLogoUrl"
+  | "letterWatermarkUrl"
+  | "letterAccentStripLight"
+  | "letterAccentStripDark"
+  | "letterInfoTableIconBg"
+>;
 
 function normalizeFunderToken(value?: string | null): string {
   return String(value ?? "")
@@ -125,20 +139,55 @@ function isEjmVenturesFunder(funder: FunderNameFields): boolean {
   return nameMatches(funder, ["ejm ventures llc", "ejm ventures"]);
 }
 
-/** Resolve logo, watermark, and accent colors for payoff / zero-balance letter emails. */
-export function resolveLetterEmailBranding(
-  funder?: Pick<
+function hasSavedLetterInfo(
+  funder: Pick<
     FunderProfile,
-    | "name"
-    | "displayName"
-    | "organization"
-    | "legalName"
-    | "mainContractLayoutKey"
-  > | null,
-): LetterEmailBranding {
-  if (!funder) return DEFAULT_LETTER_EMAIL_BRANDING;
+    | "letterCompanyName"
+    | "letterLogoUrl"
+    | "letterWatermarkUrl"
+    | "letterAccentStripLight"
+    | "letterAccentStripDark"
+    | "letterInfoTableIconBg"
+  >,
+): boolean {
+  return Boolean(
+    String(funder.letterCompanyName ?? "").trim() ||
+      String(funder.letterLogoUrl ?? "").trim() ||
+      String(funder.letterWatermarkUrl ?? "").trim() ||
+      String(funder.letterAccentStripLight ?? "").trim() ||
+      String(funder.letterAccentStripDark ?? "").trim() ||
+      String(funder.letterInfoTableIconBg ?? "").trim(),
+  );
+}
 
-  // Named funders first — never let a shared "Woodmere" organization override these.
+function brandingFromSavedLetterInfo(
+  funder: FunderLetterFields,
+  fallback: LetterEmailBranding,
+): LetterEmailBranding {
+  return {
+    companyName:
+      String(funder.letterCompanyName ?? "").trim() ||
+      fallback.companyName ||
+      String(funder.displayName || funder.name || APP_COMPANY_NAME).trim() ||
+      APP_COMPANY_NAME,
+    logoSrc: String(funder.letterLogoUrl ?? "").trim() || fallback.logoSrc,
+    watermarkSrc:
+      String(funder.letterWatermarkUrl ?? "").trim() || fallback.watermarkSrc,
+    accentStripLight:
+      String(funder.letterAccentStripLight ?? "").trim() ||
+      fallback.accentStripLight,
+    accentStripDark:
+      String(funder.letterAccentStripDark ?? "").trim() || fallback.accentStripDark,
+    infoTableIconBg:
+      String(funder.letterInfoTableIconBg ?? "").trim() ||
+      fallback.infoTableIconBg,
+  };
+}
+
+function resolveLegacyLetterEmailBranding(
+  funder: FunderNameFields &
+    Pick<FunderProfile, "organization" | "legalName" | "mainContractLayoutKey">,
+): LetterEmailBranding {
   if (isFbFundingFunder(funder)) return FB_FUNDING_LETTER_EMAIL_BRANDING;
   if (isHewlettAdvanceFunder(funder)) return HEWLETT_ADVANCE_LETTER_EMAIL_BRANDING;
   if (isTildeAdvanceFunder(funder)) return TILDE_ADVANCE_LETTER_EMAIL_BRANDING;
@@ -153,6 +202,19 @@ export function resolveLetterEmailBranding(
     ...DEFAULT_LETTER_EMAIL_BRANDING,
     companyName,
   };
+}
+
+/** Resolve logo, watermark, and accent colors for payoff / zero-balance letter emails. */
+export function resolveLetterEmailBranding(
+  funder?: FunderLetterFields | null,
+): LetterEmailBranding {
+  if (!funder) return DEFAULT_LETTER_EMAIL_BRANDING;
+
+  const legacy = resolveLegacyLetterEmailBranding(funder);
+  if (hasSavedLetterInfo(funder)) {
+    return brandingFromSavedLetterInfo(funder, legacy);
+  }
+  return legacy;
 }
 
 export function resolveLetterEmailBrandingByFunderId(

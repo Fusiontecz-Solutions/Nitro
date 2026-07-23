@@ -57,6 +57,40 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   if (payload.sharedDisclosureFunderId !== undefined) {
     formData.append("sharedDisclosureFunderId", payload.sharedDisclosureFunderId || "");
   }
+  if (payload.letterCompanyName !== undefined) {
+    formData.append("letterCompanyName", payload.letterCompanyName || "");
+  }
+  // letterLogoUrl is set by Cloudinary upload; empty string clears it.
+  if (payload.letterLogoUrl !== undefined) {
+    formData.append("letterLogoUrl", payload.letterLogoUrl || "");
+  }
+  if (payload.letterWatermarkUrl !== undefined) {
+    formData.append("letterWatermarkUrl", payload.letterWatermarkUrl || "");
+  }
+  if (payload.letterAccentStripLight !== undefined) {
+    formData.append("letterAccentStripLight", payload.letterAccentStripLight || "");
+  }
+  if (payload.letterAccentStripDark !== undefined) {
+    formData.append("letterAccentStripDark", payload.letterAccentStripDark || "");
+  }
+  if (payload.letterInfoTableIconBg !== undefined) {
+    formData.append("letterInfoTableIconBg", payload.letterInfoTableIconBg || "");
+  }
+  if (payload.letterWireBankName !== undefined) {
+    formData.append("letterWireBankName", payload.letterWireBankName || "");
+  }
+  if (payload.letterWireAddressLine1 !== undefined) {
+    formData.append("letterWireAddressLine1", payload.letterWireAddressLine1 || "");
+  }
+  if (payload.letterWireCityStateZip !== undefined) {
+    formData.append("letterWireCityStateZip", payload.letterWireCityStateZip || "");
+  }
+  if (payload.letterWireRoutingNumber !== undefined) {
+    formData.append("letterWireRoutingNumber", payload.letterWireRoutingNumber || "");
+  }
+  if (payload.letterWireAccountNumber !== undefined) {
+    formData.append("letterWireAccountNumber", payload.letterWireAccountNumber || "");
+  }
 }
 
 export async function fetchFunderProfiles(
@@ -102,11 +136,13 @@ export async function deleteDocuSignAccountProfile(id: string): Promise<void> {
 export type FunderProfileFiles = {
   contractFile?: File | null;
   logoFile?: File | null;
+  letterLogoFile?: File | null;
 };
 
 function appendFunderFiles(formData: FormData, files?: FunderProfileFiles | null) {
   if (files?.contractFile) formData.append("contract", files.contractFile);
   if (files?.logoFile) formData.append("logo", files.logoFile);
+  if (files?.letterLogoFile) formData.append("letterLogo", files.letterLogoFile);
 }
 
 export type FunderDocumentTemplateRow = import("@/utils/funderLayoutKeys").FunderDocumentTemplateRow;
@@ -150,7 +186,10 @@ export async function createFunderProfile(
     files && files instanceof File
       ? { contractFile: files }
       : (files as FunderProfileFiles | null | undefined);
-  const hasUploads = normalizedFiles?.contractFile || normalizedFiles?.logoFile;
+  const hasUploads =
+    normalizedFiles?.contractFile ||
+    normalizedFiles?.logoFile ||
+    normalizedFiles?.letterLogoFile;
   if (hasUploads) {
     const formData = new FormData();
     appendFunderFormFields(formData, payload);
@@ -171,7 +210,10 @@ export async function updateFunderProfile(
     files && files instanceof File
       ? { contractFile: files }
       : (files as FunderProfileFiles | null | undefined);
-  const hasUploads = normalizedFiles?.contractFile || normalizedFiles?.logoFile;
+  const hasUploads =
+    normalizedFiles?.contractFile ||
+    normalizedFiles?.logoFile ||
+    normalizedFiles?.letterLogoFile;
   if (hasUploads) {
     const formData = new FormData();
     appendFunderFormFields(formData, payload as FunderProfileInput);

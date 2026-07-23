@@ -48,6 +48,17 @@ export type FunderProfile = {
   sharedDisclosureFunderId?: string | null;
   sharedAddendumFunderName?: string | null;
   sharedDisclosureFunderName?: string | null;
+  letterCompanyName?: string | null;
+  letterLogoUrl?: string | null;
+  letterWatermarkUrl?: string | null;
+  letterAccentStripLight?: string | null;
+  letterAccentStripDark?: string | null;
+  letterInfoTableIconBg?: string | null;
+  letterWireBankName?: string | null;
+  letterWireAddressLine1?: string | null;
+  letterWireCityStateZip?: string | null;
+  letterWireRoutingNumber?: string | null;
+  letterWireAccountNumber?: string | null;
 };
 
 export type DocuSignAccountProfileInput = {
@@ -88,4 +99,15 @@ export type FunderProfileInput = {
   disclosureDocumentsSource?: "platform" | "own" | "shared";
   sharedAddendumFunderId?: string | null;
   sharedDisclosureFunderId?: string | null;
+  letterCompanyName?: string | null;
+  letterLogoUrl?: string | null;
+  letterWatermarkUrl?: string | null;
+  letterAccentStripLight?: string | null;
+  letterAccentStripDark?: string | null;
+  letterInfoTableIconBg?: string | null;
+  letterWireBankName?: string | null;
+  letterWireAddressLine1?: string | null;
+  letterWireCityStateZip?: string | null;
+  letterWireRoutingNumber?: string | null;
+  letterWireAccountNumber?: string | null;
 };
