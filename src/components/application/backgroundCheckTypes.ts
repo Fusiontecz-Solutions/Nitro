@@ -39,6 +39,8 @@ export type BackgroundCheckItemState = {
   liens?: BackgroundCheckEvidenceItem[];
   savedAt?: string;
   linkOpenedAt?: string;
+  /** CLEAR (TLO) search metadata for match/sync UI. */
+  clearMetadata?: import("./clearTypes").ClearLookupMetadata | null;
 };
 
 export type BackgroundCheckFormState = Record<string, BackgroundCheckItemState>;

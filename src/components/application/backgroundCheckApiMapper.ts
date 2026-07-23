@@ -9,6 +9,8 @@ import type {
   BackgroundCheckRisk,
   BackgroundCheckStatus,
 } from "./backgroundCheckTypes";
+import type { ClearLookupMetadata } from "./clearTypes";
+import { isClearLookupMetadata } from "./clearTypes";
 
 const RESOURCE_TO_TYPE: Record<string, ApiItem["checkType"]> = {
   datamerch: "DATAMERCH",
@@ -93,6 +95,10 @@ export function apiCheckToFormState(check: BackgroundCheck): BackgroundCheckForm
 
     const meta = readMetadata(item as ApiItem & { metadata?: ItemMetadata | null });
     const primaryAttachment = item.attachments?.[0];
+    const clearMetadata =
+      item.checkType === "TLO" && isClearLookupMetadata(item.metadata)
+        ? (item.metadata as ClearLookupMetadata)
+        : undefined;
 
     form[resourceId] = {
       notes: item.notes ?? "",
@@ -107,6 +113,7 @@ export function apiCheckToFormState(check: BackgroundCheck): BackgroundCheckForm
       liens: meta.liens,
       linkOpenedAt: meta.linkOpenedAt,
       savedAt: meta.savedAt,
+      clearMetadata,
     };
   }
 
