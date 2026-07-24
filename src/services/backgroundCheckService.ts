@@ -5,6 +5,16 @@ import type {
     ClearPersonSearchSubject,
 } from './backgroundCheckRunners';
 import { fetchClearReportPdfsForSearch, selectClearReportGroupIds } from './backgroundCheckRunners/clearS2sReports';
+import {
+    parseClearLienJudgmentRecords,
+    type ClearLienJudgmentRecord,
+} from './backgroundCheckRunners/clearS2sLienJudgment';
+import {
+    mergeClearNamesIntoExhibitPrefill,
+    parseClearCorporateAssociations,
+    uniqueClearCorporateNames,
+    type ClearCorporateAssociationRecord,
+} from './backgroundCheckRunners/clearS2sCorporateAssociations';
 import { resolveClientOwners } from '../utils/clientMapper';
 import uploadService from './uploadService';
 
@@ -276,9 +286,14 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
                         groupId: string;
                         reportId: string;
                         fileName: string;
+                        hasXml?: boolean;
                     }>;
                     errors: Array<{ kind: string; groupId: string; error: string }>;
                 } = { attached: [], errors: reportBatch.errors };
+
+                const pdfUrlByGroupId = new Map<string, string>();
+                const lienJudgmentRecords: ClearLienJudgmentRecord[] = [];
+                const corporateAssociationRecords: ClearCorporateAssociationRecord[] = [];
 
                 for (const report of reportBatch.attached) {
                     const uploaded = await uploadService.uploadBuffer(
@@ -303,21 +318,128 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
                         },
                         actor,
                     );
+                    pdfUrlByGroupId.set(report.groupId, uploaded.data.secure_url);
                     reportMeta.attached.push({
                         kind: report.kind,
                         groupId: report.groupId,
                         reportId: report.reportId,
                         fileName: report.fileName,
+                        hasXml: Boolean(report.xml),
                     });
+
+                    if (report.xmlError) {
+                        reportMeta.errors.push({
+                            kind: report.kind,
+                            groupId: report.groupId,
+                            error: `CLEAR report XML: ${report.xmlError}`.slice(0, 500),
+                        });
+                    }
+                    if (report.xml) {
+                        try {
+                            lienJudgmentRecords.push(
+                                ...parseClearLienJudgmentRecords(report.xml, {
+                                    groupId: report.groupId,
+                                    reportKind: report.kind,
+                                }),
+                            );
+                        } catch (parseError: any) {
+                            reportMeta.errors.push({
+                                kind: report.kind,
+                                groupId: report.groupId,
+                                error: `CLEAR Lien/Judgment parse: ${String(parseError?.message || parseError)}`.slice(0, 500),
+                            });
+                        }
+                        try {
+                            corporateAssociationRecords.push(
+                                ...parseClearCorporateAssociations(report.xml, {
+                                    groupId: report.groupId,
+                                    reportKind: report.kind,
+                                }),
+                            );
+                        } catch (parseError: any) {
+                            reportMeta.errors.push({
+                                kind: report.kind,
+                                groupId: report.groupId,
+                                error: `CLEAR Corporate parse: ${String(parseError?.message || parseError)}`.slice(0, 500),
+                            });
+                        }
+                    }
                 }
 
                 metadata.reports = reportMeta;
+                metadata.clearLienJudgments = lienJudgmentRecords.map((record) => ({
+                    ...record,
+                    pdfUrl: pdfUrlByGroupId.get(record.groupId) || undefined,
+                }));
+                metadata.clearCorporateAssociations = corporateAssociationRecords;
+
                 if (reportMeta.attached.length > 0) {
                     notes = `${notes}${notes ? ' ' : ''}CLEAR PDF report(s) attached.`.trim();
                 }
+                if (lienJudgmentRecords.length > 0) {
+                    const judgmentCount = lienJudgmentRecords.filter((r) => r.kind === 'judgment').length;
+                    const lienCount = lienJudgmentRecords.filter((r) => r.kind === 'lien').length;
+                    notes = `${notes}${notes ? ' ' : ''}CLEAR Lien/Judgment records ready for review (${judgmentCount} judgment(s), ${lienCount} lien(s)).`.trim();
+                }
+                if (corporateAssociationRecords.length > 0) {
+                    const primaryBusinessName = String(client.businessName ?? '').trim();
+                    const clearCompanyNames = uniqueClearCorporateNames(
+                        corporateAssociationRecords,
+                        primaryBusinessName ? [primaryBusinessName] : [],
+                    );
+                    notes = `${notes}${notes ? ' ' : ''}CLEAR corporation association(s): ${clearCompanyNames.length}.`.trim();
+
+                    try {
+                        const contract = await db.contract.findFirst({
+                            where: { applicationId: application.id },
+                            select: { id: true, contractPrefillOverrides: true },
+                        });
+                        if (contract && clearCompanyNames.length > 0) {
+                            const existingOverrides =
+                                contract.contractPrefillOverrides &&
+                                typeof contract.contractPrefillOverrides === 'object' &&
+                                !Array.isArray(contract.contractPrefillOverrides)
+                                    ? (contract.contractPrefillOverrides as Record<string, unknown>)
+                                    : {};
+                            const merged = mergeClearNamesIntoExhibitPrefill(
+                                existingOverrides,
+                                clearCompanyNames,
+                            );
+                            if (merged.added > 0) {
+                                await db.contract.update({
+                                    where: { id: contract.id },
+                                    data: { contractPrefillOverrides: merged.overrides },
+                                });
+                                notes = `${notes}${notes ? ' ' : ''}Exhibit A auto-filled with ${merged.added} CLEAR corporation name(s).`.trim();
+                            }
+                        }
+                    } catch (exhibitError: any) {
+                        reportMeta.errors.push({
+                            kind: 'exhibit',
+                            groupId: '',
+                            error: `Exhibit A CLEAR sync: ${String(exhibitError?.message || exhibitError)}`.slice(0, 500),
+                        });
+                        metadata.reports = reportMeta;
+                    }
+                }
                 if (reportMeta.errors.length > 0) {
                     const firstError = String(reportMeta.errors[0]?.error || '').trim();
-                    notes = `${notes}${notes ? ' ' : ''}CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.${firstError ? ` ${firstError}` : ''}`.trim();
+                    const pdfFailed = reportMeta.attached.length === 0;
+                    notes = `${notes}${notes ? ' ' : ''}${
+                        pdfFailed
+                            ? `CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.`
+                            : `CLEAR report follow-up note(s): ${reportMeta.errors.length}.`
+                    }${firstError ? ` ${firstError}` : ''}`.trim();
+                }${notes ? ' ' : ''}${
+                        pdfFailed
+                            ? `CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.`
+                            : `CLEAR report follow-up note(s): ${reportMeta.errors.length}.`
+                    }${firstError ? ` ${firstError}` : ''}`.trim();
+                }${notes ? ' ' : ''}${
+                        pdfFailed
+                            ? `CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.`
+                            : `CLEAR report follow-up note(s): ${reportMeta.errors.length}.`
+                    }${firstError ? ` ${firstError}` : ''}`.trim();
                 }
             }
         } catch (reportError: any) {

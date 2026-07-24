@@ -52,6 +52,22 @@ export type {
     ClearReportPdfResult,
     ClearReportsBatchResult,
 } from './clearS2sReports';
+export {
+    mergeClearNyCourtEvidence,
+    parseClearLienJudgmentRecords,
+    toNyCourtEvidenceItem,
+} from './clearS2sLienJudgment';
+export type {
+    ClearLienJudgmentKind,
+    ClearLienJudgmentRecord,
+    ClearNyCourtEvidenceItem,
+} from './clearS2sLienJudgment';
+export {
+    mergeClearNamesIntoExhibitPrefill,
+    parseClearCorporateAssociations,
+    uniqueClearCorporateNames,
+} from './clearS2sCorporateAssociations';
+export type { ClearCorporateAssociationRecord } from './clearS2sCorporateAssociations';
 
 export type RunnerResult = {
     result: 'PASS' | 'FAIL' | 'FLAG' | 'NA';

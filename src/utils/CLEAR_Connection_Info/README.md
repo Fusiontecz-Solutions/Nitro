@@ -28,13 +28,18 @@ The integration calls:
 4. `GET /v3/person/searchResults/{id}?resultType=xml`
 5. `POST /v2/businessReport/reportResults` (first business `GroupID`, when present)
 6. `GET /v2/businessReport/reportResults/{id}?reportType=pdf`
-7. `POST /v2/personReport/reportResults` (up to 3 unique person `GroupID`s)
-8. `GET /v2/personReport/reportResults/{id}?reportType=pdf`
+7. `GET /v2/businessReport/reportResults/{id}?reportType=xml` (best-effort Lien/Judgment parse)
+8. `POST /v2/personReport/reportResults` (up to 3 unique person `GroupID`s)
+9. `GET /v2/personReport/reportResults/{id}?reportType=pdf`
+10. `GET /v2/personReport/reportResults/{id}?reportType=xml` (best-effort Lien/Judgment parse → CLEAR panel)
 
 Report requests use namespace `http://clear.thomsonreuters.com/api/report/2.0`,
 person criteria `com/thomsonreuters/schemas/person-report`, business criteria
 `com/thomsonreuters/schemas/business-report`, `ReportChoice` `Business` /
-`Basic`, and `WorldCheckSection` set to `false`. PDF GETs poll through interim
+`Individual`, person sections (including `WorkAffiliationSection` for employer /
+affiliation names — not business-only `CorporateSection`, which CLEAR rejects
+with HTTP 400/40002), business `CorporateSection`, and `WorldCheckSection` set
+to `false`. PDF GETs poll through interim
 XML statuses such as `204` / `70001` (not ready) for about 60 seconds. Report
 API failures (including 403 entitlement) do not fail the CLEAR search run;
 errors are stored on the item under `metadata.reports` and noted for review.

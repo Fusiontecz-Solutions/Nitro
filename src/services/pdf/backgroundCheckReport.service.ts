@@ -60,8 +60,34 @@ type CheckItemState = {
   attachmentName?: string;
   attachmentUrl?: string;
   noteImages?: Array<{ id: string; name: string; url: string; publicId?: string }>;
-  judgements?: Array<{ id: string; kind: 'link' | 'image'; url: string; name: string; publicId?: string }>;
-  liens?: Array<{ id: string; kind: 'link' | 'image'; url: string; name: string; publicId?: string }>;
+  judgements?: Array<{
+    id: string;
+    kind: 'link' | 'image' | 'record';
+    url: string;
+    name: string;
+    publicId?: string;
+    source?: string;
+    court?: string;
+    filingDate?: string;
+    amount?: string;
+    parties?: string;
+    caseNumber?: string;
+    status?: string;
+  }>;
+  liens?: Array<{
+    id: string;
+    kind: 'link' | 'image' | 'record';
+    url: string;
+    name: string;
+    publicId?: string;
+    source?: string;
+    court?: string;
+    filingDate?: string;
+    amount?: string;
+    parties?: string;
+    caseNumber?: string;
+    status?: string;
+  }>;
   savedAt?: string;
 };
 
@@ -260,6 +286,26 @@ function buildNyCourtEvidenceListHtml(
 
   const rows = list
     .map((item) => {
+      if (item.kind === 'record') {
+        const details = [
+          item.caseNumber ? `Case: ${item.caseNumber}` : '',
+          item.court ? `Court: ${item.court}` : '',
+          item.filingDate ? `Filed: ${item.filingDate}` : '',
+          item.amount ? `Amount: ${item.amount}` : '',
+          item.parties ? `Parties: ${item.parties}` : '',
+          item.status ? `Status: ${item.status}` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        const link =
+          item.url?.trim()
+            ? ` <a href="${esc(item.url)}" style="color:#2563eb;text-decoration:underline;font-size:9px;">CLEAR PDF</a>`
+            : '';
+        return `<li style="margin:0 0 6px;font-size:10px;">
+          <div style="color:#0f172a;font-weight:600;">${esc(item.name || 'CLEAR record')}${link}</div>
+          ${details ? `<div style="color:#64748b;margin-top:2px;">${esc(details)}</div>` : ''}
+        </li>`;
+      }
       if (item.kind === 'link') {
         return `<li style="margin:0 0 4px;font-size:10px;">
           <a href="${esc(item.url)}" style="color:#2563eb;text-decoration:underline;word-break:break-all;">${esc(item.url)}</a>

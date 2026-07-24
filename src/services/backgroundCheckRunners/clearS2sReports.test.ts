@@ -19,7 +19,10 @@ describe('buildPersonReportXml', () => {
         expect(xml).toContain('<GroupID>group-abc-123</GroupID>');
         expect(xml).toContain('<ReportChoice>Individual</ReportChoice>');
         expect(xml).toContain('<AddressSection>true</AddressSection>');
+        expect(xml).toContain('<WorkAffiliationSection>true</WorkAffiliationSection>');
         expect(xml).toContain('<CriminalSection>true</CriminalSection>');
+        expect(xml).not.toContain('<CorporateSection>true</CorporateSection>');
+        expect(xml).not.toContain('<BusinessAssociationSection>');
         expect(xml).toContain('<WorldCheckSection>false</WorldCheckSection>');
         expect(xml).toContain('<GLB>Q</GLB>');
         expect(xml).toContain('<DPPA>0</DPPA>');
@@ -48,6 +51,7 @@ describe('buildBusinessReportXml', () => {
         expect(xml).toContain('<GroupID>biz-group-9</GroupID>');
         expect(xml).toContain('<ReportChoice>Business</ReportChoice>');
         expect(xml).toContain('<BusinessOverviewSection>true</BusinessOverviewSection>');
+        expect(xml).toContain('<CorporateSection>true</CorporateSection>');
         expect(xml).toContain('<WorldCheckSection>false</WorldCheckSection>');
         expect(xml).toContain('<GLB>Q</GLB>');
         expect(xml).toContain('<DPPA>0</DPPA>');
