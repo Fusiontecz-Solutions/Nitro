@@ -29,10 +29,147 @@ import {
 } from "./clearComparison";
 import type {
   ClearBusinessHit,
+  ClearCorporateAssociationRecord,
+  ClearLienJudgmentRecord,
   ClearLookupMetadata,
   ClearPersonHit,
   ClearPersonSearchMeta,
 } from "./clearTypes";
+
+function clearLienJudgmentTitle(record: ClearLienJudgmentRecord): string {
+  const kindLabel = record.kind === "lien" ? "Lien" : "Judgment";
+  return [kindLabel, record.amount, record.court || record.caseNumber].filter(Boolean).join(" · ");
+}
+
+function ClearCorporateAssociationsSection({
+  records,
+}: {
+  records: ClearCorporateAssociationRecord[];
+}) {
+  const names = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ClearCorporateAssociationRecord[] = [];
+    for (const row of records) {
+      const name = String(row.name ?? "").trim();
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...row, name });
+    }
+    return out;
+  }, [records]);
+
+  return (
+    <div className="rounded-md border border-[#E5E7EB] bg-[#FAFBFC] px-3 py-2.5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-[#374151]">
+        Corporations
+      </p>
+      <p className="mt-0.5 text-[11px] text-[#6B7280]">
+        From CLEAR report. Names are also auto-added to empty Exhibit A company slots on the
+        contract.
+      </p>
+      {names.length === 0 ? (
+        <p className="mt-2 text-[11px] italic text-[#9CA3AF]">None found.</p>
+      ) : (
+        <ul className="mt-2 space-y-1.5">
+          {names.map((row, index) => (
+            <li
+              key={`${row.name}-${row.groupId ?? index}`}
+              className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded border border-[#E2E8F0] bg-white px-2.5 py-1.5"
+            >
+              <p className="text-xs font-medium text-[#0F172A]">{row.name}</p>
+              <span className="rounded bg-[#EFF6FF] px-1.5 py-0.5 text-[10px] font-medium text-[#1D4ED8]">
+                CLEAR
+              </span>
+              {row.reportKind ? (
+                <span className="text-[10px] uppercase tracking-wide text-[#94A3B8]">
+                  {row.reportKind}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ClearLienJudgmentSection({
+  title,
+  records,
+}: {
+  title: string;
+  records: ClearLienJudgmentRecord[];
+}) {
+  return (
+    <div className="rounded-md border border-[#E5E7EB] bg-[#FAFBFC] px-3 py-2.5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-[#374151]">{title}</p>
+      <p className="mt-0.5 text-[11px] text-[#6B7280]">
+        From CLEAR report (filled automatically on Run).
+      </p>
+      {records.length === 0 ? (
+        <p className="mt-2 text-[11px] italic text-[#9CA3AF]">None found.</p>
+      ) : (
+        <ul className="mt-2 space-y-1.5">
+          {records.map((record, index) => {
+            const lines = [
+              record.caseNumber ? `Case: ${record.caseNumber}` : null,
+              record.court ? `Court: ${record.court}` : null,
+              record.filingDate ? `Filed: ${record.filingDate}` : null,
+              record.amount ? `Amount: ${record.amount}` : null,
+              record.parties ? `Parties: ${record.parties}` : null,
+              record.status ? `Status: ${record.status}` : null,
+            ].filter(Boolean);
+            const key = [
+              record.kind,
+              record.groupId,
+              record.caseNumber,
+              record.court,
+              record.filingDate,
+              record.amount,
+              index,
+            ].join("|");
+            return (
+              <li
+                key={key}
+                className="rounded border border-[#E2E8F0] bg-white px-2.5 py-1.5"
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <p className="text-xs font-medium text-[#0F172A]">
+                    {clearLienJudgmentTitle(record)}
+                  </p>
+                  <span className="rounded bg-[#EFF6FF] px-1.5 py-0.5 text-[10px] font-medium text-[#1D4ED8]">
+                    CLEAR
+                  </span>
+                  {record.reportKind ? (
+                    <span className="text-[10px] uppercase tracking-wide text-[#94A3B8]">
+                      {record.reportKind}
+                    </span>
+                  ) : null}
+                </div>
+                {lines.length > 0 ? (
+                  <p className="mt-0.5 text-[11px] leading-snug text-[#64748B]">
+                    {lines.join(" · ")}
+                  </p>
+                ) : null}
+                {record.pdfUrl?.trim() ? (
+                  <a
+                    href={record.pdfUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-[var(--brand)] hover:underline"
+                  >
+                    Open CLEAR PDF
+                  </a>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function ComparisonStatusIcon({ status }: { status: ClearComparisonRow["status"] }) {
   if (status === "match") {
@@ -186,6 +323,16 @@ export default function ClearPanel({
 
   const businessHits = clearMetadata?.businessSearch?.hits ?? [];
   const personSearches = clearMetadata?.personSearches ?? [];
+  const lienJudgmentRecords = clearMetadata?.clearLienJudgments ?? [];
+  const corporateAssociationRecords = clearMetadata?.clearCorporateAssociations ?? [];
+  const judgmentRecords = useMemo(
+    () => lienJudgmentRecords.filter((row) => row.kind === "judgment"),
+    [lienJudgmentRecords],
+  );
+  const lienRecords = useMemo(
+    () => lienJudgmentRecords.filter((row) => row.kind === "lien"),
+    [lienJudgmentRecords],
+  );
   const hasRun = Boolean(clearMetadata?.searchedAt || clearMetadata?.provider);
   const businessGroupCount = clearMetadata?.businessSearch?.groupCount ?? businessHits.length;
   const personGroupCount = personSearches.reduce(
@@ -508,6 +655,21 @@ export default function ClearPanel({
                 );
               })
             )}
+          </section>
+
+          <section className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
+              Corporations
+            </p>
+            <ClearCorporateAssociationsSection records={corporateAssociationRecords} />
+          </section>
+
+          <section className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
+              Liens / Judgments
+            </p>
+            <ClearLienJudgmentSection title="Judgements" records={judgmentRecords} />
+            <ClearLienJudgmentSection title="Liens" records={lienRecords} />
           </section>
         </div>
       ) : null}

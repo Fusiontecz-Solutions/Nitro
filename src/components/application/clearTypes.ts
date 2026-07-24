@@ -52,6 +52,35 @@ export type ClearLookupMetadata = {
   businessSearch?: ClearBusinessSearchMeta | null;
   personSearches?: ClearPersonSearchMeta[];
   reports?: unknown;
+  /** Parsed CLEAR report Lien/Judgment rows (shown on ClearPanel). */
+  clearLienJudgments?: ClearLienJudgmentRecord[];
+  /** Parsed CLEAR corporation / business-association names (Exhibit A + ClearPanel). */
+  clearCorporateAssociations?: ClearCorporateAssociationRecord[];
+};
+
+export type ClearLienJudgmentKind = "lien" | "judgment";
+
+export type ClearLienJudgmentRecord = {
+  source?: "clear";
+  kind: ClearLienJudgmentKind;
+  groupId?: string;
+  reportKind?: "person" | "business";
+  caseNumber?: string;
+  court?: string;
+  filingDate?: string;
+  amount?: string;
+  parties?: string;
+  status?: string;
+  description?: string;
+  pdfUrl?: string;
+};
+
+export type ClearCorporateAssociationRecord = {
+  source?: "clear";
+  name: string;
+  section?: string;
+  groupId?: string;
+  reportKind?: "person" | "business";
 };
 
 export function isClearLookupMetadata(value: unknown): value is ClearLookupMetadata {
