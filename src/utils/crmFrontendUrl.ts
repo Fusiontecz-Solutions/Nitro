@@ -109,7 +109,7 @@ function pickExplicitFrontendUrlEnv(): string | undefined {
  *      `APP_APPLICATION_URL`, `CLIENT_PORTAL_URL`, etc.
  *
  * To switch the approval-email link between local and live, set `FRONTEND_URL` in `.env`:
- *   - Local:  `FRONTEND_URL=http://localhost:5173`
+ *   - Local:  `FRONTEND_URL=http://localhost:5174`
  *   - Live:   `FRONTEND_URL=https://www.woodmere.finexusai.com`
  */
 /**
@@ -164,7 +164,7 @@ export function resolveCrmFrontendBaseUrl(): string | undefined {
     ).trim();
     const normalized = devLocal ? normalizeToOrigin(devLocal) : undefined;
     if (normalized && normalized.length > 0) return normalized;
-    return 'http://localhost:5173';
+    return 'http://localhost:5174';
   }
 
   return undefined;

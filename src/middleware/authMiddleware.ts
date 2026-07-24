@@ -238,8 +238,11 @@ export const authenticateToken = async (
                 }
             }
 
+            // Never put the Super Admin platform actor UUID on req.user.id —
+            // it is not a tenant User row and breaks FK writes (TermsOffer, etc.).
+            // Keep the real SA actor only on req.superAdminContext.actorId.
             req.user = {
-                id: tenantUserId || ctx.actorId || SUPER_ADMIN_PROXY_SENTINEL_ID,
+                id: tenantUserId || SUPER_ADMIN_PROXY_SENTINEL_ID,
                 name: displayName,
                 email: ctx.actorEmail || 'super-admin@proxy.internal',
                 role: actorRole,

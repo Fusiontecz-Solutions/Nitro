@@ -19,17 +19,21 @@ export type UserRole = Role;
 export interface AuthenticatedUser {
     id: string;
     role: UserRole | string;
+    /** True when the SA gateway proxy authenticated this request. */
+    viaSuperAdminProxy?: boolean;
 }
 
 /** JWT user on `req.user` (shared across controllers). */
 export function getAuthenticatedUserFromRequest(req: {
     user?: { id?: string; role?: string } | null;
+    isSuperAdminProxy?: boolean;
 }): AuthenticatedUser | null {
     const user = req.user;
     if (!user?.id) return null;
     return {
         id: String(user.id),
         role: String(user.role ?? ''),
+        viaSuperAdminProxy: Boolean(req.isSuperAdminProxy),
     };
 }
 
@@ -155,6 +159,10 @@ export function canUserAccessApplication(
     user: AuthenticatedUser | null | undefined
 ): boolean {
     if (!user) return false;
+    if (user.viaSuperAdminProxy) {
+        // SA gateway already authenticated the actor and applied panelConfig gates.
+        return true;
+    }
     const role = normalizeRole(user.role);
     if (!role) return false;
     if (role === 'UNDERWRITER') {

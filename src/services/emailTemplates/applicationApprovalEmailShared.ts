@@ -1,6 +1,8 @@
+import { BRAND_DISPLAY_NAME } from '../../constants/brand';
+
 /** Display name for outbound emails (override via APP_COMPANY_NAME). */
 export const APP_COMPANY_NAME =
-  String(process.env.APP_COMPANY_NAME || '').trim() || 'Katan Capital';
+  String(process.env.APP_COMPANY_NAME || '').trim() || BRAND_DISPLAY_NAME;
 
 /** CRM product name referenced in client-facing emails. */
 export const APP_COMPANY_CRM_NAME =

@@ -1,4 +1,5 @@
 import prisma from '../config/prismaClient';
+import { resolveApplicationAttributedUserIdForActor } from '../middleware/authMiddleware';
 import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 
 function parseTermInt(term: unknown): number {
@@ -11,6 +12,10 @@ function parseTermInt(term: unknown): number {
 /**
  * Mirror the persisted offer-decision onto the latest terms offer (or create one)
  * so ISO public approval links show the same amounts the scrubbing approved.
+ *
+ * Super Admin proxy actors often have no tenant User row — never write their
+ * platform id into TermsOffer.createdById (FK). Attribute to a real tenant user
+ * or leave null so the sync still succeeds.
  */
 export async function syncTermsOfferFromOfferDecision(
     applicationId: string,
@@ -27,7 +32,11 @@ export async function syncTermsOfferFromOfferDecision(
 
     const application = await prisma.application.findUnique({
         where: { id: applicationId },
-        select: { commissionPercentage: true },
+        select: {
+            commissionPercentage: true,
+            createdById: true,
+            salesRepresentativeId: true,
+        },
     });
     if (!application) return;
 
@@ -79,11 +88,16 @@ export async function syncTermsOfferFromOfferDecision(
         return;
     }
 
+    const createdById = await resolveApplicationAttributedUserIdForActor(actorUserId, {
+        createdById: application.createdById,
+        salesRepresentativeId: application.salesRepresentativeId,
+    });
+
     await prisma.termsOffer.create({
         data: {
             ...payload,
             applicationId,
-            createdById: actorUserId || null,
+            createdById,
             paymentDays: [],
         },
     });

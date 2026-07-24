@@ -1,4 +1,4 @@
-﻿import type { Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
@@ -71,9 +71,7 @@ import {
     reconcileStaleContractReinitiationFlags,
 } from '../services/contractReinitiationService';
 import {
-    buildApplicationApprovalEmailHtml,
     buildApplicationApprovedEmailInjectValues,
-    buildApplicationOfferUpdatedEmailHtml,
     injectApplicationApprovalEmailValues,
     sendApplicationApprovalEmail,
     sendApplicationRejectionEmail,
@@ -81,6 +79,7 @@ import {
     sendApplicationOfferUpdatedEmail,
     sendUnderwriterNewApplicationEmail,
 } from '../services/emailService';
+import { resolveIsoApprovalEmailHtml } from '../services/applicationApprovalEmailRenderService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
 import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
 import {
@@ -268,7 +267,7 @@ export const normalizePDFText = (text: string) => {
         .trim();
 };
 
-// Utility to process a PDF file (Claude hybrid extraction ΓåÆ parse, CSV export)
+// Utility to process a PDF file (Claude hybrid extraction G?? parse, CSV export)
 export const processPDF = async (filePath: string) => {
     const buffer = fs.readFileSync(filePath);
     const name = path.basename(filePath) || 'application.pdf';
@@ -277,7 +276,7 @@ export const processPDF = async (filePath: string) => {
     const previewLen = Math.max(200, Number(process.env.PDF_EXTRACT_DEBUG_PREVIEW_CHARS || 800));
     console.log(
         '[processPDF] Synthetic extract text preview (first chars):\n',
-        (textRaw || '').length > previewLen ? `${(textRaw || '').slice(0, previewLen)}ΓÇª` : textRaw || '',
+        (textRaw || '').length > previewLen ? `${(textRaw || '').slice(0, previewLen)}G?` : textRaw || '',
     );
     const text = normalizeOcrTextForParsing(textRaw);
 
@@ -312,7 +311,7 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
     Cancelled: 'CANCELLED' as ApplicationState,
     Contract_Pending: 'CONTRACT_PENDING' as ApplicationState,
     Contracts_Out: 'CONTRACTS_OUT' as ApplicationState,
-    /** Legacy spelling ΓÇö still accepted on input. */
+    /** Legacy spelling G?? still accepted on input. */
     'Contracts Out': 'CONTRACTS_OUT' as ApplicationState,
     /** Alias for UI label "Contracted" (same DB value as Contracts_Out). */
     Contracted: 'CONTRACTS_OUT' as ApplicationState,
@@ -327,7 +326,7 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
     Final: 'FINAL' as ApplicationState,
 };
 
-/** API input ΓåÆ verbatim `Application.currentState` string (not a Prisma workflow enum). */
+/** API input G?? verbatim `Application.currentState` string (not a Prisma workflow enum). */
 const verbatimApplicationStateByInput: Record<string, string> = {
     Approved: 'Approved',
     'Underwriter Approved': 'Underwriter Approved',
@@ -420,7 +419,7 @@ const normalizeWorkflowQueueForApi = (queue: string | null | undefined): string 
 
 const WORKFLOW_QUEUES = CANONICAL_WORKFLOW_QUEUES;
 
-/** Stored when a Underwriter approves ΓÇö both queue and state use this label. */
+/** Stored when a Underwriter approves G?? both queue and state use this label. */
 const FINAL_UNDERWRITER_APPROVED_STATE = 'Underwriter Approved' as const;
 const FINAL_UNDERWRITER_APPROVED_QUEUE = 'Underwriter Approved' as const;
 const FINAL_APPROVAL_QUEUE = 'Final Approval' as const;
@@ -491,7 +490,7 @@ const patchClearUnderwriterClaimIfQueueChanged = (
  * Record who scrubbed the deal when a Scrubbing user advances it out of the
  * Scrubbing queue (mirrors how the Underwriter is captured). Only sets the
  * scrubber when the actor holds the SCRUBBING role and no scrubber claim is
- * recorded yet ΓÇö never overwrites an existing explicit claim.
+ * recorded yet G?? never overwrites an existing explicit claim.
  */
 const patchRecordScrubberClaimOnAdvance = (
     authUser: AuthenticatedUser | null | undefined,
@@ -586,7 +585,7 @@ const resolveUnderwriterApproverId = (
     return undefined;
 };
 
-/** Record which underwriter approved the deal (queue/state ΓåÆ Underwriter Approved). */
+/** Record which underwriter approved the deal (queue/state G?? Underwriter Approved). */
 const patchRecordUnderwriterApproval = (
     authUser: AuthenticatedUser | null | undefined,
     application: {
@@ -973,7 +972,7 @@ export const mapApplicationToApi = (app: any) => {
         note,
         currentQueue: normalizeWorkflowQueueForApi(currentQueue) ?? currentQueue,
         currentState: toWorkflowApiState(currentQueue, currentState),
-        /** DB `currentState` before workflow API mapping ΓÇö use for dashboard buckets matching `/applications/stats`. */
+        /** DB `currentState` before workflow API mapping G?? use for dashboard buckets matching `/applications/stats`. */
         statsCurrentState: currentState,
         createdAt,
         updatedAt,
@@ -1027,6 +1026,7 @@ const getAuthenticatedUser = (req: Request): AuthenticatedUser | null => {
     return {
         id: user.id,
         role: user.role as any,
+        viaSuperAdminProxy: Boolean((req as any).isSuperAdminProxy),
     };
 };
 
@@ -1042,7 +1042,7 @@ const blockIfUnderwriterUnclaimedDeal = (
     return true;
 };
 
-/** PUT body only sets `isoId` ΓÇö allowed on overview without an scrubbing claim. */
+/** PUT body only sets `isoId` G?? allowed on overview without an scrubbing claim. */
 const isApplicationIsoLinkOnlyBody = (body: Record<string, unknown>): boolean => {
     const keys = Object.keys(body ?? {}).filter((k) => body[k] !== undefined);
     return keys.length === 1 && keys[0] === 'isoId';
@@ -2858,7 +2858,7 @@ class ApplicationController {
 
             // ==================================
             // Application Pipeline Funnel chart
-            // (weekly / monthly / yearly + rolling 12 months ΓÇö matches dashboard dropdown)
+            // (weekly / monthly / yearly + rolling 12 months G?? matches dashboard dropdown)
             // ==================================
             const buildPipelineFunnelSnapshot = (
                 rows: { createdAt: Date; currentQueue: string | null }[],
@@ -3246,7 +3246,7 @@ class ApplicationController {
                 currentQueue,
                 currentState,
                 loanAmount,
-                /** CRM-only; not a DB column ΓÇö maps to currentQueue + currentState */
+                /** CRM-only; not a DB column G?? maps to currentQueue + currentState */
                 status,
                 isoId,
                 commissionPercentage,
@@ -3863,7 +3863,7 @@ class ApplicationController {
                 Object.assign(updateData, scrubberClaimPatch);
             }
 
-            // Final approval: Underwriter signs off out of Final Approval ΓÇö either into
+            // Final approval: Underwriter signs off out of Final Approval G?? either into
             // Contract Pending (Decision Logic path) or Final (Funding Call path).
             const movingToContractPending =
                 normalizeQueueToken(transition.queue) === 'CONTRACT_PENDING';
@@ -5186,7 +5186,7 @@ class ApplicationController {
                     }
                 } else {
                     console.warn(
-                        '[reject] Skipped ISO decline email ΓÇö no linked ISO email on application',
+                        '[reject] Skipped ISO decline email G?? no linked ISO email on application',
                         applicationRecord.id,
                     );
                 }
@@ -5769,7 +5769,7 @@ class ApplicationController {
     }
 
     /**
-     * POST multipart field `pdf` (multer): Claude hybrid PDF extraction ΓåÆ parseBusinessData ΓåÆ
+     * POST multipart field `pdf` (multer): Claude hybrid PDF extraction G?? parseBusinessData G??
      * existing `createClientAndApplicationFromPDFBuffer` (same persistence as Gmail / PDF buffer flow).
      */
     async uploadApplicationPdfOcrCreate(req: Request, res: Response) {
@@ -5794,7 +5794,7 @@ class ApplicationController {
             console.log(
                 '[PDF upload] Synthetic parse text preview:\n',
                 syntheticText.length > previewLen
-                    ? `${syntheticText.slice(0, previewLen)}ΓÇª`
+                    ? `${syntheticText.slice(0, previewLen)}G?`
                     : syntheticText,
             );
 
@@ -6018,7 +6018,7 @@ class ApplicationController {
                 null;
             const loanAmountNum = parseNumericAmount(requestedAmountRaw);
 
-            // Parse Gross Annual Sales and calculate monthly revenue (annual ├╖ 12)
+            // Parse Gross Annual Sales and calculate monthly revenue (annual ++ 12)
             const grossAnnualRaw = business.business_monthly_revenue; // parsed from "Gross Annual Sales"
             const annualRevenue = parseNumericAmount(grossAnnualRaw);
             const monthlyRevenue =
@@ -6028,7 +6028,7 @@ class ApplicationController {
             let createdApplication: any;
 
             if (clientRecord) {
-                // Case 1: Client already exists ΓåÆ create application only
+                // Case 1: Client already exists G?? create application only
                 createdClient = clientRecord;
 
                 createdApplication = await withAllocatedDealId((dealId, tx) =>
@@ -6112,7 +6112,7 @@ class ApplicationController {
                 throw assertErr;
             }
 
-            // Case 2: Client does not exist ΓåÆ create client + application atomically
+            // Case 2: Client does not exist G?? create client + application atomically
             const result = await prisma.$transaction(async (tx) => {
                 const dealId = await allocateNextDealId(tx);
 
@@ -6286,7 +6286,7 @@ class ApplicationController {
     // - Return ONLY valid JSON. No explanations or extra text.
     // - Map values to the exact field names below. Do not mix or duplicate values.
     // - If a field is not found, use null.
-    // - Use smart matching: map similar labels to the correct field (e.g. "Company Name" ΓåÆ business_name, "FICO Score" ΓåÆ fico_score).
+    // - Use smart matching: map similar labels to the correct field (e.g. "Company Name" G?? business_name, "FICO Score" G?? fico_score).
     // - Combine Address 1 and Address 2 (if present) into a single address field, separated by comma or newline.
     // - Return a single JSON object with two keys: "business" and "owner", each containing only these fields:
 
@@ -6470,7 +6470,7 @@ class ApplicationController {
     //                 return isNaN(num) ? null : num;
     //             };
 
-    //             // Parse Gross Annual Sales and calculate monthly revenue (annual ├╖ 12)
+    //             // Parse Gross Annual Sales and calculate monthly revenue (annual ++ 12)
     //             const grossAnnualRaw = businessData.gross_annual_sales;
     //             const annualRevenue = parseNumericAmount(grossAnnualRaw);
     //             const monthlyRevenue = annualRevenue != null ? Math.round((annualRevenue / 12) * 100) / 100 : null;
@@ -6540,7 +6540,7 @@ class ApplicationController {
     //                 if (existingByEin) {
     //                     createdClient = existingByEin;
     //                     existingClient = true;
-    //                     console.log(`ΓÖ╗∩╕Å Using existing client (matched by EIN): ${createdClient.businessName} (ID: ${createdClient.clientId})`);
+    //                     console.log(`G?+n+? Using existing client (matched by EIN): ${createdClient.businessName} (ID: ${createdClient.clientId})`);
     //                 }
     //             }
 
@@ -6556,7 +6556,7 @@ class ApplicationController {
     //                 if (existingByBusiness) {
     //                     createdClient = existingByBusiness;
     //                     existingClient = true;
-    //                     console.log(`ΓÖ╗∩╕Å Using existing client (matched by business name + email): ${createdClient.businessName} (ID: ${createdClient.clientId})`);
+    //                     console.log(`G?+n+? Using existing client (matched by business name + email): ${createdClient.businessName} (ID: ${createdClient.clientId})`);
     //                 }
     //             }
 
@@ -6578,13 +6578,13 @@ class ApplicationController {
     //                 if (existingByOwner) {
     //                     createdClient = existingByOwner;
     //                     existingClient = true;
-    //                     console.log(`ΓÖ╗∩╕Å Using existing client (matched by owner SSN + business name): ${createdClient.businessName} (ID: ${createdClient.clientId})`);
+    //                     console.log(`G?+n+? Using existing client (matched by owner SSN + business name): ${createdClient.businessName} (ID: ${createdClient.clientId})`);
     //                 }
     //             }
 
     //             if (!createdClient) {
     //                 // Create client only when no duplicate found
-    //                 console.log('\n≡ƒô¥ Creating client automatically...');
+    //                 console.log('\n=??? Creating client automatically...');
     //                 try {
     //                     createdClient = await prisma.client.create({
     //                         data: {
@@ -6621,7 +6621,7 @@ class ApplicationController {
     //                             createdById: currentUserId,
     //                         },
     //                     });
-    //                     console.log(`Γ£à Client created successfully: ${createdClient.businessName} (ID: ${createdClient.clientId})`);
+    //                     console.log(`G?? Client created successfully: ${createdClient.businessName} (ID: ${createdClient.clientId})`);
     //                 } catch (clientError: any) {
     //                     console.error('Failed to create client:', clientError);
     //                     throw new Error(`Client creation failed: ${clientError?.message || 'Unknown error'}`);
@@ -6638,7 +6638,7 @@ class ApplicationController {
     //                             ...(monthlyRevenue != null && { businessMonthlyRevenue: monthlyRevenue }),
     //                         },
     //                     });
-    //                     console.log(`Γ£à Updated client revenue from PDF: annual=${annualRevenue}, monthly=${monthlyRevenue}`);
+    //                     console.log(`G?? Updated client revenue from PDF: annual=${annualRevenue}, monthly=${monthlyRevenue}`);
     //                 } catch (updateErr: any) {
     //                     console.warn('Failed to update client revenue:', updateErr?.message);
     //                 }
@@ -6717,7 +6717,7 @@ class ApplicationController {
     //                         size: pdfFile.size,
     //                         uploadedAt: new Date(),
     //                     });
-    //                     console.log(`Γ£à PDF uploaded to Cloudinary: ${uploadResult.data.secure_url}`);
+    //                     console.log(`G?? PDF uploaded to Cloudinary: ${uploadResult.data.secure_url}`);
     //                 }
     //             } catch (uploadError) {
     //                 console.warn('Failed to upload PDF to Cloudinary:', uploadError);
@@ -6751,7 +6751,7 @@ class ApplicationController {
 
     //             if (createdApplication) {
     //                 existingApplication = true;
-    //                 console.log(`ΓÖ╗∩╕Å Using existing application (no duplicate): Application #${createdApplication.applicationId}`);
+    //                 console.log(`G?+n+? Using existing application (no duplicate): Application #${createdApplication.applicationId}`);
     //                 if (uploadedFiles.length > 0) {
     //                     try {
     //                         await prisma.applicationFile.createMany({
@@ -6782,7 +6782,7 @@ class ApplicationController {
     //                 }
     //             } else {
     //                 // Create application when no recent duplicate
-    //                 console.log('\n≡ƒô¥ Creating application automatically...');
+    //                 console.log('\n=??? Creating application automatically...');
     //                 try {
     //                     createdApplication = await prisma.application.create({
     //                         data: {
@@ -6816,7 +6816,7 @@ class ApplicationController {
     //                             files: true,
     //                         },
     //                     });
-    //                     console.log(`Γ£à Application created successfully: Application #${createdApplication.applicationId}`);
+    //                     console.log(`G?? Application created successfully: Application #${createdApplication.applicationId}`);
     //                 } catch (appError: any) {
     //                     console.error('Failed to create application:', appError);
     //                     throw new Error(`Application creation failed: ${appError?.message || 'Unknown error'}`);
@@ -7080,13 +7080,16 @@ class ApplicationController {
                 (resend ? 'Your Offer Values Have Been Updated' : 'Your Application Has Been Approved');
 
             /**
-             * Prefer the frontend-rendered branded template (the approval/update-offer HTML is now
-             * owned by the frontend). Server-only values ΓÇö the signed public-portal URL, the resolved
-             * ISO recipient name, and the deal business name ΓÇö are injected here. The backend builders
-             * remain only as a safety fallback when no frontend HTML is supplied.
+             * Prefer the CRM frontend-rendered HTML for native tenant logins.
+             * Super Admin proxy: ignore SA FE HTML (platform branding) and always render
+             * this tenant's current ISO templates (same as FE applicationApprovalEmailHtml /
+             * offerUpdatedEmailHtml) ? never the legacy progress-tracker layouts.
              */
+            const useTenantServerTemplate = Boolean((req as any).isSuperAdminProxy);
             const frontendEmailHtml =
-                typeof clientEmailHtmlRaw === 'string' && clientEmailHtmlRaw.trim()
+                !useTenantServerTemplate &&
+                typeof clientEmailHtmlRaw === 'string' &&
+                clientEmailHtmlRaw.trim()
                     ? injectApplicationApprovalEmailValues(clientEmailHtmlRaw.trim(), {
                         approvalUrl: calculateApprovalUrl,
                         clientName: isoRecipientName,
@@ -7095,19 +7098,12 @@ class ApplicationController {
                     : undefined;
             const emailHtml =
                 frontendEmailHtml ??
-                (resend
-                    ? buildApplicationOfferUpdatedEmailHtml({
-                        clientName: isoRecipientName,
-                        companyName,
-                        calculateApprovalUrl,
-                        viewApplicationUrl,
-                    })
-                    : buildApplicationApprovalEmailHtml({
-                        clientName: isoRecipientName,
-                        companyName,
-                        calculateApprovalUrl,
-                        viewApplicationUrl,
-                    }));
+                resolveIsoApprovalEmailHtml({
+                    resend: !!resend,
+                    clientName: isoRecipientName,
+                    companyName,
+                    calculateApprovalUrl,
+                });
 
             const trackingId = randomUUID();
             const approvalEmailLogSuffix = resend
@@ -7370,7 +7366,7 @@ class ApplicationController {
         }
     }
 
-    /** Funded / funds-released email ΓÇö best-effort (same idea as funding-call email); any user with app access. */
+    /** Funded / funds-released email G?? best-effort (same idea as funding-call email); any user with app access. */
     async sendFundedEmail(req: Request, res: Response) {
         try {
             const { applicationId } = req.body as { applicationId?: string | number };
@@ -7978,7 +7974,7 @@ class ApplicationController {
                 mergeDuplicate(app, ['Same client']);
             }
 
-            // Strong cross-client identity (EIN or SSN only ΓÇö not loose business-name matches).
+            // Strong cross-client identity (EIN or SSN only G?? not loose business-name matches).
             const crossClientOr: Prisma.ClientWhereInput[] = [];
             if (ein) {
                 crossClientOr.push({ businessEinNumber: ein });
@@ -8183,7 +8179,7 @@ class ApplicationController {
                     );
                     touchBulkUploadJob(job);
                     console.log(
-                        `[bulk-import] job ${jobId}: completed ΓÇö inserted=${finalSummary.successCount}, updated=${finalSummary.updatedCount}, failed=${finalSummary.failedCount}/${finalSummary.totalRows}`,
+                        `[bulk-import] job ${jobId}: completed G?? inserted=${finalSummary.successCount}, updated=${finalSummary.updatedCount}, failed=${finalSummary.failedCount}/${finalSummary.totalRows}`,
                     );
                     if (mergedErrors.length) {
                         console.warn(
@@ -8202,7 +8198,7 @@ class ApplicationController {
                     job.message = error?.message || 'Bulk upload failed';
                     touchBulkUploadJob(job);
                     console.error(
-                        `[bulk-import] job ${jobId}: fatal error ΓÇö ${job.message}`,
+                        `[bulk-import] job ${jobId}: fatal error G?? ${job.message}`,
                         error,
                     );
                 }
@@ -8379,8 +8375,8 @@ class ApplicationController {
      * Approve an application (idempotent webhook-style endpoint).
      *
      * Trigger surfaces:
-     *   1. Authenticated CRM user (Underwriter / Admin / OperationsΓÇª) clicks Approve.
-     *   2. ISO clicks Approve from the public approval portal ΓÇö the portal first
+     *   1. Authenticated CRM user (Underwriter / Admin / OperationsG?) clicks Approve.
+     *   2. ISO clicks Approve from the public approval portal G?? the portal first
      *      mints a short-lived JWT (see PublicApprovalController.createApprovalSession)
      *      that flows through `authenticateToken` and lands here with
      *      `req.user.publicApprovalActor === 'ISO'`.
