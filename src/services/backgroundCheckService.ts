@@ -430,16 +430,6 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
                             ? `CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.`
                             : `CLEAR report follow-up note(s): ${reportMeta.errors.length}.`
                     }${firstError ? ` ${firstError}` : ''}`.trim();
-                }${notes ? ' ' : ''}${
-                        pdfFailed
-                            ? `CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.`
-                            : `CLEAR report follow-up note(s): ${reportMeta.errors.length}.`
-                    }${firstError ? ` ${firstError}` : ''}`.trim();
-                }${notes ? ' ' : ''}${
-                        pdfFailed
-                            ? `CLEAR PDF report generation failed for ${reportMeta.errors.length} report(s); search result unchanged.`
-                            : `CLEAR report follow-up note(s): ${reportMeta.errors.length}.`
-                    }${firstError ? ` ${firstError}` : ''}`.trim();
                 }
             }
         } catch (reportError: any) {
