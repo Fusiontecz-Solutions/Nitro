@@ -16,13 +16,14 @@ const PERSON_REPORT_CANDIDATE_PATH = '/v2/personReportCandidate/reportResultsCan
 const BUSINESS_REPORT_PATH = '/v2/businessReport/reportResults';
 const BUSINESS_REPORT_CANDIDATE_PATH = '/v2/businessReportCandidate/reportResultsCandidate';
 
-/** Basic Person Report sections (World-Check intentionally off). */
+/** Basic Person Report sections (World-Check intentionally off).
+ * Do not send business-only flags (e.g. CorporateSection) — CLEAR returns HTTP 400/40002.
+ * Person corporate affiliations come via WorkAffiliationSection; business reports keep CorporateSection.
+ */
 const PERSON_BASIC_SECTIONS = [
     'AddressSection',
     'DeathSection',
     'WorkAffiliationSection',
-    'BusinessAssociationSection',
-    'CorporateSection',
     'OtherSSNSection',
     'OtherNamesforSSNSection',
     'PhoneNumberSection',
