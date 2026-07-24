@@ -21,6 +21,8 @@ const PERSON_BASIC_SECTIONS = [
     'AddressSection',
     'DeathSection',
     'WorkAffiliationSection',
+    'BusinessAssociationSection',
+    'CorporateSection',
     'OtherSSNSection',
     'OtherNamesforSSNSection',
     'PhoneNumberSection',
@@ -72,6 +74,10 @@ export type ClearReportPdfResult = {
     reportId: string;
     fileName: string;
     pdf: Buffer;
+    /** Best-effort structured report XML (for Lien/Judgment parse). */
+    xml?: string;
+    /** Present when PDF succeeded but XML retrieval failed. */
+    xmlError?: string;
 };
 
 export type ClearReportFailure = {
@@ -366,16 +372,19 @@ async function createReport(
     return reportIdFromUri(candidateUri, kind);
 }
 
+function reportResultPath(kind: ClearReportKind, reportId: string): string {
+    return kind === 'person'
+        ? `${PERSON_REPORT_PATH}/${encodeURIComponent(reportId)}`
+        : `${BUSINESS_REPORT_PATH}/${encodeURIComponent(reportId)}`;
+}
+
 async function pollReportPdf(
     client: AxiosInstance,
     kind: ClearReportKind,
     reportId: string,
     timeoutMs: number = CLEAR_REPORT_POLL_TIMEOUT_MS,
 ): Promise<Buffer> {
-    const path =
-        kind === 'person'
-            ? `${PERSON_REPORT_PATH}/${encodeURIComponent(reportId)}`
-            : `${BUSINESS_REPORT_PATH}/${encodeURIComponent(reportId)}`;
+    const path = reportResultPath(kind, reportId);
     const operation =
         kind === 'person' ? 'Person Report PDF retrieval' : 'Business Report PDF retrieval';
     const deadline = Date.now() + timeoutMs;
@@ -424,6 +433,105 @@ async function pollReportPdf(
     throw new Error(`CLEAR ${operation} timed out after ${timeoutMs}ms.`);
 }
 
+function isReportXmlReady(xml: string): boolean {
+    if (!xml.trim()) return false;
+    if (isReportPending(xml)) return false;
+    const statusCode = extractOne(xml, 'StatusCode');
+    if (statusCode && statusCode !== '200') return false;
+    // Ready report payloads are substantial and typically include section or entity markers.
+    if (
+        /LienJudgment|Judg(?:e)?ment|TaxLien|<Lien[\s>]|PersonReport|BusinessReport/i.test(xml)
+    ) {
+        return true;
+    }
+    return xml.length > 200;
+}
+
+/**
+ * Poll CLEAR for structured report XML after PDF is available.
+ * Uses the same interim pending codes as PDF retrieval.
+ */
+export async function pollReportXml(
+    client: AxiosInstance,
+    kind: ClearReportKind,
+    reportId: string,
+    timeoutMs: number = CLEAR_REPORT_POLL_TIMEOUT_MS,
+): Promise<string> {
+    const path = reportResultPath(kind, reportId);
+    const operation =
+        kind === 'person' ? 'Person Report XML retrieval' : 'Business Report XML retrieval';
+    const deadline = Date.now() + timeoutMs;
+    let delayMs = 1_000;
+
+    while (Date.now() < deadline) {
+        let getResponse;
+        try {
+            getResponse = await client.get(path, {
+                params: { reportType: 'xml' },
+                responseType: 'arraybuffer',
+                transformResponse: [(data) => data],
+                headers: { Accept: 'application/xml, text/xml, */*' },
+            });
+        } catch (error) {
+            throw describeHttpError(error, operation);
+        }
+
+        const buffer = Buffer.from(getResponse.data ?? []);
+        if (isPdfBuffer(buffer)) {
+            throw new Error(`CLEAR ${operation} returned PDF instead of XML.`);
+        }
+
+        const xml = buffer.toString('utf8');
+        if (isReportPending(xml)) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) break;
+            await sleep(Math.min(delayMs, remaining));
+            delayMs = Math.min(delayMs * 2, 8_000);
+            continue;
+        }
+
+        const statusCode = extractOne(xml, 'StatusCode');
+        if (statusCode && statusCode !== '200' && !isReportXmlReady(xml)) {
+            const subStatusCode = extractOne(xml, 'SubStatusCode');
+            const message = extractOne(xml, 'Message');
+            throw new Error(
+                `CLEAR ${operation} failed with status ${statusCode}${subStatusCode ? `/${subStatusCode}` : ''}${message ? `: ${message}` : ''}.`,
+            );
+        }
+
+        if (isReportXmlReady(xml)) return xml;
+
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await sleep(Math.min(delayMs, remaining));
+        delayMs = Math.min(delayMs * 2, 8_000);
+    }
+
+    throw new Error(`CLEAR ${operation} timed out after ${timeoutMs}ms.`);
+}
+
+async function fetchReportPdfAndXml(
+    client: AxiosInstance,
+    kind: ClearReportKind,
+    groupId: string,
+    reportId: string,
+): Promise<ClearReportPdfResult> {
+    const pdf = await pollReportPdf(client, kind, reportId);
+    const result: ClearReportPdfResult = {
+        kind,
+        groupId,
+        reportId,
+        fileName: clearReportFileName(kind, groupId),
+        pdf,
+    };
+    try {
+        result.xml = await pollReportXml(client, kind, reportId);
+    } catch (error: any) {
+        result.xmlError = String(error?.message || error).slice(0, 500);
+    }
+    return result;
+}
+
 export async function createAndFetchPersonReportPdf(
     groupId: string,
     reference: string,
@@ -432,14 +540,7 @@ export async function createAndFetchPersonReportPdf(
     const client = createClearS2sHttpClient(config);
     const requestXml = buildPersonReportXml(groupId, config, reference);
     const reportId = await createReport(client, 'person', requestXml, config, reference);
-    const pdf = await pollReportPdf(client, 'person', reportId);
-    return {
-        kind: 'person',
-        groupId,
-        reportId,
-        fileName: clearReportFileName('person', groupId),
-        pdf,
-    };
+    return fetchReportPdfAndXml(client, 'person', groupId, reportId);
 }
 
 export async function createAndFetchBusinessReportPdf(
@@ -450,14 +551,7 @@ export async function createAndFetchBusinessReportPdf(
     const client = createClearS2sHttpClient(config);
     const requestXml = buildBusinessReportXml(groupId, config, reference);
     const reportId = await createReport(client, 'business', requestXml, config, reference);
-    const pdf = await pollReportPdf(client, 'business', reportId);
-    return {
-        kind: 'business',
-        groupId,
-        reportId,
-        fileName: clearReportFileName('business', groupId),
-        pdf,
-    };
+    return fetchReportPdfAndXml(client, 'business', groupId, reportId);
 }
 
 /**
