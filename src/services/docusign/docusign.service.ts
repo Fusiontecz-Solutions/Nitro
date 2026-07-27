@@ -132,7 +132,10 @@ import {
 import {
   archiveSignedEnvelopePdf,
   fetchStoredSignedPdfBuffer,
+  getStoredEnvelopePdfArchive,
   getStoredSignedPdfUrl,
+  isDocumentFullySignedStatus,
+  isSignedPhaseArchiveUrl,
 } from './utils/archive-signed-envelope-pdf';
 
 /** Contract signing status labels for notifications */
@@ -3336,8 +3339,8 @@ export class DocusignService {
           console.log(
             `[DocuSign] CC PDF ready for ${envelopeId}: ${buf.length} bytes (attempt ${attempt + 1})`,
           );
+          // Sent/prefilled PDF only — never poison the completed/signed cache.
           setCachedEnvelopePdf(envelopeId, 'preview', buf);
-          setCachedEnvelopePdf(envelopeId, 'completed', buf);
           return buf;
         }
       } catch (err) {
@@ -3402,12 +3405,13 @@ export class DocusignService {
           getCachedEnvelopePdf(eid, 'preview') ||
           (await this.downloadEnvelopeCombinedPdf(client, accountId, eid, false));
       } else {
-        buf =
-          getCachedEnvelopePdf(eid, 'completed') ||
-          getCachedEnvelopePdf(eid, 'preview');
+        // Completed/signed: always pull live DocuSign combined PDF.
+        // Never reuse preview/sent caches — those are the unsigned package.
+        invalidateCachedEnvelopePdf(eid);
+        const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
+        buf = await this.downloadEnvelopeCombinedPdf(client, accountId, eid, false);
         if (!buf?.length) {
-          const { client, accountId } = await this.getAuthContextForEnvelope(userId, eid);
-          buf = await this.downloadEnvelopeCombinedPdf(client, accountId, eid, false);
+          buf = await this.downloadEnvelopePdfBuffer(client, accountId, eid, 'completed');
         }
       }
 
@@ -3417,8 +3421,9 @@ export class DocusignService {
         );
         return;
       }
-      setCachedEnvelopePdf(eid, 'preview', buf);
-      if (phase === 'completed') {
+      if (phase === 'sent') {
+        setCachedEnvelopePdf(eid, 'preview', buf);
+      } else {
         setCachedEnvelopePdf(eid, 'completed', buf);
       }
       await archiveSignedEnvelopePdf({
@@ -4732,15 +4737,27 @@ export class DocusignService {
     await this.assertTenantEnvelopeKnown(eid, options);
 
     // Prefer durable Cloudinary archive (per-funder folder) — zero DocuSign GETs.
-    const storedUrl = await getStoredSignedPdfUrl(eid);
-    if (storedUrl) {
-      const cached = getCachedEnvelopePdf(eid, 'completed');
+    // Skip when Document is completed/signed but archive is still the sent (unsigned) package.
+    const storedArchive = await getStoredEnvelopePdfArchive(eid);
+    const storedUrl = storedArchive?.url || null;
+    const docFullySigned = isDocumentFullySignedStatus(storedArchive?.status);
+    const archiveIsSigned = isSignedPhaseArchiveUrl(storedUrl);
+    const staleSentArchive = Boolean(storedUrl && docFullySigned && !archiveIsSigned);
+
+    if (storedUrl && !staleSentArchive) {
+      const cacheVariant = archiveIsSigned || docFullySigned ? 'completed' : 'preview';
+      const cached = getCachedEnvelopePdf(eid, cacheVariant);
       if (cached?.length) return cached;
       const fromCloud = await fetchStoredSignedPdfBuffer(storedUrl);
       if (fromCloud?.length) {
-        setCachedEnvelopePdf(eid, 'completed', fromCloud);
+        setCachedEnvelopePdf(eid, cacheVariant, fromCloud);
         return fromCloud;
       }
+    } else if (staleSentArchive) {
+      console.warn(
+        `[DocuSign] stale sent archive for completed envelope ${eid}; refetching signed PDF from DocuSign`,
+      );
+      invalidateCachedEnvelopePdf(eid);
     }
 
     this.assertEnvelopePollingAllowed(eid);
@@ -4770,15 +4787,20 @@ export class DocusignService {
           'Could not download PDF from DocuSign (empty or unavailable combined document)',
         );
       }
-      // Lazy backfill: first sent/completed download also archives for future opens.
+      // Lazy backfill / repair: archive sent package, or replace stale sent with signed.
       const statusLower = String(status || '').toLowerCase();
+      const phase =
+        statusLower === 'completed' || statusLower === 'signed' ? 'completed' : 'sent';
+      const shouldArchive =
+        !storedUrl ||
+        staleSentArchive ||
+        (phase === 'completed' && !archiveIsSigned);
       if (
-        !storedUrl &&
-        (statusLower === 'completed' ||
+        shouldArchive &&
+        (phase === 'completed' ||
           statusLower === 'sent' ||
           statusLower === 'delivered')
       ) {
-        const phase = statusLower === 'completed' ? 'completed' : 'sent';
         void archiveSignedEnvelopePdf({
           envelopeId: eid,
           pdf: buf,

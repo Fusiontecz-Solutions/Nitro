@@ -1168,7 +1168,33 @@ function resolveTextPlacementValue(
       key.toLowerCase() === 'addendum_client_name')
   ) {
     // Always prefer Owner 1 person name — never merchant legal name.
+    const legalNameNorm = String(
+      values.client_legal_name ||
+        values.business_legal_name ||
+        values.merchant_legal_name ||
+        values.security_business_name ||
+        values.legal_name ||
+        '',
+    )
+      .trim()
+      .toLowerCase();
     for (const aliasKey of PARTY1_NAME_PRIORITY) {
+      const owner1 = String(values[aliasKey] || '').trim();
+      if (!owner1) continue;
+      // Skip when a party-1 slot was polluted with the business/legal name.
+      if (legalNameNorm && owner1.toLowerCase() === legalNameNorm) continue;
+      return owner1;
+    }
+    // Sole-prop fallback: owner tabs may equal legal name — still prefer those over empty.
+    for (const aliasKey of [
+      'owner1_guarantor_name',
+      'guaranty_owner1_name',
+      'guaranty_guarantor1_name',
+      'guaranty_client_name',
+      'security_guarantor',
+      'client_name',
+      'addendum_client_name',
+    ] as const) {
       const owner1 = String(values[aliasKey] || '').trim();
       if (owner1) return owner1;
     }
