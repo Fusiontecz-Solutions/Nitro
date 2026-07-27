@@ -1511,15 +1511,6 @@ export default function ContractTab({
                 return;
             }
 
-            if (!envelopeIdOverride) {
-                const documentStatus = (contract as { application?: { document?: { status?: string } } })
-                    ?.application?.document?.status;
-                if (!isContractFullySigned((contract as { status?: unknown })?.status, documentStatus)) {
-                    toast.info("The contract is not fully signed yet.");
-                    return;
-                }
-            }
-
             const res = await axiosGet(
                 `/docusign/download/${encodeURIComponent(envelopeId)}`,
                 { responseType: "blob", timeout: 120000 },
@@ -1538,7 +1529,7 @@ export default function ContractTab({
                 (applicationData as { applicationId?: unknown })?.applicationId ??
                     applicationUuid,
             ).replace(/[^\w.-]+/g, "_");
-            const fileName = `signed-contract-${fileLabel}.pdf`;
+            const fileName = `contract-${fileLabel}.pdf`;
 
             setSignedPdfPreviewUrl((prev) => {
                 if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
@@ -1551,7 +1542,7 @@ export default function ContractTab({
                 (err as { response?: { data?: { message?: string } }; message?: string })
                     ?.response?.data?.message ||
                 (err as { message?: string })?.message ||
-                "Could not load the signed contract.";
+                "Could not load the contract document.";
             toast.error(String(msg));
         } finally {
             setViewingSignedContract(false);
@@ -3460,46 +3451,48 @@ export default function ContractTab({
                             </span>
                             {rowEnvelopeId ? (
                                 <>
-                                    {rowFullySigned || (isSupplementalRow && rowEnvelopeId) ? (
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="icon"
-                                            onClick={() =>
-                                                isAchRow
-                                                    ? void (row.isCurrent
-                                                          ? handleViewAchDocument()
-                                                          : handleViewSignedContract(rowEnvelopeId))
-                                                    : void handleViewSignedContract(
-                                                          row.isCurrent && !isPackageRow
-                                                              ? undefined
-                                                              : rowEnvelopeId,
-                                                      )
-                                            }
-                                            disabled={isViewingRow}
-                                            className={`h-7 w-7 shrink-0 ${brandActionButtonClass}`}
-                                            title={
-                                                isAchRow
-                                                    ? rowFullySigned
-                                                        ? "View signed ACH form"
-                                                        : "View filled ACH form"
-                                                    : isPackageRow
-                                                      ? rowFullySigned
-                                                          ? "View signed supplemental documents"
-                                                          : "View supplemental documents"
-                                                      : "View signed contract"
-                                            }
-                                        >
-                                            {isViewingRow ? (
-                                                <Loader2
-                                                    className="h-3.5 w-3.5 animate-spin"
-                                                    aria-hidden
-                                                />
-                                            ) : (
-                                                <Info className="h-3.5 w-3.5" aria-hidden />
-                                            )}
-                                        </Button>
-                                    ) : null}
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() =>
+                                            isAchRow
+                                                ? void (row.isCurrent
+                                                      ? handleViewAchDocument()
+                                                      : handleViewSignedContract(rowEnvelopeId))
+                                                : void handleViewSignedContract(rowEnvelopeId)
+                                        }
+                                        disabled={isViewingRow}
+                                        className={`h-7 w-7 shrink-0 ${brandActionButtonClass}`}
+                                        title={
+                                            isAchRow
+                                                ? rowFullySigned
+                                                    ? "View signed ACH form"
+                                                    : rowIsVoided
+                                                      ? "View voided ACH form"
+                                                      : "View ACH form"
+                                                : isPackageRow
+                                                  ? rowFullySigned
+                                                      ? "View signed supplemental documents"
+                                                      : rowIsVoided
+                                                        ? "View voided supplemental documents"
+                                                        : "View supplemental documents"
+                                                  : rowFullySigned
+                                                    ? "View signed contract"
+                                                    : rowIsVoided
+                                                      ? "View voided contract"
+                                                      : "View contract"
+                                        }
+                                    >
+                                        {isViewingRow ? (
+                                            <Loader2
+                                                className="h-3.5 w-3.5 animate-spin"
+                                                aria-hidden
+                                            />
+                                        ) : (
+                                            <Info className="h-3.5 w-3.5" aria-hidden />
+                                        )}
+                                    </Button>
                                     {row.isCurrent && !rowFullySigned && !rowIsVoided ? (
                                         <Button
                                             type="button"

@@ -3279,13 +3279,6 @@ const PDFViewerModal = ({
             return;
         }
 
-        if (outForSignatureBeforeSend && packageIncludesMainContract) {
-            const confirmed = window.confirm(
-                "Create a new DocuSign envelope? The previous envelope will stay active in DocuSign (it is not voided). Use Void Contract if you want to cancel the old one.",
-            );
-            if (!confirmed) return;
-        }
-
         let docuSignTab: Window | null = null;
         try {
             setDocuSignOpenUrl(null);
