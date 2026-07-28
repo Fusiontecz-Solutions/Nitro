@@ -1651,7 +1651,9 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         }
         const merchant = resolveMainContractBusinessNameFromPrefill(byId);
         if (merchant) {
-            upsertPrefillFieldValue(byId, "client_name", merchant);
+            // Do not overwrite shared `client_name` — main contract page 2 uses it for
+            // the person/client name. Disclosure merchant slots resolve via scoped ids /
+            // disclosure_* fields + layout-prefill-scope business-name helpers.
             upsertPrefillFieldValue(byId, "recipient_name", merchant);
             upsertPrefillFieldValue(byId, "disclosure_name", merchant);
             upsertPrefillFieldValue(byId, "disclosure_merchant_name", merchant);
@@ -1767,7 +1769,8 @@ export function mergeStateDisclosurePrefillFallback(args: {
         ) ||
         String(sctx.recipientName || "").trim();
     if (merchant) {
-        upsertPrefillFieldValue(byId, "client_name", merchant);
+        // Do not overwrite shared `client_name` with merchant legal name — that field is
+        // the person/client name on the main contract (e.g. page 2).
         upsertPrefillFieldValue(byId, "recipient_name", merchant);
         upsertPrefillFieldValue(byId, "disclosure_name", merchant);
         upsertPrefillFieldValue(byId, "disclosure_merchant_name", merchant);
