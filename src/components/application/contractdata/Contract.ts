@@ -1,6 +1,7 @@
 import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
 import { computePerPeriodPayment, parseTerm } from "@/lib/offerRepaymentCalculations";
 import { formatRateUS } from "@/lib/utils";
+import { formatUSD, parseMoneyInput } from "@/utils/formatCurrency";
 import {
     clearParty2PrefillFieldPayload,
     clearParty2PrefillPartial,
@@ -12,6 +13,12 @@ import {
     buildDocuSignRolesFromEditorRows,
     parseContractSignerOverridesFromPrefill,
 } from "./templateRecipients";
+import {
+    isTexasContractState,
+    isTexasFundingGroupFunder,
+    resolveMainContractLayoutKey,
+    PLATFORM_LAYOUT_KEYS,
+} from "./platformDocumentConfig";
 
 export interface ContractPrefillField {
     id: string;
@@ -979,6 +986,102 @@ function truncateDecimalPrefill(value: unknown): string {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
     }).format(truncated);
+}
+
+/** Texas Funding Group / Alliance-style money tabs that should show `$` on the PDF. */
+const TEXAS_CONTRACT_USD_MONEY_FIELD_IDS = new Set([
+    "purchase_amount",
+    "purchaseamount",
+    "purchaseAmount",
+    "purchase_price",
+    "purchaseprice",
+    "purchasePrice",
+    "finance_charge",
+    "financecharge",
+    "total_dollar_cost",
+    "disclosure_finance_charge",
+    "appendix_underwriting_fees",
+    "appendixUnderwritingFees",
+    "underwriter_fee",
+    "underwriterfee",
+    "net_to_merchant",
+    "netToMerchant",
+    "NetFundProvided",
+    "netfundprovided",
+    "remittance",
+    "daily_payment",
+    "dailypayment",
+    "estimated_payment",
+    "estimated_payment_amount",
+    "estimatedremittance",
+    "receivable_purchase",
+    "receivable_purchase_1",
+    "receivable_purchase_2",
+    "total_repayment_amount",
+    "disclosure_total_payment",
+    "estimatedtotalpaymentamount",
+]);
+
+function normalizeTexasMoneyFieldId(id: string): string {
+    return String(id || "")
+        .trim()
+        .replace(/([a-z])([A-Z])/g, "$1_$2")
+        .replace(/[\s-]+/g, "_")
+        .toLowerCase();
+}
+
+export function shouldFormatTexasContractUsdAmounts(options?: {
+    funderName?: string | null;
+    state?: string | null;
+    layoutKey?: string | null;
+}): boolean {
+    const layoutKey = String(options?.layoutKey ?? "").trim();
+    if (
+        layoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract ||
+        layoutKey === "texas_funding_group" ||
+        layoutKey === "alliance_bridge_contract"
+    ) {
+        return true;
+    }
+    const funderName = String(options?.funderName ?? "").trim();
+    const state = String(options?.state ?? "").trim();
+    if (!funderName || !isTexasContractState(state)) return false;
+    if (isTexasFundingGroupFunder(funderName)) return true;
+    return resolveMainContractLayoutKey(funderName, state) ===
+        PLATFORM_LAYOUT_KEYS.texasFundingGroupContract;
+}
+
+/** Prefix Texas contract money tabs with `$` (e.g. `$12,000.00`) for DocuSign. */
+export function applyTexasContractUsdMoneyToPrefillFields<
+    T extends { id: string; value: string },
+>(
+    fields: T[],
+    options?: {
+        funderName?: string | null;
+        state?: string | null;
+        layoutKey?: string | null;
+    },
+): T[] {
+    if (!fields.length || !shouldFormatTexasContractUsdAmounts(options)) {
+        return fields;
+    }
+    return fields.map((field) => {
+        const id = String(field.id ?? "").trim();
+        if (!id) return field;
+        const snake = normalizeTexasMoneyFieldId(id);
+        if (
+            !TEXAS_CONTRACT_USD_MONEY_FIELD_IDS.has(id) &&
+            !TEXAS_CONTRACT_USD_MONEY_FIELD_IDS.has(snake) &&
+            !TEXAS_CONTRACT_USD_MONEY_FIELD_IDS.has(id.replace(/_/g, ""))
+        ) {
+            return field;
+        }
+        const raw = String(field.value ?? "").trim();
+        if (!raw) return field;
+        const n = parseMoneyInput(raw);
+        if (n === null) return field;
+        return { ...field, value: formatUSD(n, { fallback: raw }) };
+    });
 }
 
 /** Prefer first nonempty truncated money string from fallback chain. */

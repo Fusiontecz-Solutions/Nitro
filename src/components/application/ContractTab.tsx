@@ -80,6 +80,7 @@ import {
     applySeparatedAddressPrefillFields,
     applyClientPersonNamePrefillFields,
     applyLiveOfferSyncToPrefillPartial,
+    applyTexasContractUsdMoneyToPrefillFields,
     contractPrefillFieldsToPartial,
     contractPrefillToContractColumnUpdate,
     mergeSyncedPartialIntoPrefillFields,
@@ -118,6 +119,7 @@ import {
     buildContractSendTableRows,
     canVoidContractSendTableRow,
     formatAchTableStatusLabel,
+    getContractSendRowTermsSnapshot,
     isAchSigningFinished,
     isContractFullySigned,
     isContractVoidedOrTerminal,
@@ -2715,6 +2717,17 @@ export default function ContractTab({
                     }
                 }
             }
+            prefillFieldsPayload = applyTexasContractUsdMoneyToPrefillFields(
+                prefillFieldsPayload,
+                {
+                    funderName:
+                        funderProfileForPrefill?.name ||
+                        resolvedFunderName ||
+                        funderPlainName,
+                    state: contractStateForSend,
+                    layoutKey: mainContractLayoutKey,
+                },
+            );
             const mergeRequest = {
                 ...(standaloneAchOnly
                     ? {
@@ -3388,7 +3401,7 @@ export default function ContractTab({
               : isContractFullySigned(row.contractStatus, row.documentStatus);
         const rowSentAtDisplay = formatTableSentAt(row.sentAt);
         const rowEnvelopeId = String(row.envelopeId ?? "").trim();
-        const snap = !isSupplementalRow && !row.isCurrent ? row.termsSnapshot : null;
+        const snap = !isSupplementalRow ? getContractSendRowTermsSnapshot(row) : null;
         const rowProgram =
             snap?.approvedAmount != null
                 ? snap.approvedAmount

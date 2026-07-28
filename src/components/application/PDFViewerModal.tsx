@@ -118,6 +118,7 @@ import {
     dealReviewPrefillSubsection,
     overlaySavedAppendixFeeOnPrefillFields,
     prepareDealReviewPrefillDisplay,
+    applyTexasContractUsdMoneyToPrefillFields,
     CONTRACT_PREFILL_OVERRIDES_SECTION,
     getApplicationPrimaryRecipientName,
     resolveEffectiveDocuSignSignerEmail,
@@ -4825,9 +4826,24 @@ const PDFViewerModal = ({
             });
         }
 
-        return clearParty2PrefillFieldPayload(
-            mergedPayload,
-            activeOwnerCountForPrefill,
+        return applyTexasContractUsdMoneyToPrefillFields(
+            clearParty2PrefillFieldPayload(
+                mergedPayload,
+                activeOwnerCountForPrefill,
+            ),
+            {
+                funderName:
+                    String(selectedFunderProfile?.name ?? "").trim() ||
+                    String(selectedFunder || "").trim() ||
+                    formatFunderSelectLabel(selectedFunderProfile ?? undefined) ||
+                    String((resolvedContract as { funderName?: unknown })?.funderName ?? "").trim(),
+                state:
+                    String(selectedState || "").trim() ||
+                    String((resolvedContract as { state?: unknown })?.state ?? "").trim(),
+                layoutKey: selectedFunderProfile
+                    ? resolveLayoutKeyForProfile(selectedFunderProfile)
+                    : "",
+            },
         );
     }, [
         dealPrefillFieldsForDocuSign,
@@ -4847,6 +4863,8 @@ const PDFViewerModal = ({
         buildDocuSignRolesForSync,
         selectedFunder,
         selectedFunderProfile,
+        selectedState,
+        resolveLayoutKeyForProfile,
     ]);
 
     const syncPrefillToDraftEnvelope = useCallback(

@@ -119,9 +119,21 @@ export type ContractSendTableRow = {
     /** DocuSign sender funder — may differ from contract funder (e.g. ACH). */
     funderName?: string | null;
     funderProfileId?: string | null;
-    /** Archived / send-time terms for this envelope row. */
+    /**
+     * Archived / send-time terms for this envelope row.
+     * Used by Contracts Generated so prior sends keep their own amounts.
+     */
     termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
 };
+
+/** Prefer send-time terms for prior history rows; current row uses live contract. */
+export function getContractSendRowTermsSnapshot(
+    row: ContractSendTableRow | null | undefined,
+): ContractSendHistoryTermsSnapshot | null {
+    if (!row || row.isCurrent) return null;
+    const snap = row.termsSnapshot;
+    return snap != null && typeof snap === "object" ? snap : null;
+}
 
 export function resolveContractSendRowFunderAuth(
     contract: Record<string, unknown> | null | undefined,
