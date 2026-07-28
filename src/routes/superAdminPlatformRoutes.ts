@@ -12,5 +12,9 @@ router.get('/', superAdminPlatformController.getSnapshot.bind(superAdminPlatform
 const refresh = superAdminPlatformController.refreshSnapshot.bind(superAdminPlatformController);
 router.post('/refresh', refresh);
 router.get('/refresh', refresh);
+router.get(
+  '/contract-analytics',
+  superAdminPlatformController.getContractAnalytics.bind(superAdminPlatformController),
+);
 
 export default router;

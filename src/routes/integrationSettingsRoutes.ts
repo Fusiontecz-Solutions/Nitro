@@ -4,6 +4,7 @@ import { requireSuperAdmin } from '../middleware/requireSuperAdmin';
 import {
   createDocuSignProfile,
   createFunder,
+  getContractCcDefaults,
   getDocuSignProfile,
   getFunder,
   listDocuSignProfileOptions,
@@ -23,6 +24,9 @@ const router = Router();
 
 /** Contract UI — any authenticated user can list funders for dropdown. */
 router.get('/funders', authenticateToken, listFunders);
+
+/** Contract/ACH send UI — tenant default + funder-resolved CC emails. */
+router.get('/contract-cc-defaults', authenticateToken, getContractCcDefaults);
 
 /** Admin — DocuSign account profiles */
 router.get('/docusign-accounts', authenticateToken, requireSuperAdmin, listDocuSignProfiles);

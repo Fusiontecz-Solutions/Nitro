@@ -3,6 +3,7 @@ import type { BoldSignUserInfoResponse, OAuthTokenResponse } from '../../types/o
 import dotenv from 'dotenv';
 import prisma from '../../config/prismaClient';
 import { Client, Prisma } from '@prisma/client';
+import { resolveDocumentOwnerNumericUserId } from '../../middleware/authMiddleware';
 
 import {
   BOLDSIGN_API_BASE,
@@ -629,18 +630,23 @@ export class BoldSignService {
       const appId = String(options.applicationId || "").trim();
       if (appId) {
         try {
-          const userRecord = await prisma.user.findUnique({
-            where: { id: userId },
+          const existingDoc = await prisma.document.findUnique({
+            where: { applicationId: appId },
             select: { userId: true },
           });
-          if (userRecord?.userId) {
+          const documentOwnerUserId = await resolveDocumentOwnerNumericUserId(
+            userId,
+            appId,
+            existingDoc?.userId,
+          );
+          if (documentOwnerUserId != null) {
             await prisma.document.upsert({
               where: { applicationId: appId },
               create: {
                 applicationId: appId,
                 envelopeId: String(documentId),
                 status: "draft",
-                userId: userRecord.userId,
+                userId: documentOwnerUserId,
               },
               update: {
                 envelopeId: String(documentId),
@@ -1383,18 +1389,23 @@ export class BoldSignService {
     const docId = String(boldSignDocumentId || '').trim();
     if (!appId || !docId) return;
     try {
-      const userRecord = await prisma.user.findUnique({
-        where: { id: authUserUuid },
+      const existingDoc = await prisma.document.findUnique({
+        where: { applicationId: appId },
         select: { userId: true },
       });
-      if (!userRecord?.userId) return;
+      const documentOwnerUserId = await resolveDocumentOwnerNumericUserId(
+        authUserUuid,
+        appId,
+        existingDoc?.userId,
+      );
+      if (documentOwnerUserId == null) return;
       await prisma.document.upsert({
         where: { applicationId: appId },
         create: {
           applicationId: appId,
           envelopeId: docId,
           status: 'draft',
-          userId: userRecord.userId,
+          userId: documentOwnerUserId,
         },
         update: {
           envelopeId: docId,

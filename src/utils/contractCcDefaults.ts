@@ -1,56 +1,19 @@
-import { isAllianceBridgeFunder } from '../services/docusign/utils/resolve-main-contract-layout';
-import { isAllianceFunderProfile } from './funderProfileResolver';
+import prisma from '../config/prismaClient';
+import { DOCUSIGN_DEFAULT_CC_EMAIL } from '../services/docusign/utils/docusign-client';
 import { resolveFunderProfile } from '../services/funderProfileService';
 
-export const KATAN_CONTRACT_CC_EMAIL = 'subs@katancapital.com';
-export const ALLIANCE_CONTRACT_CC_EMAIL = 'subs@alliancebridgecapital.com';
-
-/** @deprecated Use resolveDefaultContractCcEmailForFunder */
-export const DEFAULT_CONTRACT_CC_EMAIL = KATAN_CONTRACT_CC_EMAIL;
-
-export function resolveDefaultContractCcEmailForFunderProfile(profile?: {
-  name?: string | null;
-  displayName?: string | null;
-  mainContractLayoutKey?: string | null;
-  organization?: string | null;
-  legalName?: string | null;
-  contactEmail?: string | null;
-} | null): string {
-  if (profile && isAllianceFunderProfile(profile)) {
-    return ALLIANCE_CONTRACT_CC_EMAIL;
-  }
-  return KATAN_CONTRACT_CC_EMAIL;
-}
-
-export function resolveDefaultContractCcEmailForFunder(
-  funderName?: string | null,
-): string {
-  const name = String(funderName ?? '').trim();
-  if (name && isAllianceBridgeFunder(name)) {
-    return ALLIANCE_CONTRACT_CC_EMAIL;
-  }
-  return KATAN_CONTRACT_CC_EMAIL;
-}
-
-export async function resolveDefaultContractCcEmailForContract(options: {
-  funderName?: string | null;
-  contractState?: string | null;
-  contractId?: number;
-}): Promise<string> {
-  const profile = await resolveFunderProfile({
-    funderName: options.funderName,
-    state: options.contractState,
-  });
-  if (profile) {
-    return resolveDefaultContractCcEmailForFunderProfile(profile);
-  }
-  return resolveDefaultContractCcEmailForFunder(options.funderName);
-}
-
-export function isDefaultContractCcEmail(email: string): boolean {
-  const key = String(email || '').trim().toLowerCase();
-  return key === KATAN_CONTRACT_CC_EMAIL.toLowerCase() ||
-    key === ALLIANCE_CONTRACT_CC_EMAIL.toLowerCase();
+/**
+ * Parse a comma/semicolon/newline-separated CC list into unique trimmed emails.
+ */
+export function parseContractCcEmailList(value?: string | null): string[] {
+  return [
+    ...new Set(
+      String(value ?? '')
+        .split(/[,;\n]+/)
+        .map((part) => part.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 export function dedupeContractCcEmails(emails?: string[] | null): string[] {
@@ -67,62 +30,105 @@ export function dedupeContractCcEmails(emails?: string[] | null): string[] {
   return out;
 }
 
-/** When the caller already merged a platform default, keep that brand instead of forcing Katan. */
-export function inferDefaultContractCcFromEmailList(
-  emails?: string[] | null,
-): string | null {
-  const keys = dedupeContractCcEmails(emails).map((e) => e.toLowerCase());
-  const hasAlliance = keys.includes(ALLIANCE_CONTRACT_CC_EMAIL.toLowerCase());
-  const hasKatan = keys.includes(KATAN_CONTRACT_CC_EMAIL.toLowerCase());
-  if (hasAlliance && !hasKatan) return ALLIANCE_CONTRACT_CC_EMAIL;
-  if (hasKatan && !hasAlliance) return KATAN_CONTRACT_CC_EMAIL;
-  return null;
+/** Tenant platform default from env (per-deployment); never hardcode brand emails here. */
+export function getTenantPlatformDefaultCcEmail(): string | null {
+  const email = String(DOCUSIGN_DEFAULT_CC_EMAIL || '').trim();
+  return email || null;
 }
 
-export function resolveDefaultContractCcEmailFromHints(hints: {
+export type ContractCcDefaultsPayload = {
+  defaultCcEmail: string | null;
+  resolvedCcEmail: string | null;
+  ccEmails: string[];
+};
+
+/**
+ * Resolve tenant platform default CC + optional funder-profile override.
+ * Used by GET /integration-settings/contract-cc-defaults (CRM + Super Admin proxy).
+ */
+export async function resolveContractCcDefaultsForApi(options: {
   funderName?: string | null;
-  emails?: string[] | null;
-}): string {
-  const fromFunder = resolveDefaultContractCcEmailForFunder(hints.funderName);
-  const fromEmails = inferDefaultContractCcFromEmailList(hints.emails);
-  if (fromEmails && fromFunder.toLowerCase() !== fromEmails.toLowerCase()) {
-    return fromEmails;
+  state?: string | null;
+  funderProfileId?: string | null;
+  contractId?: number | null;
+}): Promise<ContractCcDefaultsPayload> {
+  let funderName = String(options.funderName ?? '').trim() || null;
+  let state = String(options.state ?? '').trim() || null;
+  const funderProfileId = String(options.funderProfileId ?? '').trim() || null;
+
+  const contractId = Number(options.contractId);
+  if (Number.isFinite(contractId) && contractId > 0) {
+    const row = await prisma.contract.findUnique({
+      where: { id: contractId },
+      select: { funderName: true, state: true },
+    });
+    if (row) {
+      if (!funderName) funderName = String(row.funderName ?? '').trim() || null;
+      if (!state) state = String(row.state ?? '').trim() || null;
+    }
   }
-  return fromFunder;
+
+  const defaultCcEmail = getTenantPlatformDefaultCcEmail();
+
+  const profile = await resolveFunderProfile({
+    funderProfileId,
+    funderName,
+    state,
+  });
+  const funderCcRaw = String(profile?.defaultCcEmail ?? '').trim() || null;
+  const funderCcs = parseContractCcEmailList(funderCcRaw);
+  const ccEmails = funderCcs.length
+    ? funderCcs
+    : defaultCcEmail
+      ? [defaultCcEmail]
+      : [];
+  const resolvedCcEmail = ccEmails[0] ?? null;
+
+  return {
+    defaultCcEmail,
+    resolvedCcEmail,
+    ccEmails,
+  };
 }
 
-function mergeWithDefaultContractCc(
-  emails: string[] | undefined | null,
-  defaultCc: string,
+export function isDefaultContractCcEmail(
+  email: string,
+  defaults?: ContractCcDefaultsPayload | null,
+): boolean {
+  const key = String(email || '')
+    .trim()
+    .toLowerCase();
+  if (!key) return false;
+  if (defaults?.ccEmails?.length) {
+    return defaults.ccEmails.some((e) => e.trim().toLowerCase() === key);
+  }
+  const platform = getTenantPlatformDefaultCcEmail();
+  return Boolean(platform && platform.toLowerCase() === key);
+}
+
+export function mergeDefaultContractCcEmails(
+  emails?: string[] | null,
+  defaults?: ContractCcDefaultsPayload | null,
 ): string[] {
-  const out: string[] = [defaultCc];
-  const seen = new Set<string>([defaultCc.toLowerCase()]);
+  const seeds = defaults?.ccEmails?.length
+    ? defaults.ccEmails
+    : (() => {
+        const platform = getTenantPlatformDefaultCcEmail();
+        return platform ? [platform] : [];
+      })();
+  const reserved = new Set(seeds.map((e) => e.toLowerCase()));
+  const out = [...seeds];
   for (const raw of emails || []) {
     const email = String(raw ?? '').trim();
     if (!email) continue;
     const key = email.toLowerCase();
-    if (seen.has(key)) continue;
-    if (
-      key === KATAN_CONTRACT_CC_EMAIL.toLowerCase() ||
-      key === ALLIANCE_CONTRACT_CC_EMAIL.toLowerCase()
-    ) {
-      continue;
-    }
-    seen.add(key);
+    if (reserved.has(key) || out.some((e) => e.toLowerCase() === key)) continue;
     out.push(email);
   }
   return out;
 }
 
-/** Funder-specific default CC first, then any user-supplied addresses (deduped). */
-export function mergeDefaultContractCcEmails(
-  emails?: string[] | null,
-  funderName?: string | null,
-): string[] {
-  const defaultCc = resolveDefaultContractCcEmailFromHints({ funderName, emails });
-  return mergeWithDefaultContractCc(emails, defaultCc);
-}
-
+/** @deprecated Prefer resolveContractCcDefaultsForApi / mergeDefaultContractCcEmails */
 export async function mergeDefaultContractCcEmailsForSend(
   emails?: string[] | null,
   hints?: {
@@ -132,23 +138,11 @@ export async function mergeDefaultContractCcEmailsForSend(
     contractId?: number;
   },
 ): Promise<string[]> {
-  const fromEmails = inferDefaultContractCcFromEmailList(emails);
-  let defaultCc = fromEmails;
-  if (!defaultCc) {
-    const profile = await resolveFunderProfile({
-      funderProfileId: hints?.funderProfileId,
-      funderName: hints?.funderName,
-      state: hints?.contractState,
-    });
-    if (profile) {
-      defaultCc = resolveDefaultContractCcEmailForFunderProfile(profile);
-    } else {
-      defaultCc = await resolveDefaultContractCcEmailForContract({
-        funderName: hints?.funderName,
-        contractState: hints?.contractState,
-        contractId: hints?.contractId,
-      });
-    }
-  }
-  return mergeWithDefaultContractCc(emails, defaultCc);
+  const defaults = await resolveContractCcDefaultsForApi({
+    funderName: hints?.funderName,
+    state: hints?.contractState,
+    funderProfileId: hints?.funderProfileId,
+    contractId: hints?.contractId,
+  });
+  return mergeDefaultContractCcEmails(emails, defaults);
 }

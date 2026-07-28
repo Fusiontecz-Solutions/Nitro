@@ -1,4 +1,10 @@
 ﻿import type { Request, Response } from 'express';
+import prisma from '../config/prismaClient';
+import {
+  APPLICATION_USER_ATTRIBUTION_ERROR,
+  resolveApplicationAttributedUserId,
+  resolveApplicationAttributedUserIdForActor,
+} from '../middleware/authMiddleware';
 import contractService from '../services/contractService';
 
 class ContractController {
@@ -29,6 +35,45 @@ class ContractController {
         });
       }
 
+      // Super Admin proxy / stale frontend ids are not tenant Users — resolve a real
+      // User.id for Contract.createdById (same pattern as bank details / funding calls).
+      let attributedCreatedById: string | null = null;
+      if (applicationId) {
+        const app = await prisma.application.findUnique({
+          where: { id: String(applicationId) },
+          select: { createdById: true, salesRepresentativeId: true },
+        });
+        if (!app) {
+          return res.status(404).json({ success: false, message: 'Application not found' });
+        }
+        attributedCreatedById = await resolveApplicationAttributedUserId(req, {
+          createdById: app.createdById,
+          salesRepresentativeId: app.salesRepresentativeId,
+        });
+        if (!attributedCreatedById && createdById) {
+          attributedCreatedById = await resolveApplicationAttributedUserIdForActor(
+            String(createdById),
+            {
+              createdById: app.createdById,
+              salesRepresentativeId: app.salesRepresentativeId,
+            },
+          );
+        }
+      } else if (createdById) {
+        const user = await prisma.user.findUnique({
+          where: { id: String(createdById) },
+          select: { id: true },
+        });
+        attributedCreatedById = user?.id ?? null;
+      }
+
+      if (!attributedCreatedById) {
+        return res.status(400).json({
+          success: false,
+          message: APPLICATION_USER_ATTRIBUTION_ERROR,
+        });
+      }
+
       const data = await contractService.createContract({
         clientId,
         applicationId,
@@ -39,7 +84,7 @@ class ContractController {
         approvedAmount: Number(approvedAmount),
         totalAmount: Number(totalAmount),
         status,
-        createdById,
+        createdById: attributedCreatedById,
         agreementDate,
         paymentBankId ,
         ...rest,
@@ -1427,7 +1472,11 @@ class ContractController {
     try {
       const { mappingId } = req.params;
       if (!mappingId) return res.status(400).json({ success: false, message: 'mappingId is required' });
-      await contractService.deleteContractDocumentTemplateMapping(mappingId);
+      const contractId = Number(req.params.id);
+      await contractService.deleteContractDocumentTemplateMapping(
+        mappingId,
+        Number.isFinite(contractId) ? contractId : undefined,
+      );
       return res.status(200).json({ success: true, message: 'Template mapping deleted' });
     } catch (error: any) {
       console.error('Delete contract template mapping error:', error);
