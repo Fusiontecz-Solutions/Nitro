@@ -164,7 +164,7 @@ export function resolveCrmFrontendBaseUrl(): string | undefined {
     ).trim();
     const normalized = devLocal ? normalizeToOrigin(devLocal) : undefined;
     if (normalized && normalized.length > 0) return normalized;
-    return 'http://localhost:5174';
+    return 'http://localhost:5173';
   }
 
   return undefined;

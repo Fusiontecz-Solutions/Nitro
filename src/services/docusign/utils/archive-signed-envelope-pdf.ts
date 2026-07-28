@@ -17,16 +17,72 @@ export function buildSignedContractsFolder(args: {
   return `${SIGNED_CONTRACTS_ROOT}/${segment}`;
 }
 
-/** Stored Cloudinary URL for sent or completed envelope package (same Document column). */
-export async function getStoredSignedPdfUrl(envelopeId: string): Promise<string | null> {
+/** True when the Cloudinary archive filename is the completed/signed package (_signed.pdf). */
+export function isSignedPhaseArchiveUrl(url: string | null | undefined): boolean {
+  const href = String(url || '').trim();
+  if (!href) return false;
+  return /_signed\.pdf(\?|$)/i.test(href) || /\/signed-contract\//i.test(href);
+}
+
+/** True when Document.status indicates the envelope is fully signed. */
+export function isDocumentFullySignedStatus(status: string | null | undefined): boolean {
+  const s = String(status || '').trim().toLowerCase();
+  return s === 'completed' || s === 'signed';
+}
+
+export type StoredEnvelopePdfArchive = {
+  url: string;
+  status: string | null;
+  publicId: string | null;
+};
+
+/** Stored Cloudinary URL + Document status for an envelope package. */
+export async function getStoredEnvelopePdfArchive(
+  envelopeId: string,
+): Promise<StoredEnvelopePdfArchive | null> {
   const eid = String(envelopeId || '').trim();
   if (!eid) return null;
   const row = await prisma.document.findFirst({
     where: { envelopeId: eid },
-    select: { signedPdfUrl: true },
+    select: {
+      signedPdfUrl: true,
+      signedPdfPublicId: true,
+      status: true,
+      applicationId: true,
+    },
   });
   const url = String(row?.signedPdfUrl || '').trim();
-  return url || null;
+  if (!url) return null;
+
+  let status = row?.status != null ? String(row.status) : null;
+  // Contract may already be SIGNED/COMPLETED while Document.status lags behind.
+  if (!isDocumentFullySignedStatus(status) && row?.applicationId) {
+    try {
+      const contract = await prisma.contract.findFirst({
+        where: { applicationId: String(row.applicationId) },
+        select: { status: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      const cs = String(contract?.status || '').trim().toUpperCase();
+      if (cs === 'SIGNED' || cs === 'COMPLETED') {
+        status = 'completed';
+      }
+    } catch {
+      /* keep Document.status */
+    }
+  }
+
+  return {
+    url,
+    status,
+    publicId: row?.signedPdfPublicId != null ? String(row.signedPdfPublicId) : null,
+  };
+}
+
+/** Stored Cloudinary URL for sent or completed envelope package (same Document column). */
+export async function getStoredSignedPdfUrl(envelopeId: string): Promise<string | null> {
+  const archive = await getStoredEnvelopePdfArchive(envelopeId);
+  return archive?.url || null;
 }
 
 /** Fetch a previously archived envelope PDF (Cloudinary / HTTPS). */
