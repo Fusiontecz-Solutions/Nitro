@@ -257,6 +257,20 @@
       "optional": true,
       "lockedForSigner": true,
       "sourceTabLabel": "deal_id_prefix_477_515"
+    },
+    {
+      "id": "p_bt_signature",
+      "type": "signature",
+      "slot": "signature_p1_138_633",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "138",
+      "y": "633",
+      "width": "132",
+      "height": "28",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Signature balance_transfer"
     }
   ]
 }
