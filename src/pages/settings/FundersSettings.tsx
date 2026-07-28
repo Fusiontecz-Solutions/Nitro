@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   createFunderProfile,
   deleteFunderProfile,
+  fetchContractCcDefaults,
   fetchDocuSignAccountOptions,
   fetchFunderProfiles,
   updateFunderProfile,
@@ -13,7 +14,10 @@ import {
 } from "@/redux/actions/integrationSettingsActions";
 import type { FunderProfile, FunderProfileInput } from "@/types/integrationSettingsTypes";
 import FunderProfileModal from "./FunderProfileModal";
-import { DOCUSIGN_DEFAULT_CC_EMAIL } from "@/components/application/docusignCcList";
+import {
+  getTenantDefaultContractCcEmail,
+  setTenantDefaultContractCcEmail,
+} from "@/components/application/docusignCcList";
 
 function DetailRow({ label, value }: { label: string; value?: string | null | boolean }) {
   if (value === undefined || value === null || value === "") return null;
@@ -37,10 +41,17 @@ export default function FundersSettings() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [funders, accounts] = await Promise.all([
+      const [funders, accounts, ccDefaults] = await Promise.all([
         fetchFunderProfiles(null, { activeOnly: false }),
         fetchDocuSignAccountOptions(),
+        fetchContractCcDefaults().catch(() => null),
       ]);
+      if (ccDefaults) {
+        setTenantDefaultContractCcEmail(
+          ccDefaults.resolvedCcEmail ?? ccDefaults.defaultCcEmail,
+          ccDefaults.ccEmails,
+        );
+      }
       setRows(funders);
       setDocusignOptions(accounts);
     } catch (err: unknown) {
@@ -156,7 +167,11 @@ export default function FundersSettings() {
                 <DetailRow label="DocuSign account" value={row.docusignAccountName || "—"} />
                 <DetailRow
                   label="Default CC"
-                  value={row.defaultCcEmail?.trim() || DOCUSIGN_DEFAULT_CC_EMAIL}
+                  value={
+                    row.defaultCcEmail?.trim() ||
+                    getTenantDefaultContractCcEmail() ||
+                    "—"
+                  }
                 />
                 <DetailRow label="Deal ID prefix" value={row.dealIdPrefix} />
                 <DetailRow label="Contract PDF" value={row.contractPdfFileName} />

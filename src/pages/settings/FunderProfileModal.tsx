@@ -41,7 +41,7 @@ import {
   type FunderProfileFiles,
 } from "@/redux/actions/integrationSettingsActions";
 import type { FunderProfile, FunderProfileInput } from "@/types/integrationSettingsTypes";
-import { DOCUSIGN_DEFAULT_CC_EMAIL } from "@/components/application/docusignCcList";
+import { getTenantDefaultContractCcEmail } from "@/components/application/docusignCcList";
 import {
   DISCLOSURE_FREQUENCY_OPTIONS,
   FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS,
@@ -693,13 +693,15 @@ export default function FunderProfileModal({
                   type="text"
                   value={form.defaultCcEmail ?? ""}
                   onChange={(e) => set("defaultCcEmail", e.target.value)}
-                  placeholder="subs@woodmerefinancial.com, billing@example.com"
+                  placeholder="Leave blank for tenant default, or comma-separated emails"
                 />
                 <p className="text-xs text-muted-foreground">
                   Used as the default CC on contracts for this funder. Leave blank to use{" "}
-                  <span className="font-medium">{DOCUSIGN_DEFAULT_CC_EMAIL}</span>. When set, it
-                  replaces the platform default (not added alongside it). Separate multiple emails
-                  with commas.
+                  <span className="font-medium">
+                    {getTenantDefaultContractCcEmail() || "the tenant default CC"}
+                  </span>
+                  . When set, it replaces the platform default (not added alongside it). Separate
+                  multiple emails with commas.
                 </p>
               </div>
 

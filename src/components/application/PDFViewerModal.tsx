@@ -169,10 +169,16 @@ import {
     isReservedContractCcEmail,
     loadBoldSignCcEmailList,
     mergeWithDefaultCcEmails,
+    normalizeCcEmailToken,
     parseFunderDefaultCcEmails,
     resolveContractDefaultCcEmails,
     saveBoldSignCcEmailList,
+    setTenantDefaultContractCcEmail,
 } from "./docusignCcList";
+import {
+    fetchContractCcDefaults,
+    type ContractCcDefaults,
+} from "@/redux/actions/integrationSettingsActions";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
 import { ExhibitACompaniesSummarySection } from "./contractdata/ExhibitACompaniesSummarySection";
 import { TemplateMappingPrefillEditDialog } from "./contractdata/TemplateMappingPrefillEditDialog";
@@ -1210,6 +1216,9 @@ const PDFViewerModal = ({
     const selectedFunderDefaultCcEmail = useMemo(() => {
         return String(selectedFunderProfile?.defaultCcEmail ?? "").trim() || null;
     }, [selectedFunderProfile]);
+    const [tenantContractCcDefaults, setTenantContractCcDefaults] =
+        useState<ContractCcDefaults | null>(null);
+    const [tenantCcDefaultsVersion, setTenantCcDefaultsVersion] = useState(0);
     const selectedFunderDefaultCcEmails = useMemo(
         () => parseFunderDefaultCcEmails(selectedFunderDefaultCcEmail),
         [selectedFunderDefaultCcEmail],
@@ -1218,16 +1227,38 @@ const PDFViewerModal = ({
         const knownFunderDefaultCcEmails = collectKnownFunderDefaultCcEmails(
             funders.map((f) => f.defaultCcEmail),
         );
+        const apiResolved =
+            tenantContractCcDefaults?.ccEmails?.length
+                ? tenantContractCcDefaults.ccEmails.join(", ")
+                : tenantContractCcDefaults?.resolvedCcEmail ?? null;
         return {
-            funderDefaultCcEmail: selectedFunderDefaultCcEmail,
+            // Prefer API-resolved list (includes funder override when applicable).
+            funderDefaultCcEmail: apiResolved || selectedFunderDefaultCcEmail,
+            tenantDefaultCcEmail: tenantContractCcDefaults?.defaultCcEmail ?? null,
             knownFunderDefaultCcEmails,
         };
-    }, [selectedFunderDefaultCcEmail, funders]);
+        // tenantCcDefaultsVersion forces refresh after setTenantDefaultContractCcEmail cache write
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedFunderDefaultCcEmail, funders, tenantContractCcDefaults, tenantCcDefaultsVersion]);
     const contractDefaultCcEmails = useMemo(
         () => resolveContractDefaultCcEmails(contractCcMergeOptions),
         [contractCcMergeOptions],
     );
-    const contractDefaultCcUsesFunderOverride = selectedFunderDefaultCcEmails.length > 0;
+    const contractDefaultCcUsesFunderOverride = useMemo(() => {
+        if (tenantContractCcDefaults) {
+            const platform = normalizeCcEmailToken(
+                tenantContractCcDefaults.defaultCcEmail ?? "",
+            );
+            const resolved = (tenantContractCcDefaults.ccEmails?.length
+                ? tenantContractCcDefaults.ccEmails
+                : parseFunderDefaultCcEmails(tenantContractCcDefaults.resolvedCcEmail)
+            ).map(normalizeCcEmailToken);
+            if (!resolved.length) return false;
+            if (!platform) return true;
+            return resolved.some((e) => e !== platform);
+        }
+        return selectedFunderDefaultCcEmails.length > 0;
+    }, [tenantContractCcDefaults, selectedFunderDefaultCcEmails]);
     const selectedFunderDefaultCcRef = useRef<string | null>(null);
     selectedFunderDefaultCcRef.current = selectedFunderDefaultCcEmail;
     /** Canonical contract id for this application (filled after lookup below). */
@@ -3170,6 +3201,58 @@ const PDFViewerModal = ({
         setCcEmails(loadBoldSignCcEmailList(contractCcMergeOptions));
         setCcEmailDraft("");
     }, [isOpen, contractCcMergeOptions]);
+
+    // Fetch tenant contract CC defaults (platform + funder-resolved) for this book.
+    useEffect(() => {
+        if (!isOpen) {
+            return;
+        }
+        let cancelled = false;
+        const funderName = String(selectedFunder || selectedFunderProfile?.name || "").trim();
+        const funderProfileId = String(
+            persistedFunderProfileIdForApi(selectedFunderProfile) || selectedFunderProfileId || "",
+        ).trim();
+        const state = String(pickUsStateForSelect(selectedState) || selectedState || "").trim();
+        const contractIdNum = Number(resolvedContractId ?? contractId);
+        const contractIdParam =
+            Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : null;
+
+        void (async () => {
+            try {
+                const data = await fetchContractCcDefaults({
+                    funderName: funderName || null,
+                    state: state || null,
+                    funderProfileId: funderProfileId || null,
+                    contractId: contractIdParam,
+                });
+                if (cancelled) return;
+                setTenantDefaultContractCcEmail(
+                    data.resolvedCcEmail ?? data.defaultCcEmail,
+                    data.ccEmails,
+                );
+                setTenantContractCcDefaults(data);
+                setTenantCcDefaultsVersion((v) => v + 1);
+            } catch {
+                if (cancelled) return;
+                // Fail open: leave default CC empty rather than blocking send.
+                setTenantDefaultContractCcEmail(null, []);
+                setTenantContractCcDefaults(null);
+                setTenantCcDefaultsVersion((v) => v + 1);
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        isOpen,
+        selectedFunder,
+        selectedFunderProfile,
+        selectedFunderProfileId,
+        selectedState,
+        resolvedContractId,
+        contractId,
+    ]);
 
     const addPdfCcFromDraft = () => {
         const raw = ccEmailDraft.trim();
