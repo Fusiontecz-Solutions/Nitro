@@ -96,6 +96,7 @@ import {
 } from './utils/standalone-package-docusign';
 import {
   archiveMainContractEnvelopeToHistory,
+  contractPrefillContainsEnvelopeId,
   isCompletedEnvelopeStatus,
   persistMainContractSendPackage,
   resolveArchivedMainContractEnvelopeStatus,
@@ -2671,6 +2672,8 @@ export class DocusignService {
         status: true,
         sentAt: true,
         completedAt: true,
+        signedPdfUrl: true,
+        signedPdfPublicId: true,
       },
     });
     const priorEnvelopeId = String(existingDoc?.envelopeId ?? '').trim();
@@ -2695,6 +2698,8 @@ export class DocusignService {
         completedAt:
           existingDoc?.completedAt ??
           (priorWasCompleted ? new Date() : null),
+        signedPdfUrl: existingDoc?.signedPdfUrl,
+        signedPdfPublicId: existingDoc?.signedPdfPublicId,
       });
 
       await syncApplicationOnMainContractResend(prisma, applicationId, {
@@ -2720,6 +2725,9 @@ export class DocusignService {
         status: 'draft',
         sentAt: null,
         completedAt: null,
+        // Prior send's archive is stored on contractSendHistory — do not keep it on the new envelope.
+        signedPdfUrl: null,
+        signedPdfPublicId: null,
       },
     });
   }
@@ -3174,6 +3182,10 @@ export class DocusignService {
       if (isDocuSignPollingLimitError(err)) {
         this.rememberEnvelopePollingLimit(envelopeId, err);
       }
+      // Wrong funder account — bubble up so download can try the next JWT candidate.
+      if (isDocuSignUserNotEnvelopeSenderError(err)) throw err;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 401 || status === 403 || status === 404) throw err;
       return '';
     }
   }
@@ -3195,12 +3207,23 @@ export class DocusignService {
       );
       clearEnvelopePollingCooldown(envelopeId);
       const buf = Buffer.from(res.data);
+      // DocuSign sometimes returns JSON error bodies with 200 — reject non-PDF payloads.
+      if (buf?.length && buf.slice(0, 4).toString('utf8') !== '%PDF') {
+        console.warn(
+          `[DocuSign] combined download for ${envelopeId} was not a PDF (${buf.length} bytes)`,
+        );
+        return null;
+      }
       return buf?.length ? buf : null;
     } catch (err) {
       if (isDocuSignPollingLimitError(err)) {
         this.rememberEnvelopePollingLimit(envelopeId, err);
         throw err;
       }
+      // Let caller try the next funder DocuSign account.
+      if (isDocuSignUserNotEnvelopeSenderError(err)) throw err;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 401 || status === 403 || status === 404) throw err;
       console.warn('[DocuSign] download combined PDF failed:', err);
       return null;
     }
@@ -3228,12 +3251,21 @@ export class DocusignService {
       );
       clearEnvelopePollingCooldown(envelopeId);
       const buf = Buffer.from(res.data);
+      if (buf?.length && buf.slice(0, 4).toString('utf8') !== '%PDF') {
+        console.warn(
+          `[DocuSign] document/1 download for ${envelopeId} was not a PDF (${buf.length} bytes)`,
+        );
+        return null;
+      }
       return buf?.length ? buf : null;
     } catch (err) {
       if (isDocuSignPollingLimitError(err)) {
         this.rememberEnvelopePollingLimit(envelopeId, err);
         throw err;
       }
+      if (isDocuSignUserNotEnvelopeSenderError(err)) throw err;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 401 || status === 403 || status === 404) throw err;
       console.warn('[DocuSign] download first content PDF failed:', err);
       return null;
     }
@@ -3524,6 +3556,8 @@ export class DocusignService {
     options: {
       applicationId?: string;
       contractId?: number;
+      funderName?: string | null;
+      funderProfileId?: string | null;
       /** Standalone ACH / package — do not overwrite the main contract envelope on Application.document. */
       skipApplicationEnvelopeLink?: boolean;
       standaloneLinkKind?: 'ach' | 'package';
@@ -3548,15 +3582,17 @@ export class DocusignService {
     const appId = String(options.applicationId || '').trim();
     if (appId && !options.skipApplicationEnvelopeLink) {
       await this.linkEnvelopeToApplication(userId, appId, envelopeId);
-      if (options.sendPackage) {
-        const contractIdNum = Number(options.contractId);
-        await persistMainContractSendPackage(
-          appId,
-          envelopeId,
-          options.sendPackage,
-          Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
-        );
-      }
+      const contractIdNum = Number(options.contractId);
+      await persistMainContractSendPackage(
+        appId,
+        envelopeId,
+        options.sendPackage ?? { includeMainContract: true },
+        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+        {
+          funderName: options.funderName,
+          funderProfileId: options.funderProfileId,
+        },
+      );
     } else if (appId && options.skipApplicationEnvelopeLink) {
       const contractIdNum = Number(options.contractId);
       const resolvedContractId =
@@ -4056,6 +4092,8 @@ export class DocusignService {
       const result = await this.finalizeEnvelopeFlow(userId, envelopeId, {
         applicationId: options.applicationId,
         contractId: options.contractId,
+        funderName,
+        funderProfileId: options.funderProfileId,
         skipApplicationEnvelopeLink: options.skipApplicationEnvelopeLink,
         standaloneLinkKind:
           options.skipApplicationEnvelopeLink && standaloneLinkKind !== 'main'
@@ -4631,10 +4669,16 @@ export class DocusignService {
   /**
    * Ensure the envelope is known to this tenant DB before calling DocuSign.
    * Main contracts live on Document; ACH / standalone / archived sends may only be in prefill JSON.
+   * Prefer `contractId` / `applicationId` when the FE already knows which contract owns the envelope
+   * (prior sends after resend are only in that contract's history, not on Document).
    */
   private async assertTenantEnvelopeKnown(
     envelopeId: string,
-    options?: { requireDocument?: boolean },
+    options?: {
+      requireDocument?: boolean;
+      contractId?: number | null;
+      applicationId?: string | null;
+    },
   ): Promise<void> {
     const eid = String(envelopeId || '').trim();
     if (!eid) {
@@ -4653,6 +4697,29 @@ export class DocusignService {
       );
     }
 
+    const hintContractId = Number(options?.contractId);
+    const hintApplicationId = String(options?.applicationId ?? '').trim();
+
+    // Scoped lookup: FE always has the contract when viewing send-history rows.
+    if (Number.isFinite(hintContractId) && hintContractId > 0) {
+      const byId = await prisma.contract.findUnique({
+        where: { id: hintContractId },
+        select: { contractPrefillOverrides: true },
+      });
+      if (contractPrefillContainsEnvelopeId(byId?.contractPrefillOverrides, eid)) {
+        return;
+      }
+    }
+    if (hintApplicationId) {
+      const byApp = await prisma.contract.findUnique({
+        where: { applicationId: hintApplicationId },
+        select: { contractPrefillOverrides: true },
+      });
+      if (contractPrefillContainsEnvelopeId(byApp?.contractPrefillOverrides, eid)) {
+        return;
+      }
+    }
+
     const achHints = await findAchEnvelopeAuthHints(eid);
     if (achHints) return;
 
@@ -4667,55 +4734,28 @@ export class DocusignService {
     });
     if (standalone) return;
 
-    // Archived main-contract / ACH history rows (envelope no longer on Document).
-    const historyCandidates = await prisma.contract.findMany({
-      where: {
-        OR: [
-          {
-            contractPrefillOverrides: {
-              path: ['contractSendHistory'],
-              not: Prisma.JsonNull,
-            },
-          },
-          {
-            contractPrefillOverrides: {
-              path: ['documentSendHistory'],
-              not: Prisma.JsonNull,
-            },
-          },
-          {
-            contractPrefillOverrides: {
-              path: ['standalonePackageSendHistory'],
-              not: Prisma.JsonNull,
-            },
-          },
-        ],
-      },
-      select: { contractPrefillOverrides: true },
-      orderBy: { id: 'desc' },
-      take: 80,
+    const dsEnvelope = await prisma.docuSignEnvelope.findUnique({
+      where: { envelopeId: eid },
+      select: { id: true },
     });
-    for (const row of historyCandidates) {
-      const raw = row.contractPrefillOverrides;
-      if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const o = raw as Record<string, unknown>;
-      for (const key of [
-        'contractSendHistory',
-        'documentSendHistory',
-        'standalonePackageSendHistory',
-      ]) {
-        const list = o[key];
-        if (!Array.isArray(list)) continue;
-        if (
-          list.some(
-            (entry) =>
-              entry &&
-              typeof entry === 'object' &&
-              String((entry as Record<string, unknown>).envelopeId ?? '').trim() === eid,
-          )
-        ) {
-          return;
-        }
+    if (dsEnvelope) return;
+
+    // Archived history: targeted JSON text search (avoids brittle take:N global scan).
+    const historyHits = await prisma.$queryRaw<Array<{ id: number }>>`
+      SELECT c.id
+      FROM "Contract" c
+      WHERE c."contractPrefillOverrides" IS NOT NULL
+        AND c."contractPrefillOverrides"::text LIKE ${'%' + eid + '%'}
+      ORDER BY c.id DESC
+      LIMIT 25
+    `;
+    for (const hit of historyHits) {
+      const row = await prisma.contract.findUnique({
+        where: { id: hit.id },
+        select: { contractPrefillOverrides: true },
+      });
+      if (contractPrefillContainsEnvelopeId(row?.contractPrefillOverrides, eid)) {
+        return;
       }
     }
 
@@ -4727,7 +4767,14 @@ export class DocusignService {
   async downloadDocumentPdfByEnvelopeId(
     userId: string,
     envelopeId: string,
-    options?: { requireDocument?: boolean },
+    options?: {
+      requireDocument?: boolean;
+      contractId?: number | null;
+      applicationId?: string | null;
+      funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
+    },
   ) {
     const eid = String(envelopeId || '').trim();
     if (!eid) {
@@ -4761,75 +4808,152 @@ export class DocusignService {
     }
 
     this.assertEnvelopePollingAllowed(eid);
-    let client: AxiosInstance;
-    let accountId: string;
-    try {
-      ({ client, accountId } = await this.getAuthContextForEnvelope(userId, eid));
-    } catch (err: any) {
-      const msg = String(err?.message || '');
-      if (
-        err?.name === 'UnauthorizedException' ||
-        err?.status === 401 ||
-        /expired|refresh token|authorization/i.test(msg)
-      ) {
-        throw new UnauthorizedException(
-          msg || 'DocuSign authorization expired. Reconnect DocuSign or refresh credentials.',
-        );
-      }
-      throw err;
+
+    const authHints = {
+      applicationId: options?.applicationId,
+      contractId: options?.contractId,
+      funderName: options?.funderName,
+      funderProfileId: options?.funderProfileId,
+      contractState: options?.contractState,
+    };
+    const candidates = [...(await listEnvelopeFunderAuthCandidates(eid, authHints))];
+    if (!candidates.length) {
+      candidates.push({ usePlatformDefault: true });
     }
 
-    try {
-      const status = await this.getEnvelopeStatus(client, accountId, eid);
-      const buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
-      if (!buf?.length) {
-        throw new BadRequestException(
-          'Could not download PDF from DocuSign (empty or unavailable combined document)',
+    let lastErr: unknown;
+    const tried: string[] = [];
+
+    for (const candidate of candidates) {
+      const label = candidate.usePlatformDefault
+        ? 'platform-default'
+        : String(candidate.funderProfileId || candidate.funderName || 'unknown');
+      tried.push(label);
+      try {
+        const { client, accountId } = await this.getAuthContext(userId, {
+          ...candidate,
+          requireFunderCredentials: !candidate.usePlatformDefault,
+        });
+
+        const status = await this.getEnvelopeStatus(client, accountId, eid);
+        const buf = await this.downloadEnvelopePdfBufferForPreview(
+          client,
+          accountId,
+          eid,
+          status,
         );
+        if (!buf?.length) {
+          // Wrong account often surfaces as empty/null after a DocuSign error —
+          // keep trying other funder JWT candidates instead of aborting the loop.
+          console.warn('[DocuSign] empty PDF for candidate — trying next funder account', {
+            envelopeId: eid,
+            candidate: label,
+            status,
+          });
+          lastErr = new BadRequestException(
+            'Could not download PDF from DocuSign (empty or unavailable combined document)',
+          );
+          continue;
+        }
+
+        const statusLower = String(status || '').toLowerCase();
+        const phase =
+          statusLower === 'completed' || statusLower === 'signed' ? 'completed' : 'sent';
+        const shouldArchive =
+          !storedUrl ||
+          staleSentArchive ||
+          (phase === 'completed' && !archiveIsSigned);
+        if (
+          shouldArchive &&
+          (phase === 'completed' ||
+            statusLower === 'sent' ||
+            statusLower === 'delivered')
+        ) {
+          void archiveSignedEnvelopePdf({
+            envelopeId: eid,
+            pdf: buf,
+            phase,
+            replaceExisting: phase === 'completed',
+            applicationId: options?.applicationId
+              ? String(options.applicationId)
+              : undefined,
+            funderName: options?.funderName ? String(options.funderName) : undefined,
+            funderProfileId: options?.funderProfileId
+              ? String(options.funderProfileId)
+              : undefined,
+          }).catch((err) =>
+            console.warn(`[DocuSign] lazy ${phase} PDF archive failed for ${eid}:`, err),
+          );
+        }
+        if (tried.length > 1) {
+          console.info('[DocuSign] download succeeded with sender candidate', {
+            envelopeId: eid,
+            candidate: label,
+            tried,
+          });
+        }
+        return buf;
+      } catch (err: any) {
+        lastErr = err;
+        this.rememberEnvelopePollingLimit(eid, err);
+        if (isDocuSignPollingLimitError(err)) {
+          throw new BadRequestException(
+            'DocuSign polling limit reached. Wait about an hour, then try again.',
+          );
+        }
+        if (isDocuSignUserNotEnvelopeSenderError(err)) {
+          console.warn(
+            '[DocuSign] download USER_NOT_ENVELOPE_SENDER — trying next funder account',
+            { envelopeId: eid, candidate: label },
+          );
+          continue;
+        }
+        const msg = formatDocusignApiErrorMessage(err);
+        if (/no active linked DocuSign|no funder DocuSign credentials/i.test(msg)) {
+          console.warn('[DocuSign] download skip candidate without DocuSign credentials', {
+            envelopeId: eid,
+            candidate: label,
+          });
+          continue;
+        }
+        const dsStatus = err?.response?.status;
+        if (dsStatus === 401 || dsStatus === 403) {
+          console.warn('[DocuSign] download auth rejected — trying next funder account', {
+            envelopeId: eid,
+            candidate: label,
+            status: dsStatus,
+          });
+          continue;
+        }
+        if (dsStatus === 404) {
+          // Envelope may live on another linked DocuSign account — try next.
+          console.warn('[DocuSign] download envelope not found on account — trying next', {
+            envelopeId: eid,
+            candidate: label,
+          });
+          continue;
+        }
+        if (
+          err?.name === 'BadRequestException' &&
+          /empty or unavailable combined document/i.test(String(err?.message || ''))
+        ) {
+          continue;
+        }
+        if (err?.status && err.status >= 400 && err.status < 600) {
+          throw err;
+        }
+        throw new BadRequestException(msg || 'DocuSign PDF download failed');
       }
-      // Lazy backfill / repair: archive sent package, or replace stale sent with signed.
-      const statusLower = String(status || '').toLowerCase();
-      const phase =
-        statusLower === 'completed' || statusLower === 'signed' ? 'completed' : 'sent';
-      const shouldArchive =
-        !storedUrl ||
-        staleSentArchive ||
-        (phase === 'completed' && !archiveIsSigned);
-      if (
-        shouldArchive &&
-        (phase === 'completed' ||
-          statusLower === 'sent' ||
-          statusLower === 'delivered')
-      ) {
-        void archiveSignedEnvelopePdf({
-          envelopeId: eid,
-          pdf: buf,
-          phase,
-          replaceExisting: phase === 'completed',
-        }).catch((err) =>
-          console.warn(`[DocuSign] lazy ${phase} PDF archive failed for ${eid}:`, err),
-        );
-      }
-      return buf;
-    } catch (err: any) {
-      this.rememberEnvelopePollingLimit(eid, err);
-      const dsStatus = err?.response?.status;
-      const dsMsg = formatDocusignApiErrorMessage(err);
-      if (dsStatus === 401 || dsStatus === 403) {
-        throw new UnauthorizedException(
-          dsMsg || 'DocuSign authorization expired or was rejected for this envelope',
-        );
-      }
-      if (dsStatus === 404) {
-        throw new NotFoundException(
-          dsMsg || `DocuSign envelope "${eid}" was not found on the connected account`,
-        );
-      }
-      if (err?.status && err.status >= 400 && err.status < 600) {
-        throw err;
-      }
-      throw new BadRequestException(dsMsg || 'DocuSign PDF download failed');
     }
+
+    const failMsg =
+      lastErr instanceof Error && /empty or unavailable/i.test(lastErr.message)
+        ? lastErr.message
+        : formatDocusignApiErrorMessage(lastErr);
+    throw new BadRequestException(
+      `${failMsg || 'DocuSign PDF download failed'} Tried sender accounts: ${tried.join(', ') || 'none'}. ` +
+        'Open this envelope with the funder DocuSign account that originally sent it.',
+    );
   }
 
   /**
@@ -5122,7 +5246,14 @@ export class DocusignService {
   async downloadSignedPdf(
     userId: string,
     documentId: string,
-    options?: { requireDocument?: boolean },
+    options?: {
+      requireDocument?: boolean;
+      contractId?: number | null;
+      applicationId?: string | null;
+      funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
+    },
   ) {
     return this.downloadDocumentPdfByEnvelopeId(userId, documentId, options);
   }
@@ -5130,7 +5261,14 @@ export class DocusignService {
   async fetchSignedDocumentPdf(
     userId: string,
     envelopeId: string,
-    options?: { requireDocument?: boolean },
+    options?: {
+      requireDocument?: boolean;
+      contractId?: number | null;
+      applicationId?: string | null;
+      funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
+    },
   ) {
     return this.downloadSignedPdf(userId, envelopeId, options);
   }

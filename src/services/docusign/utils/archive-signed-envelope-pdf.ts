@@ -2,6 +2,8 @@ import prisma from '../../../config/prismaClient';
 import uploadService from '../../uploadService';
 import { slugifyFunderDocumentToken } from '../../../utils/funderContractLayout';
 import { resolveEnvelopeFunderAuthHints } from './envelope-funder-auth';
+import { findSignedPdfUrlInContractSendHistory, appendContractSendHistoryEntry } from './contract-send-history';
+import type { Prisma } from '@prisma/client';
 
 const SIGNED_CONTRACTS_ROOT = 'ih-crm/signed-contracts';
 
@@ -51,10 +53,48 @@ export async function getStoredEnvelopePdfArchive(
       applicationId: true,
     },
   });
-  const url = String(row?.signedPdfUrl || '').trim();
+  let url = String(row?.signedPdfUrl || '').trim();
+  let status = row?.status != null ? String(row.status) : null;
+  let publicId = row?.signedPdfPublicId != null ? String(row.signedPdfPublicId) : null;
+
+  // Prior sends after resend: Document.envelopeId was replaced — look in send history.
+  if (!url) {
+    const fromHistory = await findSignedPdfUrlInContractSendHistory(eid);
+    if (fromHistory?.url) {
+      url = fromHistory.url;
+      status = status || fromHistory.status;
+      publicId = publicId || fromHistory.publicId;
+    }
+  }
+
+  // Legacy fallback: ApplicationFile labels include the envelope id prefix.
+  if (!url) {
+    const envPart = eid.slice(0, 8);
+    try {
+      const file = await prisma.applicationFile.findFirst({
+        where: {
+          OR: [
+            { originalName: { contains: envPart, mode: 'insensitive' } },
+            { publicId: { contains: envPart, mode: 'insensitive' } },
+            { url: { contains: envPart, mode: 'insensitive' } },
+          ],
+          mimeType: { contains: 'pdf', mode: 'insensitive' },
+        },
+        select: { url: true, publicId: true },
+        orderBy: { uploadedAt: 'desc' },
+      });
+      const fileUrl = String(file?.url || '').trim();
+      if (fileUrl) {
+        url = fileUrl;
+        publicId = publicId || String(file?.publicId || '').trim() || null;
+      }
+    } catch {
+      /* optional fallback */
+    }
+  }
+
   if (!url) return null;
 
-  let status = row?.status != null ? String(row.status) : null;
   // Contract may already be SIGNED/COMPLETED while Document.status lags behind.
   if (!isDocumentFullySignedStatus(status) && row?.applicationId) {
     try {
@@ -75,7 +115,7 @@ export async function getStoredEnvelopePdfArchive(
   return {
     url,
     status,
-    publicId: row?.signedPdfPublicId != null ? String(row.signedPdfPublicId) : null,
+    publicId,
   };
 }
 
@@ -200,9 +240,56 @@ export async function archiveSignedEnvelopePdf(args: {
   });
 
   if (updated.count === 0) {
-    console.warn(
-      `[DocuSign] ${phase} PDF uploaded but no Document row for envelope ${eid} (url=${url})`,
-    );
+    // Prior / archived envelope — persist URL on contractSendHistory so view still works.
+    try {
+      let target =
+        applicationId
+          ? await prisma.contract.findUnique({
+              where: { applicationId },
+              select: { id: true, contractPrefillOverrides: true },
+            })
+          : null;
+      if (!target) {
+        const hits = await prisma.$queryRaw<Array<{ id: number }>>`
+          SELECT c.id
+          FROM "Contract" c
+          WHERE c."contractPrefillOverrides" IS NOT NULL
+            AND c."contractPrefillOverrides"::text LIKE ${'%' + eid + '%'}
+          ORDER BY c.id DESC
+          LIMIT 1
+        `;
+        if (hits[0]?.id) {
+          target = await prisma.contract.findUnique({
+            where: { id: hits[0].id },
+            select: { id: true, contractPrefillOverrides: true },
+          });
+        }
+      }
+      if (target) {
+        const merged = appendContractSendHistoryEntry(target.contractPrefillOverrides, {
+          envelopeId: eid,
+          status: phase === 'completed' ? 'completed' : 'sent',
+          signedPdfUrl: url,
+          signedPdfPublicId: publicId || null,
+        });
+        await prisma.contract.update({
+          where: { id: target.id },
+          data: { contractPrefillOverrides: merged as Prisma.InputJsonValue },
+        });
+        console.info(
+          `[DocuSign] archived ${phase} PDF on contractSendHistory for envelope ${eid}`,
+        );
+      } else {
+        console.warn(
+          `[DocuSign] ${phase} PDF uploaded but no Document/Contract history for envelope ${eid} (url=${url})`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[DocuSign] ${phase} PDF history archive failed for ${eid}:`,
+        (err as { message?: string })?.message || err,
+      );
+    }
   } else {
     console.info(
       `[DocuSign] archived ${phase} PDF for envelope ${eid} → ${folder}/${fileName}`,

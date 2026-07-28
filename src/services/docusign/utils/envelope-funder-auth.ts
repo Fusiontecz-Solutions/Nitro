@@ -6,7 +6,6 @@ import {
 import {
   ACH_AUTHORIZATION_DOCUSIGN_KEY,
   findAchEnvelopeAuthHints,
-  parseAchAuthorizationDocuSignFromPrefill,
 } from './ach-authorization-docusign';
 import { STANDALONE_PACKAGE_DOCUSIGN_KEY } from './standalone-package-docusign';
 
@@ -40,8 +39,14 @@ function parseFunderFromPrefillBlob(
   const eid = String(envelopeId || '').trim();
   if (!eid) return null;
 
-  const history = raw[DOCUMENT_SEND_HISTORY_KEY];
-  if (Array.isArray(history)) {
+  for (const historyKey of [
+    DOCUMENT_SEND_HISTORY_KEY,
+    'contractSendHistory',
+    'standalonePackageSendHistory',
+    'achSendHistory',
+  ]) {
+    const history = raw[historyKey];
+    if (!Array.isArray(history)) continue;
     for (const row of history) {
       if (!row || typeof row !== 'object') continue;
       const r = row as Record<string, unknown>;
@@ -57,37 +62,29 @@ function parseFunderFromPrefillBlob(
     }
   }
 
-  const lastAch = raw[LAST_ACH_SENT_FUNDER_KEY];
-  if (lastAch && typeof lastAch === 'object' && !Array.isArray(lastAch)) {
-    const o = lastAch as Record<string, unknown>;
-    // Prefer exact envelope match; otherwise use last ACH funder when this is the ACH envelope.
-    const lastEid = String(o.envelopeId ?? '').trim();
-    if (!lastEid || lastEid === eid) {
-      const funderName = String(o.funderName ?? '').trim();
-      const funderProfileId = String(o.funderProfileId ?? '').trim();
-      if (funderName || funderProfileId) {
-        return {
-          ...(funderName ? { funderName } : {}),
-          ...(funderProfileId ? { funderProfileId } : {}),
-        };
-      }
+  for (const capsuleKey of [
+    'mainContractSendPackage',
+    LAST_ACH_SENT_FUNDER_KEY,
+    ACH_AUTHORIZATION_DOCUSIGN_KEY,
+    STANDALONE_PACKAGE_DOCUSIGN_KEY,
+  ]) {
+    const blob = raw[capsuleKey];
+    if (!blob || typeof blob !== 'object' || Array.isArray(blob)) continue;
+    const o = blob as Record<string, unknown>;
+    const blobEid = String(o.envelopeId ?? '').trim();
+    // lastAchSentFunder may omit envelopeId; only trust exact match otherwise.
+    if (capsuleKey === LAST_ACH_SENT_FUNDER_KEY) {
+      if (blobEid && blobEid !== eid) continue;
+    } else if (blobEid !== eid) {
+      continue;
     }
-  }
-
-  const ach = parseAchAuthorizationDocuSignFromPrefill(prefill);
-  if (ach?.envelopeId === eid) {
-    const blob = raw[ACH_AUTHORIZATION_DOCUSIGN_KEY];
-    if (blob && typeof blob === 'object' && !Array.isArray(blob)) {
-      const funderName = String((blob as Record<string, unknown>).funderName ?? '').trim();
-      const funderProfileId = String(
-        (blob as Record<string, unknown>).funderProfileId ?? '',
-      ).trim();
-      if (funderName || funderProfileId) {
-        return {
-          ...(funderName ? { funderName } : {}),
-          ...(funderProfileId ? { funderProfileId } : {}),
-        };
-      }
+    const funderName = String(o.funderName ?? '').trim();
+    const funderProfileId = String(o.funderProfileId ?? '').trim();
+    if (funderName || funderProfileId) {
+      return {
+        ...(funderName ? { funderName } : {}),
+        ...(funderProfileId ? { funderProfileId } : {}),
+      };
     }
   }
 
@@ -138,7 +135,7 @@ function pushCandidate(
 
 /**
  * Resolve envelope-specific funder DocuSign auth.
- * Envelope-stored ACH/send-history funder wins over FE "current contract funder".
+ * Priority: envelope-stored history/capsule → explicit FE hints → current contract funder.
  */
 export async function resolveEnvelopeFunderAuthHints(
   envelopeId: string,
@@ -156,14 +153,16 @@ export async function resolveEnvelopeFunderAuthHints(
         : null,
   };
 
+  let contractFunderFallback: string | null = null;
+
   // 1) Envelope-specific ACH / send-history funder (highest priority).
   if (eid) {
     const achHints = await findAchEnvelopeAuthHints(eid);
     if (achHints) {
       out.applicationId = out.applicationId || achHints.applicationId;
       out.contractId = out.contractId || achHints.contractId;
-      out.funderName = achHints.funderName;
-      out.funderProfileId = achHints.funderProfileId;
+      if (achHints.funderName) out.funderName = achHints.funderName;
+      if (achHints.funderProfileId) out.funderProfileId = achHints.funderProfileId;
     }
   }
 
@@ -188,9 +187,8 @@ export async function resolveEnvelopeFunderAuthHints(
       if (fromPrefill?.funderName && !out.funderName) {
         out.funderName = fromPrefill.funderName;
       }
-      // Contract funder only if envelope did not store a sender funder.
-      if (!out.funderName && !out.funderProfileId) {
-        out.funderName = row.funderName;
+      if (!contractFunderFallback) {
+        contractFunderFallback = String(row.funderName ?? '').trim() || null;
       }
     }
   }
@@ -245,17 +243,22 @@ export async function resolveEnvelopeFunderAuthHints(
       if (fromPrefill?.funderName && !out.funderName) {
         out.funderName = fromPrefill.funderName;
       }
-      if (!out.funderName && !out.funderProfileId) {
-        out.funderName = linked.funderName;
+      if (!contractFunderFallback) {
+        contractFunderFallback = String(linked.funderName ?? '').trim() || null;
       }
     }
   }
 
-  // 2) Explicit FE hints only fill gaps — never override envelope-stored ACH sender.
+  // 2) Explicit FE hints beat current contract funder (viewer may open a prior-funder envelope).
   const explicitProfileId = String(explicit?.funderProfileId ?? '').trim();
   const explicitFunderName = String(explicit?.funderName ?? '').trim();
   if (!out.funderProfileId && explicitProfileId) out.funderProfileId = explicitProfileId;
   if (!out.funderName && explicitFunderName) out.funderName = explicitFunderName;
+
+  // 3) Live contract funder only when envelope history and FE gave nothing.
+  if (!out.funderName && !out.funderProfileId && contractFunderFallback) {
+    out.funderName = contractFunderFallback;
+  }
 
   return out;
 }

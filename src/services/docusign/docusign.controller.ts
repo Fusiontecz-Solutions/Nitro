@@ -319,6 +319,7 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
 /**
  * Shared signed-PDF response for SuperAdmin proxy + CRM.
  * Envelope ID must come from the path (`:envelopeId` or legacy `:documentId`).
+ * Optional query: `contractId`, `applicationId` — scopes tenant proof for archived prior sends.
  */
 async function sendEnvelopeSignedPdf(
   req: Request,
@@ -340,8 +341,32 @@ async function sendEnvelopeSignedPdf(
     });
   }
 
+  const contractIdNum = Number(req.query.contractId);
+  const applicationId =
+    typeof req.query.applicationId === 'string'
+      ? req.query.applicationId.trim()
+      : undefined;
+  const funderName =
+    typeof req.query.funderName === 'string' ? req.query.funderName.trim() : undefined;
+  const funderProfileId =
+    typeof req.query.funderProfileId === 'string'
+      ? req.query.funderProfileId.trim()
+      : undefined;
+  const contractState =
+    typeof req.query.contractState === 'string'
+      ? req.query.contractState.trim()
+      : typeof req.query.state === 'string'
+        ? req.query.state.trim()
+        : undefined;
+
   const pdfBuffer = await docusignService.downloadSignedPdf(userId, envelopeId, {
     requireDocument: options.requireDocument,
+    contractId:
+      Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+    applicationId: applicationId || undefined,
+    funderName: funderName || undefined,
+    funderProfileId: funderProfileId || undefined,
+    contractState: contractState || undefined,
   });
 
   if (!pdfBuffer?.length) {

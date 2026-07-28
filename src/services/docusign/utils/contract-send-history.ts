@@ -31,9 +31,71 @@ export type ContractSendHistoryEntry = {
     includeAddendum?: boolean;
     includeDisclosure?: boolean;
   } | null;
+  /** DocuSign sender funder at send time — required when contract funder later changes. */
+  funderName?: string | null;
+  funderProfileId?: string | null;
+  /** Durable Cloudinary URL for this prior send (survives Document.envelopeId replace). */
+  signedPdfUrl?: string | null;
+  signedPdfPublicId?: string | null;
 };
 
 export const MAIN_CONTRACT_SEND_PACKAGE_KEY = 'mainContractSendPackage';
+
+function parseTermsSnapshotFromUnknown(
+  raw: unknown,
+): ContractSendHistoryTermsSnapshot | null {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const snapshot: ContractSendHistoryTermsSnapshot = {
+    approvedAmount: toSnapshotNumber(o.approvedAmount),
+    totalAmount: toSnapshotNumber(o.totalAmount),
+    contractLength: toSnapshotNumber(o.contractLength),
+    term: o.term != null ? String(o.term) : null,
+    position: o.position != null ? String(o.position) : null,
+    buyRate: toSnapshotNumber(o.buyRate),
+    factorRate: toSnapshotNumber(o.factorRate),
+    paymentAmount: toSnapshotNumber(o.paymentAmount),
+    paybackAmount: toSnapshotNumber(o.paybackAmount),
+    percentOfGross: toSnapshotNumber(o.percentOfGross),
+  };
+  const hasAny = Object.values(snapshot).some((v) => v != null && v !== '');
+  return hasAny ? snapshot : null;
+}
+
+/** Terms captured on mainContractSendPackage / documentSendHistory at send time. */
+export function resolveTermsSnapshotFromContractPrefill(
+  raw: unknown,
+  envelopeId: string,
+): ContractSendHistoryTermsSnapshot | null {
+  const eid = String(envelopeId || '').trim();
+  if (!eid || raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const o = raw as Record<string, unknown>;
+
+  for (const key of [CONTRACT_SEND_HISTORY_KEY, 'documentSendHistory']) {
+    const list = o[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const row = entry as Record<string, unknown>;
+      if (String(row.envelopeId ?? '').trim() !== eid) continue;
+      const snap = parseTermsSnapshotFromUnknown(row.termsSnapshot);
+      if (snap) return snap;
+    }
+  }
+
+  const pkg = o[MAIN_CONTRACT_SEND_PACKAGE_KEY];
+  if (pkg && typeof pkg === 'object' && !Array.isArray(pkg)) {
+    const b = pkg as Record<string, unknown>;
+    if (String(b.envelopeId ?? '').trim() === eid) {
+      const snap = parseTermsSnapshotFromUnknown(b.termsSnapshot);
+      if (snap) return snap;
+    }
+  }
+
+  return null;
+}
 
 function parseMainContractSendPackageFromPrefill(
   raw: unknown,
@@ -134,6 +196,56 @@ export function isCompletedEnvelopeStatus(
   return resolveArchivedMainContractEnvelopeStatus(documentStatus, contractStatus) === 'completed';
 }
 
+/**
+ * True when `envelopeId` appears on this contract's DocuSign prefill meta:
+ * current capsules or any send-history array (main / ACH / standalone / document).
+ */
+export function contractPrefillContainsEnvelopeId(
+  raw: unknown,
+  envelopeId: string,
+): boolean {
+  const eid = String(envelopeId || '').trim();
+  if (!eid || raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return false;
+  }
+  const o = raw as Record<string, unknown>;
+
+  for (const key of [
+    CONTRACT_SEND_HISTORY_KEY,
+    'documentSendHistory',
+    'standalonePackageSendHistory',
+    'achSendHistory',
+  ]) {
+    const list = o[key];
+    if (!Array.isArray(list)) continue;
+    if (
+      list.some(
+        (entry) =>
+          entry &&
+          typeof entry === 'object' &&
+          !Array.isArray(entry) &&
+          String((entry as Record<string, unknown>).envelopeId ?? '').trim() === eid,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  for (const key of [
+    MAIN_CONTRACT_SEND_PACKAGE_KEY,
+    'achAuthorizationDocuSign',
+    'standalonePackageDocuSign',
+  ]) {
+    const blob = o[key];
+    if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) continue;
+    if (String((blob as Record<string, unknown>).envelopeId ?? '').trim() === eid) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendHistoryEntry[] {
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return [];
   const list = (raw as Record<string, unknown>)[CONTRACT_SEND_HISTORY_KEY];
@@ -171,6 +283,10 @@ export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendH
                     ),
                   }
                 : null,
+            funderName: String(o.funderName ?? '').trim() || null,
+            funderProfileId: String(o.funderProfileId ?? '').trim() || null,
+            signedPdfUrl: String(o.signedPdfUrl ?? '').trim() || null,
+            signedPdfPublicId: String(o.signedPdfPublicId ?? '').trim() || null,
         });
   }
   return out;
@@ -182,6 +298,10 @@ export function appendContractSendHistoryEntry(
     archivedAt?: string;
     termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
     package?: ContractSendHistoryEntry['package'];
+    funderName?: string | null;
+    funderProfileId?: string | null;
+    signedPdfUrl?: string | null;
+    signedPdfPublicId?: string | null;
   },
 ): Record<string, unknown> {
   const base =
@@ -200,6 +320,22 @@ export function appendContractSendHistoryEntry(
     archivedAt: entry.archivedAt ?? upsert?.archivedAt ?? new Date().toISOString(),
     termsSnapshot: entry.termsSnapshot !== undefined ? entry.termsSnapshot : (upsert?.termsSnapshot ?? null),
     package: entry.package !== undefined ? entry.package : (upsert?.package ?? null),
+    funderName:
+      entry.funderName !== undefined
+        ? String(entry.funderName ?? '').trim() || null
+        : (upsert?.funderName ?? null),
+    funderProfileId:
+      entry.funderProfileId !== undefined
+        ? String(entry.funderProfileId ?? '').trim() || null
+        : (upsert?.funderProfileId ?? null),
+    signedPdfUrl:
+      entry.signedPdfUrl !== undefined
+        ? String(entry.signedPdfUrl ?? '').trim() || null
+        : (upsert?.signedPdfUrl ?? null),
+    signedPdfPublicId:
+      entry.signedPdfPublicId !== undefined
+        ? String(entry.signedPdfPublicId ?? '').trim() || null
+        : (upsert?.signedPdfPublicId ?? null),
   };
   if (upsert) {
     return {
@@ -290,6 +426,10 @@ export async function archiveMainContractEnvelopeToHistory(
     completedAt?: Date | string | null;
     termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
     package?: ContractSendHistoryEntry['package'];
+    funderName?: string | null;
+    funderProfileId?: string | null;
+    signedPdfUrl?: string | null;
+    signedPdfPublicId?: string | null;
     /**
      * When true (default), reset Contract.status to DRAFT for a replacement draft.
      * When false (void), keep Contract.status so Contracts Generated still shows Voided.
@@ -303,7 +443,7 @@ export async function archiveMainContractEnvelopeToHistory(
 
   const contract = await prisma.contract.findUnique({
     where: { applicationId: appId },
-    select: { id: true, contractPrefillOverrides: true },
+    select: { id: true, funderName: true, contractPrefillOverrides: true },
   });
   if (!contract) return false;
 
@@ -311,14 +451,42 @@ export async function archiveMainContractEnvelopeToHistory(
     snapshot.package ??
     parseMainContractSendPackageFromPrefill(contract.contractPrefillOverrides, envelopeId);
 
+  const fromPrefill = resolveFunderFromContractPrefill(
+    contract.contractPrefillOverrides,
+    envelopeId,
+  );
+  const funderName =
+    String(snapshot.funderName ?? '').trim() ||
+    fromPrefill.funderName ||
+    String(contract.funderName ?? '').trim() ||
+    null;
+  const funderProfileId =
+    String(snapshot.funderProfileId ?? '').trim() || fromPrefill.funderProfileId || null;
+  const signedPdfUrl = String(snapshot.signedPdfUrl ?? '').trim() || null;
+  const signedPdfPublicId = String(snapshot.signedPdfPublicId ?? '').trim() || null;
+
+  // Prefer send-time snapshot (stored on package/history) over live contract terms —
+  // contract may already have been edited for the replacement send.
+  const termsSnapshot =
+    snapshot.termsSnapshot ??
+    resolveTermsSnapshotFromContractPrefill(
+      contract.contractPrefillOverrides,
+      envelopeId,
+    ) ??
+    null;
+
   const merged = appendContractSendHistoryEntry(contract.contractPrefillOverrides, {
     envelopeId,
     status: snapshot.status,
     sentAt: snapshot.sentAt ? new Date(snapshot.sentAt).toISOString() : null,
     completedAt: snapshot.completedAt ? new Date(snapshot.completedAt).toISOString() : null,
     archivedAt: new Date().toISOString(),
-    termsSnapshot: snapshot.termsSnapshot ?? null,
+    termsSnapshot,
     package: packageMeta,
+    funderName,
+    funderProfileId,
+    signedPdfUrl,
+    signedPdfPublicId,
   });
 
   const resetToDraft = snapshot.resetContractToDraft !== false;
@@ -332,6 +500,85 @@ export async function archiveMainContractEnvelopeToHistory(
   return true;
 }
 
+/** Look up a durable PDF URL stored on contract send history for a prior envelope. */
+export async function findSignedPdfUrlInContractSendHistory(
+  envelopeId: string,
+): Promise<{ url: string; status: string | null; publicId: string | null } | null> {
+  const eid = String(envelopeId || '').trim();
+  if (!eid) return null;
+
+  const hits = await prisma.$queryRaw<Array<{ id: number }>>`
+    SELECT c.id
+    FROM "Contract" c
+    WHERE c."contractPrefillOverrides" IS NOT NULL
+      AND c."contractPrefillOverrides"::text LIKE ${'%' + eid + '%'}
+    ORDER BY c.id DESC
+    LIMIT 10
+  `;
+  for (const hit of hits) {
+    const row = await prisma.contract.findUnique({
+      where: { id: hit.id },
+      select: { contractPrefillOverrides: true },
+    });
+    const history = parseContractSendHistoryFromPrefill(row?.contractPrefillOverrides);
+    const match = history.find((entry) => entry.envelopeId === eid);
+    const url = String(match?.signedPdfUrl ?? '').trim();
+    if (!url) continue;
+    return {
+      url,
+      status: match?.status != null ? String(match.status) : null,
+      publicId: String(match?.signedPdfPublicId ?? '').trim() || null,
+    };
+  }
+  return null;
+}
+
+/** Resolve sender funder stored on prefill capsules / history for an envelope. */
+export function resolveFunderFromContractPrefill(
+  raw: unknown,
+  envelopeId: string,
+): { funderName: string | null; funderProfileId: string | null } {
+  const eid = String(envelopeId || '').trim();
+  if (!eid || raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { funderName: null, funderProfileId: null };
+  }
+  const o = raw as Record<string, unknown>;
+
+  for (const key of [
+    CONTRACT_SEND_HISTORY_KEY,
+    'documentSendHistory',
+    'standalonePackageSendHistory',
+    'achSendHistory',
+  ]) {
+    const list = o[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const row = entry as Record<string, unknown>;
+      if (String(row.envelopeId ?? '').trim() !== eid) continue;
+      const funderName = String(row.funderName ?? '').trim() || null;
+      const funderProfileId = String(row.funderProfileId ?? '').trim() || null;
+      if (funderName || funderProfileId) return { funderName, funderProfileId };
+    }
+  }
+
+  for (const key of [
+    MAIN_CONTRACT_SEND_PACKAGE_KEY,
+    'achAuthorizationDocuSign',
+    'standalonePackageDocuSign',
+  ]) {
+    const blob = o[key];
+    if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) continue;
+    const b = blob as Record<string, unknown>;
+    if (String(b.envelopeId ?? '').trim() !== eid) continue;
+    const funderName = String(b.funderName ?? '').trim() || null;
+    const funderProfileId = String(b.funderProfileId ?? '').trim() || null;
+    if (funderName || funderProfileId) return { funderName, funderProfileId };
+  }
+
+  return { funderName: null, funderProfileId: null };
+}
+
 /** Persist which documents were included in the current main-contract envelope. */
 export async function persistMainContractSendPackage(
   applicationId: string,
@@ -342,22 +589,68 @@ export async function persistMainContractSendPackage(
     includeDisclosure?: boolean;
   } | null,
   contractId?: number,
+  funderMeta?: {
+    funderName?: string | null;
+    funderProfileId?: string | null;
+  },
 ): Promise<boolean> {
   const appId = String(applicationId || '').trim();
   const eid = String(envelopeId || '').trim();
   if (!appId || !eid || !sendPackage) return false;
 
+  const contractSelect = {
+    id: true,
+    funderName: true,
+    approvedAmount: true,
+    totalAmount: true,
+    contractLenght: true,
+    contractPrefillOverrides: true,
+    offer: {
+      select: {
+        offer: true,
+        term: true,
+        totalRemit: true,
+        repayPerPeriod: true,
+        rate: true,
+      },
+    },
+    termsOffers: {
+      take: 1,
+      orderBy: { createdAt: 'desc' as const },
+      select: {
+        approvedAmount: true,
+        paybackAmount: true,
+        termLength: true,
+        position: true,
+        buyRate: true,
+        factorRate: true,
+        paymentAmount: true,
+        percentOfGross: true,
+        commissionPercent: true,
+      },
+    },
+  };
+
   const contract =
     Number.isFinite(Number(contractId)) && Number(contractId) > 0
       ? await prisma.contract.findUnique({
           where: { id: Number(contractId) },
-          select: { id: true, contractPrefillOverrides: true },
+          select: contractSelect,
         })
       : await prisma.contract.findUnique({
           where: { applicationId: appId },
-          select: { id: true, contractPrefillOverrides: true },
+          select: contractSelect,
         });
   if (!contract) return false;
+
+  const funderName =
+    String(funderMeta?.funderName ?? '').trim() ||
+    String(contract.funderName ?? '').trim() ||
+    null;
+  const funderProfileId = String(funderMeta?.funderProfileId ?? '').trim() || null;
+  const termsSnapshot =
+    buildContractSendHistoryTermsSnapshot(contract as unknown as Record<string, unknown>) ??
+    null;
 
   const base =
     contract.contractPrefillOverrides &&
@@ -366,13 +659,44 @@ export async function persistMainContractSendPackage(
       ? { ...(contract.contractPrefillOverrides as Record<string, unknown>) }
       : {};
 
+  const historyRaw = base.documentSendHistory;
+  let documentSendHistory = Array.isArray(historyRaw) ? [...historyRaw] : [];
+  let historyMatched = false;
+  documentSendHistory = documentSendHistory.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const row = item as Record<string, unknown>;
+    if (String(row.envelopeId ?? '').trim() !== eid) return item;
+    historyMatched = true;
+    return {
+      ...row,
+      envelopeId: eid,
+      documentKind: row.documentKind ?? 'contract',
+      ...(funderName ? { funderName } : {}),
+      ...(funderProfileId ? { funderProfileId } : {}),
+      ...(termsSnapshot ? { termsSnapshot } : {}),
+    };
+  });
+  if (!historyMatched) {
+    documentSendHistory.push({
+      envelopeId: eid,
+      documentKind: 'contract',
+      ...(funderName ? { funderName } : {}),
+      ...(funderProfileId ? { funderProfileId } : {}),
+      ...(termsSnapshot ? { termsSnapshot } : {}),
+    });
+  }
+
   const next = {
     ...base,
+    documentSendHistory,
     [MAIN_CONTRACT_SEND_PACKAGE_KEY]: {
       envelopeId: eid,
       includeMainContract: sendPackage.includeMainContract !== false,
       includeAddendum: Boolean(sendPackage.includeAddendum),
       includeDisclosure: Boolean(sendPackage.includeDisclosure),
+      ...(funderName ? { funderName } : {}),
+      ...(funderProfileId ? { funderProfileId } : {}),
+      ...(termsSnapshot ? { termsSnapshot } : {}),
     },
   };
 
