@@ -199,16 +199,28 @@ export function isCompletedEnvelopeStatus(
 /**
  * True when `envelopeId` appears on this contract's DocuSign prefill meta:
  * current capsules or any send-history array (main / ACH / standalone / document).
+ * Also deep-walks JSON so mapping-id maps / nested blobs still count.
  */
 export function contractPrefillContainsEnvelopeId(
   raw: unknown,
   envelopeId: string,
 ): boolean {
-  const eid = String(envelopeId || '').trim();
-  if (!eid || raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
-    return false;
+  const eid = String(envelopeId || '').trim().toLowerCase();
+  if (!eid) return false;
+
+  let root: unknown = raw;
+  if (typeof root === 'string') {
+    const trimmed = root.trim();
+    if (!trimmed) return false;
+    try {
+      root = JSON.parse(trimmed);
+    } catch {
+      return trimmed.toLowerCase().includes(eid);
+    }
   }
-  const o = raw as Record<string, unknown>;
+  if (root == null || typeof root !== 'object') return false;
+
+  const o = root as Record<string, unknown>;
 
   for (const key of [
     CONTRACT_SEND_HISTORY_KEY,
@@ -224,7 +236,9 @@ export function contractPrefillContainsEnvelopeId(
           entry &&
           typeof entry === 'object' &&
           !Array.isArray(entry) &&
-          String((entry as Record<string, unknown>).envelopeId ?? '').trim() === eid,
+          String((entry as Record<string, unknown>).envelopeId ?? '')
+            .trim()
+            .toLowerCase() === eid,
       )
     ) {
       return true;
@@ -238,12 +252,57 @@ export function contractPrefillContainsEnvelopeId(
   ]) {
     const blob = o[key];
     if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) continue;
-    if (String((blob as Record<string, unknown>).envelopeId ?? '').trim() === eid) {
+    if (
+      String((blob as Record<string, unknown>).envelopeId ?? '')
+        .trim()
+        .toLowerCase() === eid
+    ) {
       return true;
     }
   }
 
-  return false;
+  const byMapping = o.documentTemplateEnvelopeByMappingId;
+  if (byMapping && typeof byMapping === 'object' && !Array.isArray(byMapping)) {
+    for (const meta of Object.values(byMapping as Record<string, unknown>)) {
+      if (!meta || typeof meta !== 'object' || Array.isArray(meta)) continue;
+      if (
+        String((meta as Record<string, unknown>).envelopeId ?? '')
+          .trim()
+          .toLowerCase() === eid
+      ) {
+        return true;
+      }
+    }
+  }
+
+  // Deep walk: any nested envelopeId (covers future keys / nested package meta).
+  const stack: unknown[] = [root];
+  const seen = new Set<unknown>();
+  while (stack.length) {
+    const cur = stack.pop();
+    if (cur == null || typeof cur !== 'object') continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    if (Array.isArray(cur)) {
+      for (const item of cur) stack.push(item);
+      continue;
+    }
+    const rec = cur as Record<string, unknown>;
+    if (String(rec.envelopeId ?? '').trim().toLowerCase() === eid) {
+      return true;
+    }
+    for (const val of Object.values(rec)) {
+      if (val && typeof val === 'object') stack.push(val);
+    }
+  }
+
+  // Last resort: UUID literally present in serialized prefill (history wipe-resistant when
+  // envelope id still appears in signedPdfUrl / misc blobs).
+  try {
+    return JSON.stringify(root).toLowerCase().includes(eid);
+  } catch {
+    return false;
+  }
 }
 
 export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendHistoryEntry[] {

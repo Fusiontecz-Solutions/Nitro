@@ -40,6 +40,10 @@ import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
 import {
   resolveMainContractCoordinateLayoutKey,
 } from './resolve-main-contract-layout';
+import {
+  applyAllianceBridgeContractPrefillToFieldList,
+  shouldApplyAllianceBridgeContractPrefill,
+} from './alliance-contract-prefill';
 import { maybeAppendReverseDisbursementToMainContractLayout } from '../../pdf/reverseDisbursementSchedule.service';
 import {
   isPersistedFunderProfileId,
@@ -687,6 +691,30 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
       }
     }
   }
+
+  const mainLayoutKeyForPrefill =
+    String(options.mainContractLayoutKey || '').trim() ||
+    (includeMainContract ? DOCUMENT_LAYOUT_KEYS.contract : '');
+  const coordinateLayoutKeyForPrefill = includeMainContract
+    ? resolveMainContractCoordinateLayoutKey({
+        funderName: funderContext.funderName,
+        state: options.contractState,
+        mainContractLayoutKey: mainLayoutKeyForPrefill,
+      })
+    : null;
+  if (
+    shouldApplyAllianceBridgeContractPrefill({
+      layoutKey: mainLayoutKeyForPrefill,
+      coordinateLayoutKey: coordinateLayoutKeyForPrefill,
+      funderName: funderContext.funderName,
+      contractState: options.contractState,
+    })
+  ) {
+    const formatted = applyAllianceBridgeContractPrefillToFieldList(prefillFields);
+    prefillFields.length = 0;
+    prefillFields.push(...formatted);
+  }
+
   const values = prefillFieldsToValueMap(prefillFields);
   const partyCounts = { ownerCount, guarantorCount };
 

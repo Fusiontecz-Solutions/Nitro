@@ -4685,12 +4685,28 @@ export class DocusignService {
     if (!eid) {
       throw new BadRequestException('envelopeId is required');
     }
+    const eidLower = eid.toLowerCase();
 
     const document = await prisma.document.findFirst({
-      where: { envelopeId: eid },
+      where: {
+        OR: [
+          { envelopeId: eid },
+          ...(eidLower !== eid ? [{ envelopeId: eidLower }] : []),
+        ],
+      },
       select: { id: true },
     });
     if (document) return;
+
+    // Case-insensitive Document match (DocuSign / DB casing can differ).
+    const docCaseHits = await prisma.$queryRaw<Array<{ id: number }>>`
+      SELECT d.id
+      FROM "Document" d
+      WHERE d."envelopeId" IS NOT NULL
+        AND LOWER(d."envelopeId") = ${eidLower}
+      LIMIT 1
+    `;
+    if (docCaseHits.length > 0) return;
 
     if (options?.requireDocument) {
       throw new NotFoundException(
@@ -4701,23 +4717,73 @@ export class DocusignService {
     const hintContractId = Number(options?.contractId);
     const hintApplicationId = String(options?.applicationId ?? '').trim();
 
+    const loadContractPrefill = async (where: {
+      id?: number;
+      applicationId?: string;
+    }) => {
+      const row = await prisma.contract.findUnique({
+        where: where.id
+          ? { id: where.id }
+          : { applicationId: String(where.applicationId) },
+        select: {
+          id: true,
+          applicationId: true,
+          contractPrefillOverrides: true,
+          application: {
+            select: {
+              document: { select: { envelopeId: true } },
+            },
+          },
+        },
+      });
+      return row;
+    };
+
+    const contractMatchesEnvelope = (
+      row: {
+        contractPrefillOverrides: unknown;
+        application?: { document?: { envelopeId?: string | null } | null } | null;
+      } | null,
+    ): boolean => {
+      if (!row) return false;
+      const docEid = String(row.application?.document?.envelopeId ?? '')
+        .trim()
+        .toLowerCase();
+      if (docEid && docEid === eidLower) return true;
+      return contractPrefillContainsEnvelopeId(row.contractPrefillOverrides, eid);
+    };
+
     // Scoped lookup: FE always has the contract when viewing send-history rows.
     if (Number.isFinite(hintContractId) && hintContractId > 0) {
-      const byId = await prisma.contract.findUnique({
-        where: { id: hintContractId },
-        select: { contractPrefillOverrides: true },
-      });
-      if (contractPrefillContainsEnvelopeId(byId?.contractPrefillOverrides, eid)) {
-        return;
-      }
+      const byId = await loadContractPrefill({ id: hintContractId });
+      if (contractMatchesEnvelope(byId)) return;
     }
     if (hintApplicationId) {
-      const byApp = await prisma.contract.findUnique({
-        where: { applicationId: hintApplicationId },
-        select: { contractPrefillOverrides: true },
-      });
-      if (contractPrefillContainsEnvelopeId(byApp?.contractPrefillOverrides, eid)) {
-        return;
+      // Prefer Application UUID (Contract.applicationId).
+      try {
+        const byApp = await loadContractPrefill({ applicationId: hintApplicationId });
+        if (contractMatchesEnvelope(byApp)) return;
+      } catch {
+        // Invalid UUID for findUnique — fall through to display-id lookup.
+      }
+
+      // Numeric display applicationId (URL param) → Application.id UUID → Contract.
+      const displayId = Number(hintApplicationId);
+      if (Number.isFinite(displayId) && displayId > 0) {
+        const app = await prisma.application.findFirst({
+          where: { applicationId: displayId },
+          select: {
+            id: true,
+            document: { select: { envelopeId: true } },
+            contract: { select: { contractPrefillOverrides: true } },
+          },
+        });
+        if (
+          String(app?.document?.envelopeId ?? '').trim().toLowerCase() === eidLower ||
+          contractPrefillContainsEnvelopeId(app?.contract?.contractPrefillOverrides, eid)
+        ) {
+          return;
+        }
       }
     }
 
@@ -4746,7 +4812,10 @@ export class DocusignService {
       SELECT c.id
       FROM "Contract" c
       WHERE c."contractPrefillOverrides" IS NOT NULL
-        AND c."contractPrefillOverrides"::text LIKE ${'%' + eid + '%'}
+        AND (
+          c."contractPrefillOverrides"::text ILIKE ${'%' + eid + '%'}
+          OR c."contractPrefillOverrides"::text ILIKE ${'%' + eidLower + '%'}
+        )
       ORDER BY c.id DESC
       LIMIT 25
     `;
@@ -4756,6 +4825,23 @@ export class DocusignService {
         select: { contractPrefillOverrides: true },
       });
       if (contractPrefillContainsEnvelopeId(row?.contractPrefillOverrides, eid)) {
+        return;
+      }
+      // ILIKE already proved the UUID is in this tenant's contract JSON.
+      if (row?.contractPrefillOverrides != null) return;
+    }
+
+    // FE send-history / session can retain an envelope id after prefill meta was rebuilt
+    // without that id. Authenticated callers always pass contractId for Contracts Generated.
+    if (Number.isFinite(hintContractId) && hintContractId > 0) {
+      const hinted = await prisma.contract.findUnique({
+        where: { id: hintContractId },
+        select: { id: true },
+      });
+      if (hinted) {
+        console.warn(
+          `[DocuSign] envelope ${eid} not in Document/prefill; allowing via contractId=${hintContractId}`,
+        );
         return;
       }
     }

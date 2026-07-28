@@ -14,8 +14,10 @@ import { normalizeFieldKey } from './docusign-prefill';
 import {
   isAllianceBridgeFunder,
   isTexasContractState,
+  isTexasFundingGroupFunder,
   resolveMainContractCoordinateLayoutKey,
 } from './resolve-main-contract-layout';
+import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
 
 export const ALLIANCE_CONTRACT_MONEY_TAB_IDS = new Set([
   'purchase_amount',
@@ -259,6 +261,15 @@ export function isAllianceBridgeContractLayoutKey(layoutKey?: string | null): bo
   return String(layoutKey ?? '').trim() === ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY;
 }
 
+export function isTexasFundingGroupContractLayoutKey(layoutKey?: string | null): boolean {
+  const key = String(layoutKey ?? '').trim();
+  return (
+    key === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract ||
+    key === 'texas_funding_group' ||
+    key === ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY
+  );
+}
+
 export type AllianceBridgePrefillContext = {
   /** Storage / send layout key (may be `funder_<uuid>` in production). */
   layoutKey?: string | null;
@@ -268,20 +279,30 @@ export type AllianceBridgePrefillContext = {
   contractState?: string | null;
 };
 
-/** True when Alliance Texas contract prefill ($ amounts, address split, term weeks) should run. */
+/**
+ * True when Texas contract money formatting ($ amounts) / address / term-weeks should run.
+ * Covers Texas Funding Group + legacy Alliance Bridge layouts (same money tab ids).
+ */
 export function shouldApplyAllianceBridgeContractPrefill(
   context?: AllianceBridgePrefillContext,
 ): boolean {
   const layoutKey = String(context?.layoutKey ?? '').trim();
   const coordinateLayoutKey = String(context?.coordinateLayoutKey ?? '').trim();
-  if (isAllianceBridgeContractLayoutKey(layoutKey)) return true;
-  if (coordinateLayoutKey && isAllianceBridgeContractLayoutKey(coordinateLayoutKey)) {
+  if (isTexasFundingGroupContractLayoutKey(layoutKey)) return true;
+  if (coordinateLayoutKey && isTexasFundingGroupContractLayoutKey(coordinateLayoutKey)) {
     return true;
   }
   if (!isTexasContractState(context?.contractState)) return false;
   const funderName = String(context?.funderName ?? '').trim();
-  if (funderName && isAllianceBridgeFunder(funderName)) {
-    return isFunderContractLayoutKey(layoutKey) || isAllianceBridgeContractLayoutKey(layoutKey);
+  if (
+    funderName &&
+    (isTexasFundingGroupFunder(funderName) || isAllianceBridgeFunder(funderName))
+  ) {
+    return (
+      isFunderContractLayoutKey(layoutKey) ||
+      isTexasFundingGroupContractLayoutKey(layoutKey) ||
+      !layoutKey
+    );
   }
   return false;
 }
@@ -293,8 +314,10 @@ export async function resolveAllianceBridgeCoordinateLayoutKey(options: {
   contractState?: string | null;
 }): Promise<string | null> {
   const layoutKey = String(options.mainContractLayoutKey ?? '').trim();
-  if (isAllianceBridgeContractLayoutKey(layoutKey)) {
-    return ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY;
+  if (isTexasFundingGroupContractLayoutKey(layoutKey)) {
+    return layoutKey === ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY
+      ? ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY
+      : DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract;
   }
   if (isFunderContractLayoutKey(layoutKey)) {
     const funderId = layoutKey.replace(/^funder_/i, '');
