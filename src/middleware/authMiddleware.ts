@@ -112,6 +112,56 @@ export async function resolveApplicationAttributedUserIdForActor(
 export const resolveBankDetailCreatedById = resolveApplicationAttributedUserId;
 
 /**
+ * Resolves User.userId (numeric) for Document ownership (DocuSign / BoldSign envelope link).
+ *
+ * Regular JWT users map directly when their row exists.
+ * Super Admin proxy principals are not tenant Users — fall back to the application's
+ * creator or sales representative (same pattern as resolveApplicationAttributedUserId).
+ * When re-linking an existing Document, prefer its prior numeric userId over failing.
+ */
+export async function resolveDocumentOwnerNumericUserId(
+    actorUserId: string | null | undefined,
+    applicationId: string,
+    existingNumericUserId?: number | null,
+): Promise<number | null> {
+    const appId = String(applicationId || '').trim();
+    if (!appId) return null;
+
+    const actorId = String(actorUserId || '').trim();
+    if (actorId && actorId !== SUPER_ADMIN_PROXY_SENTINEL_ID) {
+        const actor = await prisma.user.findUnique({
+            where: { id: actorId },
+            select: { userId: true },
+        });
+        if (actor?.userId != null) return actor.userId;
+    }
+
+    const app = await prisma.application.findUnique({
+        where: { id: appId },
+        select: { createdById: true, salesRepresentativeId: true },
+    });
+    if (app) {
+        const attributedUuid = await resolveApplicationAttributedUserIdForActor(actorId || null, {
+            createdById: app.createdById,
+            salesRepresentativeId: app.salesRepresentativeId,
+        });
+        if (attributedUuid) {
+            const attributed = await prisma.user.findUnique({
+                where: { id: attributedUuid },
+                select: { userId: true },
+            });
+            if (attributed?.userId != null) return attributed.userId;
+        }
+    }
+
+    if (existingNumericUserId != null && Number.isFinite(existingNumericUserId)) {
+        return existingNumericUserId;
+    }
+
+    return null;
+}
+
+/**
  * Tenant user id when it exists in User; otherwise null (safe for optional createdById FK).
  * Super Admin proxy principals never write a synthetic id into the database.
  */

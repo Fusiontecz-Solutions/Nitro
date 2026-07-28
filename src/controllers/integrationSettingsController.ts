@@ -24,6 +24,7 @@ import {
   deleteFunderDocumentTemplate,
   type FunderProfileInput,
 } from '../services/funderProfileService';
+import { resolveContractCcDefaultsForApi } from '../utils/contractCcDefaults';
 import type { FunderSupplementalLayoutType } from '../utils/funderContractLayout';
 
 function handleError(res: Response, error: unknown) {
@@ -372,6 +373,39 @@ export const listFunders = async (req: Request, res: Response) => {
     const state = req.query.state ? String(req.query.state) : undefined;
     const activeOnly = req.query.activeOnly !== 'false';
     const data = await listFunderProfiles({ state, activeOnly });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+/**
+ * Tenant platform default CC + optional funder override (resolved).
+ * Used by CRM + Super Admin tenant-proxy Contract/ACH send UI.
+ */
+export const getContractCcDefaults = async (req: Request, res: Response) => {
+  try {
+    const q = req.query || {};
+    const funderName = q.funderName != null ? String(q.funderName) : undefined;
+    const state =
+      q.state != null
+        ? String(q.state)
+        : q.contractState != null
+          ? String(q.contractState)
+          : undefined;
+    const funderProfileId =
+      q.funderProfileId != null ? String(q.funderProfileId) : undefined;
+    const contractIdRaw = q.contractId != null ? String(q.contractId).trim() : '';
+    const contractIdNum = contractIdRaw ? Number(contractIdRaw) : NaN;
+    const contractId =
+      Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined;
+
+    const data = await resolveContractCcDefaultsForApi({
+      funderName,
+      state,
+      funderProfileId,
+      contractId,
+    });
     return res.json({ success: true, data });
   } catch (error) {
     return handleError(res, error);

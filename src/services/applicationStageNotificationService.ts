@@ -312,6 +312,16 @@ async function createAndPushNotifications(
     );
     if (!filtered.length) return;
 
+    // Notification.createdById is optional — never write Super Admin proxy / orphan UUIDs.
+    let safeCreatedById: string | null = null;
+    if (actorId) {
+        const actor = await prisma.user.findUnique({
+            where: { id: actorId },
+            select: { id: true },
+        });
+        safeCreatedById = actor?.id ?? null;
+    }
+
     const triage = notificationTriageDefaults(base.type, application ?? undefined);
 
     const created = await Promise.allSettled(
@@ -323,7 +333,7 @@ async function createAndPushNotifications(
                     type: base.type,
                     recipientId: r.id,
                     applicationId: base.applicationId,
-                    createdById: base.createdById,
+                    createdById: safeCreatedById,
                     category: triage.category,
                     bucket: triage.bucket,
                     importance: base.importance ?? triage.importance,

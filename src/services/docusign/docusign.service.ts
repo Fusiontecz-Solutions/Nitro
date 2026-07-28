@@ -4,6 +4,7 @@ import type { DocuSignUserInfoResponse, OAuthTokenResponse } from '../../types/o
 import dotenv from 'dotenv';
 import prisma from '../../config/prismaClient';
 import { Prisma } from '@prisma/client';
+import { resolveDocumentOwnerNumericUserId } from '../../middleware/authMiddleware';
 import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
 import {
   DOCUSIGN_CLIENT_ID,
@@ -2649,21 +2650,6 @@ export class DocusignService {
     applicationId: string,
     envelopeId: string,
   ) {
-    if (!userId?.trim()) {
-      throw new BadRequestException(
-        'Cannot link DocuSign envelope: authenticated user id is missing.',
-      );
-    }
-    const userRecord = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { userId: true },
-    });
-    if (!userRecord?.userId) {
-      throw new BadRequestException(
-        'Cannot link DocuSign envelope: CRM user record not found for this session.',
-      );
-    }
-
     const newEnvelopeId = String(envelopeId).trim();
     const existingDoc = await prisma.document.findUnique({
       where: { applicationId },
@@ -2674,8 +2660,23 @@ export class DocusignService {
         completedAt: true,
         signedPdfUrl: true,
         signedPdfPublicId: true,
+        userId: true,
       },
     });
+
+    // Super Admin proxy sessions use a sentinel / Master UUID — not a tenant User.
+    // Fall back to application creator / sales rep (same pattern as other proxy FK writes).
+    const documentOwnerUserId = await resolveDocumentOwnerNumericUserId(
+      userId,
+      applicationId,
+      existingDoc?.userId,
+    );
+    if (documentOwnerUserId == null) {
+      throw new BadRequestException(
+        'Cannot link DocuSign envelope: CRM user record not found for this session.',
+      );
+    }
+
     const priorEnvelopeId = String(existingDoc?.envelopeId ?? '').trim();
     if (priorEnvelopeId && priorEnvelopeId !== newEnvelopeId) {
       const contractRow = await prisma.contract.findUnique({
@@ -2718,7 +2719,7 @@ export class DocusignService {
         applicationId,
         envelopeId: newEnvelopeId,
         status: 'draft',
-        userId: userRecord.userId,
+        userId: documentOwnerUserId,
       },
       update: {
         envelopeId: newEnvelopeId,

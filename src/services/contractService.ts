@@ -386,8 +386,13 @@ class ContractService {
     });
   }
 
-  async deleteContractDocumentTemplateMapping(id: string) {
-    return (prisma as any).contractDocumentTemplateMapping.delete({ where: { id } });
+  async deleteContractDocumentTemplateMapping(id: string, contractId?: number) {
+    // deleteMany is idempotent — concurrent cleanup can race and hit the same id twice.
+    const where: { id: string; contractId?: number } = { id };
+    if (contractId != null && Number.isFinite(contractId)) {
+      where.contractId = contractId;
+    }
+    return (prisma as any).contractDocumentTemplateMapping.deleteMany({ where });
   }
 
   /**
@@ -884,8 +889,24 @@ class ContractService {
     });
 
     const derivedClientId = data.clientId ?? application?.clientId ?? null;
-    const derivedCreatedById =
-      data.createdById ?? application?.createdById ?? application?.salesRepresentative?.id ?? null;
+    // Prefer a User.id that actually exists — Super Admin proxy / deleted users break Contract_createdById_fkey.
+    const createdByCandidates = [
+      data.createdById,
+      application?.createdById,
+      application?.salesRepresentative?.id,
+      application?.referringAgent?.id,
+    ].filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+    let derivedCreatedById: string | null = null;
+    for (const candidateId of createdByCandidates) {
+      const user = await (prisma as any).user.findUnique({
+        where: { id: candidateId },
+        select: { id: true },
+      });
+      if (user?.id) {
+        derivedCreatedById = user.id;
+        break;
+      }
+    }
     const derivedOfferId = data.offerId ?? application?.termsOffers?.[0]?.id ?? null;
     const derivedPaymentBankId = resolvedPaymentBank?.id ?? null;
     const derivedContractLength =
