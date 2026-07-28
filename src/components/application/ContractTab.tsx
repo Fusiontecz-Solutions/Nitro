@@ -1511,9 +1511,46 @@ export default function ContractTab({
                 return;
             }
 
+            const contractRecord = contract as Record<string, unknown>;
+            const sendRows = buildContractSendTableRows(contractRecord);
+            const matchingRow =
+                sendRows.find(
+                    (row) => String(row.envelopeId ?? "").trim() === envelopeId,
+                ) ?? null;
+            const funderAuth = matchingRow
+                ? resolveContractSendRowFunderAuth(contractRecord, matchingRow)
+                : {
+                      funderName: String(
+                          (contract as { funderName?: unknown })?.funderName ?? "",
+                      ).trim(),
+                      contractState: String(
+                          (contract as { state?: unknown })?.state ?? "",
+                      ).trim(),
+                  };
+
             const res = await axiosGet(
                 `/docusign/download/${encodeURIComponent(envelopeId)}`,
-                { responseType: "blob", timeout: 120000 },
+                {
+                    responseType: "blob",
+                    timeout: 120000,
+                    params: {
+                        ...(applicationUuid
+                            ? { applicationId: String(applicationUuid) }
+                            : {}),
+                        ...(Number.isFinite(contractId) && contractId > 0
+                            ? { contractId }
+                            : {}),
+                        ...(funderAuth.funderName
+                            ? { funderName: funderAuth.funderName }
+                            : {}),
+                        ...(funderAuth.funderProfileId
+                            ? { funderProfileId: funderAuth.funderProfileId }
+                            : {}),
+                        ...(funderAuth.contractState
+                            ? { contractState: funderAuth.contractState }
+                            : {}),
+                    },
+                },
             );
             const blob =
                 res.data instanceof Blob
@@ -3351,6 +3388,47 @@ export default function ContractTab({
               : isContractFullySigned(row.contractStatus, row.documentStatus);
         const rowSentAtDisplay = formatTableSentAt(row.sentAt);
         const rowEnvelopeId = String(row.envelopeId ?? "").trim();
+        const snap = !isSupplementalRow && !row.isCurrent ? row.termsSnapshot : null;
+        const rowProgram =
+            snap?.approvedAmount != null
+                ? snap.approvedAmount
+                : (fetchedContract?.offer?.offer ?? fetchedContract?.program ?? "—");
+        const rowTerm =
+            snap?.term != null && String(snap.term).trim()
+                ? String(snap.term)
+                : snap?.contractLength != null
+                  ? snap.contractLength
+                  : (fetchedContract?.offer?.term ?? "—");
+        const rowPosition =
+            snap?.position != null && String(snap.position).trim()
+                ? String(snap.position)
+                : "1";
+        const rowAdvance =
+            snap?.approvedAmount != null
+                ? snap.approvedAmount
+                : fetchedContract?.approvedAmount;
+        const rowPayback =
+            snap?.paybackAmount != null
+                ? snap.paybackAmount
+                : snap?.totalAmount != null
+                  ? snap.totalAmount
+                  : (fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit);
+        const rowPaymentAmount =
+            snap?.paymentAmount != null
+                ? snap.paymentAmount
+                : contractTableMetrics.perPeriodPayment;
+        const formatSnapRate = (value: number | null | undefined) => {
+            if (value == null || !Number.isFinite(value)) return null;
+            return `${value}%`;
+        };
+        const rowBuyRate =
+            formatSnapRate(snap?.buyRate ?? null) ?? contractTableMetrics.buyRate;
+        const rowUpsell =
+            formatSnapRate(snap?.percentOfGross ?? null) ?? contractTableMetrics.upsell;
+        const rowFactor =
+            snap?.factorRate != null && Number.isFinite(snap.factorRate)
+                ? String(snap.factorRate)
+                : contractTableMetrics.factor;
         // One void control per envelope when addendum + disclosure share a package send.
         const isPrimaryVoidRowForEnvelope =
             !rowEnvelopeId ||
@@ -3401,41 +3479,33 @@ export default function ContractTab({
                     </span>
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow
-                        ? "—"
-                        : (fetchedContract?.offer?.offer ??
-                              fetchedContract?.program ??
-                              "—")}
+                    {isSupplementalRow ? "—" : rowProgram}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : (fetchedContract?.offer?.term ?? "—")}
-                </TableCell>
-                <TableCell className={tableCellClass}>{isSupplementalRow ? "—" : "1"}</TableCell>
-                <TableCell className={tableCellClass}>
-                    {isSupplementalRow
-                        ? "—"
-                        : formatContractCurrency(fetchedContract?.approvedAmount)}
+                    {isSupplementalRow ? "—" : rowTerm}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow
-                        ? "—"
-                        : formatContractCurrency(
-                              fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit,
-                          )}
+                    {isSupplementalRow ? "—" : rowPosition}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow ? "—" : formatContractCurrency(rowAdvance)}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow ? "—" : formatContractCurrency(rowPayback)}
                 </TableCell>
                 <TableCell className={tableCellClass}>
                     {isSupplementalRow
                         ? "—"
-                        : formatContractCurrency(contractTableMetrics.perPeriodPayment)}
+                        : formatContractCurrency(rowPaymentAmount)}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : contractTableMetrics.buyRate}
+                    {isSupplementalRow ? "—" : rowBuyRate}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : contractTableMetrics.upsell}
+                    {isSupplementalRow ? "—" : rowUpsell}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : contractTableMetrics.factor}
+                    {isSupplementalRow ? "—" : rowFactor}
                 </TableCell>
                 <TableCell>
                     <div className="flex flex-col gap-1">

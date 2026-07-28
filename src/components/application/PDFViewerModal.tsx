@@ -233,6 +233,7 @@ import {
     getContractSendTableRowStatusLabel,
     isContractSendTableRowFullySigned,
     pickPreservedDocuSignEnvelopeMetaFromPrefill,
+    resolveContractSendRowFunderAuth,
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -2439,6 +2440,9 @@ const PDFViewerModal = ({
     }, [signerRolesDraftFingerprint, invalidateDocuSignDraftSession]);
 
     const sessionEnvelopeIdRef = useRef<string | null>(null);
+    const effectiveContractIdRef = useRef<number | null>(null);
+    const resolvedContractRef = useRef<Record<string, unknown> | null>(null);
+    const selectedSentRowRef = useRef<ContractSendTableRow | null>(null);
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
@@ -2446,6 +2450,9 @@ const PDFViewerModal = ({
     const disclosureAutoLinkKeyRef = useRef("");
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
+    effectiveContractIdRef.current = effectiveContractId;
+    resolvedContractRef.current = resolvedContract;
+    selectedSentRowRef.current = selectedSentRow;
     ccEmailsRef.current = ccEmails;
     selectedAddendumOptionRef.current = selectedAddendumOption;
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
@@ -2544,9 +2551,47 @@ const PDFViewerModal = ({
                     const urlPath = envelopeId
                         ? `/docusign/download/${encodeURIComponent(envelopeId)}`
                         : `/docusign/prefilled-pdf/application/${encodeURIComponent(appId!)}`;
+                    const contractIdHint = effectiveContractIdRef.current;
+                    const contractRecord = resolvedContractRef.current;
+                    const sentRows = contractRecord
+                        ? buildContractSendTableRows(contractRecord)
+                        : [];
+                    const matchingRow =
+                        (envelopeId
+                            ? sentRows.find(
+                                  (row) =>
+                                      String(row.envelopeId ?? "").trim() === envelopeId,
+                              )
+                            : null) ??
+                        selectedSentRowRef.current;
+                    const funderAuth =
+                        envelopeId && contractRecord && matchingRow
+                            ? resolveContractSendRowFunderAuth(contractRecord, matchingRow)
+                            : {};
                     const res = await axiosGet(urlPath, {
                         responseType: "blob",
                         timeout: 120000,
+                        ...(envelopeId
+                            ? {
+                                  params: {
+                                      ...(appId ? { applicationId: String(appId) } : {}),
+                                      ...(contractIdHint != null &&
+                                      Number.isFinite(contractIdHint) &&
+                                      contractIdHint > 0
+                                          ? { contractId: contractIdHint }
+                                          : {}),
+                                      ...(funderAuth.funderName
+                                          ? { funderName: funderAuth.funderName }
+                                          : {}),
+                                      ...(funderAuth.funderProfileId
+                                          ? { funderProfileId: funderAuth.funderProfileId }
+                                          : {}),
+                                      ...(funderAuth.contractState
+                                          ? { contractState: funderAuth.contractState }
+                                          : {}),
+                                  },
+                              }
+                            : {}),
                     });
                     if (prefilledLoadGenRef.current !== gen) return;
 
@@ -2878,9 +2923,45 @@ const PDFViewerModal = ({
             const urlPath = envelopeId
                 ? `/docusign/download/${encodeURIComponent(envelopeId)}`
                 : `/docusign/prefilled-pdf/application/${encodeURIComponent(appId!)}`;
+            const contractIdHint = effectiveContractIdRef.current;
+            const contractRecord = resolvedContractRef.current;
+            const sentRows = contractRecord
+                ? buildContractSendTableRows(contractRecord)
+                : [];
+            const matchingRow =
+                (envelopeId
+                    ? sentRows.find(
+                          (row) => String(row.envelopeId ?? "").trim() === envelopeId,
+                      )
+                    : null) ?? selectedSentRowRef.current;
+            const funderAuth =
+                envelopeId && contractRecord && matchingRow
+                    ? resolveContractSendRowFunderAuth(contractRecord, matchingRow)
+                    : {};
             const res = await axiosGet(urlPath, {
                 responseType: "blob",
                 timeout: 120000,
+                ...(envelopeId
+                    ? {
+                          params: {
+                              ...(appId ? { applicationId: String(appId) } : {}),
+                              ...(contractIdHint != null &&
+                              Number.isFinite(contractIdHint) &&
+                              contractIdHint > 0
+                                  ? { contractId: contractIdHint }
+                                  : {}),
+                              ...(funderAuth.funderName
+                                  ? { funderName: funderAuth.funderName }
+                                  : {}),
+                              ...(funderAuth.funderProfileId
+                                  ? { funderProfileId: funderAuth.funderProfileId }
+                                  : {}),
+                              ...(funderAuth.contractState
+                                  ? { contractState: funderAuth.contractState }
+                                  : {}),
+                          },
+                      }
+                    : {}),
             });
             const blob =
                 res.data instanceof Blob

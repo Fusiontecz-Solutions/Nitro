@@ -63,6 +63,20 @@ export type MainContractSendPackageMeta = {
     includeDisclosure?: boolean;
 };
 
+/** Contract terms captured when a main-contract envelope is sent/archived. */
+export type ContractSendHistoryTermsSnapshot = {
+    approvedAmount?: number | null;
+    totalAmount?: number | null;
+    contractLength?: number | null;
+    term?: string | null;
+    position?: string | null;
+    buyRate?: number | null;
+    factorRate?: number | null;
+    paymentAmount?: number | null;
+    paybackAmount?: number | null;
+    percentOfGross?: number | null;
+};
+
 export type ContractSendHistoryEntry = {
     envelopeId: string;
     status: string;
@@ -70,6 +84,11 @@ export type ContractSendHistoryEntry = {
     completedAt?: string | null;
     archivedAt: string;
     package?: MainContractSendPackageMeta;
+    /** DocuSign sender funder at send time (may differ from current contract funder). */
+    funderName?: string | null;
+    funderProfileId?: string | null;
+    /** Contract terms at send time — keeps history rows from reflecting later edits. */
+    termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
 };
 
 export type ContractSendTableRowKind = "contract" | "ach" | "package";
@@ -100,6 +119,8 @@ export type ContractSendTableRow = {
     /** DocuSign sender funder — may differ from contract funder (e.g. ACH). */
     funderName?: string | null;
     funderProfileId?: string | null;
+    /** Archived / send-time terms for this envelope row. */
+    termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
 };
 
 export function resolveContractSendRowFunderAuth(
@@ -131,6 +152,19 @@ export function resolveContractSendRowFunderAuth(
 
     const prefill = contract?.contractPrefillOverrides;
     if (envelopeId) {
+        const fromContractHistory = parseContractSendHistoryFromPrefill(prefill).find(
+            (h) => String(h.envelopeId ?? "").trim() === envelopeId,
+        );
+        if (fromContractHistory?.funderName || fromContractHistory?.funderProfileId) {
+            return withState({
+                ...(fromContractHistory.funderName
+                    ? { funderName: fromContractHistory.funderName }
+                    : {}),
+                ...(fromContractHistory.funderProfileId
+                    ? { funderProfileId: fromContractHistory.funderProfileId }
+                    : {}),
+            });
+        }
         const fromHistory = parseDocumentSendHistory(prefill).find(
             (h) => String(h.envelopeId ?? "").trim() === envelopeId,
         );
@@ -323,6 +357,11 @@ export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendH
                       ),
                   }
                 : undefined;
+        const snapRaw = o.termsSnapshot;
+        const termsSnapshot =
+            snapRaw != null && typeof snapRaw === "object" && !Array.isArray(snapRaw)
+                ? (snapRaw as ContractSendHistoryTermsSnapshot)
+                : null;
         out.push({
             envelopeId,
             status: String(o.status ?? "draft").trim().toLowerCase(),
@@ -330,6 +369,9 @@ export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendH
             completedAt: o.completedAt != null ? String(o.completedAt) : null,
             archivedAt: String(o.archivedAt ?? ""),
             package: packageMeta,
+            funderName: String(o.funderName ?? "").trim() || null,
+            funderProfileId: String(o.funderProfileId ?? "").trim() || null,
+            termsSnapshot,
         });
     }
     return out;
@@ -501,6 +543,9 @@ function pushMainEnvelopeDocumentRows(
         keyPrefix: string;
         historyCount?: number;
         sendNumber?: number;
+        funderName?: string | null;
+        funderProfileId?: string | null;
+        termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
     },
 ): void {
     const parts = listMainEnvelopeDocumentParts(args.packageMeta);
@@ -522,6 +567,9 @@ function pushMainEnvelopeDocumentRows(
         sentAt: args.sentAt,
         isCurrent: args.isCurrent,
         documentKind: part.documentKind,
+        ...(args.funderName ? { funderName: args.funderName } : {}),
+        ...(args.funderProfileId ? { funderProfileId: args.funderProfileId } : {}),
+        ...(args.termsSnapshot ? { termsSnapshot: args.termsSnapshot } : {}),
     });
 }
 
@@ -706,6 +754,9 @@ export function buildContractSendTableRows(
                 isCurrent: true,
                 packageMeta: mainSendPackage,
                 keyPrefix: "current-contract",
+                funderName:
+                    String((contract as { funderName?: unknown }).funderName ?? "").trim() ||
+                    null,
             });
         }
     }
@@ -725,6 +776,16 @@ export function buildContractSendTableRows(
         }
         seenEnvelopeIds.add(entry.envelopeId);
         const sendNumber = contractHistory.length - index;
+        const fromDocHistory = parseDocumentSendHistory(prefill).find(
+            (h) => String(h.envelopeId ?? "").trim() === entry.envelopeId,
+        );
+        const docSnap =
+            fromDocHistory &&
+            (fromDocHistory as { termsSnapshot?: ContractSendHistoryTermsSnapshot | null })
+                .termsSnapshot
+                ? (fromDocHistory as { termsSnapshot?: ContractSendHistoryTermsSnapshot | null })
+                      .termsSnapshot
+                : null;
         pushMainEnvelopeDocumentRows(rows, {
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
@@ -735,6 +796,9 @@ export function buildContractSendTableRows(
             keyPrefix: "history-contract",
             historyCount: contractHistory.length,
             sendNumber,
+            funderName: entry.funderName,
+            funderProfileId: entry.funderProfileId,
+            termsSnapshot: entry.termsSnapshot ?? docSnap ?? null,
         });
     });
 
