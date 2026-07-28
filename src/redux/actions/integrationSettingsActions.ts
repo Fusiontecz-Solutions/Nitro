@@ -104,6 +104,60 @@ export async function fetchFunderProfiles(
   return (res as { data?: { data?: FunderProfile[] } })?.data?.data ?? [];
 }
 
+export type ContractCcDefaults = {
+  defaultCcEmail: string | null;
+  resolvedCcEmail: string | null;
+  ccEmails: string[];
+};
+
+export type FetchContractCcDefaultsParams = {
+  funderName?: string | null;
+  state?: string | null;
+  contractState?: string | null;
+  funderProfileId?: string | null;
+  contractId?: string | number | null;
+};
+
+/**
+ * Tenant platform default CC (+ funder override when resolved).
+ * Works with normal JWT and Super Admin tenant-proxy headers (same axios instance).
+ */
+export async function fetchContractCcDefaults(
+  params?: FetchContractCcDefaultsParams,
+): Promise<ContractCcDefaults> {
+  const query: Record<string, string> = {};
+  const funderName = String(params?.funderName ?? "").trim();
+  const state = String(params?.state ?? params?.contractState ?? "").trim();
+  const funderProfileId = String(params?.funderProfileId ?? "").trim();
+  const contractIdRaw = params?.contractId;
+  const contractId =
+    contractIdRaw != null && String(contractIdRaw).trim() !== ""
+      ? String(contractIdRaw).trim()
+      : "";
+
+  if (funderName) query.funderName = funderName;
+  if (state) query.state = state;
+  if (funderProfileId) query.funderProfileId = funderProfileId;
+  if (contractId) query.contractId = contractId;
+
+  const res = await axiosGet("/integration-settings/contract-cc-defaults", {
+    params: query,
+  });
+  const data = (res as { data?: { data?: Partial<ContractCcDefaults> } })?.data?.data;
+  const ccEmails = Array.isArray(data?.ccEmails)
+    ? data!.ccEmails.map((e) => String(e).trim()).filter(Boolean)
+    : [];
+  const defaultCcEmail = String(data?.defaultCcEmail ?? "").trim() || null;
+  const resolvedCcEmail =
+    String(data?.resolvedCcEmail ?? "").trim() || ccEmails[0] || defaultCcEmail;
+
+  return {
+    defaultCcEmail,
+    resolvedCcEmail,
+    ccEmails: ccEmails.length ? ccEmails : resolvedCcEmail ? [resolvedCcEmail] : [],
+  };
+}
+
 export async function fetchDocuSignAccountProfiles(): Promise<DocuSignAccountProfile[]> {
   const res = await axiosGet("/integration-settings/docusign-accounts");
   return (res as { data?: { data?: DocuSignAccountProfile[] } })?.data?.data ?? [];

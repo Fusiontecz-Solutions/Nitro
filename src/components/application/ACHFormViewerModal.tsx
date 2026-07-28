@@ -56,10 +56,16 @@ import {
     isReservedContractCcEmail,
     loadBoldSignCcEmailList,
     mergeWithDefaultCcEmails,
+    normalizeCcEmailToken,
     parseFunderDefaultCcEmails,
     resolveContractDefaultCcEmails,
     saveBoldSignCcEmailList,
+    setTenantDefaultContractCcEmail,
 } from "./docusignCcList";
+import {
+    fetchContractCcDefaults,
+    type ContractCcDefaults,
+} from "@/redux/actions/integrationSettingsActions";
 import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
@@ -699,23 +705,46 @@ export default function ACHFormViewerModal({
         [selectedFunderProfile],
     );
 
+    const [tenantContractCcDefaults, setTenantContractCcDefaults] =
+        useState<ContractCcDefaults | null>(null);
+    const [tenantCcDefaultsVersion, setTenantCcDefaultsVersion] = useState(0);
+
     const contractCcMergeOptions = useMemo(() => {
         const knownFunderDefaultCcEmails = collectKnownFunderDefaultCcEmails(
             funders.map((f) => f.defaultCcEmail),
         );
+        const apiResolved =
+            tenantContractCcDefaults?.ccEmails?.length
+                ? tenantContractCcDefaults.ccEmails.join(", ")
+                : tenantContractCcDefaults?.resolvedCcEmail ?? null;
         return {
-            funderDefaultCcEmail: selectedFunderDefaultCcEmail,
+            funderDefaultCcEmail: apiResolved || selectedFunderDefaultCcEmail,
+            tenantDefaultCcEmail: tenantContractCcDefaults?.defaultCcEmail ?? null,
             knownFunderDefaultCcEmails,
         };
-    }, [selectedFunderDefaultCcEmail, funders]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedFunderDefaultCcEmail, funders, tenantContractCcDefaults, tenantCcDefaultsVersion]);
 
     const contractDefaultCcEmails = useMemo(
         () => resolveContractDefaultCcEmails(contractCcMergeOptions),
         [contractCcMergeOptions],
     );
 
-    const contractDefaultCcUsesFunderOverride =
-        parseFunderDefaultCcEmails(selectedFunderDefaultCcEmail).length > 0;
+    const contractDefaultCcUsesFunderOverride = useMemo(() => {
+        if (tenantContractCcDefaults) {
+            const platform = normalizeCcEmailToken(
+                tenantContractCcDefaults.defaultCcEmail ?? "",
+            );
+            const resolved = (tenantContractCcDefaults.ccEmails?.length
+                ? tenantContractCcDefaults.ccEmails
+                : parseFunderDefaultCcEmails(tenantContractCcDefaults.resolvedCcEmail)
+            ).map(normalizeCcEmailToken);
+            if (!resolved.length) return false;
+            if (!platform) return true;
+            return resolved.some((e) => e !== platform);
+        }
+        return parseFunderDefaultCcEmails(selectedFunderDefaultCcEmail).length > 0;
+    }, [tenantContractCcDefaults, selectedFunderDefaultCcEmail]);
 
     const funderSelectionStorageKey = useMemo(
         () =>
@@ -1105,6 +1134,55 @@ export default function ACHFormViewerModal({
             email: secondary?.email?.trim() || "",
         });
     }, [isOpen, resolvedContract, getSignerName, getSignerEmail, contractCcMergeOptions]);
+
+    // Fetch tenant contract CC defaults for this book (platform + funder-resolved).
+    useEffect(() => {
+        if (!isOpen) return;
+        let cancelled = false;
+        const funderName = String(selectedFunder || selectedFunderProfile?.name || "").trim();
+        const funderProfileId = String(
+            persistedFunderProfileIdForApi(selectedFunderProfile) || selectedFunderProfileId || "",
+        ).trim();
+        const state = String(contractStateForFunders || "").trim();
+        const contractIdParam =
+            contractId != null && Number.isFinite(Number(contractId)) && Number(contractId) > 0
+                ? Number(contractId)
+                : null;
+
+        void (async () => {
+            try {
+                const data = await fetchContractCcDefaults({
+                    funderName: funderName || null,
+                    state: state || null,
+                    funderProfileId: funderProfileId || null,
+                    contractId: contractIdParam,
+                });
+                if (cancelled) return;
+                setTenantDefaultContractCcEmail(
+                    data.resolvedCcEmail ?? data.defaultCcEmail,
+                    data.ccEmails,
+                );
+                setTenantContractCcDefaults(data);
+                setTenantCcDefaultsVersion((v) => v + 1);
+            } catch {
+                if (cancelled) return;
+                setTenantDefaultContractCcEmail(null, []);
+                setTenantContractCcDefaults(null);
+                setTenantCcDefaultsVersion((v) => v + 1);
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        isOpen,
+        selectedFunder,
+        selectedFunderProfile,
+        selectedFunderProfileId,
+        contractStateForFunders,
+        contractId,
+    ]);
 
     const syncAchEnvelopeStatus = useCallback(
         async (silent = false, options?: { force?: boolean; crmOnly?: boolean }) => {
