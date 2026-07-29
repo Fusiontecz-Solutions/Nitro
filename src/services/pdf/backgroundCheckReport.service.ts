@@ -38,7 +38,7 @@ const CHECK_RESOURCES = [
   { id: 'datamerch', title: 'DataMerch', description: 'Industry default database' },
   { id: 'opencorporates', title: 'OpenCorporates', description: 'Entity registration & status' },
   { id: 'sos', title: 'Secretary of State', description: 'State business registration' },
-  { id: 'nyscef', title: 'NY Court', description: 'Civil / judgment search' },
+  { id: 'nyscef', title: 'NY Court', description: 'Civil court case search' },
   { id: 'google', title: 'Google Search', description: 'Open-web reputation' },
   { id: 'tlo', title: 'Thomson Reuters CLEAR', description: 'Identity and background screening' },
 ] as const;
@@ -52,6 +52,34 @@ type AttachmentPreview = {
   kind: 'image' | 'pdf';
 };
 
+type ClearLienJudgmentRecord = {
+  source?: string;
+  kind?: 'lien' | 'judgment' | string;
+  groupId?: string;
+  reportKind?: 'person' | 'business' | string;
+  caseNumber?: string;
+  court?: string;
+  filingDate?: string;
+  amount?: string;
+  parties?: string;
+  status?: string;
+  description?: string;
+  pdfUrl?: string;
+};
+
+type ClearCorporateAssociationRecord = {
+  source?: string;
+  name?: string;
+  section?: string;
+  groupId?: string;
+  reportKind?: 'person' | 'business' | string;
+};
+
+export type ClearReportMetadata = {
+  clearLienJudgments?: ClearLienJudgmentRecord[];
+  clearCorporateAssociations?: ClearCorporateAssociationRecord[];
+};
+
 type CheckItemState = {
   notes?: string;
   status?: CheckStatus | string;
@@ -60,35 +88,8 @@ type CheckItemState = {
   attachmentName?: string;
   attachmentUrl?: string;
   noteImages?: Array<{ id: string; name: string; url: string; publicId?: string }>;
-  judgements?: Array<{
-    id: string;
-    kind: 'link' | 'image' | 'record';
-    url: string;
-    name: string;
-    publicId?: string;
-    source?: string;
-    court?: string;
-    filingDate?: string;
-    amount?: string;
-    parties?: string;
-    caseNumber?: string;
-    status?: string;
-  }>;
-  liens?: Array<{
-    id: string;
-    kind: 'link' | 'image' | 'record';
-    url: string;
-    name: string;
-    publicId?: string;
-    source?: string;
-    court?: string;
-    filingDate?: string;
-    amount?: string;
-    parties?: string;
-    caseNumber?: string;
-    status?: string;
-  }>;
   savedAt?: string;
+  clearMetadata?: ClearReportMetadata | null;
 };
 
 type DataMerchRecord = {
@@ -270,55 +271,39 @@ function formatFindings(
   return '—';
 }
 
-type NyCourtEvidenceItem = NonNullable<CheckItemState['judgements']>[number];
-
-function buildNyCourtEvidenceListHtml(
+function buildClearLienJudgmentListHtml(
   title: string,
-  items: NyCourtEvidenceItem[] | undefined,
+  records: ClearLienJudgmentRecord[],
 ): string {
-  const list = items ?? [];
-  if (list.length === 0) {
-    return `<div style="margin-top:8px;">
-      <div style="font-size:8px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:#94a3b8;margin-bottom:3px;">${esc(title)}</div>
-      <div style="font-size:10px;color:#94a3b8;font-style:italic;">None</div>
-    </div>`;
-  }
-
-  const rows = list
-    .map((item) => {
-      if (item.kind === 'record') {
-        const details = [
-          item.caseNumber ? `Case: ${item.caseNumber}` : '',
-          item.court ? `Court: ${item.court}` : '',
-          item.filingDate ? `Filed: ${item.filingDate}` : '',
-          item.amount ? `Amount: ${item.amount}` : '',
-          item.parties ? `Parties: ${item.parties}` : '',
-          item.status ? `Status: ${item.status}` : '',
-        ]
-          .filter(Boolean)
-          .join(' · ');
-        const link =
-          item.url?.trim()
-            ? ` <a href="${esc(item.url)}" style="color:#2563eb;text-decoration:underline;font-size:9px;">CLEAR PDF</a>`
-            : '';
-        return `<li style="margin:0 0 6px;font-size:10px;">
-          <div style="color:#0f172a;font-weight:600;">${esc(item.name || 'CLEAR record')}${link}</div>
-          ${details ? `<div style="color:#64748b;margin-top:2px;">${esc(details)}</div>` : ''}
-        </li>`;
-      }
-      if (item.kind === 'link') {
-        return `<li style="margin:0 0 4px;font-size:10px;">
-          <a href="${esc(item.url)}" style="color:#2563eb;text-decoration:underline;word-break:break-all;">${esc(item.url)}</a>
-        </li>`;
-      }
-      return `<li style="margin:0 0 6px;font-size:10px;">
-        <div style="color:#334155;margin-bottom:3px;">${esc(item.name)}</div>
-        <div style="border:1px solid #e2e8f0;border-radius:6px;padding:6px;background:#fff;">
-          <img src="${esc(item.url)}" alt="${esc(item.name)}" style="display:block;width:100%;max-height:220px;object-fit:contain;object-position:top center;" />
-        </div>
-      </li>`;
-    })
-    .join('');
+  const rows =
+    records.length > 0
+      ? records
+          .map((record) => {
+            const heading =
+              String(record.description ?? '').trim() ||
+              String(record.parties ?? '').trim() ||
+              `${title.replace(/s$/, '')} record`;
+            const details = [
+              record.caseNumber ? `Case: ${record.caseNumber}` : '',
+              record.court ? `Court: ${record.court}` : '',
+              record.filingDate ? `Filed: ${record.filingDate}` : '',
+              record.amount ? `Amount: ${record.amount}` : '',
+              record.parties && heading !== record.parties ? `Parties: ${record.parties}` : '',
+              record.status ? `Status: ${record.status}` : '',
+              record.reportKind ? `Report: ${record.reportKind}` : '',
+            ]
+              .filter(Boolean)
+              .join(' · ');
+            const reportLink = String(record.pdfUrl ?? '').trim()
+              ? ` <a href="${esc(record.pdfUrl)}" style="color:#2563eb;text-decoration:underline;font-size:9px;">CLEAR PDF</a>`
+              : '';
+            return `<li style="margin:0 0 6px;font-size:10px;">
+              <div style="color:#0f172a;font-weight:600;">${esc(heading)}${reportLink}</div>
+              ${details ? `<div style="color:#64748b;margin-top:2px;">${esc(details)}</div>` : ''}
+            </li>`;
+          })
+          .join('')
+      : '<li style="font-size:10px;color:#94a3b8;font-style:italic;">None</li>';
 
   return `<div style="margin-top:8px;">
     <div style="font-size:8px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:#94a3b8;margin-bottom:4px;">${esc(title)}</div>
@@ -326,13 +311,50 @@ function buildNyCourtEvidenceListHtml(
   </div>`;
 }
 
-function buildNyCourtEvidenceHtml(state: CheckItemState): string {
-  const judgements = buildNyCourtEvidenceListHtml('Judgements', state.judgements);
-  const liens = buildNyCourtEvidenceListHtml('Liens', state.liens);
-  if ((state.judgements ?? []).length === 0 && (state.liens ?? []).length === 0) {
-    return '';
-  }
-  return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e8edf3;">${judgements}${liens}</div>`;
+function buildClearCorporationsHtml(records: ClearCorporateAssociationRecord[]): string {
+  const rows =
+    records.length > 0
+      ? records
+          .map((record) => {
+            const details = [
+              record.section ? `Section: ${record.section}` : '',
+              record.reportKind ? `Report: ${record.reportKind}` : '',
+            ]
+              .filter(Boolean)
+              .join(' · ');
+            return `<li style="margin:0 0 6px;font-size:10px;">
+              <div style="color:#0f172a;font-weight:600;">${esc(record.name || 'Corporation')}</div>
+              ${details ? `<div style="color:#64748b;margin-top:2px;">${esc(details)}</div>` : ''}
+            </li>`;
+          })
+          .join('')
+      : '<li style="font-size:10px;color:#94a3b8;font-style:italic;">None</li>';
+
+  return `<div style="margin-top:8px;">
+    <div style="font-size:8px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:#94a3b8;margin-bottom:4px;">Corporations</div>
+    <ul style="margin:0;padding-left:16px;">${rows}</ul>
+  </div>`;
+}
+
+export function buildClearReportSectionsHtml(
+  metadata: ClearReportMetadata | null | undefined,
+): string {
+  if (!metadata) return '';
+
+  const lienJudgments = Array.isArray(metadata.clearLienJudgments)
+    ? metadata.clearLienJudgments
+    : [];
+  const corporations = Array.isArray(metadata.clearCorporateAssociations)
+    ? metadata.clearCorporateAssociations
+    : [];
+  const judgements = lienJudgments.filter((record) => record?.kind === 'judgment');
+  const liens = lienJudgments.filter((record) => record?.kind === 'lien');
+
+  return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e8edf3;">
+    ${buildClearLienJudgmentListHtml('Judgements', judgements)}
+    ${buildClearLienJudgmentListHtml('Liens', liens)}
+    ${buildClearCorporationsHtml(corporations)}
+  </div>`;
 }
 
 function merchantRecords(merchant: DataMerchMerchant): DataMerchRecord[] {
@@ -741,15 +763,15 @@ function buildHtml(payload: BackgroundCheckReportPayload): string {
         dmFindings,
       );
     }
-    if (resource.id === 'nyscef') {
-      const nyExtra = buildNyCourtEvidenceHtml(state);
+    if (resource.id === 'tlo') {
+      const clearExtra = buildClearReportSectionsHtml(state.clearMetadata);
       return buildCheckCardHtml(
         index,
         resource.title,
         resource.description,
         state,
         preview,
-        nyExtra,
+        clearExtra,
       );
     }
     return buildCheckCardHtml(index, resource.title, resource.description, state, preview);

@@ -41,6 +41,11 @@ class BackgroundCheckController {
         return handle(res, () => backgroundCheckService.removeAttachment(req.params.id, actor(req)));
     }
 
+    // POST /background-checks/items/:itemId/map-to-exhibit
+    mapToExhibit(req: Request, res: Response) {
+        return handle(res, () => backgroundCheckService.mapClearCorporationsToExhibit(req.params.itemId, actor(req)));
+    }
+
     // PATCH /background-checks/:checkId/required  { flags: { TLO: true, ... } }
     setRequired(req: Request, res: Response) {
         return handle(res, () => backgroundCheckService.setRequiredFlags(req.params.checkId, req.body?.flags ?? {}, actor(req)));

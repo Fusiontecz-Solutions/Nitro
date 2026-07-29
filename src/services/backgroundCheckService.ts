@@ -402,39 +402,6 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
                         primaryBusinessName ? [primaryBusinessName] : [],
                     );
                     notes = `${notes}${notes ? ' ' : ''}CLEAR corporation association(s): ${clearCompanyNames.length}.`.trim();
-
-                    try {
-                        const contract = await db.contract.findFirst({
-                            where: { applicationId: application.id },
-                            select: { id: true, contractPrefillOverrides: true },
-                        });
-                        if (contract && clearCompanyNames.length > 0) {
-                            const existingOverrides =
-                                contract.contractPrefillOverrides &&
-                                typeof contract.contractPrefillOverrides === 'object' &&
-                                !Array.isArray(contract.contractPrefillOverrides)
-                                    ? (contract.contractPrefillOverrides as Record<string, unknown>)
-                                    : {};
-                            const merged = mergeClearNamesIntoExhibitPrefill(
-                                existingOverrides,
-                                clearCompanyNames,
-                            );
-                            if (merged.added > 0) {
-                                await db.contract.update({
-                                    where: { id: contract.id },
-                                    data: { contractPrefillOverrides: merged.overrides },
-                                });
-                                notes = `${notes}${notes ? ' ' : ''}Exhibit A auto-filled with ${merged.added} CLEAR corporation name(s).`.trim();
-                            }
-                        }
-                    } catch (exhibitError: any) {
-                        reportMeta.errors.push({
-                            kind: 'exhibit',
-                            groupId: '',
-                            error: `Exhibit A CLEAR sync: ${String(exhibitError?.message || exhibitError)}`.slice(0, 500),
-                        });
-                        metadata.reports = reportMeta;
-                    }
                 }
                 if (reportMeta.errors.length > 0) {
                     const firstError = String(reportMeta.errors[0]?.error || '').trim();
@@ -514,12 +481,149 @@ async function addAttachment(
     return getCheck(item.backgroundCheckId);
 }
 
+/**
+ * CLEAR report metadata points back at the uploaded PDF, so dropping only the
+ * attachment row would leave "Open CLEAR PDF" links aimed at a deleted asset.
+ */
+async function forgetAttachmentInItemMetadata(
+    item: { id: string; metadata?: unknown },
+    attachment: { url: string; originalName?: string | null },
+) {
+    const source = item.metadata;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return;
+
+    const metadata = { ...(source as Record<string, unknown>) };
+    let changed = false;
+
+    if (Array.isArray(metadata.clearLienJudgments)) {
+        const rows = metadata.clearLienJudgments as Array<Record<string, unknown> | null>;
+        const next = rows.map((row) => {
+            if (!row || typeof row !== 'object' || row.pdfUrl !== attachment.url) return row;
+            const { pdfUrl, ...rest } = row;
+            return rest;
+        });
+        if (next.some((row, index) => row !== rows[index])) {
+            metadata.clearLienJudgments = next;
+            changed = true;
+        }
+    }
+
+    const reports = metadata.reports;
+    const fileName = String(attachment.originalName ?? '').trim();
+    if (fileName && reports && typeof reports === 'object' && !Array.isArray(reports)) {
+        const attached = (reports as Record<string, unknown>).attached;
+        if (Array.isArray(attached)) {
+            const next = attached.filter(
+                (row: any) => String(row?.fileName ?? '').trim() !== fileName,
+            );
+            if (next.length !== attached.length) {
+                metadata.reports = { ...(reports as Record<string, unknown>), attached: next };
+                changed = true;
+            }
+        }
+    }
+
+    if (changed) {
+        await db.backgroundCheckItem.update({ where: { id: item.id }, data: { metadata } });
+    }
+}
+
 async function removeAttachment(attachmentId: string, actor: Actor) {
     const att = await db.backgroundCheckAttachment.findUnique({ where: { id: attachmentId }, include: { item: true } });
     if (!att) throw new BackgroundCheckError('Attachment not found', 404);
     await db.backgroundCheckAttachment.delete({ where: { id: attachmentId } });
-    await logEvent(att.item.backgroundCheckId, 'attachment_removed', { itemId: att.itemId, actorId: actor?.id });
+    if (att.publicId) {
+        // The row is already gone, so a stranded Cloudinary asset must not fail the removal.
+        const deleted = await uploadService.deleteFile(att.publicId, 'raw');
+        if (!deleted?.success) {
+            console.error('[backgroundCheck] Cloudinary delete failed:', deleted?.error || deleted?.message);
+        }
+    }
+    await forgetAttachmentInItemMetadata(att.item, att);
+    await logEvent(att.item.backgroundCheckId, 'attachment_removed', {
+        itemId: att.itemId,
+        detail: { originalName: att.originalName },
+        actorId: actor?.id,
+    });
     return getCheck(att.item.backgroundCheckId);
+}
+
+/**
+ * Copy CLEAR corporation names into empty Exhibit A slots on the deal's contract.
+ * Explicit rather than part of the CLEAR run so an underwriter decides when the
+ * contract changes.
+ */
+async function mapClearCorporationsToExhibit(itemId: string, actor: Actor) {
+    if (!DECIDER_ROLES.includes(norm(actor?.role))) {
+        throw new BackgroundCheckError('You are not authorized to update Exhibit A.', 403);
+    }
+
+    const item = await db.backgroundCheckItem.findUnique({
+        where: { id: itemId },
+        include: {
+            backgroundCheck: {
+                include: { application: { include: { client: true } } },
+            },
+        },
+    });
+    if (!item) throw new BackgroundCheckError('Check item not found', 404);
+    if (item.checkType !== 'TLO') {
+        throw new BackgroundCheckError('Only the CLEAR check carries corporation names.');
+    }
+
+    const application = item.backgroundCheck?.application;
+    if (!application) throw new BackgroundCheckError('Application data is unavailable.', 404);
+
+    const metadata =
+        item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+            ? (item.metadata as Record<string, unknown>)
+            : {};
+    const records = Array.isArray(metadata.clearCorporateAssociations)
+        ? (metadata.clearCorporateAssociations as ClearCorporateAssociationRecord[])
+        : [];
+    const primaryBusinessName = String(application.client?.businessName ?? '').trim();
+    const clearCompanyNames = uniqueClearCorporateNames(
+        records,
+        primaryBusinessName ? [primaryBusinessName] : [],
+    );
+    if (clearCompanyNames.length === 0) {
+        throw new BackgroundCheckError('Run CLEAR first — no corporation names are available to map.');
+    }
+
+    const contract = await db.contract.findFirst({
+        where: { applicationId: application.id },
+        select: { id: true, contractPrefillOverrides: true },
+    });
+    if (!contract) {
+        throw new BackgroundCheckError('This deal has no contract yet, so Exhibit A cannot be filled.');
+    }
+
+    const existingOverrides =
+        contract.contractPrefillOverrides &&
+        typeof contract.contractPrefillOverrides === 'object' &&
+        !Array.isArray(contract.contractPrefillOverrides)
+            ? (contract.contractPrefillOverrides as Record<string, unknown>)
+            : {};
+    const merged = mergeClearNamesIntoExhibitPrefill(existingOverrides, clearCompanyNames);
+    if (merged.added > 0) {
+        await db.contract.update({
+            where: { id: contract.id },
+            data: { contractPrefillOverrides: merged.overrides },
+        });
+    }
+    await logEvent(item.backgroundCheckId, 'exhibit_mapped', {
+        itemId,
+        detail: { added: merged.added, names: merged.names, contractId: contract.id },
+        actorId: actor?.id,
+    });
+
+    return {
+        added: merged.added,
+        names: merged.names,
+        candidates: clearCompanyNames,
+        contractId: contract.id,
+        check: await getCheck(item.backgroundCheckId),
+    };
 }
 
 async function setRequiredFlags(backgroundCheckId: string, flags: Record<string, boolean>, actor: Actor) {
@@ -626,6 +730,7 @@ export const backgroundCheckService = {
     runAutomatedItem,
     addAttachment,
     removeAttachment,
+    mapClearCorporationsToExhibit,
     setRequiredFlags,
     recordDecision,
     reopen,

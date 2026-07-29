@@ -14,6 +14,7 @@ router.use(authenticateToken);
 router.get('/application/:applicationId', backgroundCheck.getForApplication.bind(backgroundCheck));
 router.patch('/items/:itemId', backgroundCheck.updateItem.bind(backgroundCheck));
 router.post('/items/:itemId/run', requireRoles(...DECIDERS), backgroundCheck.runItem.bind(backgroundCheck));
+router.post('/items/:itemId/map-to-exhibit', requireRoles(...DECIDERS), backgroundCheck.mapToExhibit.bind(backgroundCheck));
 router.post('/items/:itemId/attachments', backgroundCheck.addAttachment.bind(backgroundCheck));
 router.delete('/attachments/:id', backgroundCheck.removeAttachment.bind(backgroundCheck));
 router.get('/:checkId/audit', backgroundCheck.audit.bind(backgroundCheck));
