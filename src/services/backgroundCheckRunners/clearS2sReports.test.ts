@@ -20,8 +20,8 @@ describe('buildPersonReportXml', () => {
         expect(xml).toContain('<ReportChoice>Individual</ReportChoice>');
         expect(xml).toContain('<AddressSection>true</AddressSection>');
         expect(xml).toContain('<WorkAffiliationSection>true</WorkAffiliationSection>');
+        expect(xml).toContain('<CorporateSection>true</CorporateSection>');
         expect(xml).toContain('<CriminalSection>true</CriminalSection>');
-        expect(xml).not.toContain('<CorporateSection>true</CorporateSection>');
         expect(xml).not.toContain('<BusinessAssociationSection>');
         expect(xml).toContain('<WorldCheckSection>false</WorldCheckSection>');
         expect(xml).toContain('<GLB>Q</GLB>');
@@ -47,7 +47,7 @@ describe('buildBusinessReportXml', () => {
         );
 
         expect(xml).toContain('<br:BusinessReportRequest xmlns:br="http://clear.thomsonreuters.com/api/report/2.0">');
-        expect(xml).toContain('xmlns:rc="com/thomsonreuters/schemas/business-report"');
+        expect(xml).toContain('xmlns:rc="com/thomsonreuters/schemas/company-report"');
         expect(xml).toContain('<GroupID>biz-group-9</GroupID>');
         expect(xml).toContain('<ReportChoice>Business</ReportChoice>');
         expect(xml).toContain('<BusinessOverviewSection>true</BusinessOverviewSection>');
@@ -60,9 +60,9 @@ describe('buildBusinessReportXml', () => {
 });
 
 describe('selectClearReportGroupIds', () => {
-    it('takes the first business groupId and up to three unique person groupIds', () => {
+    it('keeps up to three unique business and person groupIds', () => {
         const selected = selectClearReportGroupIds({
-            businessSearch: { groupIds: ['b1', 'b2'] },
+            businessSearch: { groupIds: ['b1', 'b1', 'b2', 'b3', 'b4'] },
             personSearches: [
                 { groupIds: ['p1', 'p1', 'p2'] },
                 { groupIds: ['p2', 'p3', 'p4'] },
@@ -70,7 +70,50 @@ describe('selectClearReportGroupIds', () => {
         });
 
         expect(selected.businessGroupId).toBe('b1');
+        expect(selected.businessGroupIds).toEqual(['b1', 'b2', 'b3']);
         expect(selected.personGroupIds).toEqual(['p1', 'p2', 'p3']);
+    });
+
+    it('prefers business hits with address detail over name-only hits', () => {
+        const selected = selectClearReportGroupIds({
+            businessSearch: {
+                groupIds: ['thin1', 'thin2', 'full1', 'partial1', 'full2'],
+                hits: [
+                    { groupId: 'thin1' },
+                    { groupId: 'thin2' },
+                    {
+                        groupId: 'full1',
+                        address1: '825 Maple Woods Dr',
+                        city: 'Pensacola',
+                        state: 'FL',
+                        zipCode: '32534',
+                    },
+                    { groupId: 'partial1', state: 'FL' },
+                    {
+                        groupId: 'full2',
+                        address1: '825 Maple Woods Drive',
+                        city: 'Pensacola',
+                        state: 'FL',
+                        zipCode: '32534',
+                    },
+                ],
+            },
+            personSearches: [],
+        });
+
+        expect(selected.businessGroupIds).toEqual(['full1', 'full2', 'partial1']);
+        expect(selected.businessGroupId).toBe('full1');
+    });
+
+    it('keeps CLEAR result order when no hit carries address detail', () => {
+        const selected = selectClearReportGroupIds({
+            businessSearch: {
+                groupIds: ['b1', 'b2'],
+                hits: [{ groupId: 'b1' }, { groupId: 'b2' }],
+            },
+        });
+
+        expect(selected.businessGroupIds).toEqual(['b1', 'b2']);
     });
 });
 

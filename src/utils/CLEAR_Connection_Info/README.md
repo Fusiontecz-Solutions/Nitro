@@ -35,16 +35,31 @@ The integration calls:
 
 Report requests use namespace `http://clear.thomsonreuters.com/api/report/2.0`,
 person criteria `com/thomsonreuters/schemas/person-report`, business criteria
-`com/thomsonreuters/schemas/business-report`, `ReportChoice` `Business` /
-`Individual`, person sections (including `WorkAffiliationSection` for employer /
-affiliation names — not business-only `CorporateSection`, which CLEAR rejects
-with HTTP 400/40002), business `CorporateSection`, and `WorldCheckSection` set
-to `false`. PDF GETs poll through interim
-XML statuses such as `204` / `70001` (not ready) for about 60 seconds. Report
+`com/thomsonreuters/schemas/company-report`, `ReportChoice` `Business` /
+`Individual`, person sections (including `WorkAffiliationSection` and
+`CorporateSection`; Thomson Reuters confirmed Individual + CorporateSection
+is valid), business `CorporateSection`, and `WorldCheckSection` set to
+`false`. Do not send `UCCFilingsSection` on business reports — the company-report
+XSD rejects it with `400` / `40002`. PDF GETs poll through interim XML statuses
+`204` (with no sub-status) and `70001` (not ready) for about 60 seconds; a `204`
+carrying an error sub-status such as `40002` is terminal, not pending.
+
+A business search hit can be too thin to back a report (`204` / `40002`, "The
+results you have selected does not provide enough information to order a
+report") — name-only hits with no address are rejected. Business results also
+nest `GroupId` on the parent group element rather than inside each result, so
+hits are zipped back to their group IDs in document order. Report candidates are
+then ordered by how much address detail CLEAR returned, and we try up to three,
+moving to the next one only on that specific error. Report
 API failures (including 403 entitlement) do not fail the CLEAR search run;
 errors are stored on the item under `metadata.reports` and noted for review.
 Successful PDFs are uploaded to Cloudinary (`ih-crm/background-checks`) and
 attached to the TLO background-check item.
+
+To capture a full Person Report request/response for Thomson Reuters support,
+run `scripts/probe-clear-person-report-corporate.ts` from an **approved US
+egress host only** (never from an Indian / unapproved IP). The script refuses
+to call CLEAR unless `CLEAR_PROBE_ALLOW_LOCAL=1` is set.
 
 Authentication uses HTTP Basic Auth and the Thomson Reuters-issued PKCS#12
 client certificate (mutual TLS). The application stores only result counts and

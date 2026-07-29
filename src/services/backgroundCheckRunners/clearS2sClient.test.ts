@@ -154,4 +154,48 @@ describe('parseClearBusinessHits', () => {
             }),
         ]);
     });
+
+    it('backfills GroupId when CLEAR nests it on the parent group element', () => {
+        const xml = `
+          <Status><StatusCode>200</StatusCode></Status>
+          <BusinessGroup>
+            <GroupId>biz-group-1</GroupId>
+            <BusinessSearchResult>
+              <CompanyEntityId>ce-1</CompanyEntityId>
+              <BusinessName>Acme LLC</BusinessName>
+            </BusinessSearchResult>
+          </BusinessGroup>
+          <BusinessGroup>
+            <GroupId>biz-group-2</GroupId>
+            <BusinessSearchResult>
+              <CompanyEntityId>ce-2</CompanyEntityId>
+              <BusinessName>Acme LLC</BusinessName>
+              <City>New York</City>
+              <State>NY</State>
+            </BusinessSearchResult>
+          </BusinessGroup>
+        `;
+
+        expect(parseClearBusinessHits(xml)).toEqual([
+            expect.objectContaining({ groupId: 'biz-group-1', companyEntityId: 'ce-1' }),
+            expect.objectContaining({
+                groupId: 'biz-group-2',
+                companyEntityId: 'ce-2',
+                city: 'New York',
+                state: 'NY',
+            }),
+        ]);
+    });
+
+    it('leaves GroupId empty when the counts do not line up', () => {
+        const xml = `
+          <BusinessGroup>
+            <GroupId>biz-group-1</GroupId>
+            <BusinessSearchResult><BusinessName>Acme LLC</BusinessName></BusinessSearchResult>
+            <BusinessSearchResult><BusinessName>Acme Holdings LLC</BusinessName></BusinessSearchResult>
+          </BusinessGroup>
+        `;
+
+        expect(parseClearBusinessHits(xml).map((hit) => hit.groupId)).toEqual(['', '']);
+    });
 });

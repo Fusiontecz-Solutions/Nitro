@@ -309,7 +309,6 @@ export function parseClearBusinessHitBlock(block: string): ClearBusinessHit | nu
         'BusinessName',
         'CompanyName',
         'OrganizationName',
-        'Name',
     ]);
     if (!groupId && !name) return null;
 
@@ -344,6 +343,25 @@ export function parseClearPersonHits(resultXml: string): ClearPersonHit[] {
     return hits;
 }
 
+/**
+ * Business results carry GroupId on the parent group element, so hits parsed from
+ * the inner result block have none and cannot be matched to a report candidate.
+ * Zip them back in document order, and only when every hit has a counterpart.
+ */
+function backfillBusinessGroupIds(
+    hits: ClearBusinessHit[],
+    resultXml: string,
+): ClearBusinessHit[] {
+    if (hits.length === 0 || hits.some((hit) => hit.groupId)) return hits;
+
+    const groupIds = extractAll(resultXml, 'GroupId')
+        .map((value) => value.trim())
+        .filter(Boolean);
+    if (groupIds.length !== hits.length) return hits;
+
+    return hits.map((hit, index) => ({ ...hit, groupId: groupIds[index] }));
+}
+
 export function parseClearBusinessHits(resultXml: string): ClearBusinessHit[] {
     const blocks = extractNamedBlocks(resultXml, [
         'BusinessSearchResult',
@@ -362,7 +380,7 @@ export function parseClearBusinessHits(resultXml: string): ClearBusinessHit[] {
         seen.add(key);
         hits.push(hit);
     }
-    return hits;
+    return backfillBusinessGroupIds(hits, resultXml);
 }
 
 function resultIdFromUri(uri: string): string {
@@ -414,8 +432,16 @@ export function assertClearSuccess(xml: string, operation: string): {
     const statusCode = extractOne(xml, 'StatusCode') ?? '';
     const subStatusCode = extractOne(xml, 'SubStatusCode');
     if (statusCode !== '200') {
+        const message = extractOne(xml, 'Message') || extractOne(xml, 'StatusMessage');
+        const detail = [
+            statusCode || 'unknown',
+            subStatusCode ? `/${subStatusCode}` : '',
+            message ? `: ${message}` : '',
+        ].join('');
+        // Keep enough of the response for Thomson Reuters support tickets.
+        const bodySnippet = String(xml ?? '').trim().slice(0, 8_000);
         throw new Error(
-            `CLEAR ${operation} failed with status ${statusCode || 'unknown'}${subStatusCode ? `/${subStatusCode}` : ''}.`,
+            `CLEAR ${operation} failed with status ${detail}.${bodySnippet ? `\n${bodySnippet}` : ''}`,
         );
     }
     return { statusCode, subStatusCode };
