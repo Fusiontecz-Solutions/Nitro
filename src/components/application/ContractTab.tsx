@@ -13,6 +13,10 @@ import {
 import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
 import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
 import {
+    OFFER_DECISION_UPDATED_EVENT,
+    offerDecisionUpdateMatchesApplication,
+} from "@/lib/offerDecisionSync";
+import {
     createContract,
     getBoldSignTemplates,
     getAllACH,
@@ -846,6 +850,30 @@ export default function ContractTab({
         if (!appId) return;
         dispatch(getOfferDecisionByApplication(String(appId)));
     }, [appId, dispatch]);
+
+    // Refresh offer / prefill when Live Offer is saved elsewhere (scrubbing Offer Decision).
+    useEffect(() => {
+        const matchId = applicationUuid ?? appId;
+        if (!matchId) return;
+        const onOfferDecisionUpdated = (event: Event) => {
+            const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+            if (
+                !offerDecisionUpdateMatchesApplication(detail?.applicationId, matchId) &&
+                !offerDecisionUpdateMatchesApplication(detail?.applicationId, appId)
+            ) {
+                return;
+            }
+            void dispatch(getOfferDecisionByApplication(String(matchId)));
+            if (applicationUuid) {
+                void dispatch(getApplicationById(String(applicationUuid)));
+            }
+            void dispatch(getTermsOffers({ application: String(matchId) }));
+        };
+        window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+        return () => {
+            window.removeEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+        };
+    }, [applicationUuid, appId, dispatch]);
 
     useEffect(() => {
         if (!applicationUuid) return;
