@@ -15,12 +15,11 @@ export type BackgroundCheckNoteImage = {
   publicId?: string;
 };
 
-/** Screenshot upload or external link attached to NY Court judgements / liens. */
-export type BackgroundCheckEvidenceItem = {
+/** A stored attachment row, kept with its id so it can be removed. */
+export type BackgroundCheckStoredAttachment = {
   id: string;
-  kind: "link" | "image";
-  url: string;
   name: string;
+  url: string;
   publicId?: string;
 };
 
@@ -32,11 +31,9 @@ export type BackgroundCheckItemState = {
   attachmentName?: string;
   attachmentUrl?: string;
   attachmentPublicId?: string;
+  /** All attachments saved on this check (CLEAR PDFs included). */
+  attachments?: BackgroundCheckStoredAttachment[];
   noteImages?: BackgroundCheckNoteImage[];
-  /** NY Court — civil judgment evidence (screenshots or links). */
-  judgements?: BackgroundCheckEvidenceItem[];
-  /** NY Court — lien evidence (screenshots or links). */
-  liens?: BackgroundCheckEvidenceItem[];
   savedAt?: string;
   linkOpenedAt?: string;
   /** CLEAR (TLO) search metadata for match/sync UI. */

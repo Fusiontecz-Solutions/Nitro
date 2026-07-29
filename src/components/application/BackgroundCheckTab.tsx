@@ -10,7 +10,6 @@ import {
 } from "@/config/externalLinks";
 import BackgroundCheckItemCard from "@/components/application/BackgroundCheckItemCard";
 import BackgroundCheckSidebar from "@/components/application/BackgroundCheckSidebar";
-import NyCourtEvidenceSections from "@/components/application/NyCourtEvidenceSections";
 import DataMerchPanel from "@/components/application/DataMerchPanel";
 import OpenCorporatesPanel from "@/components/application/OpenCorporatesPanel";
 import ClearPanel from "@/components/application/ClearPanel";
@@ -30,11 +29,17 @@ import {
   formatBackgroundCheckEin,
 } from "@/components/application/backgroundCheckPdf";
 import PDFViewerDocsModal from "@/components/application/PDFViewerDocsModal";
-import type { BackgroundCheckFormState, BackgroundCheckItemState } from "@/components/application/backgroundCheckTypes";
+import type {
+  BackgroundCheckFormState,
+  BackgroundCheckItemState,
+  BackgroundCheckStoredAttachment,
+} from "@/components/application/backgroundCheckTypes";
 import type { DataMerchLookupData } from "@/redux/actions/datamerch-actions";
 import {
   addCheckAttachment,
   getBackgroundCheck,
+  mapClearCorporationsToExhibit,
+  removeCheckAttachment,
   runAutomatedCheckItem,
   updateCheckItem,
 } from "@/redux/actions/backgroundCheckActions";
@@ -207,6 +212,8 @@ export default function BackgroundCheckTab() {
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [viewingPdf, setViewingPdf] = useState(false);
   const [runningClear, setRunningClear] = useState(false);
+  const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
+  const [mappingToExhibit, setMappingToExhibit] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [pdfPreviewName, setPdfPreviewName] = useState("Compliance-Report.pdf");
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
@@ -323,6 +330,49 @@ export default function BackgroundCheckTab() {
     },
     [checks, persistItem],
   );
+
+  const removeClearAttachment = useCallback(
+    async (attachment: BackgroundCheckStoredAttachment) => {
+      if (!window.confirm(`Remove "${attachment.name}" from this check?`)) return;
+      setRemovingAttachmentId(attachment.id);
+      try {
+        const check = (await dispatch(
+          removeCheckAttachment(attachment.id),
+        ).unwrap()) as BackgroundCheck;
+        itemIdByResource.current = buildItemIdMap(check);
+        setChecks(apiCheckToFormState(check));
+        setSavedAt(resolveLatestSavedAt(check));
+        toast.success("PDF removed.");
+      } catch (error) {
+        toast.error(typeof error === "string" ? error : "Failed to remove the PDF.");
+      } finally {
+        setRemovingAttachmentId(null);
+      }
+    },
+    [dispatch],
+  );
+
+  const mapClearToExhibit = useCallback(async () => {
+    const itemId = itemIdByResource.current.tlo;
+    if (!itemId) {
+      toast.error("CLEAR background-check item was not found.");
+      return;
+    }
+
+    setMappingToExhibit(true);
+    try {
+      const result = await dispatch(mapClearCorporationsToExhibit(itemId)).unwrap();
+      toast.success(
+        result.added > 0
+          ? `Exhibit A filled with ${result.added} CLEAR corporation name(s).`
+          : "Exhibit A already lists these CLEAR corporations.",
+      );
+    } catch (error) {
+      toast.error(typeof error === "string" ? error : "Failed to map corporations to Exhibit A.");
+    } finally {
+      setMappingToExhibit(false);
+    }
+  }, [dispatch]);
 
   const runClear = useCallback(async () => {
     const itemId = itemIdByResource.current.tlo;
@@ -584,18 +634,6 @@ export default function BackgroundCheckTab() {
                     attachmentPublicId: undefined,
                   })
                 }
-                belowNotes={
-                  isNyCourt ? (
-                    <NyCourtEvidenceSections
-                      judgements={state.judgements ?? []}
-                      liens={state.liens ?? []}
-                      onJudgementsChange={(judgements) =>
-                        markCheckDirty(resource.id, { judgements })
-                      }
-                      onLiensChange={(liens) => markCheckDirty(resource.id, { liens })}
-                    />
-                  ) : undefined
-                }
               >
                 {isDataMerch ? <DataMerchPanel manualSearch embedded /> : null}
                 {isOpenCorporates ? (
@@ -614,9 +652,14 @@ export default function BackgroundCheckTab() {
                   <ClearPanel
                     embedded
                     clearMetadata={state.clearMetadata}
+                    attachments={state.attachments ?? []}
                     canRunClear={canRunClear}
                     runningClear={runningClear || saving}
                     onRunClear={() => void runClear()}
+                    removingAttachmentId={removingAttachmentId}
+                    onRemoveAttachment={(attachment) => void removeClearAttachment(attachment)}
+                    mappingToExhibit={mappingToExhibit}
+                    onMapToExhibit={canRunClear ? () => void mapClearToExhibit() : undefined}
                   />
                 ) : null}
               </BackgroundCheckItemCard>
