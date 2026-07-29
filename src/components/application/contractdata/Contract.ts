@@ -3200,15 +3200,29 @@ export function resolveContractClientPersonNameForPrefill(
     const row = partial as Record<string, unknown>;
     const linkedClient = row.client as Record<string, unknown> | undefined;
     const linkedOwnerName = ownerFullName(linkedClient?.ownerFirstName, linkedClient?.ownerLastName);
+    const legal =
+        str(row.legalName) ||
+        str(row.securityBusinessName) ||
+        str(linkedClient?.businessName) ||
+        "";
+    const legalNorm = legal.toLowerCase();
+    const isLegal = (name: string) => Boolean(legalNorm && name.toLowerCase() === legalNorm);
 
-    return (
-        str(row.customerName) ||
-        getApplicationPrimaryRecipientName(application) ||
-        linkedOwnerName ||
-        str(row.exhibitOwnerName) ||
-        str(row.guarantyOwner1Name) ||
-        ""
-    );
+    const candidates = [
+        str(row.owner1GuarantorName),
+        str(row.guarantyOwner1Name),
+        str(row.guarantyGuarantor1Name),
+        str(row.guarantyClientName),
+        str(row.securityGuarantor),
+        str(row.customerName),
+        str(row.clientName),
+        getApplicationPrimaryRecipientName(application),
+        linkedOwnerName,
+        str(row.exhibitOwnerName),
+        str(row.appendixClientName),
+        str(row.authorizationClientNamePrint),
+    ];
+    return candidates.find((n) => n && !isLegal(n)) || "";
 }
 
 /** Force client / appendix / guaranty name tabs to owner person name (never merchant legal name). */

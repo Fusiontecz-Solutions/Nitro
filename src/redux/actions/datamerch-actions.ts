@@ -36,13 +36,18 @@ export type DataMerchMerchant = {
 
 export type DataMerchLookupData = {
   searchQuery: string;
-  searchType: "ein" | "name";
+  searchType: "ein" | "name" | "both";
   businessName: string | null;
   ein: string | null;
   merchants: DataMerchMerchant[];
   searchAttempts?: string[];
   raw: unknown;
 };
+
+function normalizeSearchType(value: unknown): "ein" | "name" | "both" {
+  if (value === "name" || value === "both") return value;
+  return "ein";
+}
 
 function extractLookupData(payload: unknown): DataMerchLookupData | null {
   if (!payload || typeof payload !== "object") return null;
@@ -52,7 +57,7 @@ function extractLookupData(payload: unknown): DataMerchLookupData | null {
   const merchants = Array.isArray(data.merchants) ? data.merchants : [];
   return {
     searchQuery: String(data.searchQuery ?? ""),
-    searchType: data.searchType === "name" ? "name" : "ein",
+    searchType: normalizeSearchType(data.searchType),
     businessName:
       data.businessName != null ? String(data.businessName) : null,
     ein: data.ein != null ? String(data.ein) : null,
@@ -93,9 +98,16 @@ function buildEmptyDataMerchLookup(hints?: {
   const einDigits = String(hints?.ein ?? "").replace(/\D/g, "");
   const hasEin = einDigits.length === 9;
   const businessName = String(hints?.businessName ?? "").trim();
+  const searchType: "ein" | "name" | "both" =
+    hasEin && businessName ? "both" : hasEin ? "ein" : "name";
   return {
-    searchQuery: hasEin ? einDigits : businessName,
-    searchType: hasEin ? "ein" : "name",
+    searchQuery:
+      searchType === "both"
+        ? `${einDigits} / ${businessName}`
+        : hasEin
+          ? einDigits
+          : businessName,
+    searchType,
     businessName: businessName || null,
     ein: hasEin ? einDigits : null,
     merchants: [],
