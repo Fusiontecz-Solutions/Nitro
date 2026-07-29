@@ -107,6 +107,55 @@ describe('parseClearLienJudgmentRecords', () => {
         expect(rows[0].kind).toBe('lien');
         expect(rows[0].caseNumber).toBe('X-9');
     });
+
+    it('parses CLEAR Result-style filings shaped like the PDF Liens & Judgments section', () => {
+        const xml = `
+          <PersonReportResults>
+            <LienJudgmentSection>
+              <Result>
+                <CaseNumber>E035651395</CaseNumber>
+                <FilingType>NY STATE TAX WARRANT</FilingType>
+                <FilingDate>08/21/2012</FilingDate>
+                <JudgmentAmount>2686.23</JudgmentAmount>
+                <DebtorName>LEWIN, ARTURO E</DebtorName>
+                <CreditorName>NY STATE DEP'T OF TAXATION AND FINANCE</CreditorName>
+                <FilingCounty>NEW YORK</FilingCounty>
+                <Status>FULL</Status>
+              </Result>
+              <Document>
+                <FilingNumber>436122</FilingNumber>
+                <FilingType>JUDGMENT</FilingType>
+                <FilingDate>02/12/2008</FilingDate>
+                <AwardAmount>42132.00</AwardAmount>
+                <DebtorName>CMS CONTRACTING</DebtorName>
+                <CreditorName>ARTURO E LEWIN</CreditorName>
+                <FilingOffice>CIRCUIT COURT</FilingOffice>
+                <JudgmentStatus>UNSATISFIED</JudgmentStatus>
+              </Document>
+              <Detail>
+                <FilingType>STATE LIEN OR CERTIFICATE OF DEBT DOCKETED WITH CLERK OF SUPERIOR COURT</FilingType>
+                <FilingDate>11/21/2000</FilingDate>
+                <VendorNumber>DJ-00223600-2000</VendorNumber>
+                <DebtorName>ARTURO E LEWIN</DebtorName>
+                <CreditorName>DIV OF MOTOR VEHICLES</CreditorName>
+                <PrincipalAmount>350.00</PrincipalAmount>
+                <Court>NJ000DJ</Court>
+              </Detail>
+            </LienJudgmentSection>
+          </PersonReportResults>
+        `;
+        const rows = parseClearLienJudgmentRecords(xml, meta);
+        expect(rows.length).toBeGreaterThanOrEqual(3);
+        expect(rows.some((row) => row.caseNumber === 'E035651395')).toBe(true);
+        expect(rows.some((row) => row.caseNumber === '436122' && row.kind === 'judgment')).toBe(true);
+        expect(
+            rows.some(
+                (row) =>
+                    row.kind === 'lien' &&
+                    (row.caseNumber === 'DJ-00223600-2000' || /certificate of debt/i.test(row.description ?? '')),
+            ),
+        ).toBe(true);
+    });
 });
 
 describe('NY Court evidence mapping', () => {

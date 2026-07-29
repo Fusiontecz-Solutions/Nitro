@@ -6,6 +6,7 @@ import type {
 } from './backgroundCheckRunners';
 import { fetchClearReportPdfsForSearch, selectClearReportGroupIds } from './backgroundCheckRunners/clearS2sReports';
 import {
+    inventoryClearLienJudgmentTags,
     parseClearLienJudgmentRecords,
     type ClearLienJudgmentRecord,
 } from './backgroundCheckRunners/clearS2sLienJudgment';
@@ -336,12 +337,25 @@ async function runAutomatedItem(itemId: string, actor: Actor) {
                     }
                     if (report.xml) {
                         try {
-                            lienJudgmentRecords.push(
-                                ...parseClearLienJudgmentRecords(report.xml, {
+                            const parsedLiens = parseClearLienJudgmentRecords(report.xml, {
+                                groupId: report.groupId,
+                                reportKind: report.kind,
+                            });
+                            lienJudgmentRecords.push(...parsedLiens);
+                            if (
+                                parsedLiens.length === 0 &&
+                                /Lien|Judg|Warrant/i.test(report.xml)
+                            ) {
+                                const tags = inventoryClearLienJudgmentTags(report.xml).slice(0, 40);
+                                reportMeta.errors.push({
+                                    kind: report.kind,
                                     groupId: report.groupId,
-                                    reportKind: report.kind,
-                                }),
-                            );
+                                    error: `CLEAR Lien/Judgment parse: 0 rows from XML that mentions liens/judgments; tags=${tags.join(',') || 'none'}`.slice(
+                                        0,
+                                        500,
+                                    ),
+                                });
+                            }
                         } catch (parseError: any) {
                             reportMeta.errors.push({
                                 kind: report.kind,

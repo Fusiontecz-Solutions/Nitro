@@ -54,6 +54,7 @@ export type {
 } from './clearS2sReports';
 export {
     mergeClearNyCourtEvidence,
+    inventoryClearLienJudgmentTags,
     parseClearLienJudgmentRecords,
     toNyCourtEvidenceItem,
 } from './clearS2sLienJudgment';
