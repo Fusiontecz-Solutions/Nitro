@@ -334,12 +334,12 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   ],
   recipient_address2: ['recipient_address', 'recipient_address1'],
   recipient_address: ['recipient_address1', 'business_address'],
-  total_amount_commercial_financing: ['disclosure_amount_financed', 'funding_provided', 'total_amount_business_fund'],
-  total_commerical_financing: ['disclosure_total_payment', 'total_repayment_amount'],
+  total_amount_commercial_financing: ['funding_provided', 'disclosure_purchase_price', 'purchase_amount', 'total_amount_business_fund', 'disclosure_amount_financed'],
+  total_commerical_financing: ['disclosure_recipient_funds', 'total_amount_of_fund_disbursed', 'amountFinanced', 'net_to_merchant'],
   deducted_at_disbursement: [
-    'disclosure_origination_fee',
     'disclosure_fees_deducted',
     'fees_deducted',
+    'disclosure_origination_fee',
   ],
   fees_deducted: [
     'disclosure_fees_deducted',
@@ -481,6 +481,46 @@ const PARTY1_NAME_PRIORITY = [
   'addendum_client_name',
   'seller_1_name',
 ] as const;
+
+/** Business / legal names that must not fill `client_name` (owner / client person). */
+function resolveContractLegalNameValue(values: Record<string, string>): string {
+  return String(
+    values.client_legal_name ||
+      values.business_legal_name ||
+      values.merchant_legal_name ||
+      values.security_business_name ||
+      values.legal_name ||
+      values.authorization_client_name ||
+      '',
+  ).trim();
+}
+
+/**
+ * CRM clientName / layout `client_name` (e.g. client_name__p2_p87).
+ * Prefer owner / client person name — never business legal name.
+ */
+function resolvePersonalClientNameValue(values: Record<string, string>): string {
+  const legal = resolveContractLegalNameValue(values);
+  const legalNorm = legal.toLowerCase();
+  const isLegal = (raw: string) => Boolean(legalNorm && raw.toLowerCase() === legalNorm);
+  const candidates = [
+    values.owner1_guarantor_name,
+    values.guaranty_owner1_name,
+    values.guaranty_guarantor1_name,
+    values.guaranty_client_name,
+    values.security_guarantor,
+    values.customer_name,
+    values.client_name_by,
+    values.client_name,
+    values.addendum_client_name,
+    values.seller_1_name,
+  ];
+  for (const raw of candidates) {
+    const t = String(raw || '').trim();
+    if (t && !isLegal(t)) return t;
+  }
+  return '';
+}
 
 const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss'] as const;
 const PARTY1_DL_KEYS = [
@@ -666,9 +706,17 @@ function mirrorIdentityFields(
 
 /** Owner / Merchant / Guarantor / Client 1 are the same person — force one canonical name. */
 function syncParty1NameFields(out: Record<string, string>): void {
-  const canonical = PARTY1_NAME_PRIORITY.map((k) => String(out[k] || '').trim()).find(
-    Boolean,
-  );
+  const legal = resolveContractLegalNameValue(out);
+  const legalNorm = legal.toLowerCase();
+  const personal = resolvePersonalClientNameValue(out);
+  const canonical =
+    personal ||
+    PARTY1_NAME_PRIORITY.map((k) => String(out[k] || '').trim()).find((v) => {
+      if (!v) return false;
+      // Prefer a non-legal name when available; sole-prop may equal legal.
+      if (legalNorm && v.toLowerCase() === legalNorm && personal) return false;
+      return true;
+    });
   if (!canonical) return;
   for (const k of PARTY1_NAME_KEYS) {
     out[k] = canonical;
@@ -707,9 +755,27 @@ function expandPrefillValues(
   ownerCount?: number,
 ): Record<string, string> {
   const out = { ...values };
+  // Sanitize before party sync so a legal-name `client_name` does not pollute owner slots
+  // or land on client_name__p2_p87.
+  {
+    const personal = resolvePersonalClientNameValue(out);
+    const legal = resolveContractLegalNameValue(out);
+    const current = String(out.client_name || '').trim();
+    const currentIsLegal =
+      Boolean(legal) && current.toLowerCase() === legal.toLowerCase();
+    if (personal) {
+      if (!current || currentIsLegal) out.client_name = personal;
+    } else if (currentIsLegal) {
+      out.client_name = '';
+    }
+  }
   // Capture disclosure merchant business name before Owner-1 person sync overwrites client_name.
   const disclosureBusinessBeforeSync = resolveDisclosureMerchantBusinessName(out);
   syncParty1NameFields(out);
+  {
+    const personal = resolvePersonalClientNameValue(out);
+    if (personal) out.client_name = personal;
+  }
   mirrorIdentityFields(out, PARTY1_SS_KEYS);
   mirrorIdentityFields(out, PARTY1_DL_KEYS);
   if (ownerCount === undefined || ownerCount >= 2) {
@@ -843,6 +909,7 @@ function enrichValuesFromSigners(
   ownerCount: number,
 ): Record<string, string> {
   const out = { ...values };
+  const legalNorm = resolveContractLegalNameValue(out).toLowerCase();
   const primaryName = String(
     signers.find((s) => /receiver|client|merchant|customer/i.test(s.roleName))?.name ||
       signers.find((s) => /^owner$/i.test(s.roleName))?.name ||
@@ -850,12 +917,17 @@ function enrichValuesFromSigners(
       signers[0]?.name ||
       '',
   ).trim();
-  if (primaryName) {
+  // Do not stamp business/legal name onto client_name / owner person slots.
+  if (primaryName && !(legalNorm && primaryName.toLowerCase() === legalNorm)) {
     for (const k of [...PRIMARY_GUARANTOR_NAME_VARIABLES, ...PARTY1_NAME_KEYS]) {
       out[k] = primaryName;
     }
   }
   syncParty1NameFields(out);
+  {
+    const personal = resolvePersonalClientNameValue(out);
+    if (personal) out.client_name = personal;
+  }
   if (ownerCount >= 2) {
     const primaryEmail = String(
       signers.find((s) => /receiver|client|merchant|customer/i.test(s.roleName))?.email ||
@@ -1167,37 +1239,10 @@ function resolveTextPlacementValue(
     (key.toLowerCase() === 'client_name' ||
       key.toLowerCase() === 'addendum_client_name')
   ) {
-    // Always prefer Owner 1 person name — never merchant legal name.
-    const legalNameNorm = String(
-      values.client_legal_name ||
-        values.business_legal_name ||
-        values.merchant_legal_name ||
-        values.security_business_name ||
-        values.legal_name ||
-        '',
-    )
-      .trim()
-      .toLowerCase();
-    for (const aliasKey of PARTY1_NAME_PRIORITY) {
-      const owner1 = String(values[aliasKey] || '').trim();
-      if (!owner1) continue;
-      // Skip when a party-1 slot was polluted with the business/legal name.
-      if (legalNameNorm && owner1.toLowerCase() === legalNameNorm) continue;
-      return owner1;
-    }
-    // Sole-prop fallback: owner tabs may equal legal name — still prefer those over empty.
-    for (const aliasKey of [
-      'owner1_guarantor_name',
-      'guaranty_owner1_name',
-      'guaranty_guarantor1_name',
-      'guaranty_client_name',
-      'security_guarantor',
-      'client_name',
-      'addendum_client_name',
-    ] as const) {
-      const owner1 = String(values[aliasKey] || '').trim();
-      if (owner1) return owner1;
-    }
+    // client_name__p2_p87 — owner/client person name only, never business legal name.
+    const personal = resolvePersonalClientNameValue(values);
+    if (personal) return formatIfMoney(personal);
+    return '';
   }
 
   if (

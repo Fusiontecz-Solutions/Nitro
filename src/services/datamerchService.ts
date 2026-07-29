@@ -34,7 +34,7 @@ export type DataMerchMerchant = {
 
 export type DataMerchLookupResult = {
     searchQuery: string;
-    searchType: 'ein' | 'name';
+    searchType: 'ein' | 'name' | 'both';
     businessName: string | null;
     ein: string | null;
     merchants: DataMerchMerchant[];
@@ -105,6 +105,25 @@ function filterExactMatches(
     const businessName = String(searchQuery ?? '').trim();
     if (!businessName) return [];
     return merchants.filter((merchant) => merchantMatchesBusinessName(merchant, businessName));
+}
+
+function merchantDedupeKey(merchant: DataMerchMerchant): string {
+    const einDigits = normalizeEin(merchant.fein);
+    if (einDigits) return `ein:${einDigits}`;
+    if (merchant.legalName) return `name:${normalizeForExactNameCompare(merchant.legalName)}`;
+    return `row:${JSON.stringify(merchant)}`;
+}
+
+function dedupeMerchants(merchants: DataMerchMerchant[]): DataMerchMerchant[] {
+    const seen = new Set<string>();
+    const out: DataMerchMerchant[] = [];
+    for (const merchant of merchants) {
+        const key = merchantDedupeKey(merchant);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(merchant);
+    }
+    return out;
 }
 
 function parseSessionToken(payload: unknown): string | null {
@@ -344,24 +363,65 @@ export const datamerchService = {
         const businessName = normalizeBusinessName(application.client?.businessName);
         const ein = normalizeEin(application.client?.businessEinNumber);
 
+        if (!ein && !businessName) {
+            throw new ValidationError(
+                'This deal has no business EIN or legal name. Add business details before running DataMerch.',
+            );
+        }
+
+        const searchAttempts: string[] = [];
+        const merchants: DataMerchMerchant[] = [];
+        const rawParts: unknown[] = [];
+        let searchedEin = false;
+        let searchedName = false;
+        let lastError: unknown = null;
+
         if (ein) {
             try {
                 const byEin = await this.searchMerchants(ein);
-                if (byEin.merchants.length > 0) {
-                    return { ...byEin, businessName, ein };
-                }
-            } catch {
-                // Fall through to exact legal-name search.
+                searchedEin = true;
+                searchAttempts.push(...byEin.searchAttempts);
+                merchants.push(...byEin.merchants);
+                rawParts.push(byEin.raw);
+            } catch (error) {
+                lastError = error;
             }
         }
 
         if (businessName) {
-            const byName = await this.searchMerchants(businessName);
-            return { ...byName, businessName, ein };
+            try {
+                const byName = await this.searchMerchants(businessName);
+                searchedName = true;
+                searchAttempts.push(...byName.searchAttempts);
+                merchants.push(...byName.merchants);
+                rawParts.push(byName.raw);
+            } catch (error) {
+                lastError = error;
+            }
         }
 
-        throw new ValidationError(
-            'This deal has no business EIN or legal name. Add business details before running DataMerch.',
-        );
+        if (!searchedEin && !searchedName) {
+            if (lastError instanceof Error) throw lastError;
+            throw new ValidationError('DataMerch lookup failed.');
+        }
+
+        const searchType: 'ein' | 'name' | 'both' =
+            searchedEin && searchedName ? 'both' : searchedEin ? 'ein' : 'name';
+        const searchQuery =
+            searchType === 'both'
+                ? `${ein} / ${businessName}`
+                : searchType === 'ein'
+                  ? String(ein)
+                  : String(businessName);
+
+        return {
+            searchQuery,
+            searchType,
+            businessName,
+            ein,
+            merchants: dedupeMerchants(merchants),
+            searchAttempts,
+            raw: rawParts.length === 1 ? rawParts[0] : rawParts,
+        };
     },
 };

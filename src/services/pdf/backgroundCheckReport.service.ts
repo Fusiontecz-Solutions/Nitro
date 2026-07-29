@@ -483,12 +483,16 @@ function buildDataMerchHtml(
     : `<div style="font-size:11px;font-weight:600;color:#166534;">No DataMerch records found</div>`;
 
   const matchLine = hasRecords
-    ? datamerch.searchType === 'ein'
-      ? `Matched using EIN: ${esc(fmtEin(datamerch.searchQuery ?? ''))}`
-      : `Matched using business name: ${esc(datamerch.searchQuery ?? '')}`
-    : datamerch.searchType === 'ein'
-      ? `Searched by EIN ${esc(fmtEin(datamerch.searchQuery ?? ''))}`
-      : `No exact match for business name "${esc(datamerch.businessName ?? datamerch.searchQuery ?? '')}"`;
+    ? datamerch.searchType === 'both'
+      ? `Matched using EIN and business name: ${esc(fmtEin(datamerch.ein ?? ''))} / ${esc(datamerch.businessName ?? datamerch.searchQuery ?? '')}`
+      : datamerch.searchType === 'ein'
+        ? `Matched using EIN: ${esc(fmtEin(datamerch.searchQuery ?? ''))}`
+        : `Matched using business name: ${esc(datamerch.searchQuery ?? '')}`
+    : datamerch.searchType === 'both'
+      ? `Searched by EIN ${esc(fmtEin(datamerch.ein ?? ''))} and business name "${esc(datamerch.businessName ?? '')}"`
+      : datamerch.searchType === 'ein'
+        ? `Searched by EIN ${esc(fmtEin(datamerch.searchQuery ?? ''))}`
+        : `No exact match for business name "${esc(datamerch.businessName ?? datamerch.searchQuery ?? '')}"`;
 
   const summaryBg = hasRecords ? '#fffbeb' : '#f0fdf4';
   const summaryBorder = hasRecords ? '#fde68a' : '#bbf7d0';

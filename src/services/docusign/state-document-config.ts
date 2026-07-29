@@ -618,8 +618,11 @@ const LOUISIANA_DISCLOSURE_SIGN_AND_DATE: Pick<
 
 /** Texas disclosure — 3-page PDF (page 2 = fees/payoff; page 3 = broker/payoff lines + signatures). */
 const TEXAS_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
-  { tabLabel: 'total_amount_business_fund', x: '430', y: '101' },
-  { tabLabel: 'total_amount_of_fund_disbursed', x: '431', y: '138' },
+  { tabLabel: 'total_amount_of_fund_disbursed', x: '430', y: '101' },
+  { tabLabel: 'total_amount_business_fund', x: '431', y: '138' },
+  { tabLabel: 'client_name', x: '271', y: '99' },
+  { tabLabel: 'client_name', x: '191', y: '134' },
+  { tabLabel: 'funder_name', x: '158', y: '172' },
   { tabLabel: 'total_dollar_cost', x: '431', y: '174' },
   { tabLabel: 'total_amount_tobe_paid_to_provider', x: '431', y: '212' },
   { tabLabel: 'estimated_term', x: '449', y: '247' },
@@ -629,12 +632,20 @@ const TEXAS_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
 ];
 
 const TEXAS_DISCLOSURE_PAGE2_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
+  { tabLabel: 'deal_id_prefix', x: '511', y: '68', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '350', y: '139', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '456', y: '277', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '251', y: '304', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '274', y: '332', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '494', y: '346', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '290', y: '373', pageNumber: '2' },
   { tabLabel: 'client_name', x: '155', y: '407', pageNumber: '2' },
   { tabLabel: 'client_name', x: '139', y: '496', pageNumber: '2' },
   { tabLabel: 'total_dollar_cost', x: '492', y: '461', pageNumber: '2' },
 ];
 
 const TEXAS_DISCLOSURE_PAGE3_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
+  { tabLabel: 'deal_id_prefix', x: '503', y: '197', pageNumber: '3' },
   { tabLabel: 'funder_name', x: '241', y: '257', pageNumber: '3' },
   { tabLabel: 'disclosure_broker_fee', x: '510', y: '257', pageNumber: '3' },
   {
