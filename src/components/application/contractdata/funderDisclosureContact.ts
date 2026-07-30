@@ -43,7 +43,7 @@ function upsertPrefillField(
 
 /**
  * Stamp selected-funder contact + deal prefix onto disclosure/addendum prefill
- * (Connecticut and other layouts that use these tab labels).
+ * (Connecticut, Texas, Flex/BT layouts that use these tab labels).
  */
 export function applyFunderDisclosureContactPrefill(
     fields: ContractPrefillField[],

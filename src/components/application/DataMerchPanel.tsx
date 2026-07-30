@@ -533,10 +533,11 @@ export default function DataMerchPanel({
                   </p>
                   {resultsExpanded ? (
                     <p className="mt-0.5">
-                      Matched using {result.searchType === "ein" ? "EIN" : "business name"}:{" "}
-                      {result.searchType === "ein"
-                        ? formatEinDisplay(result.searchQuery)
-                        : result.searchQuery}
+                      {result.searchType === "both"
+                        ? `Matched using EIN and business name: ${formatEinDisplay(result.ein ?? "")} / ${result.businessName ?? result.searchQuery}`
+                        : result.searchType === "ein"
+                          ? `Matched using EIN: ${formatEinDisplay(result.searchQuery)}`
+                          : `Matched using business name: ${result.searchQuery}`}
                     </p>
                   ) : (
                     <p className="mt-0.5 opacity-80">Click to expand results</p>
@@ -547,9 +548,11 @@ export default function DataMerchPanel({
                   <p className="font-semibold">No record found</p>
                   {resultsExpanded ? (
                     <p className="mt-0.5">
-                      {result.searchType === "ein"
-                        ? `Searched by EIN ${formatEinDisplay(result.searchQuery)}`
-                        : `No exact match for business name "${result.businessName ?? result.searchQuery}"`}
+                      {result.searchType === "both"
+                        ? `Searched by EIN ${formatEinDisplay(result.ein ?? "")} and business name "${result.businessName ?? ""}"`
+                        : result.searchType === "ein"
+                          ? `Searched by EIN ${formatEinDisplay(result.searchQuery)}`
+                          : `No exact match for business name "${result.businessName ?? result.searchQuery}"`}
                     </p>
                   ) : (
                     <p className="mt-0.5 opacity-80">Click to expand details</p>

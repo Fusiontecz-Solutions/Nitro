@@ -118,6 +118,7 @@ import {
     dealReviewPrefillSubsection,
     overlaySavedAppendixFeeOnPrefillFields,
     prepareDealReviewPrefillDisplay,
+    applyTexasContractUsdMoneyToPrefillFields,
     CONTRACT_PREFILL_OVERRIDES_SECTION,
     getApplicationPrimaryRecipientName,
     resolveEffectiveDocuSignSignerEmail,
@@ -164,6 +165,11 @@ import {
     voidBoldSignDocument,
 } from "@/redux/actions/boldSignActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
+import { getTermsOffers } from "@/redux/actions/termsOfferActions";
+import {
+    OFFER_DECISION_UPDATED_EVENT,
+    offerDecisionUpdateMatchesApplication,
+} from "@/lib/offerDecisionSync";
 import {
     collectKnownFunderDefaultCcEmails,
     isReservedContractCcEmail,
@@ -239,6 +245,7 @@ import {
     getContractSendTableRowStatusLabel,
     isContractSendTableRowFullySigned,
     pickPreservedDocuSignEnvelopeMetaFromPrefill,
+    resolveContractSendRowFunderAuth,
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -274,15 +281,42 @@ import {
 } from "./contractdata/boldSignTemplateDocument";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 
-/** Fingerprint of saved prefill — used to patch an open DocuSign draft after Edit Prefill saves. */
+/** Fingerprint of saved prefill + live offer money — patch open DocuSign draft when either changes. */
 function docuSignPrefillDraftFingerprint(input: {
     contractPrefillOverrides: Partial<BuildContractPrefillFieldsArgs> | null;
     documentTemplatePrefillByMappingId: Record<string, Record<string, string>>;
+    offerDecisionMoneyKey?: string | null;
 }): string {
     return JSON.stringify({
         o: input.contractPrefillOverrides ?? null,
         d: input.documentTemplatePrefillByMappingId ?? {},
+        od: input.offerDecisionMoneyKey ?? "",
     });
+}
+
+function offerDecisionMoneyFingerprint(od: Record<string, unknown> | null | undefined): string {
+    if (!od || typeof od !== "object") return "";
+    return [
+        od.offer,
+        od.approvedAmount,
+        od.rate,
+        od.term,
+        od.termLength,
+        od.frequency,
+        od.repayPerPeriod,
+        od.paymentAmount,
+        od.totalRemit,
+        od.fees,
+        od.numberOfPayments,
+        od.paymentsTerms,
+        od.monthlyPayment,
+        od.ourRemit,
+        od.refinanceAmount,
+        od.commissionAmount,
+        od.updatedAt,
+    ]
+        .map((v) => String(v ?? ""))
+        .join("|");
 }
 
 const DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS = {
@@ -1988,13 +2022,22 @@ const PDFViewerModal = ({
         return Object.keys(merged).length > 0 ? merged : undefined;
     }, [applicationData, contractPrefillFromDb, contractPrefillLoaded, resolvedContract]);
 
+    const offerDecisionMoneyKey = useMemo(
+        () =>
+            offerDecisionMoneyFingerprint(
+                (offerDecisionData as Record<string, unknown> | null) ?? null,
+            ),
+        [offerDecisionData],
+    );
+
     const prefillDraftFingerprint = useMemo(
         () =>
             docuSignPrefillDraftFingerprint({
                 contractPrefillOverrides: contractPrefillFromDb,
                 documentTemplatePrefillByMappingId,
+                offerDecisionMoneyKey,
             }),
-        [contractPrefillFromDb, documentTemplatePrefillByMappingId],
+        [contractPrefillFromDb, documentTemplatePrefillByMappingId, offerDecisionMoneyKey],
     );
 
     const canEditContractPrefill = useMemo(
@@ -2041,7 +2084,7 @@ const PDFViewerModal = ({
 
     const docuSignPrimaryActionLabel = useMemo(() => {
         if (showResendContractOnSentStep) {
-            return isContractOutForSignature ? "Send new contract" : "Resend contract";
+            return "Send new contract";
         }
         if (!includeMainContractInSend && canSendWithoutContract) {
             return "Review & send documents in DocuSign";
@@ -2049,7 +2092,6 @@ const PDFViewerModal = ({
         return "Review & send in DocuSign";
     }, [
         showResendContractOnSentStep,
-        isContractOutForSignature,
         includeMainContractInSend,
         canSendWithoutContract,
     ]);
@@ -2156,6 +2198,29 @@ const PDFViewerModal = ({
     useEffect(() => {
         if (!isOpen || !applicationIdForLookup) return;
         void dispatch(getOfferDecisionByApplication(applicationIdForLookup));
+        void dispatch(getTermsOffers({ application: applicationIdForLookup }));
+    }, [isOpen, applicationIdForLookup, dispatch]);
+
+    /** Re-fetch offer decision when saved elsewhere (e.g. scrubbing Offer Decision) while viewer is open. */
+    useEffect(() => {
+        if (!isOpen || !applicationIdForLookup) return;
+        const onOfferDecisionUpdated = (event: Event) => {
+            const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+            if (
+                !offerDecisionUpdateMatchesApplication(
+                    detail?.applicationId,
+                    applicationIdForLookup,
+                )
+            ) {
+                return;
+            }
+            void dispatch(getOfferDecisionByApplication(applicationIdForLookup));
+            void dispatch(getTermsOffers({ application: applicationIdForLookup }));
+        };
+        window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+        return () => {
+            window.removeEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+        };
     }, [isOpen, applicationIdForLookup, dispatch]);
 
     /** Sent step: refresh from CRM (webhook). DocuSign API only if Connect looks stale. */
@@ -2470,6 +2535,9 @@ const PDFViewerModal = ({
     }, [signerRolesDraftFingerprint, invalidateDocuSignDraftSession]);
 
     const sessionEnvelopeIdRef = useRef<string | null>(null);
+    const effectiveContractIdRef = useRef<number | null>(null);
+    const resolvedContractRef = useRef<Record<string, unknown> | null>(null);
+    const selectedSentRowRef = useRef<ContractSendTableRow | null>(null);
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
@@ -2477,6 +2545,9 @@ const PDFViewerModal = ({
     const disclosureAutoLinkKeyRef = useRef("");
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
+    effectiveContractIdRef.current = effectiveContractId;
+    resolvedContractRef.current = resolvedContract;
+    selectedSentRowRef.current = selectedSentRow;
     ccEmailsRef.current = ccEmails;
     selectedAddendumOptionRef.current = selectedAddendumOption;
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
@@ -2575,9 +2646,47 @@ const PDFViewerModal = ({
                     const urlPath = envelopeId
                         ? `/docusign/download/${encodeURIComponent(envelopeId)}`
                         : `/docusign/prefilled-pdf/application/${encodeURIComponent(appId!)}`;
+                    const contractIdHint = effectiveContractIdRef.current;
+                    const contractRecord = resolvedContractRef.current;
+                    const sentRows = contractRecord
+                        ? buildContractSendTableRows(contractRecord)
+                        : [];
+                    const matchingRow =
+                        (envelopeId
+                            ? sentRows.find(
+                                  (row) =>
+                                      String(row.envelopeId ?? "").trim() === envelopeId,
+                              )
+                            : null) ??
+                        selectedSentRowRef.current;
+                    const funderAuth =
+                        envelopeId && contractRecord && matchingRow
+                            ? resolveContractSendRowFunderAuth(contractRecord, matchingRow)
+                            : {};
                     const res = await axiosGet(urlPath, {
                         responseType: "blob",
                         timeout: 120000,
+                        ...(envelopeId
+                            ? {
+                                  params: {
+                                      ...(appId ? { applicationId: String(appId) } : {}),
+                                      ...(contractIdHint != null &&
+                                      Number.isFinite(contractIdHint) &&
+                                      contractIdHint > 0
+                                          ? { contractId: contractIdHint }
+                                          : {}),
+                                      ...(funderAuth.funderName
+                                          ? { funderName: funderAuth.funderName }
+                                          : {}),
+                                      ...(funderAuth.funderProfileId
+                                          ? { funderProfileId: funderAuth.funderProfileId }
+                                          : {}),
+                                      ...(funderAuth.contractState
+                                          ? { contractState: funderAuth.contractState }
+                                          : {}),
+                                  },
+                              }
+                            : {}),
                     });
                     if (prefilledLoadGenRef.current !== gen) return;
 
@@ -2909,9 +3018,45 @@ const PDFViewerModal = ({
             const urlPath = envelopeId
                 ? `/docusign/download/${encodeURIComponent(envelopeId)}`
                 : `/docusign/prefilled-pdf/application/${encodeURIComponent(appId!)}`;
+            const contractIdHint = effectiveContractIdRef.current;
+            const contractRecord = resolvedContractRef.current;
+            const sentRows = contractRecord
+                ? buildContractSendTableRows(contractRecord)
+                : [];
+            const matchingRow =
+                (envelopeId
+                    ? sentRows.find(
+                          (row) => String(row.envelopeId ?? "").trim() === envelopeId,
+                      )
+                    : null) ?? selectedSentRowRef.current;
+            const funderAuth =
+                envelopeId && contractRecord && matchingRow
+                    ? resolveContractSendRowFunderAuth(contractRecord, matchingRow)
+                    : {};
             const res = await axiosGet(urlPath, {
                 responseType: "blob",
                 timeout: 120000,
+                ...(envelopeId
+                    ? {
+                          params: {
+                              ...(appId ? { applicationId: String(appId) } : {}),
+                              ...(contractIdHint != null &&
+                              Number.isFinite(contractIdHint) &&
+                              contractIdHint > 0
+                                  ? { contractId: contractIdHint }
+                                  : {}),
+                              ...(funderAuth.funderName
+                                  ? { funderName: funderAuth.funderName }
+                                  : {}),
+                              ...(funderAuth.funderProfileId
+                                  ? { funderProfileId: funderAuth.funderProfileId }
+                                  : {}),
+                              ...(funderAuth.contractState
+                                  ? { contractState: funderAuth.contractState }
+                                  : {}),
+                          },
+                      }
+                    : {}),
             });
             const blob =
                 res.data instanceof Blob
@@ -4744,9 +4889,24 @@ const PDFViewerModal = ({
             });
         }
 
-        return clearParty2PrefillFieldPayload(
-            mergedPayload,
-            activeOwnerCountForPrefill,
+        return applyTexasContractUsdMoneyToPrefillFields(
+            clearParty2PrefillFieldPayload(
+                mergedPayload,
+                activeOwnerCountForPrefill,
+            ),
+            {
+                funderName:
+                    String(selectedFunderProfile?.name ?? "").trim() ||
+                    String(selectedFunder || "").trim() ||
+                    formatFunderSelectLabel(selectedFunderProfile ?? undefined) ||
+                    String((resolvedContract as { funderName?: unknown })?.funderName ?? "").trim(),
+                state:
+                    String(selectedState || "").trim() ||
+                    String((resolvedContract as { state?: unknown })?.state ?? "").trim(),
+                layoutKey: selectedFunderProfile
+                    ? resolveLayoutKeyForProfile(selectedFunderProfile)
+                    : "",
+            },
         );
     }, [
         dealPrefillFieldsForDocuSign,
@@ -4766,6 +4926,8 @@ const PDFViewerModal = ({
         buildDocuSignRolesForSync,
         selectedFunder,
         selectedFunderProfile,
+        selectedState,
+        resolveLayoutKeyForProfile,
     ]);
 
     const syncPrefillToDraftEnvelope = useCallback(
@@ -9342,7 +9504,7 @@ const PDFViewerModal = ({
                                                                 : canResendContract && isContractOutForSignature
                                                                   ? "Signers have an open envelope. You can void it, or send a new contract without voiding the previous one."
                                                                   : canResendContract
-                                                                    ? "All signers completed. Use Resend contract below to start a new envelope, or view the signed PDF on the right."
+                                                                    ? "All signers completed. Use Send new contract below to start a new envelope, or view the signed PDF on the right."
                                                                     : "The DocuSign envelope was sent. Status and contract details refresh automatically."}
                                                         </p>
                                                     </div>

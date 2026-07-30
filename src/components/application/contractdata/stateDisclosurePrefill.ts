@@ -80,7 +80,7 @@ export interface StateDisclosureContext {
     funderPhone?: string;
     /** Selected funder email (Connecticut disclosures). */
     funderEmail?: string;
-    /** Selected funder deal ID prefix (Connecticut disclosures). */
+    /** Selected funder deal ID prefix (Connecticut / Texas disclosures). */
     dealIdPrefix?: string;
     /** Broker fee paid to broker (Utah disclosure). */
     brokerFeePaidToBroker?: string;
@@ -202,7 +202,7 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     daily_connecticut: (ctx) =>
         buildDailyConnecticutContractPrefillFields({
-            totalCommericalFinancing: ctx.totalRepayment,
+            totalCommericalFinancing: ctx.fundingDisbursed,
             deductedAtDisbursement: ctx.feesDeducted,
             totalAmountCommercialFinancing: ctx.fundingProvided,
             financeCharge: ctx.financeCharge,
@@ -230,7 +230,7 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     weekly_connecticut: (ctx) =>
         buildDailyConnecticutContractPrefillFields({
-            totalCommericalFinancing: ctx.totalRepayment,
+            totalCommericalFinancing: ctx.fundingDisbursed,
             deductedAtDisbursement: ctx.feesDeducted,
             totalAmountCommercialFinancing: ctx.fundingProvided,
             financeCharge: ctx.financeCharge,
@@ -260,8 +260,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyFloridaContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -278,8 +278,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyFloridaContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -297,8 +297,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyFloridaContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -315,8 +315,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyFloridaContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -333,8 +333,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyLouisianaContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -351,8 +351,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyLouisianaContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -369,6 +369,7 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyTexasContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
+            dealIdPrefix: ctx.dealIdPrefix,
             totalAmountBusinessFund: ctx.fundingProvided,
             totalAmountOfFundDisbursed: ctx.fundingDisbursed,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
@@ -384,6 +385,7 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyTexasContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
+            dealIdPrefix: ctx.dealIdPrefix,
             totalAmountBusinessFund: ctx.fundingProvided,
             totalAmountOfFundDisbursed: ctx.fundingDisbursed,
             totalAmountTobePaidToProvider: ctx.totalRepayment,
@@ -397,8 +399,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     daily_georgia: (ctx) =>
         buildDailyGeorgiaContractPrefillFields({
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountToBePaid: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -413,8 +415,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     weekly_georgia: (ctx) =>
         buildDailyGeorgiaContractPrefillFields({
-            totalAmountBusinessFund: ctx.fundingProvided,
-            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountBusinessFund: ctx.fundingDisbursed,
+            totalAmountOfFundDisbursed: ctx.fundingProvided,
             totalAmountToBePaid: ctx.totalRepayment,
             totalDollarCost: ctx.totalDollarCost,
             estimatedPaymentAmount: ctx.estimatedPayment,
@@ -431,8 +433,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyKansasContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountOfFundProvided: ctx.fundingProvided,
-            totalAmountFundDisbursed: ctx.fundingDisbursed,
+            totalAmountOfFundProvided: ctx.fundingDisbursed,
+            totalAmountFundDisbursed: ctx.fundingProvided,
             totalOfPayments: ctx.totalRepayment,
             totalDollarCostOfFrinancing: ctx.totalDollarCost,
             estimatedPayment: ctx.estimatedPayment,
@@ -447,8 +449,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         buildDailyKansasContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
-            totalAmountOfFundProvided: ctx.fundingProvided,
-            totalAmountFundDisbursed: ctx.fundingDisbursed,
+            totalAmountOfFundProvided: ctx.fundingDisbursed,
+            totalAmountFundDisbursed: ctx.fundingProvided,
             totalOfPayments: ctx.totalRepayment,
             totalDollarCostOfFrinancing: ctx.totalDollarCost,
             estimatedPayment: ctx.estimatedPayment,

@@ -1,6 +1,12 @@
 import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
-import { computePerPeriodPayment, parseTerm } from "@/lib/offerRepaymentCalculations";
+import {
+    computePerPeriodPayment,
+    parseTerm,
+    resolveOfferFactorRate,
+    resolveOfferPayback,
+} from "@/lib/offerRepaymentCalculations";
 import { formatRateUS } from "@/lib/utils";
+import { formatUSD, parseMoneyInput } from "@/utils/formatCurrency";
 import {
     clearParty2PrefillFieldPayload,
     clearParty2PrefillPartial,
@@ -12,6 +18,12 @@ import {
     buildDocuSignRolesFromEditorRows,
     parseContractSignerOverridesFromPrefill,
 } from "./templateRecipients";
+import {
+    isTexasContractState,
+    isTexasFundingGroupFunder,
+    resolveMainContractLayoutKey,
+    PLATFORM_LAYOUT_KEYS,
+} from "./platformDocumentConfig";
 
 export interface ContractPrefillField {
     id: string;
@@ -981,6 +993,102 @@ function truncateDecimalPrefill(value: unknown): string {
     }).format(truncated);
 }
 
+/** Texas Funding Group / Alliance-style money tabs that should show `$` on the PDF. */
+const TEXAS_CONTRACT_USD_MONEY_FIELD_IDS = new Set([
+    "purchase_amount",
+    "purchaseamount",
+    "purchaseAmount",
+    "purchase_price",
+    "purchaseprice",
+    "purchasePrice",
+    "finance_charge",
+    "financecharge",
+    "total_dollar_cost",
+    "disclosure_finance_charge",
+    "appendix_underwriting_fees",
+    "appendixUnderwritingFees",
+    "underwriter_fee",
+    "underwriterfee",
+    "net_to_merchant",
+    "netToMerchant",
+    "NetFundProvided",
+    "netfundprovided",
+    "remittance",
+    "daily_payment",
+    "dailypayment",
+    "estimated_payment",
+    "estimated_payment_amount",
+    "estimatedremittance",
+    "receivable_purchase",
+    "receivable_purchase_1",
+    "receivable_purchase_2",
+    "total_repayment_amount",
+    "disclosure_total_payment",
+    "estimatedtotalpaymentamount",
+]);
+
+function normalizeTexasMoneyFieldId(id: string): string {
+    return String(id || "")
+        .trim()
+        .replace(/([a-z])([A-Z])/g, "$1_$2")
+        .replace(/[\s-]+/g, "_")
+        .toLowerCase();
+}
+
+export function shouldFormatTexasContractUsdAmounts(options?: {
+    funderName?: string | null;
+    state?: string | null;
+    layoutKey?: string | null;
+}): boolean {
+    const layoutKey = String(options?.layoutKey ?? "").trim();
+    if (
+        layoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract ||
+        layoutKey === "texas_funding_group" ||
+        layoutKey === "alliance_bridge_contract"
+    ) {
+        return true;
+    }
+    const funderName = String(options?.funderName ?? "").trim();
+    const state = String(options?.state ?? "").trim();
+    if (!funderName || !isTexasContractState(state)) return false;
+    if (isTexasFundingGroupFunder(funderName)) return true;
+    return resolveMainContractLayoutKey(funderName, state) ===
+        PLATFORM_LAYOUT_KEYS.texasFundingGroupContract;
+}
+
+/** Prefix Texas contract money tabs with `$` (e.g. `$12,000.00`) for DocuSign. */
+export function applyTexasContractUsdMoneyToPrefillFields<
+    T extends { id: string; value: string },
+>(
+    fields: T[],
+    options?: {
+        funderName?: string | null;
+        state?: string | null;
+        layoutKey?: string | null;
+    },
+): T[] {
+    if (!fields.length || !shouldFormatTexasContractUsdAmounts(options)) {
+        return fields;
+    }
+    return fields.map((field) => {
+        const id = String(field.id ?? "").trim();
+        if (!id) return field;
+        const snake = normalizeTexasMoneyFieldId(id);
+        if (
+            !TEXAS_CONTRACT_USD_MONEY_FIELD_IDS.has(id) &&
+            !TEXAS_CONTRACT_USD_MONEY_FIELD_IDS.has(snake) &&
+            !TEXAS_CONTRACT_USD_MONEY_FIELD_IDS.has(id.replace(/_/g, ""))
+        ) {
+            return field;
+        }
+        const raw = String(field.value ?? "").trim();
+        if (!raw) return field;
+        const n = parseMoneyInput(raw);
+        if (n === null) return field;
+        return { ...field, value: formatUSD(n, { fallback: raw }) };
+    });
+}
+
 /** Prefer first nonempty truncated money string from fallback chain. */
 function firstTruncateDecimal(...values: unknown[]): string {
     for (const v of values) {
@@ -1035,6 +1143,11 @@ function offerDecisionEffectiveRecordForNet(
     return odRoot;
 }
 
+/**
+ * Payback dollars for DocuSign / Verify Prefill.
+ * Prefer offer × factor rate. Do not treat `OfferDecision.totalRemit` as dollars — in woodmere
+ * that column stores total-leverage %, so reading it directly poisoned `purchase_price`.
+ */
 function resolvePaybackAmountDollars(sources: NetToMerchantPrefillSources): number | undefined {
     const app = sources.application;
     const contract = sources.contract;
@@ -1045,14 +1158,44 @@ function resolvePaybackAmountDollars(sources: NetToMerchantPrefillSources): numb
         (app?.OfferDecision as Record<string, unknown> | undefined) ??
         null;
     const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
-    const payback =
-        coerceToFiniteNumber(contract?.purchasePrice) ??
-        coerceToFiniteNumber(contract?.totalAmount) ??
-        coerceToFiniteNumber(odEff?.totalRemit) ??
-        coerceToFiniteNumber(odRoot?.totalRemit) ??
-        coerceToFiniteNumber(odEff?.paybackAmount) ??
-        coerceToFiniteNumber(odRoot?.paybackAmount);
-    return payback !== undefined && payback > 0 ? payback : undefined;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+
+    // Read advance directly — do not call resolveOfferAmountDollarsForUnderwritingFees here
+    // (that helper asks for payback and would recurse).
+    const advance =
+        coerceToFiniteNumber(odEff?.offer) ??
+        coerceToFiniteNumber(odEff?.approvedAmount) ??
+        coerceToFiniteNumber(odRoot?.offer) ??
+        coerceToFiniteNumber(odRoot?.approvedAmount) ??
+        coerceToFiniteNumber(terms0?.approvedAmount) ??
+        coerceToFiniteNumber(contract?.approvedAmount) ??
+        0;
+    const factorRate = resolveOfferFactorRate({
+        offerDecisionRate:
+            coerceToFiniteNumber(odRoot?.rate) ?? coerceToFiniteNumber(odEff?.rate),
+        offerDecisionFactorRate:
+            coerceToFiniteNumber(odRoot?.factorRate) ?? coerceToFiniteNumber(odEff?.factorRate),
+        termsFactorRate: coerceToFiniteNumber(terms0?.factorRate),
+    });
+    const payback = resolveOfferPayback(advance, factorRate, {
+        termsPaybackAmount: coerceToFiniteNumber(terms0?.paybackAmount),
+        offerPaybackAmount:
+            coerceToFiniteNumber(odEff?.paybackAmount) ?? coerceToFiniteNumber(odRoot?.paybackAmount),
+        // Only accepted when totalRemit >= advance (true dollars); leverage % is ignored.
+        totalRemit:
+            coerceToFiniteNumber(odEff?.totalRemit) ?? coerceToFiniteNumber(odRoot?.totalRemit),
+    });
+    if (payback > 0) return payback;
+
+    const legacy =
+        coerceToFiniteNumber(contract?.purchasePrice) ?? coerceToFiniteNumber(contract?.totalAmount);
+    return legacy !== undefined && legacy > 0 ? legacy : undefined;
 }
 
 /**
@@ -3057,15 +3200,29 @@ export function resolveContractClientPersonNameForPrefill(
     const row = partial as Record<string, unknown>;
     const linkedClient = row.client as Record<string, unknown> | undefined;
     const linkedOwnerName = ownerFullName(linkedClient?.ownerFirstName, linkedClient?.ownerLastName);
+    const legal =
+        str(row.legalName) ||
+        str(row.securityBusinessName) ||
+        str(linkedClient?.businessName) ||
+        "";
+    const legalNorm = legal.toLowerCase();
+    const isLegal = (name: string) => Boolean(legalNorm && name.toLowerCase() === legalNorm);
 
-    return (
-        str(row.customerName) ||
-        getApplicationPrimaryRecipientName(application) ||
-        linkedOwnerName ||
-        str(row.exhibitOwnerName) ||
-        str(row.guarantyOwner1Name) ||
-        ""
-    );
+    const candidates = [
+        str(row.owner1GuarantorName),
+        str(row.guarantyOwner1Name),
+        str(row.guarantyGuarantor1Name),
+        str(row.guarantyClientName),
+        str(row.securityGuarantor),
+        str(row.customerName),
+        str(row.clientName),
+        getApplicationPrimaryRecipientName(application),
+        linkedOwnerName,
+        str(row.exhibitOwnerName),
+        str(row.appendixClientName),
+        str(row.authorizationClientNamePrint),
+    ];
+    return candidates.find((n) => n && !isLegal(n)) || "";
 }
 
 /** Force client / appendix / guaranty name tabs to owner person name (never merchant legal name). */
@@ -4146,9 +4303,25 @@ function getLiveOfferPrefillArgs(
               ? (termsRaw as Record<string, unknown>)
               : null;
 
+    /**
+     * This function builds the live OfferDecision overlay. Do not let persisted Contract
+     * scalars or contractPrefillOverrides outrank that freshly fetched offer. Those values
+     * are snapshots from the previous Verify Prefill save and otherwise keep old amounts
+     * in Deal Review and the DocuSign payload after scrubbing updates the offer.
+     */
+    const liveContract = options?.contract ? { ...options.contract } : null;
+    if (liveContract) {
+        for (const key of LIVE_OFFER_MONEY_PREFILL_KEYS) {
+            delete liveContract[key];
+        }
+        delete liveContract.contractPrefillOverrides;
+        delete liveContract.totalAmount;
+        delete liveContract.numberOfPayments;
+    }
+
     const sources: NetToMerchantPrefillSources = {
         application: app ?? undefined,
-        contract: options?.contract ?? null,
+        contract: liveContract,
         offerDecision: odRoot,
     };
 
@@ -4176,11 +4349,20 @@ function getLiveOfferPrefillArgs(
         addendumDatedPrincipalOwnerAmount2: paybackAmount,
     };
 
-    /** Contract tab Final Calculation (`[CONTRACT_VALUES]`) wins over raw OfferDecision. */
-    return {
-        ...fromOfferDecision,
-        ...getFinalCalculationPrefillOverlayFromApplication(anyApp),
-    };
+    const finalCalculation = getFinalCalculationPrefillOverlayFromApplication(anyApp);
+    const staleFinalCalculation =
+        Boolean(odRoot) && liveOfferMoneyDiffersFromPartial(fromOfferDecision, finalCalculation);
+
+    /**
+     * Preserve a Final Calculation that still matches the live offer. Once scrubbing changes
+     * any corresponding amount/cadence, it is stale and the freshly fetched OfferDecision wins.
+     */
+    return staleFinalCalculation
+        ? fromOfferDecision
+        : {
+              ...fromOfferDecision,
+              ...finalCalculation,
+          };
 }
 
 /**

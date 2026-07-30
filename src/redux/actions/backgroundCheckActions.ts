@@ -80,6 +80,25 @@ export const removeCheckAttachment = createAsyncThunk(
     },
 );
 
+/** Copy CLEAR corporation names into empty Exhibit A slots on the deal's contract. */
+export const mapClearCorporationsToExhibit = createAsyncThunk(
+    'backgroundCheck/mapToExhibit',
+    async (itemId: string, { rejectWithValue }) => {
+        try {
+            const res = await axiosPost(`${BASE}/items/${itemId}/map-to-exhibit`, {});
+            return res.data?.data as {
+                added: number;
+                names: string[];
+                candidates: string[];
+                contractId: string;
+                check: unknown;
+            };
+        } catch (e: any) {
+            return rejectWithValue(e.response?.data?.message || 'Failed to map CLEAR corporations to Exhibit A');
+        }
+    },
+);
+
 export const setRequiredFlags = createAsyncThunk(
     'backgroundCheck/setRequired',
     async ({ checkId, flags }: { checkId: string; flags: Record<string, boolean> }, { rejectWithValue }) => {

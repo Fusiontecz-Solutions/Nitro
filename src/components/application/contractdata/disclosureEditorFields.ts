@@ -66,7 +66,7 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "total_amount_business_fund",
         // funding_provided is forced from purchase_amount (offer) in the envelope expander —
         // do not alias amount-financed-after-fees onto it.
-        "total_amount_commercial_financing",
+        // Connecticut total_amount_commercial_financing = purchase price (forced in expand).
         "amountFinanced",
         "total_amount_of_fund_provided",
         "total_amount_sales_based_financing",
@@ -99,7 +99,7 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "total_amount_to_be_paid",
         "amount_required_to_trigger_prepayment_discount",
         "total_repayment_amount",
-        "total_commerical_financing",
+        // Connecticut total_commerical_financing = amount financed (forced in expand), not payback.
         "total_of_payments",
         // Do NOT alias onto main RPA `purchase_price` / payback — disclosure calculator
         // was overwriting Final Calculation values on Review & open DocuSign.
@@ -238,6 +238,77 @@ export function collapsePdfFieldsToDisclosureEditorValues(
     return out;
 }
 
+
+/** Connecticut page-1: purchase price / fee / amount financed. */
+function applyConnecticutPage1AmountFields(
+    editorValues: Record<string, string>,
+    out: Record<string, string>,
+): void {
+    const hasSeparatePurchase = Boolean(
+        String(editorValues.funding_provided ?? "").trim() ||
+            String(editorValues.disclosure_purchase_price ?? "").trim(),
+    );
+    const purchase = String(
+        editorValues.funding_provided ??
+            editorValues.disclosure_purchase_price ??
+            out.funding_provided ??
+            out.purchase_amount ??
+            "",
+    ).trim();
+    const amountFinancedRaw = String(editorValues.disclosure_amount_financed ?? "").trim();
+    const recipientRaw = String(
+        editorValues.disclosure_recipient_funds ?? out.disclosure_recipient_funds ?? "",
+    ).trim();
+    let fees = String(
+        editorValues.disclosure_fees_deducted ??
+            out.deducted_at_disbursement ??
+            out.fees_deducted ??
+            "",
+    ).trim();
+
+    const purchaseFinal = purchase || (!hasSeparatePurchase ? amountFinancedRaw : "");
+    const purchaseN = parseDisclosurePrefillMoney(purchaseFinal);
+    const amountN = parseDisclosurePrefillMoney(amountFinancedRaw);
+    const recipientN = parseDisclosurePrefillMoney(recipientRaw);
+    let feesN = parseDisclosurePrefillMoney(fees);
+
+    if (
+        !fees &&
+        purchaseN !== undefined &&
+        amountN !== undefined &&
+        amountN < purchaseN - 0.009
+    ) {
+        fees = formatDisclosureUsd(Math.max(0, purchaseN - amountN));
+        feesN = parseDisclosurePrefillMoney(fees);
+    }
+
+    let amountFinanced = "";
+    if (purchaseN !== undefined && amountN !== undefined && amountN < purchaseN - 0.009) {
+        amountFinanced = formatDisclosureUsd(amountN);
+    } else if (
+        purchaseN !== undefined &&
+        recipientN !== undefined &&
+        recipientN < purchaseN - 0.009
+    ) {
+        amountFinanced = formatDisclosureUsd(recipientN);
+    } else if (purchaseN !== undefined && feesN !== undefined) {
+        amountFinanced = formatDisclosureUsd(Math.max(0, purchaseN - feesN));
+    } else if (hasSeparatePurchase && amountN !== undefined) {
+        amountFinanced = formatDisclosureUsd(amountN);
+    } else if (recipientN !== undefined) {
+        amountFinanced = formatDisclosureUsd(recipientN);
+    } else if (amountN !== undefined && feesN !== undefined) {
+        amountFinanced = formatDisclosureUsd(Math.max(0, amountN - feesN));
+    }
+
+    if (purchaseFinal) out.total_amount_commercial_financing = purchaseFinal;
+    if (fees) {
+        out.deducted_at_disbursement = fees;
+        if (!String(out.fees_deducted ?? "").trim()) out.fees_deducted = fees;
+    }
+    if (amountFinanced) out.total_commerical_financing = amountFinanced;
+}
+
 /** Expand canonical editor values to every PDF tab label needed for DocuSign. */
 export function expandDisclosureEditorValuesToPdfFields(
     editorValues: Record<string, string>,
@@ -284,6 +355,8 @@ export function expandDisclosureEditorValuesToPdfFields(
             if (!String(out[pdfId] ?? "").trim()) out[pdfId] = derivedFees;
         }
     }
+
+    applyConnecticutPage1AmountFields(editorValues, out);
 
     return out;
 }

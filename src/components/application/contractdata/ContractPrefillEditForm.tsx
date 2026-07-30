@@ -1706,11 +1706,18 @@ export function ContractPrefillEditForm({
                 inner.fees,
                 inner.rate,
                 inner.term,
+                inner.termLength,
                 inner.numberOfPayments,
+                inner.paymentsTerms,
+                inner.frequency,
                 inner.paymentFrequency,
                 inner.monthlyPayment,
                 inner.dailyPayment,
                 inner.repayPerPeriod,
+                inner.paymentAmount,
+                inner.ourRemit,
+                inner.refinanceAmount,
+                inner.updatedAt,
             ]
                 .map((v) => String(v ?? ""))
                 .join("|");

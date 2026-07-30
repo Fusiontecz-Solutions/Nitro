@@ -29,8 +29,6 @@ export type ItemIdByResource = Record<string, string>;
 
 type ItemMetadata = {
   noteImages?: BackgroundCheckItemState["noteImages"];
-  judgements?: BackgroundCheckItemState["judgements"];
-  liens?: BackgroundCheckItemState["liens"];
   linkOpenedAt?: string;
   savedAt?: string;
 };
@@ -108,9 +106,13 @@ export function apiCheckToFormState(check: BackgroundCheck): BackgroundCheckForm
       attachmentName: primaryAttachment?.originalName ?? undefined,
       attachmentUrl: primaryAttachment?.url ?? undefined,
       attachmentPublicId: primaryAttachment?.publicId ?? undefined,
+      attachments: (item.attachments ?? []).map((attachment) => ({
+        id: attachment.id,
+        name: attachment.originalName ?? "Attachment",
+        url: attachment.url,
+        publicId: attachment.publicId ?? undefined,
+      })),
       noteImages: meta.noteImages,
-      judgements: meta.judgements,
-      liens: meta.liens,
       linkOpenedAt: meta.linkOpenedAt,
       savedAt: meta.savedAt,
       clearMetadata,
@@ -132,8 +134,6 @@ export function formItemToApiPayload(state: BackgroundCheckItemState): {
 
   const metadata: ItemMetadata = {};
   if (state.noteImages?.length) metadata.noteImages = state.noteImages;
-  if (state.judgements?.length) metadata.judgements = state.judgements;
-  if (state.liens?.length) metadata.liens = state.liens;
   if (state.linkOpenedAt) metadata.linkOpenedAt = state.linkOpenedAt;
   if (state.savedAt) metadata.savedAt = state.savedAt;
 

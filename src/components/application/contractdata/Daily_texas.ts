@@ -4,6 +4,7 @@ import { TEXAS_DISCLOSURE_PAGE3_DEFAULT_AMOUNT } from "./texas_disclosure";
 const FIELD_IDS = {
     clientName: ["client_name"],
     funderName: ["funder_name"],
+    dealIdPrefix: ["deal_id_prefix"],
     totalAmountBusinessFund: ["total_amount_business_fund"],
     totalAmountOfFundDisbursed: ["total_amount_of_fund_disbursed"],
     totalAmountTobePaidToProvider: ["total_amount_tobe_paid_to_provider"],
@@ -38,6 +39,7 @@ const mapIdsWithDefault = (
 export interface DailyTexasContractPrefillFields {
     clientName?: string;
     funderName?: string;
+    dealIdPrefix?: string;
     totalAmountBusinessFund?: string;
     totalAmountOfFundDisbursed?: string;
     totalAmountTobePaidToProvider?: string;
@@ -55,6 +57,7 @@ export interface DailyTexasContractPrefillFields {
 export function buildDailyTexasContractPrefillFields({
     clientName = "",
     funderName = "",
+    dealIdPrefix = "",
     totalAmountBusinessFund = "",
     totalAmountOfFundDisbursed = "",
     totalAmountTobePaidToProvider = "",
@@ -71,6 +74,7 @@ export function buildDailyTexasContractPrefillFields({
     return [
         ...mapIds(FIELD_IDS.clientName, "Merchant / recipient name", clientName),
         ...mapIds(FIELD_IDS.funderName, "Funder / provider name", funderName),
+        ...mapIds(FIELD_IDS.dealIdPrefix, "Deal ID prefix", dealIdPrefix),
         ...mapIds(FIELD_IDS.totalAmountBusinessFund, "Total amount business fund", totalAmountBusinessFund),
         ...mapIds(
             FIELD_IDS.totalAmountOfFundDisbursed,

@@ -1,6 +1,14 @@
 import { useCallback, useMemo, useState } from "react";
 import { useParams } from "react-router";
-import { CheckCircle2, Loader2, MinusCircle, RefreshCw, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  FileOutput,
+  Loader2,
+  MinusCircle,
+  RefreshCw,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { useDispatch, useSelector } from "react-redux";
 import { toast } from "react-toastify";
 import { Button } from "@/components/ui/button";
@@ -35,16 +43,83 @@ import type {
   ClearPersonHit,
   ClearPersonSearchMeta,
 } from "./clearTypes";
+import type { BackgroundCheckStoredAttachment } from "./backgroundCheckTypes";
 
 function clearLienJudgmentTitle(record: ClearLienJudgmentRecord): string {
   const kindLabel = record.kind === "lien" ? "Lien" : "Judgment";
   return [kindLabel, record.amount, record.court || record.caseNumber].filter(Boolean).join(" · ");
 }
 
+function ClearAttachmentsSection({
+  attachments,
+  removingId,
+  onRemove,
+}: {
+  attachments: BackgroundCheckStoredAttachment[];
+  removingId: string | null;
+  onRemove?: (attachment: BackgroundCheckStoredAttachment) => void;
+}) {
+  return (
+    <div className="rounded-md border border-[#E5E7EB] bg-[#FAFBFC] px-3 py-2.5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-[#374151]">
+        Attached PDFs
+      </p>
+      <p className="mt-0.5 text-[11px] text-[#6B7280]">
+        CLEAR report PDFs saved on this check.
+      </p>
+      {attachments.length === 0 ? (
+        <p className="mt-2 text-[11px] italic text-[#9CA3AF]">None attached.</p>
+      ) : (
+        <ul className="mt-2 space-y-1.5">
+          {attachments.map((attachment) => (
+            <li
+              key={attachment.id}
+              className="flex items-center gap-2 rounded border border-[#E2E8F0] bg-white px-2.5 py-1.5"
+            >
+              <a
+                href={attachment.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="min-w-0 flex-1 truncate text-xs text-[var(--brand)] hover:underline"
+                title={attachment.name}
+              >
+                {attachment.name}
+              </a>
+              {onRemove ? (
+                <button
+                  type="button"
+                  onClick={() => onRemove(attachment)}
+                  disabled={removingId === attachment.id}
+                  className={cn(
+                    "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-[#64748B] hover:bg-[#FEF2F2] hover:text-red-600",
+                    removingId === attachment.id && "cursor-not-allowed opacity-60",
+                  )}
+                  title="Remove PDF"
+                >
+                  {removingId === attachment.id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                  )}
+                  Remove
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ClearCorporateAssociationsSection({
   records,
+  mapping = false,
+  onMapToExhibit,
 }: {
   records: ClearCorporateAssociationRecord[];
+  mapping?: boolean;
+  onMapToExhibit?: () => void;
 }) {
   const names = useMemo(() => {
     const seen = new Set<string>();
@@ -61,13 +136,34 @@ function ClearCorporateAssociationsSection({
 
   return (
     <div className="rounded-md border border-[#E5E7EB] bg-[#FAFBFC] px-3 py-2.5">
-      <p className="text-xs font-semibold uppercase tracking-wide text-[#374151]">
-        Corporations
-      </p>
-      <p className="mt-0.5 text-[11px] text-[#6B7280]">
-        From CLEAR report. Names are also auto-added to empty Exhibit A company slots on the
-        contract.
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[#374151]">
+            Corporations
+          </p>
+          <p className="mt-0.5 text-[11px] text-[#6B7280]">
+            From CLEAR report. Use Map to Exhibit to add these names to empty Exhibit A company
+            slots on the contract.
+          </p>
+        </div>
+        {onMapToExhibit ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={mapping || names.length === 0}
+            onClick={onMapToExhibit}
+            className="h-7 shrink-0 px-2.5 text-xs"
+          >
+            {mapping ? (
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+            ) : (
+              <FileOutput className="mr-1 h-3 w-3" aria-hidden />
+            )}
+            {mapping ? "Mapping…" : "Map to Exhibit"}
+          </Button>
+        ) : null}
+      </div>
       {names.length === 0 ? (
         <p className="mt-2 text-[11px] italic text-[#9CA3AF]">None found.</p>
       ) : (
@@ -290,13 +386,23 @@ function MatchRows({
 export default function ClearPanel({
   embedded = false,
   clearMetadata,
+  attachments = [],
   onRunClear,
+  onRemoveAttachment,
+  onMapToExhibit,
+  removingAttachmentId = null,
+  mappingToExhibit = false,
   runningClear = false,
   canRunClear = true,
 }: {
   embedded?: boolean;
   clearMetadata?: ClearLookupMetadata | null;
+  attachments?: BackgroundCheckStoredAttachment[];
   onRunClear?: () => void;
+  onRemoveAttachment?: (attachment: BackgroundCheckStoredAttachment) => void;
+  onMapToExhibit?: () => void;
+  removingAttachmentId?: string | null;
+  mappingToExhibit?: boolean;
   runningClear?: boolean;
   canRunClear?: boolean;
 }) {
@@ -537,6 +643,19 @@ export default function ClearPanel({
         ) : null}
       </div>
 
+      {hasRun || attachments.length > 0 ? (
+        <section className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
+            Attachments
+          </p>
+          <ClearAttachmentsSection
+            attachments={attachments}
+            removingId={removingAttachmentId}
+            onRemove={onRemoveAttachment}
+          />
+        </section>
+      ) : null}
+
       {hasRun ? (
         <div className="space-y-4">
           <section className="space-y-2">
@@ -661,7 +780,11 @@ export default function ClearPanel({
             <p className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
               Corporations
             </p>
-            <ClearCorporateAssociationsSection records={corporateAssociationRecords} />
+            <ClearCorporateAssociationsSection
+              records={corporateAssociationRecords}
+              mapping={mappingToExhibit}
+              onMapToExhibit={onMapToExhibit}
+            />
           </section>
 
           <section className="space-y-2">
