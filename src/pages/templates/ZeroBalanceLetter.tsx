@@ -29,12 +29,6 @@ export const ZERO_BALANCE_LETTER_VARIABLES: TemplateVariable[] = [
     defaultValue: "John Doe",
   },
   {
-    key: "payment_account_number",
-    label: "Account Number",
-    placeholder: "0210047692",
-    defaultValue: "0210047692",
-  },
-  {
     key: "account_status",
     label: "Account Status",
     placeholder: "Zero Balance",
@@ -62,7 +56,6 @@ export default function ZeroBalanceLetter({ values }: TemplateComponentProps) {
   const letterDate = pick(values, v.letter_date);
   const accountName = pick(values, v.account_name);
   const salutationName = pick(values, v.salutation_name);
-  const accountNumber = pick(values, v.payment_account_number);
   const accountStatus = pick(values, v.account_status);
   const senderName = pick(values, v.sender_name);
 
@@ -96,9 +89,6 @@ export default function ZeroBalanceLetter({ values }: TemplateComponentProps) {
               This letter is to confirm that your account with us has a zero balance
               as of the date below. At this time, there is no amount due on your
               account.
-            </p>
-            <p style={{ margin: "0 0 8px" }}>
-              <strong>Account Number:</strong> {accountNumber}
             </p>
             <p style={{ margin: "0 0 8px" }}>
               <strong>Date:</strong> {letterDate}

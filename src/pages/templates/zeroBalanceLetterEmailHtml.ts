@@ -36,8 +36,6 @@ import {
 
 const ZERO_BALANCE_LETTER_EMAIL_ICON_SRC = {
 
-  account: "https://res.cloudinary.com/dehrku8og/image/upload/q_auto/f_auto/v1781791504/Account_Number_Icon_1_ieacvs.png",
-
   date: "https://res.cloudinary.com/dehrku8og/image/upload/q_auto/f_auto/v1781791504/Vector_2_jpgu6e.png",
 
   status: "https://res.cloudinary.com/dehrku8og/image/upload/q_auto/f_auto/v1781791503/Account_Status_Icon_-_White_1_tfndrl.png",
@@ -146,8 +144,6 @@ export function renderZeroBalanceLetterEmailHtml(
 
   const salutationName = escapeHtml(pickOrBlank(values, v.salutation_name));
 
-  const accountNumber = escapeHtml(pickOrNA(values, v.payment_account_number));
-
   const accountStatus = escapeHtml(pickOrNA(values, v.account_status));
 
   const senderName = escapeHtml(
@@ -248,10 +244,6 @@ export function renderZeroBalanceLetterEmailHtml(
   };
 
 
-
-  const iconAccount =
-
-    'style="font-family:Arial,sans-serif;font-size:16px;font-weight:bold;color:#ffffff;line-height:16px;letter-spacing:1px;"';
 
   const iconDate =
 
@@ -478,8 +470,6 @@ export function renderZeroBalanceLetterEmailHtml(
                   <td style="padding:0 0 30px 0;">
 
                     <table role="presentation" class="info-table" border="0" cellpadding="0" cellspacing="0" width="${INFO_TABLE_WIDTH}" style="width:${INFO_TABLE_WIDTH}px;max-width:100%;border-collapse:collapse;background-color:#ffffff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
-
-                      ${infoRow(iconCell(ZERO_BALANCE_LETTER_EMAIL_ICON_SRC.account, "&#35;", iconAccount), "Account Number", accountNumber)}
 
                       ${infoRow(iconCell(ZERO_BALANCE_LETTER_EMAIL_ICON_SRC.date, "&#128197;", iconDate), "Date", letterDate)}
 
