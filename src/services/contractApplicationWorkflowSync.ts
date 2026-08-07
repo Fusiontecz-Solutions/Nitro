@@ -105,6 +105,16 @@ export function contractSignedApplicationUpdateData(): {
   };
 }
 
+export function contractPendingApplicationUpdateData(): {
+  currentQueue: string;
+  currentState: string;
+} {
+  return {
+    currentQueue: APPLICATION_QUEUE_CONTRACT_PENDING,
+    currentState: APPLICATION_STATE_CONTRACT_PENDING,
+  };
+}
+
 export function contractGeneratedApplicationUpdateData(): {
   currentQueue: string;
   currentState: string;
@@ -216,6 +226,27 @@ async function syncApplicationWorkflowStage(
   });
 
   return true;
+}
+
+/**
+ * After Create & Save Offer — deal is ready for contract generation.
+ * Does not move deals that are already Contract Signed / Funded / etc. backwards.
+ */
+export async function syncApplicationToContractPending(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  meta: ContractWorkflowSyncMeta,
+): Promise<boolean> {
+  return syncApplicationWorkflowStage(
+    prismaClient,
+    applicationId,
+    contractPendingApplicationUpdateData(),
+    meta,
+    (app) =>
+      normalizeWorkflowToken(app.currentQueue) === 'contractpending' ||
+      normalizeWorkflowToken(app.currentState) === 'contractpending' ||
+      isApplicationPastContractSignedStage(app),
+  );
 }
 
 /** After contract record is created (DRAFT) — not when the envelope is sent. */

@@ -108,6 +108,10 @@ router.get(
     '/operations-dashboard-recent-cases',
     applicationController.getOperationsDashboardRecentCases.bind(applicationController),
 );
+router.get(
+    '/operations-dashboard-payment-performance',
+    applicationController.getOperationsDashboardPaymentPerformance.bind(applicationController),
+);
 
 // Get monthly trend stats (approved & funded amounts per month)
 router.get('/stats/trend', applicationController.getMonthlyTrend.bind(applicationController));

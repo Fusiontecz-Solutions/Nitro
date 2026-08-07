@@ -39,7 +39,9 @@ import {
 import { DashboardCacheKind, withDashboardCache } from '../services/dashboardCache';
 import {
     aggregateOperationsDashboardSummary,
+    aggregateOperationsPaymentPerformanceTrend,
     listOperationsDashboardRecentCases,
+    type OperationsPaymentPerformancePeriod,
 } from '../services/operationsDashboardSummaryService';
 import {
     buildOperationsStatusFilterWhere,
@@ -2633,6 +2635,50 @@ class ApplicationController {
     }
 
     /**
+     * Operations Payment Performance: Contract Pending vs Contract Signed amounts
+     * for daily / weekly / monthly buckets.
+     */
+    async getOperationsDashboardPaymentPerformance(req: Request, res: Response) {
+        try {
+            const authUser = getAuthenticatedUser(req);
+            if (!authUser) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Unauthorized',
+                });
+            }
+
+            const rawPeriod = String(req.query.period ?? 'monthly')
+                .trim()
+                .toLowerCase();
+            const period: OperationsPaymentPerformancePeriod =
+                rawPeriod === 'daily' || rawPeriod === 'weekly' || rawPeriod === 'monthly'
+                    ? rawPeriod
+                    : 'monthly';
+
+            const roleKey = String(authUser.role ?? '').trim();
+            const cacheKey = `${authUser.id}|${roleKey}|${period}`;
+            const data = await withDashboardCache(
+                DashboardCacheKind.TREND,
+                cacheKey,
+                () => aggregateOperationsPaymentPerformanceTrend(authUser, period),
+            );
+
+            return res.status(200).json({
+                success: true,
+                data,
+                meta: { period },
+            });
+        } catch (error) {
+            console.error('Get operations dashboard payment performance error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /**
      * Admin dashboard stats
      * Aggregated metrics for the admin overview dashboard.
      */
@@ -5061,14 +5107,20 @@ class ApplicationController {
                 ccEmails: parsedCcEmails,
             });
 
-            // Best-effort: notify the linked ISO with the branded decline template.
+            // Best-effort: notify the linked ISO with the branded decline template
+            // only when the client explicitly requests email (isoEmail / emailHtml).
             try {
                 const iso = (applicationRecord as any).iso;
                 const isoName = String(iso?.name ?? '').trim();
                 const linkedIsoEmail = String(iso?.email ?? '').trim();
                 const isoEmailOverrideTrimmed =
                     typeof isoEmailOverride === 'string' ? isoEmailOverride.trim() : '';
-                const isoEmail = isoEmailOverrideTrimmed || linkedIsoEmail;
+                const hasExplicitDeclineEmail =
+                    Boolean(isoEmailOverrideTrimmed) ||
+                    (typeof emailHtml === 'string' && Boolean(emailHtml.trim()));
+                const isoEmail = hasExplicitDeclineEmail
+                    ? isoEmailOverrideTrimmed || linkedIsoEmail
+                    : '';
                 const emailCcList = parsedCcEmails;
                 const uniqueCcList = [...new Set(emailCcList.map((e) => e.toLowerCase()))]
                     .map((lower) => emailCcList.find((e) => e.toLowerCase() === lower) || lower)
@@ -5160,8 +5212,8 @@ class ApplicationController {
                         }
                     }
                 } else {
-                    console.warn(
-                        '[reject] Skipped ISO decline email G?? no linked ISO email on application',
+                    console.info(
+                        '[reject] Skipped ISO decline email — simple decline (no email requested)',
                         applicationRecord.id,
                     );
                 }

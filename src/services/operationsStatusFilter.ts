@@ -261,21 +261,21 @@ const CONTRACT_CANCELLED_QUEUE_STRICT = [
 const CONTRACT_OUT_QUEUE_STRICT = CONTRACT_SENT_QUEUE_STRICT;
 
 export function contractPendingStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return andExcludeNeedsContractReinitiation({
+    return {
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_PENDING') } },
             { currentQueue: { in: CONTRACT_PENDING_QUEUE_STRICT } },
         ],
-    });
+    };
 }
 
 export function contractGeneratedStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return andExcludeNeedsContractReinitiation({
+    return {
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_GENERATED') } },
             { currentQueue: { in: CONTRACT_GENERATED_QUEUE_STRICT } },
         ],
-    });
+    };
 }
 
 /**
@@ -283,22 +283,22 @@ export function contractGeneratedStrictMatchWhere(): Prisma.ApplicationWhereInpu
  * Includes legacy Contract Out / Contracts Out rows.
  */
 export function contractSentStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return andExcludeNeedsContractReinitiation({
+    return {
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_SENT') } },
             { currentState: { in: expandStoredCurrentStateValues('CONTRACTS_OUT') } },
             { currentQueue: { in: CONTRACT_SENT_QUEUE_STRICT } },
         ],
-    });
+    };
 }
 
 export function contractCancelledStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return andExcludeNeedsContractReinitiation({
+    return {
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_CANCELLED') } },
             { currentQueue: { in: CONTRACT_CANCELLED_QUEUE_STRICT } },
         ],
-    });
+    };
 }
 
 /** @deprecated Use {@link contractSentStrictMatchWhere}. */
@@ -336,18 +336,12 @@ function andExcludeNeedsContractReinitiation(
 /**
  * Strict contract-signed: `currentState` in SIGNED_CONTRACTS spellings **or** `currentQueue`
  * matches explicit signed-contract labels (operations “Contract Signed” card drill-down).
- * Excludes deals awaiting contract reinitiation (shown under Reinitiate_Contract).
  */
 export function signedContractsStrictMatchWhere(): Prisma.ApplicationWhereInput {
     return {
-        AND: [
-            {
-                OR: [
-                    { currentState: { in: expandStoredCurrentStateValues('SIGNED_CONTRACTS') } },
-                    { currentQueue: { in: CONTRACT_SIGNED_QUEUE_STRICT } },
-                ],
-            },
-            { NOT: { needsContractReinitiation: true } },
+        OR: [
+            { currentState: { in: expandStoredCurrentStateValues('SIGNED_CONTRACTS') } },
+            { currentQueue: { in: CONTRACT_SIGNED_QUEUE_STRICT } },
         ],
     };
 }

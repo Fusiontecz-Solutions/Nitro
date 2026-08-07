@@ -9,6 +9,8 @@ import {
     offerDecisionValuesChanged,
 } from '../services/contractReinitiationService';
 import { recordContractWorkflowActivityLog } from '../services/contractWorkflowActivityLog';
+import { syncApplicationToContractPending } from '../services/contractApplicationWorkflowSync';
+import { createApplicationActivityLog } from '../services/applicationActivityLogService';
 import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
@@ -252,6 +254,48 @@ class OfferDecisionController {
         );
       }
 
+      /**
+       * Create & Save Offer → advance the deal to Contract Pending so Operations
+       * can generate the contract. Skips if already Contract Pending or past
+       * Contract Signed / Funded / etc.
+       */
+      const decisionNorm = String(decision).trim().toLowerCase();
+      let movedToContractPending = false;
+      if (decisionNorm === 'approved') {
+        try {
+          const previousStatus =
+            `${app.currentQueue ?? ''} / ${app.currentState ?? ''}`.trim();
+          movedToContractPending = await syncApplicationToContractPending(
+            prisma,
+            app.id,
+            { source: 'offerDecisionController.upsert' },
+          );
+          if (movedToContractPending) {
+            const authUser = authUserFromReq(req);
+            const actorName = String((req as any).user?.name || '').trim();
+            const actorPrefix = actorName || authUser?.role || 'User';
+            await createApplicationActivityLog({
+              applicationId: app.id,
+              user: authUser,
+              req,
+              actionType: 'QUEUE_CHANGED',
+              actionDescription: `${actorPrefix} saved offer and moved deal to Contract Pending.`,
+              previousStatus,
+              currentStatus: 'Contract Pending / CONTRACT_PENDING',
+              metadata: {
+                source: 'offerDecisionController.upsert',
+                offer: result.offer ?? null,
+              },
+            });
+          }
+        } catch (queueErr) {
+          console.error(
+            'OfferDecision upsert: failed to set Application to Contract Pending',
+            queueErr,
+          );
+        }
+      }
+
       try {
         const existingContract = await prisma.contract.findUnique({
           where: { applicationId: app.id },
@@ -304,6 +348,9 @@ class OfferDecisionController {
         success: true,
         message: 'Offer decision saved successfully',
         data: mapOfferDecisionToApi(result),
+        meta: {
+          movedToContractPending,
+        },
       });
     } catch (error) {
       console.error('OfferDecision upsert error:', error);
