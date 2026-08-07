@@ -36,52 +36,35 @@ interface DataTableContentProps<TData> {
     renderExpandedRow?: (row: Row<TData>) => React.ReactNode;
 }
 
-// Only constrain a column's width when an explicit size was set on its
-// definition; otherwise let the browser size it as before.
-function getColumnSizeStyle<TData>(
-    column: Column<TData, unknown>,
-    widthPercent?: number,
-): React.CSSProperties | undefined {
+/** Resolve a column's pixel width from its size definition. */
+function getColumnPixelSize<TData>(column: Column<TData, unknown>): number {
     const { size, minSize, maxSize } = column.columnDef;
-    const style: React.CSSProperties = {};
-    if (widthPercent != null) {
-        style.width = `${widthPercent}%`;
-    } else if (size != null) {
-        style.width = size;
-    }
-    if (minSize != null) style.minWidth = minSize;
-    if (maxSize != null) style.maxWidth = maxSize;
-    return Object.keys(style).length > 0 ? style : undefined;
+    let width = size ?? 120;
+    if (minSize != null) width = Math.max(width, minSize);
+    if (maxSize != null) width = Math.min(width, maxSize);
+    return width;
 }
 
-function getProportionalColumnWidths<TData>(
-    table: ReactTable<TData>,
-): Map<string, number> {
-    const columns = table.getVisibleLeafColumns();
-    const total = columns.reduce(
-        (sum, column) => sum + (column.columnDef.size ?? 120),
-        0,
-    );
-    const widths = new Map<string, number>();
-    if (total <= 0) return widths;
+// Fixed layout uses explicit pixel widths so columns keep uniform gaps
+// instead of stretching middle columns (e.g. Business Name) to fill the viewport.
+function getColumnSizeStyle<TData>(
+    column: Column<TData, unknown>,
+): React.CSSProperties | undefined {
+    const { size, minSize, maxSize } = column.columnDef;
+    if (size == null && minSize == null && maxSize == null) return undefined;
 
-    let assigned = 0;
-    columns.forEach((column, index) => {
-        const weight = column.columnDef.size ?? 120;
-        if (index === columns.length - 1) {
-            widths.set(column.id, Math.max(0, 100 - assigned));
-            return;
-        }
-        const pct = Math.round((weight / total) * 1000) / 10;
-        widths.set(column.id, pct);
-        assigned += pct;
-    });
-    return widths;
+    const width = getColumnPixelSize(column);
+    const style: React.CSSProperties = {
+        width,
+        minWidth: minSize ?? width,
+    };
+    if (maxSize != null) style.maxWidth = maxSize;
+    return style;
 }
 
 function getFixedTableMinWidth<TData>(table: ReactTable<TData>): number {
     return table.getVisibleLeafColumns().reduce(
-        (total, column) => total + (column.columnDef.size ?? 120),
+        (total, column) => total + getColumnPixelSize(column),
         0,
     );
 }
@@ -124,24 +107,22 @@ export default function DataTableContent<TData>({
     }
 
     const tableMinWidth = fixedLayout ? getFixedTableMinWidth(table) : undefined;
-    const proportionalWidths = fixedLayout
-        ? getProportionalColumnWidths(table)
-        : null;
 
     return (
         <Table
-            className={fixedLayout ? "table-fixed" : undefined}
-            style={tableMinWidth ? { minWidth: tableMinWidth } : undefined}
+            className={fixedLayout ? "table-fixed !w-auto max-w-none" : undefined}
+            style={
+                tableMinWidth
+                    ? { width: tableMinWidth, minWidth: tableMinWidth }
+                    : undefined
+            }
         >
             {fixedLayout ? (
                 <colgroup>
                     {table.getVisibleLeafColumns().map((column) => (
                         <col
                             key={column.id}
-                            style={getColumnSizeStyle(
-                                column,
-                                proportionalWidths?.get(column.id),
-                            )}
+                            style={getColumnSizeStyle(column)}
                         />
                     ))}
                 </colgroup>

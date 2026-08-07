@@ -708,7 +708,7 @@ const RequiredDocument = ({
 
                                                 {disableFundingUpload && (
                                                     <p className="text-xs text-muted-foreground mt-2">
-                                                        Upload is available to Super Admin, Scrubbing, and Underwriter only.
+                                                        Upload is available to Super Admin, Create Offer, and Underwriter only.
                                                     </p>
                                                 )}
 

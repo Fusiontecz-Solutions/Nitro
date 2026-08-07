@@ -72,7 +72,8 @@ const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Contract_Out: "Contract Out",
   Contracted: "Contracted",
   Contract_Signed: "Contract Signed",
-  Reinitiate_Contract: "Reinitiated Contract",
+  /** @deprecated No longer a user-facing contract stage; maps to Contract Pending labeling if needed. */
+  Reinitiate_Contract: "Contract Pending",
   Signed_Contracts: "Signed Contracts",
   "Funding Call": "Funding Call",
   Finals_And_Funding_Call: "Finals and Funding Call",
@@ -82,7 +83,7 @@ const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Declined: "Rejected",
   Recently_Deleted: "Recently Deleted",
   Agent: "Agent",
-  Scrubbing: "Scrubbing",
+  Scrubbing: "Create Offer",
   "Underwriter": "Underwriter",
   Final_Approval: "Final Approval",
   Final: "Final",
@@ -110,7 +111,6 @@ export const OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS = new Set<
   "Contract_Out",
   "Contracted",
   "Contract_Signed",
-  "Reinitiate_Contract",
   "Signed_Contracts",
   "Final",
   "Funding Call",
@@ -125,6 +125,14 @@ export function normalizeOperationsDashboardStatusParam(
 ): OperationsApplicationsListStatus | null {
   if (!raw?.trim()) return null;
   const trimmed = raw.trim();
+  // Legacy reinitiation bucket collapsed into Contract Pending.
+  if (
+    trimmed === "Reinitiate_Contract" ||
+    trimmed.toLowerCase().replace(/[\s-]+/g, "_") === "reinitiate_contract" ||
+    trimmed.toLowerCase().replace(/[\s-]+/g, "_") === "reinitiated_contract"
+  ) {
+    return "Contract_Pending";
+  }
   if (ALLOWED.has(trimmed)) {
     return trimmed as OperationsApplicationsListStatus;
   }
@@ -139,8 +147,8 @@ export function normalizeOperationsDashboardStatusParam(
     contracted: "Contracted",
     contracts_out: "Contract_Out",
     contract_signed: "Contract_Signed",
-    reinitiate_contract: "Reinitiate_Contract",
-    reinitiated_contract: "Reinitiate_Contract",
+    reinitiate_contract: "Contract_Pending",
+    reinitiated_contract: "Contract_Pending",
     signed_contracts: "Contract_Signed",
     funding_call: "Funding Call",
     finals_and_funding_call: "Finals_And_Funding_Call",

@@ -35,6 +35,12 @@ const schema = yup.object().shape({
 
 type SettingsTab = 'profile' | 'docusign' | 'funders';
 
+const tabTriggerClass = cn(
+  'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer',
+  'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182]',
+  'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm',
+);
+
 export default function UserSetting() {
   const dispatch = useDispatch<AppDispatch>();
   const loginData = useSelector((state: RootState) => state.login?.data);
@@ -125,13 +131,6 @@ export default function UserSetting() {
     setSearchParams(next, { replace: true });
   };
 
-  const pageTitle =
-    activeTab === 'docusign'
-      ? 'DocuSign Accounts'
-      : activeTab === 'funders'
-        ? 'Funders'
-        : 'Settings';
-
   const pageDescription =
     activeTab === 'profile'
       ? 'Manage your profile information and keep your contact details up to date.'
@@ -212,13 +211,9 @@ export default function UserSetting() {
     <div className="min-h-[calc(100vh-80px)] w-full bg-background">
       <div className="container w-full px-4 py-10">
         <div className="flex flex-col gap-6">
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
-              <div>
-                <h1 className="text-3xl font-semibold tracking-tight text-foreground">{pageTitle}</h1>
-                <p className="text-sm text-muted-foreground mt-1">{pageDescription}</p>
-              </div>
-            </div>
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-foreground">Settings</h1>
+            <p className="text-sm text-muted-foreground mt-1">{pageDescription}</p>
           </div>
 
           <Separator />
@@ -226,36 +221,15 @@ export default function UserSetting() {
           {isSuperAdmin ? (
             <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
               <TabsList className="inline-flex h-auto flex-wrap gap-0 rounded-lg bg-[#E8ECF1] dark:bg-muted p-1 border-0 shadow-none mb-4">
-                <TabsTrigger
-                  value="profile"
-                  className={cn(
-                    'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer',
-                    'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182]',
-                    'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm',
-                  )}
-                >
+                <TabsTrigger value="profile" className={tabTriggerClass}>
                   <User className="h-4 w-4 shrink-0" />
                   Profile
                 </TabsTrigger>
-                <TabsTrigger
-                  value="docusign"
-                  className={cn(
-                    'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer',
-                    'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182]',
-                    'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm',
-                  )}
-                >
+                <TabsTrigger value="docusign" className={tabTriggerClass}>
                   <FileSignature className="h-4 w-4 shrink-0" />
                   DocuSign
                 </TabsTrigger>
-                <TabsTrigger
-                  value="funders"
-                  className={cn(
-                    'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer',
-                    'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182]',
-                    'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm',
-                  )}
-                >
+                <TabsTrigger value="funders" className={tabTriggerClass}>
                   <Building2 className="h-4 w-4 shrink-0" />
                   Funders
                 </TabsTrigger>

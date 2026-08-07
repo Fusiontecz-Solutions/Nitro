@@ -20,10 +20,18 @@ import {
 } from "@/lib/offerDecisionSync";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
+import { useDispatch } from "react-redux";
+import type { AppDispatch } from "@/redux/store";
+import {
+  getApplicationByApplicationId,
+  getApplicationById,
+  rejectApplication,
+} from "@/redux/actions/applicationActions";
 import { Badge } from "@/components/ui/badge";
 import MyNotes from "./MyNotes";
 import { ApprovedOfferDisplay } from "./ApprovedOfferDisplay";
-import RejectApplicationModal from "./RejectApplicationModal";
+
+const SIMPLE_DECLINE_REASON = "Declined";
 
 type Frequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly" | "";
 
@@ -63,7 +71,7 @@ export interface OfferDecisionToggleProps {
 
   /** Called when user confirms Approve & Save. Return false to abort the offer save. */
   onApprove?: (value: OfferFormValue) => void | boolean | Promise<void | boolean>;
-  /** Called when user confirms decline with a reason. */
+  /** Called after the deal is declined. */
   onDecline?: (reason: string) => void | Promise<void>;
   /** Called when user cancels editing an existing decision. */
   onCancelEdit?: () => void;
@@ -425,13 +433,14 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     aboveOffer,
   } = props;
 
+  const dispatch = useDispatch<AppDispatch>();
   const [localData, setLocalData] = useState<OfferFormValue>(() => ({
     ...DEFAULT_FORM_STATE,
     ...(props.value ?? {}),
   }));
   const [showApproveForm, setShowApproveForm] = useState<boolean>(false);
   const [isApproveLoading, setIsApproveLoading] = useState(false);
-  const [isDeclineModalOpen, setIsDeclineModalOpen] = useState(false);
+  const [isDeclineLoading, setIsDeclineLoading] = useState(false);
   // Used to show an inline loading state while we fetch saved decision.
   const [isOfferDecisionLoading, setIsOfferDecisionLoading] = useState(false);
   const [persistedDecision, setPersistedDecision] = useState<
@@ -1162,7 +1171,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
   // const isApprovedButtonDisabled =
   //   !!disabled || (!isEditingDecision && hasDecision);
   const isDeclinedButtonDisabled =
-    !!disabled || (!isEditingDecision && hasDecision);
+    !!disabled || isDeclineLoading || (!isEditingDecision && hasDecision);
 
   // If parent indicates this offer was declined, clear editable fields.
   // Keep "editingDeclined" intact so parent flows that re-edit declined decisions
@@ -1183,42 +1192,66 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
   //   setShowApproveForm((prev) => !prev);
   // };
 
-  const handleDeclineClick = () => {
+  const handleDeclineClick = async () => {
     if (isDeclinedButtonDisabled) return;
-    setIsDeclineModalOpen(true);
-  };
+    if (!applicationId) {
+      toast.error("Missing application id. Please reload and try again.");
+      return;
+    }
 
-  // Runs after RejectApplicationModal's rejectApplication succeeds: keep the
-  // offer-decision record + local offer form in sync with the rejected state.
-  const handleAfterReject = async (reason: string) => {
-    const trimmed = reason.trim();
+    setIsDeclineLoading(true);
+    try {
+      await dispatch(
+        rejectApplication({
+          id: applicationId,
+          reason: SIMPLE_DECLINE_REASON,
+          ccEmails: [],
+        }),
+      ).unwrap();
 
-    if (applicationId) {
       try {
         await axiosPost("/offer-decisions/decline", {
           applicationId,
-          declineReason: trimmed,
+          declineReason: SIMPLE_DECLINE_REASON,
           decision: "declined",
         });
       } catch (error: unknown) {
         console.error("Failed to persist offer decline:", error);
       }
-    }
 
-    if (onDecline) {
-      const maybePromise = onDecline(trimmed);
-      if (maybePromise && typeof (maybePromise as any).then === "function") {
-        await maybePromise;
+      if (onDecline) {
+        const maybePromise = onDecline(SIMPLE_DECLINE_REASON);
+        if (maybePromise && typeof (maybePromise as any).then === "function") {
+          await maybePromise;
+        }
       }
-    }
 
-    // Clear editable fields after a decline.
-    hasManualOurRemitRef.current = false;
-    lastChangedFieldRef.current = null;
-    offerSnapshotBeforeEditRef.current = null;
-    setLocalData({ ...DEFAULT_FORM_STATE });
-    setShowApproveForm(false);
-    setPersistedDecision("declined");
+      hasManualOurRemitRef.current = false;
+      lastChangedFieldRef.current = null;
+      offerSnapshotBeforeEditRef.current = null;
+      setLocalData({ ...DEFAULT_FORM_STATE });
+      setShowApproveForm(false);
+      setPersistedDecision("declined");
+
+      const idStr = String(applicationId);
+      if (/^\d+$/.test(idStr)) {
+        await dispatch(getApplicationByApplicationId(idStr));
+      } else {
+        await dispatch(getApplicationById(idStr));
+      }
+
+      toast.success("Application declined");
+    } catch (error: unknown) {
+      const message =
+        typeof error === "string"
+          ? error
+          : error instanceof Error
+            ? error.message
+            : "Failed to decline application";
+      toast.error(message);
+    } finally {
+      setIsDeclineLoading(false);
+    }
   };
 
   const canApproveOffer = useMemo(() => {
@@ -1338,6 +1371,21 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
 
       skipNextOfferDecisionReloadRef.current = true;
       emitOfferDecisionUpdated(applicationId);
+
+      // Refresh application so header status shows Contract Pending
+      try {
+        const idStr = String(applicationId);
+        if (/^\d+$/.test(idStr)) {
+          await dispatch(getApplicationByApplicationId(idStr));
+        } else {
+          await dispatch(getApplicationById(idStr));
+        }
+      } catch (refreshErr) {
+        console.error(
+          "Offer saved but failed to refresh application status:",
+          refreshErr,
+        );
+      }
 
       toast.success("Offer saved successfully.");
     } catch (error: any) {
@@ -1463,7 +1511,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                   : "bg-[#ff4d4d] text-white hover:bg-[#e64545] cursor-pointer"
               }`}
             >
-              Declined
+              {isDeclineLoading ? "Declining..." : "Declined"}
             </button>
             <button
               type="button"
@@ -1477,7 +1525,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                   : "bg-[#00b377] text-white cursor-pointer hover:bg-[#009e69] transform hover:-translate-y-0.5"
               } disabled:opacity-60 disabled:cursor-not-allowed`}
             >
-              {isApproveLoading ? "Saving..." : "Scrubbed & Saved"}
+              {isApproveLoading ? "Saving..." : "Create & Save Offer"}
             </button>
           </>
         )}
@@ -1828,12 +1876,6 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         </div>
       </div>
 
-      {/* DECLINE MODAL — same flow as ChecksAndDecision (reason dropdown + ISO rejection email) */}
-      <RejectApplicationModal
-        open={isDeclineModalOpen}
-        onOpenChange={setIsDeclineModalOpen}
-        onAfterReject={handleAfterReject}
-      />
     </div>
   );
 };

@@ -16,6 +16,10 @@ function safeAppReturnPath(raw: string | null): string | null {
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import type { AppDispatch, RootState } from '../../redux/store';
 import { login } from '../../redux/actions/authActions';
+import {
+  fetchOperationsDashboardSummary,
+  fetchOperationsDashboardRecentCases,
+} from '../../redux/actions/operationsDashboardActions';
 import { useDispatch, useSelector } from 'react-redux';
 import { toast } from 'react-toastify';
 
@@ -54,11 +58,14 @@ export default function LoginPage() {
         localStorage.setItem('role', result.user.role);
         toast.success(result?.message);
 
+        void dispatch(fetchOperationsDashboardSummary());
+        void dispatch(fetchOperationsDashboardRecentCases());
+
         const afterLogin = safeAppReturnPath(searchParams.get('returnUrl'));
         if (afterLogin) {
           navigate(afterLogin, { replace: true });
         } else {
-          navigate('/applications', { replace: true });
+          navigate('/', { replace: true });
         }
       } else {
         toast.error(result?.message);

@@ -27,32 +27,30 @@ interface ApplicationProgressBarProps {
 }
 
 const TWO_LINE_STAGE_KEYS = new Set<ApplicationProgressStageKey>([
-  "FINAL_APPROVAL",
+  "APPLICATION_ADDED",
+  "CREATE_OFFER",
   "CONTRACT_GENERATED",
+  "CONTRACT_SENT",
   "CONTRACT_SIGNED",
-  "FINAL_AND_FUNDING",
 ]);
 
-/** Compact labels so all steps fit without crushing layout. Full text stays in `title`. */
-const COMPACT_STAGE_LABELS: Partial<Record<ApplicationProgressStageKey, string>> = {
-  UNDERWRITER: "Underwriter",
-  DISBURSEMENT: "Disbursement",
-};
-
 function splitStageLabel(key: ApplicationProgressStageKey, label: string) {
-  if (key === "FINAL_APPROVAL") {
-    return { primary: "Final", secondary: "Approval" };
+  if (key === "APPLICATION_ADDED") {
+    return { primary: "Application", secondary: "Added" };
+  }
+  if (key === "CREATE_OFFER") {
+    return { primary: "Create", secondary: "Offer" };
   }
   if (key === "CONTRACT_GENERATED") {
-    return { primary: "Contract", secondary: "Generated" };
+    return { primary: "Contract", secondary: "Pending" };
+  }
+  if (key === "CONTRACT_SENT") {
+    return { primary: "Contract", secondary: "Sent" };
   }
   if (key === "CONTRACT_SIGNED") {
     return { primary: "Contract", secondary: "Signed" };
   }
-  if (key === "FINAL_AND_FUNDING") {
-    return { primary: "Final &", secondary: "Funding" };
-  }
-  return { primary: COMPACT_STAGE_LABELS[key] ?? label, secondary: null };
+  return { primary: label, secondary: null };
 }
 
 const ApplicationProgressBar = ({
@@ -120,7 +118,7 @@ const ApplicationProgressBar = ({
       </div>
 
       <HorizontalScrollFade scrollKey={String(currentIndex)}>
-        <div className="relative min-w-[47rem] px-1 pb-1">
+        <div className="relative min-w-[28rem] px-1 pb-1">
           <div
             className="absolute left-1 right-1 top-[15px] h-[3px] rounded-full"
             style={{ backgroundColor: trackColor }}
@@ -142,7 +140,8 @@ const ApplicationProgressBar = ({
             {stages.map((stage, index) => {
               const isCompleted = !isNegative && index < currentIndex;
               const isActive = index === currentIndex;
-              const isFunded = isActive && index === lastIndex && !isNegative;
+              const isTerminalComplete =
+                isActive && index === lastIndex && !isNegative;
               const useTwoLines = TWO_LINE_STAGE_KEYS.has(stage.key);
               const labels = splitStageLabel(stage.key, stage.label);
 
@@ -154,7 +153,7 @@ const ApplicationProgressBar = ({
                     color: "#ffffff",
                   };
                 }
-                if (isCompleted || isFunded) {
+                if (isCompleted || isTerminalComplete) {
                   return {
                     backgroundColor: accentDark,
                     borderColor: accentDark,
@@ -194,7 +193,7 @@ const ApplicationProgressBar = ({
                         : {}),
                     }}
                   >
-                    {isCompleted || isFunded ? (
+                    {isCompleted || isTerminalComplete ? (
                       <Check className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />
                     ) : isNegative && isActive ? (
                       <X className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />

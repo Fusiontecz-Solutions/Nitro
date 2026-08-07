@@ -74,9 +74,9 @@ export function canViewApplicationClaimAssignments(roleKey: string): boolean {
   return key === "SUPER_ADMIN" || key === "OPERATIONS";
 }
 
-/** Approved offer amount on application lists (ops/admin + pipeline reviewers). */
+/** Approved offer amount on application lists (ops/admin + scrubbing). */
 export function canViewApplicationApprovedAmount(roleKey: string): boolean {
   const key = roleKey.trim().toUpperCase().replace(/\s+/g, "_");
   if (canViewApplicationClaimAssignments(key)) return true;
-  return key === "SCRUBBING" || key === "UNDERWRITER";
+  return key === "SCRUBBING";
 }

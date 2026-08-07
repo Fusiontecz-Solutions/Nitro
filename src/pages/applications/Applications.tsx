@@ -3,9 +3,6 @@ import { Input } from "@/components/ui/input";
 import {
   Search,
   Plus,
-  BadgeCheck,
-  CircleDollarSign,
-  XCircle,
   Clock,
   Loader2,
   AlertCircle,
@@ -15,32 +12,29 @@ import {
   LayoutGrid,
   LayoutList,
   ArrowLeft,
-  Activity,
-  Upload,
-  Download,
   TrendingUp,
+  CheckCircle2,
+  FileInput,
 } from "lucide-react";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import RestoreApplicationToScrubberModal from "@/components/application/RestoreApplicationToScrubberModal";
 import { motion } from "framer-motion";
 import { useLocation, useNavigate } from "react-router";
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
   claimUnderwriterDeal,
-  claimFinalUnderwriterDeal,
   getApplicationStats,
   deleteApplication,
   permanentlyDeleteApplication,
   extractBusinessDetails,
-  normalizeApplicationStatsData,
 } from "@/redux/actions/applicationActions";
-import type { ApplicationStatsData } from "@/redux/actions/applicationActions";
 import {
-  hydrateApplicationsListFromCache,
   resetDeleteApplication,
 } from "@/redux/slices/applicationSlice";
+import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashboardActions";
 
 import { toast } from "react-toastify";
 import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
@@ -68,9 +62,8 @@ import {
   formatCurrency,
   formatDate as formatDateUtil,
   formatDateTimeUS as formatDateTimeUSUtil,
-  getPreviousMonthDateRangeET,
+  formatInt,
 } from "@/lib/utils";
-import { axiosGet, axiosPostFormData } from "@/redux/axios";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import { getClientByClientId } from "@/redux/actions/clientActions";
 import {
@@ -81,29 +74,23 @@ import {
   operationsDashboardStatusTitle,
 } from "@/constants/operationsDashboardApplications";
 import {
-  buildApplicationsBrowseUrl,
+  buildOperationsPipelineApplicationsUrl,
   buildUnderwriterPipelineApplicationsUrl,
-  statCardTitleToApplicationsQuery,
 } from "@/constants/dashboardApplicationsNavigation";
 import {
   applicationsListParamsCacheKey,
-  getCachedApplicationsList,
 } from "@/lib/applicationsListCache";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 import {
   parseApplicationsListRouteFilters,
   parseUnderwriterClaimFromSearch,
-  parseUnderwriterPipelineFromSearch,
   poolTabFromUnderwriterClaim,
   underwriterClaimFromPoolTab,
   type ScrubberPoolTab,
   type UnderwriterClaimParam,
   buildApplicationsListParams,
   applicationsListSortFromTable,
-  APPLICATIONS_LIST_DEFAULT_SORT,
 } from "@/lib/applicationsListParams";
-import { underwriterPipelineTitle } from "@/constants/underwriterPipeline";
-import { invalidateUnderwriterPipelineCounts } from "@/lib/underwriterPipelineCounts";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
@@ -111,15 +98,8 @@ import { getOperationsPipelineStageTabId } from "@/constants/operationsPipelineT
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
 import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
 import {
-  formatUnderwriterClaimLabel,
-  canViewApplicationClaimAssignments,
   canViewApplicationApprovedAmount,
-  mapUsersToClaimFilterOptions,
 } from "@/lib/applicationClaimLabel";
-import {
-  downloadFailedBulkUploadRows,
-  type BulkImportRowError,
-} from "@/lib/bulkUploadErrors";
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
@@ -129,8 +109,6 @@ import { resolveApplicationRequestAmount } from "@/lib/applicationLoanAmount";
 import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
 import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
 import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
-import { ApplicationClaimUserFilterDropdown } from "@/components/application/ApplicationClaimUserFilterDropdown";
-import { fetchUsersByRole } from "@/redux/actions/settingsUserActions";
 import {
   normalizeRoleKey,
   resolveEffectiveRole,
@@ -139,62 +117,20 @@ import { getApplicationApprovedAmount } from "@/lib/applicationOfferAmount";
 import {
   getReinitiateContractIsoDecisionLabel,
   isIsoUpdatedOfferApproved,
-  applicationAwaitingContractReinitiation,
 } from "@/lib/contractReinitiation";
 import { formatFinalApprovalSourceLabel } from "@/lib/finalApprovalSource";
 import FinalApprovalSourceBadge from "@/components/application/FinalApprovalSourceBadge";
+import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
+import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
 
-type StatCardProps = {
-  isDark: boolean;
-  title: string;
+type ApplicationsSummaryCard = {
+  label: string;
+  value: number;
+  helper: string;
+  subtitle?: string;
   icon: ReactNode;
-  countValue: string;
-  countSuffix: string;
-  footLeft?: string;
-  amountValue?: string;
+  operationsStatus: string;
 };
-
-/** Minimal stats tile (replaces deleted CornerSummaryCard). */
-function StatCard({
-  isDark,
-  title,
-  icon,
-  countValue,
-  countSuffix,
-  footLeft,
-  amountValue,
-}: StatCardProps) {
-  return (
-    <div
-      className={`h-full rounded-xl border p-4 shadow-sm ${
-        isDark ? "border-[#374151] bg-[#1a1b1e]" : "border-border/60 bg-card"
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {title}
-        </p>
-        <span className="shrink-0">{icon}</span>
-      </div>
-      <p className="mt-3 text-2xl font-semibold tabular-nums text-foreground">
-        {countValue}
-        <span className="ml-1.5 text-sm font-medium text-muted-foreground">
-          {countSuffix}
-        </span>
-      </p>
-      {(footLeft || amountValue) && (
-        <div className="mt-3 flex items-end justify-between gap-2 border-t border-border/50 pt-3">
-          <p className="text-xs text-muted-foreground">{footLeft}</p>
-          {amountValue ? (
-            <p className="text-sm font-semibold tabular-nums text-foreground">
-              {amountValue}
-            </p>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /** List/table: imported `dealId` when set, otherwise business `applicationId`. */
 function getApplicationDealIdDisplay(app: Application): string {
@@ -206,31 +142,6 @@ function getApplicationDealIdDisplay(app: Application): string {
 
 const APPLICATIONS_VIEW_MODE_STORAGE_KEY = "applicationsListViewMode";
 
-/** Calendar bounds for the month before “today” in ET (`YYYY-MM-DD`), used for stats “last month” deltas. */
-function getPreviousCalendarMonthDateBoundaries(): { startDate: string; endDate: string } {
-  const range = getPreviousMonthDateRangeET();
-  if (!range) return { startDate: "", endDate: "" };
-  return { startDate: range.start, endDate: range.end };
-}
-
-function getApplicationsStatCardIcon(title: string) {
-  switch (title) {
-    case "Funded":
-    case "Funded Deals":
-      return <CircleDollarSign size={16} className="text-green-500" aria-hidden />;
-    case "Approved":
-      return <BadgeCheck size={16} className="text-[#49A8E8]" aria-hidden />;
-    case "Rejected":
-      return <XCircle size={16} className="text-rose-500" aria-hidden />;
-    case "Pending":
-      return <Clock size={16} className="text-sky-500" aria-hidden />;
-    case "In Progress":
-      return <Activity size={16} className="text-[#49A8E8]" aria-hidden />;
-    default:
-      return <BadgeCheck size={16} className="text-[#49A8E8]" aria-hidden />;
-  }
-}
-
 const Applications = () => {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
@@ -239,22 +150,8 @@ const Applications = () => {
   const loginData = useSelector((state: RootState) => state.login.data);
   const loginUser = loginData?.user;
   const effectiveRoleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
-  /** Super Admin / Operations — scrubbers and underwriters must not see colleagues' claims. */
-  const showClaimedByColumn = canViewApplicationClaimAssignments(effectiveRoleKey);
-  /** Ops/admin + Scrubbing/Underwriter — show approved offer amount alongside request amount. */
+  /** Ops/admin + Scrubbing — show approved offer amount alongside request amount. */
   const showApprovedAmountColumn = canViewApplicationApprovedAmount(effectiveRoleKey);
-  const underwriters = useSelector(
-    (state: RootState) => state.settingsUsers.byRole.UNDERWRITER?.list ?? [],
-  );
-  const underwriterFilterOptions = useMemo(
-    () => mapUsersToClaimFilterOptions(underwriters),
-    [underwriters],
-  );
-
-  useEffect(() => {
-    if (!showClaimedByColumn) return;
-    void dispatch(fetchUsersByRole("UNDERWRITER"));
-  }, [dispatch, showClaimedByColumn]);
 
   const getApplicationClientId = useCallback((application: Application): string | null => {
     const client = application?.client;
@@ -290,16 +187,8 @@ const Applications = () => {
   const isOperationsDashboardView =
     new URLSearchParams(location.search).get("fromDashboard") === "operations";
 
-  const underwriterPipelineFilter = parseUnderwriterPipelineFromSearch(
-    location.search,
-  );
-  const showUnderwriterPipelineView =
-    sessionRoleKey === "UNDERWRITER" && Boolean(underwriterPipelineFilter);
-
   const showUwDealPoolUi =
-    (sessionRoleKey === "SCRUBBING" || sessionRoleKey === "UNDERWRITER") &&
-    !isOperationsDashboardView &&
-    !showUnderwriterPipelineView;
+    sessionRoleKey === "SCRUBBING" && !isOperationsDashboardView;
 
   // Local state (URL-derived defaults avoid a blank frame before the first list fetch)
   const [searchTerm, setSearchTerm] = useState("");
@@ -309,7 +198,6 @@ const Applications = () => {
   );
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
-  const [underwriterFilter, setUnderwriterFilter] = useState<string>("all");
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
@@ -323,7 +211,7 @@ const Applications = () => {
   }, [isOperationsDashboardView, dashboardStateFilter]);
 
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(true);
-  /** Scrubber inbox: Queue / Claimed / My deals; underwriter keeps Queue / My deals. */
+  /** Scrubber inbox: Queue / Claimed / My deals. */
   const [underwriterPoolTab, setUnderwriterPoolTab] = useState<ScrubberPoolTab>(
     () => poolTabFromUnderwriterClaim(parseUnderwriterClaimFromSearch(location.search)),
   );
@@ -346,28 +234,6 @@ const Applications = () => {
     owner: Record<string, unknown>;
   } | null>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
-  const bulkUploadInputRef = useRef<HTMLInputElement>(null);
-  const bulkUploadSourceFileRef = useRef<File | null>(null);
-  const [showBulkUploadErrorsDialog, setShowBulkUploadErrorsDialog] =
-    useState(false);
-  const [bulkUploadProgress, setBulkUploadProgress] = useState<{
-    status: "idle" | "processing" | "completed" | "failed";
-    totalRows: number;
-    processedRows: number;
-    successCount: number;
-    updatedCount: number;
-    failedCount: number;
-    message?: string;
-    errors: BulkImportRowError[];
-  }>({
-    status: "idle",
-    totalRows: 0,
-    processedRows: 0,
-    successCount: 0,
-    updatedCount: 0,
-    failedCount: 0,
-    errors: [],
-  });
   const isBulkDeleteRef = useRef(false);
   const fetchApplicationsRef = useRef<(() => Promise<void>) | null>(null);
 
@@ -385,15 +251,7 @@ const Applications = () => {
     pageSize: 10,
   });
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<string[]>([]);
-  const [prevMonthStats, setPrevMonthStats] =
-    useState<ApplicationStatsData | null>(null);
-  /** Stats scoped to Queue / My deals (Scrubbing inbox only); avoids overwriting global Redux stats. */
-  const [uwDealPoolStats, setUwDealPoolStats] =
-    useState<ApplicationStatsData | null>(null);
-  const [uwDealPoolPrevStats, setUwDealPoolPrevStats] =
-    useState<ApplicationStatsData | null>(null);
   const [viewApplication, setViewApplication] = useState<Application | null>(null);
-  const [isNavigatingToBrowse, setIsNavigatingToBrowse] = useState(false);
   const [listViewMode, setListViewMode] = useState<"list" | "grid">(() => {
     if (typeof window === "undefined") return "list";
     try {
@@ -421,64 +279,36 @@ const Applications = () => {
     error,
   } = useSelector((state: RootState) => state.applications);
 
-  const { data: statsData } = useSelector(
-    (state: RootState) => state.applicationStats,
-  );
-
   const {
     loading: deleteLoading,
     success: deleteSuccess,
     error: deleteError,
   } = useSelector((state: RootState) => state.deleteApplication);
 
+  const {
+    summaryCounts,
+    summaryAmounts,
+    caseStageCounts,
+    caseStageAmounts,
+    summaryLoading,
+    summaryRefreshing,
+    hasLoadedSummaryOnce,
+    lastSummaryFetchedAt,
+  } = useSelector((state: RootState) => state.operationsDashboard);
 
-  const fetchUwDealPoolStats = useCallback(
-    async (signal?: AbortSignal) => {
-      if (!showUwDealPoolUi) return;
-      const claim = resolveUwClaimParam();
-      const { startDate, endDate } = getPreviousCalendarMonthDateBoundaries();
-      const config = signal ? { signal } : undefined;
-      const [curRes, prevRes] = await Promise.all([
-        axiosGet(
-          `/applications/stats?underwriterClaim=${encodeURIComponent(claim)}`,
-          config,
-        ),
-        axiosGet(
-          `/applications/stats?underwriterClaim=${encodeURIComponent(
-            claim,
-          )}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`,
-          config,
-        ),
-      ]);
-      const curRaw = curRes.data as { data?: unknown };
-      const prevRaw = prevRes.data as { data?: unknown };
-      setUwDealPoolStats(
-        normalizeApplicationStatsData(curRaw?.data ?? curRes.data),
-      );
-      setUwDealPoolPrevStats(
-        normalizeApplicationStatsData(prevRaw?.data ?? prevRes.data),
-      );
-    },
-    [showUwDealPoolUi, underwriterPoolTab, resolveUwClaimParam],
-  );
+  const summaryPrefetchFresh =
+    hasLoadedSummaryOnce && isShellPrefetchFresh(lastSummaryFetchedAt);
+  const statCardsShowSkeleton =
+    !hasLoadedSummaryOnce || (summaryLoading && !summaryRefreshing);
 
-  useEffect(() => {
-    if (!showUwDealPoolUi) {
-      setUwDealPoolStats(null);
-      setUwDealPoolPrevStats(null);
-      return;
-    }
-    setUwDealPoolStats(null);
-    setUwDealPoolPrevStats(null);
-    const ac = new AbortController();
-    void fetchUwDealPoolStats(ac.signal).catch((err: unknown) => {
-      if (ac.signal.aborted) return;
-      console.error("Failed to fetch scrubbing pool application stats", err);
-      setUwDealPoolStats(null);
-      setUwDealPoolPrevStats(null);
-    });
-    return () => ac.abort();
-  }, [showUwDealPoolUi, underwriterPoolTab, fetchUwDealPoolStats]);
+  useQuery({
+    queryKey: ["operations-dashboard-summary", sessionRoleKey],
+    queryFn: async () => dispatch(fetchOperationsDashboardSummary()).unwrap(),
+    enabled: !isOperationsDashboardView && !summaryPrefetchFresh,
+    staleTime: 60_000,
+    refetchOnMount: !summaryPrefetchFresh,
+    refetchOnWindowFocus: false,
+  });
 
   // Handle PDF file selection
   const handlePDFFileSelect = useCallback(
@@ -598,27 +428,11 @@ const Applications = () => {
     return formatDateTimeUSUtil(dateString ?? "", "-");
   }, []);
 
-  const getApplicationIsoLabel = useCallback((application: Application): string => {
-    const iso = application.iso;
-    if (!iso || typeof iso !== "object") return "-";
-    const name = iso.name?.trim();
-    if (name) return name;
-    const email = iso.email?.trim();
-    if (email) return email;
-    return "-";
-  }, []);
-
   const getApplicationQueueLabel = useCallback((application: Application): string => {
-    if (applicationAwaitingContractReinitiation(application)) {
-      return "Reinitiated Contract";
-    }
     return getApplicationSummaryStatusLabel(application);
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
-    if (queueLabel.toLowerCase() === "reinitiated contract") {
-      return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200";
-    }
     const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
     if (contractWorkflowClass) return contractWorkflowClass;
     if (isContractSignedQueueBadgeLabel(queueLabel)) {
@@ -706,20 +520,11 @@ const Applications = () => {
     async (app: Application) => {
       const id = app._id ?? (app as { id?: string }).id;
       if (!id) return;
-      const isFinalUnderwriterRole = sessionRoleKey === "UNDERWRITER";
       try {
         setClaimBusyAppId(String(id));
-        if (isFinalUnderwriterRole) {
-          await dispatch(claimFinalUnderwriterDeal({ applicationId: String(id) })).unwrap();
-        } else {
-          await dispatch(claimUnderwriterDeal({ applicationId: String(id) })).unwrap();
-        }
-        toast.success(isFinalUnderwriterRole ? "Application claimed" : "Deal claimed");
-        if (showUwDealPoolUi) {
-          void fetchUwDealPoolStats().catch((err: unknown) => {
-            console.error("Failed to refresh deal pool stats after claim", err);
-          });
-        }
+        await dispatch(claimUnderwriterDeal({ applicationId: String(id) })).unwrap();
+        toast.success("Deal claimed");
+        void dispatch(fetchOperationsDashboardSummary());
         handleNavigateToApplication(app, { tab: "decision-making" });
       } catch (e: unknown) {
         const msg =
@@ -733,13 +538,7 @@ const Applications = () => {
         setClaimBusyAppId(null);
       }
     },
-    [
-      dispatch,
-      fetchUwDealPoolStats,
-      handleNavigateToApplication,
-      sessionRoleKey,
-      showUwDealPoolUi,
-    ],
+    [dispatch, handleNavigateToApplication],
   );
 
   const handlePrefetchApplicationDetail = useCallback((app: Application) => {
@@ -827,7 +626,8 @@ const Applications = () => {
       },
       {
         id: "businessName",
-        size: 260,
+        size: 160,
+        maxSize: 180,
         accessorFn: (row) => getApplicationBusinessDisplayName(row),
         enableSorting: true,
         header: ({ column }) => (
@@ -841,7 +641,8 @@ const Applications = () => {
       },
       {
         id: "seeProgress",
-        size: 100,
+        size: 88,
+        maxSize: 96,
         header: () => (
           <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
             Progress
@@ -886,50 +687,6 @@ const Applications = () => {
         enableSorting: false,
         enableHiding: false,
       },
-      ...(sessionRoleKey === "UNDERWRITER" || sessionRoleKey === "SCRUBBING"
-        ? []
-        : ([
-          {
-            id: "iso",
-            size: 150,
-            accessorFn: (row) => getApplicationIsoLabel(row),
-            header: () => (
-              <span className="font-medium text-foreground uppercase tracking-wide">
-                ISO
-              </span>
-            ),
-            cell: ({ row }) => (
-              <span className="text-foreground">
-                {getApplicationIsoLabel(row.original)}
-              </span>
-            ),
-          },
-        ] satisfies ColumnDef<Application>[])),
-      ...(showClaimedByColumn
-        ? ([
-          {
-            id: "claimedByUnderwriter",
-            size: 180,
-            header: () => (
-              <span className="font-medium text-foreground tracking-wide">
-                  Underwriter
-              </span>
-            ),
-            cell: ({ row }) => {
-              const label = formatUnderwriterClaimLabel(row.original);
-              return (
-                <span
-                  className="block truncate text-foreground text-sm"
-                  title={label}
-                >
-                  {label}
-                </span>
-              );
-            },
-            enableSorting: false,
-          },
-        ] satisfies ColumnDef<Application>[])
-        : []),
       {
         id: "loanAmount",
         size: 160,
@@ -1118,44 +875,6 @@ const Applications = () => {
           );
         },
       },
-      ...(sessionRoleKey === "UNDERWRITER"
-        ? ([
-          {
-            id: "scrubberRecommendation",
-            size: 180,
-            accessorFn: (row) => row.scrubberRecommendation ?? "",
-            header: () => (
-              <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
-                Request
-              </span>
-            ),
-            cell: ({ row }) => {
-              const recommendation = row.original.scrubberRecommendation;
-              if (!recommendation) {
-                return <span className="text-foreground">-</span>;
-              }
-              const isApproval = /approv/i.test(recommendation);
-              const displayLabel = /recommend\s+decline/i.test(recommendation)
-                ? "Decline"
-                : /recommend\s+approval/i.test(recommendation)
-                  ? "Approve"
-                  : recommendation;
-              return (
-                <span
-                  className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
-                    isApproval
-                      ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
-                      : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                  }`}
-                >
-                  {displayLabel}
-                </span>
-              );
-            },
-            enableSorting: false,
-          },
-        ] satisfies ColumnDef<Application>[])
-        : []),
       {
         id: "createdAt",
         size: 170,
@@ -1349,7 +1068,6 @@ const Applications = () => {
     formatDate,
     formatDateTime,
     getApplicationQueueBadgeClass,
-    getApplicationIsoLabel,
     getApplicationBusinessDisplayName,
     getApplicationQueueLabel,
     handleNavigateToApplication,
@@ -1357,14 +1075,12 @@ const Applications = () => {
     expandedProgressRowId,
     handleToggleApplicationProgress,
     showUwDealPoolUi,
-    showClaimedByColumn,
     showApprovedAmountColumn,
     showReinitiateContractIsoDecisionColumn,
     showFinalApprovalSourceColumn,
     underwriterPoolTab,
     claimBusyAppId,
     handleUwClaimDeal,
-    sessionRoleKey,
     effectiveRoleKey,
     isOperationsDashboardView,
     dashboardStateFilter,
@@ -1419,17 +1135,6 @@ const Applications = () => {
 
   const listRequestParamsForKey = useMemo((): GetApplicationsParams => {
     const sort = applicationsListSortFromTable(sorting);
-    if (showUnderwriterPipelineView && underwriterPipelineFilter) {
-      return buildApplicationsListParams({
-        pageIndex: pagination.pageIndex,
-        pageSize: pagination.pageSize,
-        searchTerm: debouncedSearchTerm,
-        dashboardStateFilter: "",
-        statusFilter: "all",
-        underwriterPipeline: underwriterPipelineFilter,
-        ...sort,
-      });
-    }
     if (showUwDealPoolUi) {
       return buildApplicationsListParams({
         pageIndex: pagination.pageIndex,
@@ -1449,8 +1154,7 @@ const Applications = () => {
       statusFilter,
       typeFilter,
       priorityFilter,
-      underwriterFilter:
-        showClaimedByColumn ? underwriterFilter : "all",
+      underwriterFilter: "all",
       useDashboardStageFilter: isOperationsDashboardView,
       ...sort,
     });
@@ -1459,12 +1163,8 @@ const Applications = () => {
     statusFilter,
     typeFilter,
     priorityFilter,
-    underwriterFilter,
-    showClaimedByColumn,
     isOperationsDashboardView,
     showUwDealPoolUi,
-    showUnderwriterPipelineView,
-    underwriterPipelineFilter,
     underwriterPoolTab,
     resolveUwClaimParam,
     pagination.pageIndex,
@@ -1493,21 +1193,6 @@ const Applications = () => {
   const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
   });
-
-  /** Keep sidebar pipeline badges aligned when stage filters change. */
-  useEffect(() => {
-    if (!isListFilterInitialized || !applicationsListQuery.isSuccess) return;
-    if (sessionRoleKey === "UNDERWRITER") {
-      invalidateUnderwriterPipelineCounts();
-    }
-  }, [
-    applicationsListQuery.isSuccess,
-    isListFilterInitialized,
-    listFetchParams.operationsStatus,
-    listFetchParams.statsBucket,
-    listFetchParams.currentQueue,
-    sessionRoleKey,
-  ]);
 
   const fetchApplications = useCallback(async () => {
     await applicationsListQuery.refetch();
@@ -1548,19 +1233,6 @@ const Applications = () => {
   // Initialize list filter from dashboard query params
   useEffect(() => {
     const query = new URLSearchParams(location.search);
-    const uwPipeline = parseUnderwriterPipelineFromSearch(location.search);
-    if (uwPipeline) {
-      setDashboardStateFilter("");
-      setStatusFilter("all");
-
-      if (pagination.pageIndex !== 0) {
-        setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-        return;
-      }
-
-      setIsListFilterInitialized(true);
-      return;
-    }
 
     const uwClaim = query.get("underwriterClaim");
     if (uwClaim === "unclaimed" || uwClaim === "claimed" || uwClaim === "mine") {
@@ -1646,11 +1318,7 @@ const Applications = () => {
       }
       fetchApplications();
       dispatch(getApplicationStats());
-      if (showUwDealPoolUi) {
-        void fetchUwDealPoolStats().catch((err: unknown) => {
-          console.error("Failed to refresh scrubbing pool stats after delete", err);
-        });
-      }
+      void dispatch(fetchOperationsDashboardSummary());
     } catch (err: unknown) {
       const message =
         err && typeof err === "object" && "message" in err
@@ -1668,8 +1336,6 @@ const Applications = () => {
     dispatch,
     fetchApplications,
     viewApplication,
-    showUwDealPoolUi,
-    fetchUwDealPoolStats,
     sessionRoleKey,
   ]);
 
@@ -1739,14 +1405,7 @@ const Applications = () => {
       dispatch(resetDeleteApplication());
       fetchApplications();
       dispatch(getApplicationStats());
-      if (showUwDealPoolUi) {
-        void fetchUwDealPoolStats().catch((err: unknown) => {
-          console.error(
-            "Failed to refresh scrubbing pool stats after delete",
-            err,
-          );
-        });
-      }
+      void dispatch(fetchOperationsDashboardSummary());
     }
     if (deleteError) {
       toast.error(deleteError);
@@ -1757,14 +1416,12 @@ const Applications = () => {
     deleteError,
     dispatch,
     fetchApplications,
-    showUwDealPoolUi,
-    fetchUwDealPoolStats,
     sessionRoleKey,
   ]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [searchTerm, typeFilter, priorityFilter, underwriterFilter]);
+  }, [searchTerm, typeFilter, priorityFilter]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
@@ -1787,230 +1444,15 @@ const Applications = () => {
     }
   }, [loginData, loading]);
 
-  useEffect(() => {
-    const { startDate, endDate } = getPreviousCalendarMonthDateBoundaries();
-
-    const fetchPrevStats = async () => {
-      try {
-        const queryParams = new URLSearchParams();
-        queryParams.append("startDate", startDate);
-        queryParams.append("endDate", endDate);
-
-        const url = `/applications/stats${queryParams.toString() ? `?${queryParams.toString()}` : ""
-          }`;
-        const response = await axiosGet(url);
-        const payload = response.data as any;
-        const data = (payload?.data ?? payload) as ApplicationStatsData;
-        setPrevMonthStats(data);
-      } catch (error) {
-        console.error("Failed to fetch previous month application stats", error);
-        setPrevMonthStats(null);
-      }
-    };
-
-    fetchPrevStats();
-  }, []);
-
   const userRole = resolveEffectiveRole(user);
   const roleKey = normalizeRoleKey(userRole);
   const isSuperAdmin = roleKey === "SUPER_ADMIN";
   const canCreateNewApplication =
     roleKey === "AGENT" || isSuperAdmin;
-  const isUnderwriterRole =
-    roleKey === "SCRUBBING" || roleKey === "UNDERWRITER";
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
-
-  const handleBulkUploadFileSelect = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      const lowerName = file.name.toLowerCase();
-      const isValidFile =
-        lowerName.endsWith(".csv") ||
-        lowerName.endsWith(".xlsx") ||
-        lowerName.endsWith(".xls");
-
-      if (!isValidFile) {
-        toast.error("Please upload a valid Excel/CSV file (.csv, .xlsx, .xls).");
-        e.target.value = "";
-        return;
-      }
-
-      const resetInput = () => {
-        e.target.value = "";
-      };
-
-      try {
-        bulkUploadSourceFileRef.current = file;
-        setShowBulkUploadErrorsDialog(false);
-        setBulkUploadProgress({
-          status: "processing",
-          totalRows: 0,
-          processedRows: 0,
-          successCount: 0,
-          updatedCount: 0,
-          failedCount: 0,
-          message: "Upload started...",
-          errors: [],
-        });
-
-        const formData = new FormData();
-        formData.append("file", file);
-        const startRes = await axiosPostFormData(
-          "/applications/bulk-upload-excel/start",
-          formData,
-          { timeout: 120000 },
-        );
-        const jobId = startRes?.data?.data?.jobId as string | undefined;
-        if (!jobId) {
-          throw new Error("Bulk upload job could not be started.");
-        }
-
-        // Polling design notes:
-        // - No hard attempts cap. The job lives on the server (sliding TTL) and the sheet may
-        //   contain thousands of rows; we keep polling until the server reports terminal status.
-        // - Transient poll failures (network blip, brief 5xx) MUST NOT mark the upload as failed —
-        //   the BE is likely still working. We tolerate a generous run of consecutive poll
-        //   failures and only give up if the BE truly seems unreachable for an extended period.
-        // - We also bail out if the BE makes no progress for a long stretch (stuck job).
-        const POLL_INTERVAL_MS = 2000;
-        const MAX_CONSECUTIVE_POLL_FAILURES = 30; // ~1 min of full outage
-        const NO_PROGRESS_TIMEOUT_MS = 1000 * 60 * 15; // 15 min with zero forward motion
-        let consecutiveFailures = 0;
-        let lastProgressMs = Date.now();
-        let lastProcessedRows = -1;
-        let finished = false;
-
-        while (!finished) {
-          await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
-
-          let progress: any = null;
-          try {
-            const progressRes = await axiosGet(
-              `/applications/bulk-upload-excel/progress/${encodeURIComponent(jobId)}`,
-            );
-            progress = progressRes?.data?.data;
-            consecutiveFailures = 0;
-          } catch (pollErr) {
-            consecutiveFailures += 1;
-            console.warn(
-              `[Bulk upload] progress poll failed (${consecutiveFailures}/${MAX_CONSECUTIVE_POLL_FAILURES})`,
-              pollErr,
-            );
-            if (consecutiveFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
-              throw new Error(
-                "Lost contact with the server while the bulk upload was running. Please check the applications list — the import may still be in progress on the server.",
-              );
-            }
-            continue;
-          }
-
-          if (!progress) {
-            // Server hasn't published the first heartbeat yet; keep waiting without resetting
-            // the no-progress timer.
-            continue;
-          }
-
-          const processedRows = Number(progress.processedRows) || 0;
-          if (processedRows !== lastProcessedRows) {
-            lastProcessedRows = processedRows;
-            lastProgressMs = Date.now();
-          }
-
-          const rowErrors: BulkImportRowError[] = Array.isArray(progress.errors)
-            ? progress.errors.map((err: BulkImportRowError) => ({
-                excelRowNumber: Number(err.excelRowNumber) || 0,
-                message: String(err.message ?? "Unknown error"),
-                dealId: err.dealId ?? null,
-                dealName: err.dealName ?? null,
-              }))
-            : [];
-
-          setBulkUploadProgress({
-            status: progress.status,
-            totalRows: Number(progress.totalRows) || 0,
-            processedRows,
-            successCount: Number(progress.successCount) || 0,
-            updatedCount: Number(progress.updatedCount) || 0,
-            failedCount: Number(progress.failedCount) || 0,
-            message: progress.message,
-            errors: rowErrors,
-          });
-
-          if (progress.status === "completed") {
-            const insertedNum = Number(progress.successCount) || 0;
-            const updatedNum = Number(progress.updatedCount) || 0;
-            const totalNum = Number(progress.totalRows) || 0;
-            const fallbackMessage =
-              insertedNum === 0 && updatedNum === 0
-                ? `No applications were imported from ${totalNum} row(s).`
-                : `Inserted ${insertedNum}, updated ${updatedNum} of ${totalNum} row(s).`;
-            toast.success(progress.message || fallbackMessage);
-            if (rowErrors.length) {
-              setShowBulkUploadErrorsDialog(true);
-              toast.warning(
-                `${rowErrors.length} row(s) could not be imported. Review the failure report to fix and re-upload.`,
-              );
-            }
-            await applicationsListQuery.refetch();
-            finished = true;
-            break;
-          }
-
-          if (progress.status === "failed") {
-            throw new Error(progress.message || "Bulk upload failed.");
-          }
-
-          if (Date.now() - lastProgressMs > NO_PROGRESS_TIMEOUT_MS) {
-            throw new Error(
-              "Bulk upload appears stuck (no progress for 15 minutes). The job may still be running on the server — check the applications list before retrying.",
-            );
-          }
-        }
-      } catch (err: unknown) {
-        const msg =
-          typeof err === "string"
-            ? err
-            : err && typeof err === "object" && "message" in err
-              ? String((err as { message?: string }).message)
-              : "Bulk upload failed.";
-        setBulkUploadProgress((prev) => ({
-          ...prev,
-          status: "failed",
-          message: msg,
-        }));
-        toast.error(msg);
-      } finally {
-        resetInput();
-      }
-    },
-    [applicationsListQuery],
-  );
-
-  const handleDownloadFailedBulkRows = useCallback(async () => {
-    const sourceFile = bulkUploadSourceFileRef.current;
-    const { errors } = bulkUploadProgress;
-    if (!sourceFile) {
-      toast.error("Original upload file is no longer available. Re-upload the full file.");
-      return;
-    }
-    if (!errors.length) {
-      toast.error("No failed rows to export.");
-      return;
-    }
-    try {
-      await downloadFailedBulkUploadRows(sourceFile, errors);
-      toast.success("Failed rows downloaded. Fix the issues and re-upload this file.");
-    } catch (err: unknown) {
-      const msg =
-        err && typeof err === "object" && "message" in err
-          ? String((err as { message?: string }).message)
-          : "Failed to export rows.";
-      toast.error(msg);
-    }
-  }, [bulkUploadProgress]);
+  const sectionShadowClass =
+    "shadow-[0px_10px_28px_0px_rgba(2,6,23,0.10)]";
 
   const showStatusFilterDropdown =
     !isOperationsDashboardView && !showUwDealPoolUi;
@@ -2043,7 +1485,7 @@ const Applications = () => {
       return "Contract Signed Application";
     }
     if (normalizedStatus === "Reinitiate_Contract") {
-      return "Reinitiated Contract Application";
+      return "Contract Pending Application";
     }
     if (normalizedStatus === "Contracted") {
       return "CONTRACT APPLICATIONS";
@@ -2061,209 +1503,72 @@ const Applications = () => {
     navigate(-1);
   }, [navigate]);
 
-  const getBrowseQueryFromStatCard = useCallback(
-    (
-      title: string,
-    ): {
-      statsBucket?: string;
-      currentQueue?: string;
-      underwriterClaim?: UnderwriterClaimParam;
-    } => {
-      let q: { statsBucket?: string; currentQueue?: string };
-
-      if (title === "Total Application Assigned") {
-        if (roleKey === "UNDERWRITER") {
-          q = { currentQueue: "Underwriter" };
-        } else {
-          q = {};
-        }
-      } else if (title === "Total Deals Picked") {
-        q = {};
-      } else {
-        q = statCardTitleToApplicationsQuery(title);
-      }
-
-      if (showUwDealPoolUi) {
-        return {
-          ...q,
-          underwriterClaim: resolveUwClaimParam(),
-        };
-      }
-      return q;
-    },
-    [roleKey, showUwDealPoolUi, resolveUwClaimParam],
+  /** Same contract-workflow KPI tiles as OperationsDashboard. */
+  const summaryCards: ApplicationsSummaryCard[] = useMemo(
+    () => [
+      {
+        label: "Total Applications",
+        value: summaryCounts.totalCases,
+        helper: "All applications",
+        subtitle: "Including all stages",
+        icon: <LayoutList className="w-6 h-6 text-emerald-500" />,
+        operationsStatus: OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
+      },
+      {
+        label: "Contract Pending",
+        value: caseStageCounts.Contract_Pending ?? summaryCounts.contractPending ?? 0,
+        helper: "Awaiting contract generation",
+        icon: <Clock className="w-6 h-6 text-sky-500" />,
+        operationsStatus: "Contract_Pending",
+      },
+      {
+        label: "Contract Sent",
+        value: caseStageCounts.Contract_Sent ?? summaryCounts.contractsOut ?? 0,
+        helper: "Contracts sent for signature",
+        icon: <FileInput className="w-6 h-6 text-emerald-500" />,
+        operationsStatus: "Contract_Sent",
+      },
+      {
+        label: "Contract Signed",
+        value: caseStageCounts.Contract_Signed ?? summaryCounts.signedContracts ?? 0,
+        helper: "Contract signed applications",
+        icon: <CheckCircle2 className="w-6 h-6 text-amber-500" />,
+        operationsStatus: "Contract_Signed",
+      },
+    ],
+    [
+      caseStageCounts.Contract_Pending,
+      caseStageCounts.Contract_Sent,
+      caseStageCounts.Contract_Signed,
+      summaryCounts.contractPending,
+      summaryCounts.contractsOut,
+      summaryCounts.signedContracts,
+      summaryCounts.totalCases,
+    ],
   );
 
-  const prefetchBrowseFromStatCard = useCallback(
-    (title: string) => {
-      const q = getBrowseQueryFromStatCard(title);
-      prefetchApplicationsList({
-        page: 1,
-        limit: 10,
-        ...APPLICATIONS_LIST_DEFAULT_SORT,
-        lite: true,
-        ...q,
-      });
+  const getSummaryCardAmount = useCallback(
+    (card: ApplicationsSummaryCard) => {
+      switch (card.operationsStatus) {
+        case "Contract_Pending":
+          return summaryAmounts.contractPending ?? caseStageAmounts.Contract_Pending ?? 0;
+        case "Contract_Sent":
+          return summaryAmounts.contractsOut ?? caseStageAmounts.Contract_Sent ?? 0;
+        case "Contract_Signed":
+          return summaryAmounts.signedContracts ?? caseStageAmounts.Contract_Signed ?? 0;
+        default:
+          return 0;
+      }
     },
-    [getBrowseQueryFromStatCard],
+    [caseStageAmounts, summaryAmounts],
   );
 
-  // Stats data (dynamic from API)
-  const stats = useMemo(() => {
-    const s = showUwDealPoolUi ? uwDealPoolStats : statsData;
-    const prev = showUwDealPoolUi ? uwDealPoolPrevStats : prevMonthStats;
-    const fmt = (n: number) => formatCurrency(n);
-
-    const buildBucket = (
-      count: number,
-      total: number,
-      prevTotal: number | null | undefined,
-    ) => {
-      const currentTotal = total ?? 0;
-      const previousTotal = prevTotal ?? 0;
-
-      let changePercent: number | null = null;
-
-      if (previousTotal > 0) {
-        changePercent = ((currentTotal - previousTotal) / previousTotal) * 100;
-      } else if (currentTotal > 0) {
-        changePercent = 100;
-      } else if (previousTotal === 0 && currentTotal === 0) {
-        changePercent = 0;
-      }
-
-      let changeLabel = "No change from last month";
-      let changeClass = "text-muted-foreground";
-
-      if (typeof changePercent === "number") {
-        const rounded = Math.round(Math.abs(changePercent));
-        const sign =
-          changePercent > 0 ? "+" : changePercent < 0 ? "-" : "";
-
-        if (changePercent > 0) {
-          changeClass = "text-emerald-600";
-        } else if (changePercent < 0) {
-          changeClass = "text-rose-600";
-        }
-
-        changeLabel = `${sign}${rounded}% from last month`;
-      }
-
-      return {
-        value: String(count),
-        money: fmt(currentTotal),
-        changePercent,
-        changeLabel,
-        changeClass,
-      };
-    };
-    if (isUnderwriterRole) {
-      return [
-        {
-          title: "Pending",
-          footLeft: "Total Pending Amount",
-          icon: getApplicationsStatCardIcon("Pending"),
-          ...buildBucket(
-            s?.workflowPending?.count ?? 0,
-            s?.workflowPending?.totalAmount ?? 0,
-            prev?.workflowPending?.totalAmount,
-          ),
-        },
-        {
-          title: "In Progress",
-          footLeft: "Total In Progress Amount",
-          icon: getApplicationsStatCardIcon("In Progress"),
-          ...buildBucket(
-            s?.workflowInProgress?.count ?? 0,
-            s?.workflowInProgress?.totalAmount ?? 0,
-            prev?.workflowInProgress?.totalAmount,
-          ),
-        },
-        {
-          title: "Funded",
-          footLeft: "Total Funded Amount",
-          icon: getApplicationsStatCardIcon("Funded"),
-          ...buildBucket(
-            s?.funded?.count ?? 0,
-            s?.funded?.totalAmount ?? 0,
-            prev?.funded?.totalAmount,
-          ),
-        },
-        {
-          title: "Approved",
-          footLeft: "Total Approved Amount",
-          icon: getApplicationsStatCardIcon("Approved"),
-          ...buildBucket(
-            s?.approved?.count ?? 0,
-            s?.approved?.totalAmount ?? 0,
-            prev?.approved?.totalAmount,
-          ),
-        },
-        {
-          title: "Rejected",
-          footLeft: "Total Rejected Amount",
-          icon: getApplicationsStatCardIcon("Rejected"),
-          ...buildBucket(
-            s?.rejected?.count ?? 0,
-            s?.rejected?.totalAmount ?? 0,
-            prev?.rejected?.totalAmount,
-          ),
-        },
-      ];
-    }
-    return [
-      {
-        title: "Funded",
-        footLeft: "Total Funded Amount",
-        icon: getApplicationsStatCardIcon("Funded"),
-        ...buildBucket(
-          s?.funded?.count ?? 0,
-          s?.funded?.totalAmount ?? 0,
-          prev?.funded?.totalAmount,
-        ),
-      },
-      {
-        title: "Approved",
-        footLeft: "Total Approved Amount",
-        icon: getApplicationsStatCardIcon("Approved"),
-        ...buildBucket(
-          s?.approved?.count ?? 0,
-          s?.approved?.totalAmount ?? 0,
-          prev?.approved?.totalAmount,
-        ),
-      },
-      {
-        title: "Rejected",
-        footLeft: "Total Rejected Amount",
-        icon: getApplicationsStatCardIcon("Rejected"),
-        ...buildBucket(
-          s?.rejected?.count ?? 0,
-          s?.rejected?.totalAmount ?? 0,
-          prev?.rejected?.totalAmount,
-        ),
-      },
-      {
-        title: "Pending",
-        footLeft: "Total Pending Amount",
-        icon: getApplicationsStatCardIcon("Pending"),
-        ...buildBucket(
-          s?.workflowPending?.count ?? 0,
-          s?.workflowPending?.totalAmount ?? 0,
-          prev?.workflowPending?.totalAmount,
-        ),
-      },
-    ];
-  }, [
-    isUnderwriterRole,
-    showUwDealPoolUi,
-    statsData,
-    prevMonthStats,
-    uwDealPoolStats,
-    uwDealPoolPrevStats,
-  ]);
-
-  const statsGridCols =
-    stats.length === 5 ? "xl:grid-cols-5" : "xl:grid-cols-4";
+  const handleSummaryCardClick = useCallback(
+    (card: ApplicationsSummaryCard) => {
+      navigate(buildOperationsPipelineApplicationsUrl(card.operationsStatus));
+    },
+    [navigate],
+  );
 
   const contractWorkflow = useMemo(() => {
     const w = new URLSearchParams(location.search).get("workflow");
@@ -2287,7 +1592,7 @@ const Applications = () => {
   const contractWorkflowHint = useMemo(() => {
     switch (contractWorkflow) {
       case "offer":
-        return "Select an application to create or send a terms offer (Scrubbing tab).";
+        return "Select an application to create or send a terms offer (Create Offer tab).";
       case "contract":
         return "Select an application to generate and send the contract.";
       case "ach":
@@ -2310,12 +1615,8 @@ const Applications = () => {
             <h1 className="text-[1.3rem] font-semibold text-foreground uppercase">
               {contractWorkflowTitle
                 ? contractWorkflowTitle
-                : showUnderwriterPipelineView && underwriterPipelineFilter
-                ? underwriterPipelineTitle(underwriterPipelineFilter)
                 : showUwDealPoolUi
-                ? sessionRoleKey === "UNDERWRITER"
-                  ? "Underwriter applications"
-                  : "Scrubbing applications"
+                ? "Create Offer applications"
                 : "Add Application"}
             </h1>
             {contractWorkflowHint ? (
@@ -2333,13 +1634,6 @@ const Applications = () => {
                 className="hidden"
                 onChange={handlePDFFileSelect}
               />
-              <input
-                ref={bulkUploadInputRef}
-                type="file"
-                accept=".csv,.xlsx,.xls"
-                className="hidden"
-                onChange={handleBulkUploadFileSelect}
-              />
 
               {pdfFile && (
                 <Button
@@ -2352,45 +1646,6 @@ const Applications = () => {
                   )}
                   Upload File
                 </Button>
-              )}
-              {isSuperAdmin && (
-                <div className="flex flex-col items-start gap-1">
-                  <Button
-                    className="px-4   py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer disabled:cursor-not-allowed"
-                    onClick={() => bulkUploadInputRef.current?.click()}
-                    disabled={bulkUploadProgress.status === "processing"}
-                  >
-                    {bulkUploadProgress.status === "processing" ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Upload className="size-4" />
-                    )}
-                    {bulkUploadProgress.status === "processing"
-                      ? "Uploading..."
-                      : "Bulk Upload Application"}
-                  </Button>
-                  {bulkUploadProgress.status !== "idle" && (
-                    <div className="text-xs text-muted-foreground">
-                      <p>
-                        Processed {bulkUploadProgress.processedRows}/
-                        {bulkUploadProgress.totalRows || "?"} | Inserted{" "}
-                        {bulkUploadProgress.successCount} | Updated{" "}
-                        {bulkUploadProgress.updatedCount} | Failed{" "}
-                        {bulkUploadProgress.failedCount}
-                      </p>
-                      {bulkUploadProgress.errors.length > 0 && (
-                        <button
-                          type="button"
-                          className="mt-0.5 text-[var(--brand)] hover:underline cursor-pointer"
-                          onClick={() => setShowBulkUploadErrorsDialog(true)}
-                        >
-                          View {bulkUploadProgress.errors.length} failed row
-                          {bulkUploadProgress.errors.length === 1 ? "" : "s"}
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
               )}
             </div>
             {canCreateNewApplication && (
@@ -2406,69 +1661,44 @@ const Applications = () => {
         </div>
       )}
 
-      {/* Stats */}
+      {/* Stats — same contract-stage cards as OperationsDashboard */}
       {!isOperationsDashboardView && (
-        <section
-          className={`mt-6 mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 ${statsGridCols} transition-opacity duration-200 ${isNavigatingToBrowse ? "opacity-80 pointer-events-none" : "opacity-100"
-            }`}
-        >
-          {stats.map((c, i) => {
-            const countNum = Number.parseInt(c.value, 10);
-            const countSuffix =
-              Number.isFinite(countNum) && countNum === 1
-                ? "Application"
-                : "Applications";
+        <section className="mt-6 mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {summaryCards.map((card) => {
+            const countNum = card.value;
+            const countSuffix = countNum === 1 ? "Application" : "Applications";
             return (
               <div
-                key={i}
-                role="button"
-                tabIndex={0}
+                key={card.label}
+                role={statCardsShowSkeleton ? undefined : "button"}
+                tabIndex={statCardsShowSkeleton ? -1 : 0}
+                aria-busy={statCardsShowSkeleton}
                 onKeyDown={(e) => {
+                  if (statCardsShowSkeleton) return;
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    (e.currentTarget as HTMLDivElement).click();
+                    handleSummaryCardClick(card);
                   }
                 }}
                 onClick={() => {
-                  setIsNavigatingToBrowse(true);
-                  const q = getBrowseQueryFromStatCard(c.title);
-                  const browseParams: GetApplicationsParams = {
-                    page: 1,
-                    limit: 10,
-                    ...APPLICATIONS_LIST_DEFAULT_SORT,
-                    lite: true,
-                    ...q,
-                  };
-                  const browseCacheKey = applicationsListParamsCacheKey(browseParams);
-                  const cachedBrowse = getCachedApplicationsList(browseCacheKey) as
-                    | { data?: Application[]; pagination?: unknown }
-                    | Application[]
-                    | undefined;
-                  if (cachedBrowse) {
-                    dispatch(hydrateApplicationsListFromCache(cachedBrowse));
-                  } else {
-                    prefetchApplicationsList(browseParams);
-                  }
-                  navigate(
-                    buildApplicationsBrowseUrl({
-                      statsBucket: q.statsBucket,
-                      currentQueue: q.currentQueue,
-                      underwriterClaim: q.underwriterClaim,
-                    }),
-                  );
+                  if (statCardsShowSkeleton) return;
+                  handleSummaryCardClick(card);
                 }}
-                onMouseEnter={() => prefetchBrowseFromStatCard(c.title)}
-                onFocus={() => prefetchBrowseFromStatCard(c.title)}
-                className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
+                className={`h-full overflow-hidden rounded-xl text-left transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 ${sectionShadowClass} ${
+                  statCardsShowSkeleton ? "cursor-default" : "cursor-pointer"
+                }`}
               >
-                <StatCard
+                <CornerSummaryCard
                   isDark={isDark}
-                  title={c.title.toUpperCase()}
-                  icon={c.icon}
-                  countValue={c.value}
+                  title={card.label.toUpperCase()}
+                  subtitle={card.subtitle}
+                  icon={card.icon}
+                  iconSize={22}
+                  isLoading={statCardsShowSkeleton}
+                  countValue={formatInt(card.value, { fallback: "0" })}
                   countSuffix={countSuffix}
-                  footLeft={c.footLeft}
-                  amountValue={c.money}
+                  footLeft={card.helper}
+                  amountValue={formatCurrency(getSummaryCardAmount(card))}
                 />
               </div>
             );
@@ -2508,11 +1738,7 @@ const Applications = () => {
             <div
               className="flex rounded-md border border-border overflow-hidden bg-muted/40 dark:bg-muted/25 shrink-0 p-0.5 gap-0.5"
               role="tablist"
-              aria-label={
-                sessionRoleKey === "UNDERWRITER"
-                  ? "Underwriter deal pool"
-                  : "Scrubbing deal pool"
-              }
+              aria-label="Create Offer deal pool"
             >
               <Button
                 type="button"
@@ -2536,30 +1762,28 @@ const Applications = () => {
               >
                 <span className="text-xs font-medium sm:text-sm">Queue</span>
               </Button>
-              {sessionRoleKey === "SCRUBBING" ? (
-                <Button
-                  type="button"
-                  variant={underwriterPoolTab === "claimed" ? "default" : "ghost"}
-                  className={cn(
-                    "h-9 min-w-[5.5rem] rounded-sm px-3 shadow-none gap-1.5",
-                    underwriterPoolTab !== "claimed" &&
-                      "text-muted-foreground hover:text-foreground",
-                  )}
-                  onClick={() => {
-                    setUnderwriterPoolTab("claimed");
-                    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                    navigate(
-                      buildUnderwriterPipelineApplicationsUrl({
-                        underwriterClaim: "claimed",
-                      }),
-                      { replace: true },
-                    );
-                  }}
-                  aria-pressed={underwriterPoolTab === "claimed"}
-                >
-                  <span className="text-xs font-medium sm:text-sm">Claimed</span>
-                </Button>
-              ) : null}
+              <Button
+                type="button"
+                variant={underwriterPoolTab === "claimed" ? "default" : "ghost"}
+                className={cn(
+                  "h-9 min-w-[5.5rem] rounded-sm px-3 shadow-none gap-1.5",
+                  underwriterPoolTab !== "claimed" &&
+                    "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => {
+                  setUnderwriterPoolTab("claimed");
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                  navigate(
+                    buildUnderwriterPipelineApplicationsUrl({
+                      underwriterClaim: "claimed",
+                    }),
+                    { replace: true },
+                  );
+                }}
+                aria-pressed={underwriterPoolTab === "claimed"}
+              >
+                <span className="text-xs font-medium sm:text-sm">Claimed</span>
+              </Button>
               <Button
                 type="button"
                 variant={underwriterPoolTab === "my" ? "default" : "ghost"}
@@ -2608,17 +1832,6 @@ const Applications = () => {
                   setPagination((prev) => ({ ...prev, pageIndex: 0 }));
                 }}
               />
-              {showClaimedByColumn ? (
-                <ApplicationClaimUserFilterDropdown
-                  allLabel="All underwriters"
-                  value={underwriterFilter}
-                  options={underwriterFilterOptions}
-                  onChange={(next) => {
-                    setUnderwriterFilter(next);
-                    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                  }}
-                />
-              ) : null}
             </>
           <div className="relative min-w-[12rem] flex-1 max-w-xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
@@ -2905,23 +2118,6 @@ const Applications = () => {
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground space-y-1">
-                        <p className="truncate" title={getApplicationIsoLabel(app)}>
-                          <span className="text-foreground/80">ISO: </span>
-                          {getApplicationIsoLabel(app)}
-                        </p>
-                        {showClaimedByColumn ? (
-                          <p
-                            className="truncate"
-                            title={formatUnderwriterClaimLabel(app)}
-                          >
-                            <span className="text-foreground/80">
-                              Underwriter:{" "}
-                            </span>
-                            <span className="text-foreground">
-                              {formatUnderwriterClaimLabel(app)}
-                            </span>
-                          </p>
-                        ) : null}
                         <p>
                           <span className="text-foreground/80">Request: </span>
                           {loanAmount == null
@@ -3065,104 +2261,6 @@ const Applications = () => {
             >
               OK
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Bulk upload failure report */}
-      <Dialog
-        open={showBulkUploadErrorsDialog}
-        onOpenChange={setShowBulkUploadErrorsDialog}
-      >
-        <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col">
-          <DialogHeader>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/30">
-                <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-500" />
-              </div>
-              <div>
-                <DialogTitle className="text-left">
-                  Bulk Upload — Failed Rows
-                </DialogTitle>
-                <DialogDescription className="text-left pt-1">
-                  {bulkUploadProgress.errors.length} row
-                  {bulkUploadProgress.errors.length === 1 ? "" : "s"} could not
-                  be imported. Fix the issues below, then download the failed
-                  rows and re-upload that file.
-                </DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
-          <div className="overflow-auto border rounded-md">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-muted/80 backdrop-blur-sm">
-                <tr className="text-left">
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
-                    Excel Row
-                  </th>
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
-                    Deal ID
-                  </th>
-                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
-                    Deal Name
-                  </th>
-                  <th className="px-3 py-2 font-semibold">Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bulkUploadProgress.errors.map((err, idx) => (
-                  <tr
-                    key={`${err.excelRowNumber}-${idx}`}
-                    className="border-t even:bg-muted/30"
-                  >
-                    <td className="px-3 py-2 whitespace-nowrap font-medium">
-                      {err.excelRowNumber > 0 ? err.excelRowNumber : "—"}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      {err.dealId?.trim() || "—"}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap max-w-[180px] truncate">
-                      {err.dealName?.trim() || "—"}
-                    </td>
-                    <td className="px-3 py-2 text-muted-foreground">
-                      {err.message}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <DialogFooter className="sm:justify-between gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              className="gap-2"
-              onClick={handleDownloadFailedBulkRows}
-              disabled={!bulkUploadSourceFileRef.current}
-            >
-              <Download className="size-4" />
-              Download failed rows
-            </Button>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setShowBulkUploadErrorsDialog(false)}
-              >
-                Close
-              </Button>
-              <Button
-                type="button"
-                className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90 gap-2"
-                onClick={() => {
-                  setShowBulkUploadErrorsDialog(false);
-                  bulkUploadInputRef.current?.click();
-                }}
-              >
-                <Upload className="size-4" />
-                Re-upload
-              </Button>
-            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

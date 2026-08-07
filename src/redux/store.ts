@@ -128,6 +128,8 @@ import {
     deleteUploadedContractDocumentSlice,
 } from './slices/contractSlice';
 import isoReducer from './slices/isoSlice';
+import { operationsDashboardSlice } from './slices/operationsDashboardSlice';
+import { operationsDashboardPersistMiddleware } from './middleware/operationsDashboardPersistMiddleware';
 
 export const store = configureStore({
     reducer: {
@@ -254,11 +256,12 @@ export const store = configureStore({
         updateUploadedContractDocument: updateUploadedContractDocumentSlice.reducer,
         deleteUploadedContractDocument: deleteUploadedContractDocumentSlice.reducer,
         iso: isoReducer,
+        operationsDashboard: operationsDashboardSlice.reducer,
     },
     middleware: (getDefaultMiddleware) =>
         getDefaultMiddleware({
             serializableCheck: false,
-        }),
+        }).concat(operationsDashboardPersistMiddleware),
 });
 
 export type RootState = ReturnType<typeof store.getState>;

@@ -4,13 +4,10 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LazyTabContent } from "@/components/application/LazyTabContent";
 import { Button } from "@/components/ui/button";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
-import AgentDealIsoTag from "@/components/application/AgentDealIsoTag";
 import ApplicationBasicDetails from "@/components/application/ApplicationBasicDetails";
 import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
-import RequiredDocument from "@/components/application/RequiredDocument";
 import ContractTab from "@/components/application/ContractTab";
-import DecisionMakeFinalValues from "@/components/application/DecisionMakeFinalValues";
 import BankAnalysis from "@/components/application/BankAnalysis";
 
 import { useDispatch, useSelector } from "react-redux";
@@ -123,8 +120,6 @@ const ApplicationDetails = () => {
     const isUnderwriter = roleKey === 'SCRUBBING' || roleKey === 'UNDERWRITER';
     const isFinalUnderwriter = roleKey === 'UNDERWRITER';
     const isAgent = roleKey === 'AGENT';
-    const canEditIsoDetails =
-        isSuperAdmin || isAgent || roleKey === "OPERATIONS";
     /** Operations + Super Admin use the same contract-workflow tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
         roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
@@ -540,7 +535,7 @@ const ApplicationDetails = () => {
             return;
         }
         setSendingToUnderwriter(true);
-        const toastId = toast.loading("Sending application to Scrubbing...");
+        const toastId = toast.loading("Sending application for Create Offer...");
         try {
             await dispatch(
                 updateApplicationQueue({
@@ -550,18 +545,18 @@ const ApplicationDetails = () => {
             ).unwrap();
             setAgentSentToUnderwriter(true);
             toast.update(toastId, {
-                render: "Application has been sent to Scrubbing.",
+                render: "Application has been sent for Create Offer.",
                 type: "success",
                 isLoading: false,
                 autoClose: 2500,
             });
             refetchApplicationDetail();
         } catch (error) {
-            console.error("Failed to send application to Scrubbing:", error);
+            console.error("Failed to send application for Create Offer:", error);
             const apiMessage =
                 typeof error === "string" && error.trim()
                     ? error.trim()
-                    : "Failed to send application to Scrubbing. Please try again.";
+                    : "Failed to send application for Create Offer. Please try again.";
             toast.update(toastId, {
                 render: apiMessage,
                 type: "error",
@@ -640,7 +635,6 @@ const ApplicationDetails = () => {
                         {canRenderTabContent ? (
                             <>
                                 <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
-                                    <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
                                     <ApplicationBasicDetails applicationId={applicationId} />
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="documents" className="mt-6">
@@ -648,19 +642,11 @@ const ApplicationDetails = () => {
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
-                                    <DecisionMakeFinalValues
-                                        applicationId={applicationId}
-                                        allowOfferEdit={!pipelineStageReadOnly}
-                                        allowPositionsEdit={!pipelineStageReadOnly}
+                                    <BankAnalysis
+                                        readOnly={pipelineStageReadOnly}
+                                        enableCreate={!pipelineStageReadOnly}
+                                        showBankStatementUpload={false}
                                     />
-                                    <div className="mt-6">
-                                        <BankAnalysis
-                                            readOnly={pipelineStageReadOnly}
-                                            enableCreate={!pipelineStageReadOnly}
-                                        />
-                                    </div>
-                                    <RequiredDocument readOnly={pipelineStageReadOnly} />
-                                    <div className="mt-6"><CommentSection styles="flex-row" readOnly={commentsReadOnly} /></div>
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
                                     <ContractTab readOnly={isAgent || isViewOnlyBrowse} />
@@ -774,10 +760,6 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <>
                                         <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
-                                        <AgentDealIsoTag
-                                            applicationId={applicationId}
-                                            alwaysEditable={canEditIsoDetails}
-                                        />
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                         {canShowSendToUnderwriterButton ? (
                                             <div className="flex justify-end mb-4">
@@ -788,7 +770,7 @@ const ApplicationDetails = () => {
                                                     disabled={sendingToUnderwriter}
                                                     className="mt-4 disabled:opacity-40"
                                                 >
-                                                    {sendingToUnderwriter ? "Sending..." : "Send to Scrubbing"}
+                                                    {sendingToUnderwriter ? "Sending..." : "Send to Create Offer"}
                                                 </Button>
                                             </div>
                                         ) : null}
@@ -809,7 +791,7 @@ const ApplicationDetails = () => {
                                                 disabled={sendingToUnderwriter}
                                                 className="mt-4 disabled:opacity-40"
                                             >
-                                                {sendingToUnderwriter ? "Sending..." : "Send to Scrubbing"}
+                                                {sendingToUnderwriter ? "Sending..." : "Send to Create Offer"}
                                             </Button>
                                         </div>
                                     ) : null}
@@ -818,19 +800,11 @@ const ApplicationDetails = () => {
 
                             <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
-                                    <DecisionMakeFinalValues
-                                        applicationId={applicationId}
-                                        allowOfferEdit={!pipelineStageReadOnly}
-                                        allowPositionsEdit={!pipelineStageReadOnly}
+                                    <BankAnalysis
+                                        readOnly={pipelineStageReadOnly}
+                                        enableCreate={!pipelineStageReadOnly}
+                                        showBankStatementUpload={false}
                                     />
-                                    <div className="mt-6">
-                                        <BankAnalysis
-                                            readOnly={pipelineStageReadOnly}
-                                            enableCreate={!pipelineStageReadOnly}
-                                        />
-                                    </div>
-                                    <RequiredDocument readOnly={pipelineStageReadOnly} />
-                                    <div className="mt-6"><CommentSection styles="flex-row" readOnly={commentsReadOnly} /></div>
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">

@@ -31,7 +31,7 @@ export type ApplicationsPipelineFilterItem = {
 export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[] =
   [
     {
-      label: "Scrubbing",
+      label: "Create Offer",
       filterValue: "Scrubbing",
       icon: ContentPasteSearchIcon,
       showCount: false,
@@ -78,10 +78,6 @@ export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[
           label: operationsDashboardStatusTitle("Contract_Signed"),
           filterValue: "Contract_Signed",
         },
-        {
-          label: operationsDashboardStatusTitle("Reinitiate_Contract"),
-          filterValue: "Reinitiate_Contract",
-        },
       ],
     },
     {
@@ -116,24 +112,9 @@ export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[
     },
   ];
 
-/** Flat list for the Applications page status dropdown (original UI + new pipeline stages). */
+/** Flat list for the Applications page status dropdown (contract stages only). */
 export const APPLICATIONS_STATUS_FILTER_OPTIONS: ApplicationsPipelineFilterChild[] =
   [
-    // { label: "Agent", filterValue: "Agent" },
-    { label: "Scrubbing", filterValue: "Scrubbing" },
-    { label: "Underwriter", filterValue: "Underwriter" },
-    {
-      label: operationsDashboardStatusTitle("Approved_By_UW"),
-      filterValue: "Approved_By_UW",
-    },
-    {
-      label: operationsDashboardStatusTitle("Approval_Sent"),
-      filterValue: "Approval_Sent",
-    },
-    {
-      label: operationsDashboardStatusTitle("Approved_By_ISO"),
-      filterValue: "Approved_By_ISO",
-    },
     {
       label: operationsDashboardStatusTitle("Contract_Pending"),
       filterValue: "Contract_Pending",
@@ -146,18 +127,6 @@ export const APPLICATIONS_STATUS_FILTER_OPTIONS: ApplicationsPipelineFilterChild
       label: operationsDashboardStatusTitle("Contract_Signed"),
       filterValue: "Contract_Signed",
     },
-    {
-      label: operationsDashboardStatusTitle("Reinitiate_Contract"),
-      filterValue: "Reinitiate_Contract",
-    },
-    {
-      label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
-      filterValue: "Finals_And_Funding_Call",
-    },
-    { label: "Disbursement", filterValue: "Disbursment" },
-    { label: operationsDashboardStatusTitle("On_Hold"), filterValue: "On_Hold" },
-    { label: "Funded", filterValue: "Funded" },
-    { label: "Rejected", filterValue: "Declined" },
   ];
 
 export function applicationsPipelineFilterLabel(filterValue: string): string {
@@ -186,8 +155,7 @@ export function isApplicationsPipelineFilterActive(
     return (
       statusFilter === "Contract_Pending" ||
       statusFilter === "Contract_Sent" ||
-      statusFilter === "Contract_Signed" ||
-      statusFilter === "Reinitiate_Contract"
+      statusFilter === "Contract_Signed"
     );
   }
   if (filterValue === "Approved") {
@@ -239,13 +207,11 @@ export function resolveApplicationsPipelineCount(
     case "Approved_By_ISO":
       return caseStageCounts.Approved_By_ISO ?? 0;
     case "Contract_Pending":
-      return summaryCounts.contractPending;
+      return caseStageCounts.Contract_Pending ?? summaryCounts.contractPending ?? 0;
     case "Contract_Sent":
-      return summaryCounts.contractsOut;
+      return caseStageCounts.Contract_Sent ?? summaryCounts.contractsOut ?? 0;
     case "Contract_Signed":
-      return summaryCounts.signedContracts;
-    case "Reinitiate_Contract":
-      return caseStageCounts.Reinitiate_Contract ?? 0;
+      return caseStageCounts.Contract_Signed ?? summaryCounts.signedContracts ?? 0;
     case "Final":
       return caseStageCounts.Final ?? 0;
     case "Funding Call":

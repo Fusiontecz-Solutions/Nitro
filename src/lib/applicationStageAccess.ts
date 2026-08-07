@@ -92,7 +92,7 @@ const POST_FINAL_STAGE_TOKENS = new Set([
 
 const STAGE_FRIENDLY_LABEL: Record<ApplicationStageKey, string> = {
   AGENT: "Agent",
-  SCRUBBING: "Scrubbing",
+  SCRUBBING: "Create Offer",
   UNDERWRITER: "Underwriter",
   POST_FINAL: "Operations",
 };

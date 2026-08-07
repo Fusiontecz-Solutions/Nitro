@@ -59,7 +59,7 @@ import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 
 const QUEUE_OPTIONS = [
   { label: "Agent", value: "Agent" },
-  { label: "Scrubbing", value: "Scrubbing" },
+  { label: "Create Offer", value: "Scrubbing" },
   { label: "Underwriter", value: "Underwriter" },
   { label: "Contract Out", value: "Contract Out" },
   { label: "Contract Signed", value: "Contract_Signed" },

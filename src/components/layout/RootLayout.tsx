@@ -9,6 +9,8 @@ import { useSelector } from "react-redux";
 import type { RootState } from "@/redux/store";
 import { axiosGet } from "@/redux/axios";
 import { toast } from "react-toastify";
+import NotificationsSync from "@/components/notifications/NotificationsSync";
+import RealtimeNotificationsListener from "@/components/notifications/RealtimeNotificationsListener";
 
 interface DecodedToken {
     role: string;
@@ -110,6 +112,8 @@ const RootLayout = () => {
             <SidebarProvider>
                 <Sidebar />
                 <RootLayoutWrapper />
+                <NotificationsSync />
+                <RealtimeNotificationsListener />
             </SidebarProvider>
         </div>
     );

@@ -10,7 +10,7 @@ function apiRoleToSettingsTabId(role: string): string {
 
 const ROLE_TAB_LABELS: Record<string, string> = {
   AGENT: 'Agent',
-  SCRUBBING: 'Scrubbing',
+  SCRUBBING: 'Create Offer',
   UNDERWRITER: 'Underwriters',
   SYNDICATORS: 'Syndicators',
   ACCOUNTANT: 'Accountant',

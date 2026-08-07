@@ -23,7 +23,6 @@ import { useTheme } from "@/context/ThemeContext"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  Briefcase,
   Building2,
   FileText,
   AlertCircle
@@ -104,21 +103,10 @@ function mapPositionsForCalculator(positions: Array<Record<string, unknown>>) {
 const TABS = [
   { id: "details", label: "Application Details", icon: <FileText className="w-4 h-4" /> },
   { id: "contract", label: "Contracts", icon: <FileText className="w-4 h-4" /> },
-  { id: "final", label: "Final", icon: <Briefcase className="w-4 h-4" /> },
-  { id: "funding", label: "Funding", icon: <Briefcase className="w-4 h-4" /> },
-  { id: "disbursement", label: "Disbursement", icon: <Briefcase className="w-4 h-4" /> },
   { id: "mailLog", label: "Mail Log", icon: <AlertCircle className="w-4 h-4" /> },
   { id: "activityLog", label: "Activity Log", icon: <Building2 className="w-4 h-4" /> },
   { id: "dedupe", label: "Dedupe", icon: <AlertCircle className="w-4 h-4" /> },
 ]
-
-function UnavailableCaseTab({ label }: { label: string }) {
-  return (
-    <div className="rounded-md border border-dashed border-border/70 bg-muted/20 p-6 text-sm text-muted-foreground">
-      {label} is unavailable in this build.
-    </div>
-  )
-}
 
 export default function ApplicationDetailsSheet({
   application,
@@ -459,27 +447,6 @@ export default function ApplicationDetailsSheet({
               {activeTab === "contract" && (
                 <TabsContent value="contract" className="m-0">
                   <ContractTab readOnly={isOperationsRole} />
-                </TabsContent>
-              )}
-
-              {/* Final Tab */}
-              {activeTab === "final" && (
-                <TabsContent value="final" className="m-0">
-                  <UnavailableCaseTab label="Final" />
-                </TabsContent>
-              )}
-
-              {/* Funding Tab */}
-              {activeTab === "funding" && (
-                <TabsContent value="funding" className="m-0">
-                  <UnavailableCaseTab label="Funding Call" />
-                </TabsContent>
-              )}
-
-              {/* Disbursement Tab */}
-              {activeTab === "disbursement" && (
-                <TabsContent value="disbursement" className="m-0">
-                  <UnavailableCaseTab label="Disbursement" />
                 </TabsContent>
               )}
 
