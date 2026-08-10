@@ -530,7 +530,7 @@ const PARTY1_DL_KEYS = [
 
 const PARTY2_SS_KEYS = ['guaranty_owner2_ss', 'guaranty_guarantor2_ss'] as const;
 
-/** Woodmere contract page 16 = Katan page 15 (ACH portal, credentials, references). */
+/** Harbor contract page 19 — bank portal credentials left blank for signer. */
 export const FILL_AT_SIGNING_VARIABLES = new Set([
   'ach_authorization_bank_portal_website',
   'ach_authorization_username',
@@ -542,25 +542,15 @@ export const FILL_AT_SIGNING_VARIABLES = new Set([
   'ach_authorization_security_question3',
   'ach_authorization_security_answer3',
   'ach_authorization_other_infomation',
-  'ach_authorization_reference_name1',
-  'ach_authorization_reference_number_1',
-  'ach_authorization_reference_relationship1',
-  'ach_authorization_reference_name2',
-  'ach_authorization_reference_number2',
-  'ach_authorization_reference_relationship2',
-  'ach_authorization_reference_name3',
-  'ach_authorization_reference_number3',
-  'ach_authorization_reference_relationship3',
 ]);
 
-/** Katan uses page 15; Woodmere contract shifts portal section to page 16. */
-const WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE = '16';
+/** Harbor View Capital MCA — financial institution portal section. */
+const HARBOR_CONTRACT_FILL_AT_SIGNING_PAGE = '19';
 
-/** Woodmere-style 17-page contract (page-16 portal section) — excludes Texas Funding Group layout. */
-function usesWoodmereStyleNonTexasContractLayout(layoutKey: string | undefined): boolean {
+/** Harbor main contract (and funder-scoped contract uploads using the same coords). */
+function usesHarborMainContractLayout(layoutKey: string | undefined): boolean {
   const key = String(layoutKey || '').trim();
   if (!key || key === DOCUMENT_LAYOUT_KEYS.contract) return true;
-  if (key === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract) return false;
   if (isFunderContractLayoutKey(key)) return true;
   return false;
 }
@@ -587,25 +577,25 @@ function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
   return FILL_AT_SIGNING_VARIABLES.has(variable);
 }
 
-function isWoodmereContractFillAtSigningPlacement(
+function isHarborContractFillAtSigningPlacement(
   layoutKey: string | undefined,
   placement: DocumentLayoutPlacement,
 ): boolean {
-  if (!usesWoodmereStyleNonTexasContractLayout(layoutKey)) return false;
+  if (!usesHarborMainContractLayout(layoutKey)) return false;
   // Explicit fillAtSigning works on any page (portal / credentials stay signer-editable).
   if (placement.fillAtSigning === true) return true;
   return (
-    String(placement.pageNumber || '') === WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE &&
+    String(placement.pageNumber || '') === HARBOR_CONTRACT_FILL_AT_SIGNING_PAGE &&
     isFillAtSigningPlacement(placement)
   );
 }
 
-/** Page-16 ACH fields start blank; page-1 client phone keeps CRM prefill on the live tab. */
+/** Page-19 portal credentials start blank; page-1 client phone keeps CRM prefill on the live tab. */
 function clearsValueAtSend(
   layoutKey: string | undefined,
   placement: DocumentLayoutPlacement,
 ): boolean {
-  return isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
+  return isHarborContractFillAtSigningPlacement(layoutKey, placement);
 }
 
 function isSignerEditableTextPlacement(
@@ -615,18 +605,18 @@ function isSignerEditableTextPlacement(
   // Page-1 client_phone stays signer-editable (optional) on every contract layout.
   if (isOptionalSignerEditablePlacement(placement)) return true;
   if (isRequiredSignerEditablePlacement(placement)) return true;
-  if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
+  if (isHarborContractFillAtSigningPlacement(layoutKey, placement)) return true;
   return false;
 }
 
-/** Portal / reference fields on contract page 16, plus any explicitly required signer text. */
+/** Portal credential fields on Harbor contract page 19, plus any explicitly required signer text. */
 function isRequiredSignerTextField(
   placement: DocumentLayoutPlacement,
   layoutKey?: string,
 ): boolean {
   if (placement.type !== 'text') return false;
   if (isRequiredSignerEditablePlacement(placement)) return true;
-  return isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
+  return isHarborContractFillAtSigningPlacement(layoutKey, placement);
 }
 
 /** True when a live DocuSign tab must stay unlocked at send (signer fills or confirms). */
@@ -660,7 +650,7 @@ function shouldIncludeEmptyTextPlacement(
   if (placement.type === 'date') return true;
   if (placement.type !== 'text') return false;
   if (isSignerEditableTextPlacement(layoutKey, placement)) return true;
-  if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
+  if (isHarborContractFillAtSigningPlacement(layoutKey, placement)) return true;
   return includeEmptyLockedOptionalTextPlacement(placement);
 }
 
@@ -675,10 +665,10 @@ const WOODMERE_ACH_CONSENT_BUSINESS_NAME_VARIABLES = new Set([
   'ach_authorization_concent_account_holder_name_2',
 ]);
 
-/** Woodmere ACH pages 1/14/15/16 — explicit owner-2 tabs; do not auto-mirror initials here. */
-const WOODMERE_CONTRACT_NO_OWNER2_INITIAL_MIRROR_PAGES = new Set(['1', '14', '15', '16']);
-/** ACH authorization pages 14 & 15 — owner 2 initials only (no signature/date). */
-const WOODMERE_ACH_OWNER2_INITIALS_ONLY_PAGES = new Set(['14', '15']);
+/** Harbor pages with explicit owner-2 signature tabs — do not auto-mirror initials here. */
+const HARBOR_CONTRACT_NO_OWNER2_INITIAL_MIRROR_PAGES = new Set(['18', '19']);
+/** Legacy ACH owner-2 initials-only pages (unused on Harbor self-contained MCA). */
+const WOODMERE_ACH_OWNER2_INITIALS_ONLY_PAGES = new Set<string>();
 
 function placementPageOffset(
   placement: DocumentLayoutPlacement,
@@ -1132,7 +1122,7 @@ function expandLayoutsWithOwner2Initials(
       if (placement.when === 'owners >= 2') continue;
       if (
         layout.key === 'contract' &&
-        WOODMERE_CONTRACT_NO_OWNER2_INITIAL_MIRROR_PAGES.has(
+        HARBOR_CONTRACT_NO_OWNER2_INITIAL_MIRROR_PAGES.has(
           String(placement.pageNumber || ''),
         )
       ) {
@@ -1450,7 +1440,7 @@ export async function renderFlattenedLayoutPdf(
   for (const placement of layout.placements) {
     if (placement.type !== 'text' && placement.type !== 'date') continue;
     if (!placementAllowed(placement, counts, scopedExpanded, layout.key)) continue;
-    if (isWoodmereContractFillAtSigningPlacement(layout.key, placement)) continue;
+    if (isHarborContractFillAtSigningPlacement(layout.key, placement)) continue;
     // Keep client_phone as a live DocuSign tab (optional + writable), never burn into PDF.
     if (
       isOptionalSignerEditablePlacement(placement) ||

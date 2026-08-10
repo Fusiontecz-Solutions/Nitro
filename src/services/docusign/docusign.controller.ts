@@ -34,7 +34,7 @@ export const getDocusignConsentUrl = async (_req: Request, res: Response) => {
     return res.json({
       consentUrl,
       redirectUriNote:
-        'Add this redirect URI under Apps and Keys → Woodmere CRM → Additional settings → Redirect URIs: ' +
+        'Add this redirect URI under Apps and Keys → Harbor CRM → Additional settings → Redirect URIs: ' +
         'https://developers.docusign.com/platform/auth/consent',
       loginAsNote:
         'Sign in as the same user as DOCUSIGN_IMPERSONATED_USER_ID (your dev@ account) before approving.',

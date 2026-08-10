@@ -1,16 +1,10 @@
 export const DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY = 'contract';
 export const DEFAULT_FUNDER_CONTRACT_FILENAME = 'Contract.pdf';
 
-export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [
-  'flex_addendum',
-  'pre_payment_addendum',
-  'balance_transfer',
-  'case_takeover_addendum',
-  'ach_authorization',
-  'ach_authorization_texas',
-] as const;
+/** Platform supplemental layout keys removed — funder uploads use `funder_<uuid>_…` keys. */
+export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [] as const;
 
-export type FunderSupplementalLayoutType = (typeof FUNDER_SUPPLEMENTAL_LAYOUT_TYPES)[number];
+export type FunderSupplementalLayoutType = string;
 
 export function funderContractLayoutKey(funderId: string): string {
   return `funder_${String(funderId || '').trim()}`;

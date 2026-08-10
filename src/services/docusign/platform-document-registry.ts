@@ -1,12 +1,9 @@
 import prisma from '../../config/prismaClient';
-import * as fs from 'fs';
-import * as path from 'path';
 import {
   DOCUMENT_LAYOUT_KEYS,
   getDocumentLayout,
   type DocumentLayoutKey,
 } from './layouts/document-layout.registry';
-import { downloadLegacyDocuSignTemplatePdfBase64 } from './utils/download-legacy-docusign-template-pdf';
 import {
   DOCUSIGN_DEFAULT_ROLE_NAME,
   DOCUSIGN_SECONDARY_ROLE_NAME,
@@ -30,67 +27,15 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
     name: 'Harbor View Capital Contract',
     type: 'contract',
   },
-  [DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
-    name: 'Texas Funding Group Contract',
-    type: 'texas_funding_group_contract',
-  },
-  [DOCUMENT_LAYOUT_KEYS.flexAddendum]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.flexAddendum,
-    name: 'Harbor View Capital Flex Addendum',
-    type: 'flex_addendum',
-  },
-  [DOCUMENT_LAYOUT_KEYS.prePaymentAddendum]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.prePaymentAddendum,
-    name: 'Harbor View Capital Pre-Payment Addendum',
-    type: 'pre_payment_addendum',
-  },
-  [DOCUMENT_LAYOUT_KEYS.balanceTransfer]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.balanceTransfer,
-    name: 'Harbor View Capital Balance Transfer Sheet',
-    type: 'balance_transfer',
-  },
-  [DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum,
-    name: 'Case Takeover Balance Transfer',
-    type: 'case_takeover_addendum',
-  },
-  [DOCUMENT_LAYOUT_KEYS.achAuthorization]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.achAuthorization,
-    name: 'Harbor View Capital ACH Authorization',
-    type: 'ach_authorization',
-  },
-  [DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone,
-    name: 'Harbor View Capital ACH Authorization (standalone)',
-    type: 'ach_authorization',
-  },
-  [DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas]: {
-    layoutKey: DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas,
-    name: 'Texas ACH Authorization (contract pages 11–12)',
-    type: 'ach_authorization_texas',
-  },
 };
 
 /** Supplemental documents available in the addendum picker (excludes main contract). */
-export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [
-  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.flexAddendum],
-  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.prePaymentAddendum],
-  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.balanceTransfer],
-  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.achAuthorization],
-];
+export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [];
 
 const LAYOUT_KEY_SET = new Set<string>(Object.values(DOCUMENT_LAYOUT_KEYS));
 
 /** When a layout key has no uploaded PDF, also try these sibling keys' uploads. */
-const PDF_URL_ALIASES: Partial<Record<DocumentLayoutKey, DocumentLayoutKey[]>> = {
-  [DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone]: [
-    DOCUMENT_LAYOUT_KEYS.achAuthorization,
-  ],
-  [DOCUMENT_LAYOUT_KEYS.achAuthorization]: [
-    DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone,
-  ],
-};
+const PDF_URL_ALIASES: Partial<Record<DocumentLayoutKey, DocumentLayoutKey[]>> = {};
 
 export function isDocumentLayoutKey(value: string): value is DocumentLayoutKey {
   return LAYOUT_KEY_SET.has(String(value || '').trim());
@@ -104,7 +49,7 @@ function isValidRemotePdfUrl(url: string): boolean {
 
 /**
  * Resolve pdfUrl by exact layoutKey / templateId only.
- * Never match by BoldSignTemplate.type ΓÇö multiple funders share type "contract"
+ * Never match by BoldSignTemplate.type — multiple funders share type "contract"
  * and fuzzy matching can return the wrong funder's PDF (legal/compliance risk).
  */
 export async function findBoldSignTemplatePdfUrlByExactLayoutKey(
@@ -147,23 +92,6 @@ async function fetchRemotePdfAsBase64(url: string, documentName: string): Promis
   return Buffer.from(await res.arrayBuffer()).toString('base64');
 }
 
-async function loadDefaultPdfFromLegacyDocuSign(
-  layoutKey: DocumentLayoutKey,
-): Promise<string | null> {
-  const layout = getDocumentLayout(layoutKey);
-  const legacyId = String(layout.legacyDocuSignTemplateId || '').trim();
-  if (!legacyId) return null;
-  try {
-    return await downloadLegacyDocuSignTemplatePdfBase64(legacyId, layout.name);
-  } catch (err) {
-    console.warn(
-      `[platform-docs] Default DocuSign PDF failed for "${layoutKey}" (${legacyId}):`,
-      err instanceof Error ? err.message : err,
-    );
-    return null;
-  }
-}
-
 export async function resolvePlatformDocumentPdfUrl(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
@@ -171,108 +99,48 @@ export async function resolvePlatformDocumentPdfUrl(
   const fromDb = await findBoldSignTemplatePdfUrlForLayout(layoutKey);
   if (fromDb) return fromDb;
 
+  if (layoutKey === DOCUMENT_LAYOUT_KEYS.contract) {
+    const latest = await prisma.contractTemplate.findFirst({
+      orderBy: { createdAt: 'desc' },
+      select: { url: true },
+    });
+    const url = String(latest?.url || '').trim();
+    if (isValidRemotePdfUrl(url)) return url;
+  }
+
   throw new Error(
-    `Missing PDF URL for "${def.name}". Upload the PDF to Cloudinary and set pdfUrl on the BoldSignTemplate row with layoutKey "${layoutKey}", or rely on the default DocuSign template PDF via loadPlatformDocumentPdfBase64.`,
+    `Missing PDF URL for "${def.name}". Upload via Settings → Funders → Main contract PDF, or Contract Templates.`,
   );
 }
 
 /**
- * Bundled Texas ACH blank PDF (`TEXAS FUNDING GROUP- BLANK FILLABLE ACH.pdf`).
- * Used when no funder/platform Cloudinary upload exists for `ach_authorization_texas`.
- */
-function loadBundledTexasAchPdfBase64(): string | null {
-  const candidates = [
-    path.join(__dirname, 'layouts', 'assets', 'ach_authorization_texas.pdf'),
-    path.join(
-      process.cwd(),
-      'src',
-      'services',
-      'docusign',
-      'layouts',
-      'assets',
-      'ach_authorization_texas.pdf',
-    ),
-    path.join(
-      process.cwd(),
-      'dist',
-      'services',
-      'docusign',
-      'layouts',
-      'assets',
-      'ach_authorization_texas.pdf',
-    ),
-  ];
-  for (const filePath of candidates) {
-    try {
-      if (fs.existsSync(filePath)) {
-        return fs.readFileSync(filePath).toString('base64');
-      }
-    } catch {
-      /* try next */
-    }
-  }
-  return null;
-}
-
-/**
  * Load platform document PDF bytes.
- * Priority: uploaded BoldSignTemplate.pdfUrl → sibling layout upload → default DocuSign template PDF.
- * Texas ACH prefers the uploaded funder PDF, then the bundled blank ACH form (page-11 coordinates).
+ * Priority: BoldSignTemplate.pdfUrl → latest ContractTemplate.url (platform contract only).
+ * Never reads local filesystem files.
  */
 export async function loadPlatformDocumentPdfBase64(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
   const def = PLATFORM_DOCUMENTS[layoutKey];
 
-  if (layoutKey === DOCUMENT_LAYOUT_KEYS.caseTakeoverAddendum) {
-    const dedicatedUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
-    if (dedicatedUrl) {
-      return fetchRemotePdfAsBase64(dedicatedUrl, def.name);
-    }
-    throw new Error(
-      `No PDF uploaded for "${def.name}". Upload it in Settings → Funder profile → Addendum PDFs (Case Takeover Balance Transfer).`,
-    );
-  }
-
-  if (layoutKey === DOCUMENT_LAYOUT_KEYS.achAuthorizationTexas) {
-    const dedicatedUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
-    if (dedicatedUrl) {
-      return fetchRemotePdfAsBase64(dedicatedUrl, def.name);
-    }
-    // Funder-scoped texas ACH upload (Settings → Funder profile → Addendum PDFs).
-    const funderScoped = await prisma.boldSignTemplate.findFirst({
-      where: {
-        OR: [
-          { layoutKey: { endsWith: '_ach_authorization_texas' } },
-          { type: 'ach_authorization_texas' },
-        ],
-      },
-      orderBy: { createdAt: 'desc' },
-      select: { pdfUrl: true },
-    });
-    const scopedUrl = String(funderScoped?.pdfUrl || '').trim();
-    if (scopedUrl && /^https?:\/\//i.test(scopedUrl)) {
-      return fetchRemotePdfAsBase64(scopedUrl, def.name);
-    }
-    const bundled = loadBundledTexasAchPdfBase64();
-    if (bundled) return bundled;
-  }
-
   const fromDb = await findBoldSignTemplatePdfUrlForLayout(layoutKey);
   if (fromDb) {
     return fetchRemotePdfAsBase64(fromDb, def.name);
   }
 
-  const fromLegacy = await loadDefaultPdfFromLegacyDocuSign(layoutKey);
-  if (fromLegacy) return fromLegacy;
-
-  for (const alias of PDF_URL_ALIASES[layoutKey] ?? []) {
-    const aliasLegacy = await loadDefaultPdfFromLegacyDocuSign(alias);
-    if (aliasLegacy) return aliasLegacy;
+  if (layoutKey === DOCUMENT_LAYOUT_KEYS.contract) {
+    const latest = await prisma.contractTemplate.findFirst({
+      orderBy: { createdAt: 'desc' },
+      select: { url: true },
+    });
+    const url = String(latest?.url || '').trim();
+    if (isValidRemotePdfUrl(url)) {
+      return fetchRemotePdfAsBase64(url, def.name);
+    }
   }
 
   throw new Error(
-    `No PDF configured for "${def.name}". Upload to Cloudinary (BoldSignTemplate.pdfUrl, layoutKey "${layoutKey}") or ensure the default DocuSign template is available.`,
+    `No PDF configured for "${def.name}". Upload from Settings → Funders → Main contract PDF, or upload a Contract Template (Cloudinary URL in DB).`,
   );
 }
 
@@ -318,7 +186,7 @@ export async function ensurePlatformBoldSignTemplateRow(
   }
 
   throw new Error(
-    `No document record for "${def.name}" (layoutKey: ${layoutKey}). Create a BoldSignTemplate row with layoutKey "${layoutKey}" and a Cloudinary pdfUrl.`,
+    `No document record for "${def.name}" (layoutKey: ${layoutKey}). Create a BoldSignTemplate row with layoutKey "${layoutKey}" and a Cloudinary pdfUrl, or upload via Settings → Funders.`,
   );
 }
 

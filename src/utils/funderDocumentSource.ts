@@ -215,7 +215,7 @@ const SUPPLEMENTAL_GENERIC_DISPLAY_NAMES: Record<string, string> = {
   ach_authorization_standalone: "ACH Authorization",
 };
 
-/** Display name for funder-owned supplemental PDFs (avoid Woodmere platform labels on Texas Funding Group sends). */
+/** Display name for funder-owned supplemental PDFs (strip legacy brand prefixes from platform labels). */
 export function resolveFunderSupplementalDocumentDisplayName(
   supplementalType: string,
   profile: {
@@ -234,13 +234,15 @@ export function resolveFunderSupplementalDocumentDisplayName(
   if (usesPlatform) {
     return uploaded || String(platformDefaultName ?? "").trim() || type;
   }
-  if (uploaded && !/woodmere/i.test(uploaded)) {
+  const looksLikeLegacyBrand = (s: string) =>
+    /woodmere|texas\s+funding\s+group|alliance\s+bridge/i.test(s);
+  if (uploaded && !looksLikeLegacyBrand(uploaded)) {
     return uploaded;
   }
   const generic =
     SUPPLEMENTAL_GENERIC_DISPLAY_NAMES[type] ||
     String(platformDefaultName ?? "")
-      .replace(/^Woodmere[^ ]+\s+/i, "")
+      .replace(/^(Woodmere|Texas Funding Group|Alliance Bridge)[^ ]*\s+/i, "")
       .trim() ||
     type;
   const funderLabel = String(profile?.displayName || profile?.name || "").trim();

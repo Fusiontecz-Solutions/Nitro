@@ -793,9 +793,9 @@ export async function uploadFunderNamedAddendumPdf(
   if (!label) throw new Error('Addendum name is required.');
 
   const coordsKey = String(coordinateLayoutKey || '').trim();
-  if (!coordsKey || !isDocumentLayoutKey(coordsKey)) {
+  if (!coordsKey) {
     throw new Error(
-      'Select a valid coordinate layout (Flex Addendum, Pre-Payment Addendum, Balance Transfer, Case Takeover Balance Transfer, ACH Authorization, or Texas ACH).',
+      'Coordinate layout key is required. Platform supplemental layouts were removed; use a funder-scoped addendum upload.',
     );
   }
 
