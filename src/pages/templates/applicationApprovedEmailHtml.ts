@@ -15,7 +15,7 @@ const EMAIL_WIDTH = 600;
 /**
  * Gmail / Outlook-safe HTML for the ISO application-approved email with full
  * offer terms inline — no public approval portal link.
- * Woodmere brand palette — aligned with the application-approval template.
+ * Harbor brand palette — aligned with the application-approval template.
  */
 export function renderApplicationApprovedEmailHtml(
   values: TemplateValues,

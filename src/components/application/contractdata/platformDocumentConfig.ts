@@ -4,13 +4,6 @@ import { DOCUSIGN_PRIMARY_SIGNER_ROLE } from "./docusignTemplateConfig";
 
 export const PLATFORM_LAYOUT_KEYS = {
     contract: "contract",
-    texasFundingGroupContract: "texas_funding_group_contract",
-    flexAddendum: "flex_addendum",
-    prePaymentAddendum: "pre_payment_addendum",
-    balanceTransfer: "balance_transfer",
-    caseTakeoverAddendum: "case_takeover_addendum",
-    achAuthorization: "ach_authorization",
-    achAuthorizationTexas: "ach_authorization_texas",
 } as const;
 
 export type PlatformLayoutKey =
@@ -29,44 +22,29 @@ export const PLATFORM_SIGNER_SLOTS = [
 ] as const;
 
 export type SupplementalDocumentOption = {
-    layoutKey: PlatformLayoutKey;
+    layoutKey: string;
     label: string;
 };
 
-export const SUPPLEMENTAL_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [
-    { layoutKey: PLATFORM_LAYOUT_KEYS.flexAddendum, label: "Flex Addendum" },
-    {
-        layoutKey: PLATFORM_LAYOUT_KEYS.prePaymentAddendum,
-        label: "Pre-Payment Addendum",
-    },
-    { layoutKey: PLATFORM_LAYOUT_KEYS.balanceTransfer, label: "Balance Transfer Sheet" },
-    { layoutKey: PLATFORM_LAYOUT_KEYS.achAuthorization, label: "ACH Authorization" },
-];
+export const SUPPLEMENTAL_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [];
 
 /**
  * Upload-gated addendums — shown in Create Contract only after the funder
  * uploads that PDF on their profile (Settings → Funder → Addendum PDFs).
  */
-export const UPLOAD_GATED_ADDENDUM_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [
-    {
-        layoutKey: PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum,
-        label: "Case Takeover Balance Transfer",
-    },
-];
+export const UPLOAD_GATED_ADDENDUM_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [];
 
 /** Addendum picker — ACH is managed in its own Info Required section. */
-export const CONTRACT_ADDENDUM_DOCUMENT_OPTIONS: SupplementalDocumentOption[] =
-    SUPPLEMENTAL_DOCUMENT_OPTIONS.filter(
-        (o) => o.layoutKey !== PLATFORM_LAYOUT_KEYS.achAuthorization,
-    );
+export const CONTRACT_ADDENDUM_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [];
 
 export function isAchAuthorizationLayoutKey(value: unknown): boolean {
     const key = String(value ?? "")
         .trim()
         .toLowerCase();
     return (
-        key === PLATFORM_LAYOUT_KEYS.achAuthorization ||
-        key === PLATFORM_LAYOUT_KEYS.achAuthorizationTexas ||
+        key === "ach_authorization" ||
+        key === "ach_authorization_texas" ||
+        key === "ach_authorization_standalone" ||
         key.includes("ach_authorization") ||
         key.includes("ach-authorization")
     );
@@ -77,7 +55,7 @@ export function isTexasAchAuthorizationLayoutKey(value: unknown): boolean {
         .trim()
         .toLowerCase();
     return (
-        key === PLATFORM_LAYOUT_KEYS.achAuthorizationTexas ||
+        key === "ach_authorization_texas" ||
         key.includes("ach_authorization_texas") ||
         key.includes("texas_ach")
     );
@@ -89,7 +67,7 @@ export function isPlatformLayoutKey(value: unknown): value is PlatformLayoutKey 
     return LAYOUT_KEY_SET.has(String(value ?? "").trim());
 }
 
-/** Texas deals with Texas Funding Group use the 13-page contract layout (Alliance Bridge coordinates). */
+/** Texas-state helper (TX deals use the same Harbor `contract` layout). */
 export function isTexasContractState(state?: string | null): boolean {
     const normalized = String(state ?? "")
         .trim()
@@ -97,6 +75,7 @@ export function isTexasContractState(state?: string | null): boolean {
     return normalized === "texas" || normalized === "tx";
 }
 
+/** @deprecated Legacy match token for old funder rows — do not show in UI. */
 export const TEXAS_FUNDING_GROUP_FUNDER_LABEL = "TEXAS FUNDING GROUP";
 
 export function isTexasFundingGroupFunder(funderName?: string | null): boolean {
@@ -106,21 +85,11 @@ export function isTexasFundingGroupFunder(funderName?: string | null): boolean {
     return normalized.includes("texas funding group");
 }
 
+/** Main contract always uses the Harbor `contract` layout (funder PDFs use `funder_<uuid>`). */
 export function resolveMainContractLayoutKey(
-    funderName?: string | null,
-    state?: string | null,
+    _funderName?: string | null,
+    _state?: string | null,
 ): PlatformLayoutKey {
-    if (
-        funderName &&
-        ((funderName.toLowerCase().includes("harbor view") ||
-            funderName.toLowerCase().includes("woodmere")) &&
-            !funderName.toLowerCase().includes("texas"))
-    ) {
-        return PLATFORM_LAYOUT_KEYS.contract;
-    }
-    if (isTexasFundingGroupFunder(funderName) && isTexasContractState(state)) {
-        return PLATFORM_LAYOUT_KEYS.texasFundingGroupContract;
-    }
     return PLATFORM_LAYOUT_KEYS.contract;
 }
 

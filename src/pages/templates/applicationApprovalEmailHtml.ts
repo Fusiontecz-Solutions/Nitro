@@ -13,7 +13,7 @@ const EMAIL_WIDTH = 600;
 
 /**
  * Bulletproof CTA — VML roundrect for Outlook + inline anchor for Gmail/Apple Mail.
- * Woodmere brand: black button (matches document-request upload CTA).
+ * Harbor brand: black button (matches document-request upload CTA).
  */
 function buildStyledCtaButton(
   href: string,
@@ -73,7 +73,7 @@ function renderStipColumn(title: string, itemsHtml: string): string {
 
 /**
  * Gmail / Outlook-safe HTML for the ISO application-approval email.
- * Woodmere brand palette — aligned with the document-request template.
+ * Harbor brand palette — aligned with the document-request template.
  */
 export function renderApplicationApprovalEmailHtml(
   values: TemplateValues,

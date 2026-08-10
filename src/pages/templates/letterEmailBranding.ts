@@ -115,7 +115,7 @@ function nameMatches(funder: FunderNameFields, needles: string[]): boolean {
   );
 }
 
-function isWoodmereLetterFunder(funder: FunderNameFields): boolean {
+function isHarborLetterFunder(funder: FunderNameFields): boolean {
   return nameMatches(funder, [
     "harbor view capital",
     "harbor view",
@@ -198,7 +198,7 @@ function resolveLegacyLetterEmailBranding(
   if (isTildeAdvanceFunder(funder)) return TILDE_ADVANCE_LETTER_EMAIL_BRANDING;
   if (isAtlasAdvanceFunder(funder)) return ATLAS_ADVANCE_LETTER_EMAIL_BRANDING;
   if (isEjmVenturesFunder(funder)) return EJM_VENTURES_LETTER_EMAIL_BRANDING;
-  if (isWoodmereLetterFunder(funder)) return DEFAULT_LETTER_EMAIL_BRANDING;
+  if (isHarborLetterFunder(funder)) return DEFAULT_LETTER_EMAIL_BRANDING;
 
   const companyName =
     String(funder.displayName || funder.name || APP_COMPANY_NAME).trim() ||

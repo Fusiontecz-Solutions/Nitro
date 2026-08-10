@@ -33,6 +33,8 @@ export interface OfferFormValue {
   rate: string;
   term: string;
   fees: string;
+  /** Prior deal payoff / REFI balance (dollars). Empty = not a REFI deal. */
+  refinanceAmount: string;
   notes: string;
   frequency: Frequency;
   daysWeeks: string;
@@ -114,6 +116,7 @@ function isSameOfferForm(a: OfferFormValue, b: OfferFormValue): boolean {
     a.rate === b.rate &&
     a.term === b.term &&
     a.fees === b.fees &&
+    a.refinanceAmount === b.refinanceAmount &&
     a.notes === b.notes &&
     a.frequency === b.frequency &&
     a.daysWeeks === b.daysWeeks &&
@@ -136,6 +139,7 @@ const DEFAULT_FORM_STATE: OfferFormValue = {
   rate: DEFAULT_OFFER_RATE,
   term: "",
   fees: DEFAULT_FEES_PERCENT,
+  refinanceAmount: "",
   notes: "",
   frequency: "",
   daysWeeks: "",
@@ -364,6 +368,11 @@ function mapApiOfferDecisionToLocalData(
       loadedFeesPercent != null
         ? formatNumberUS(loadedFeesPercent)
         : prev.fees,
+    refinanceAmount:
+      apiData.refinanceAmount != null &&
+      String(apiData.refinanceAmount).trim() !== ""
+        ? formatNumberUS(apiData.refinanceAmount)
+        : "",
     ourRemit:
       apiData.ourRemit != null ? formatNumberUS(apiData.ourRemit) : "",
     totalRemit:
@@ -1282,6 +1291,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         repayPerPeriod: parseNum(localData.daysWeeks) || null,
         monthlyPayment: parseNum(localData.monthlyPayment) || null,
         fees: feesDollarsForDb,
+        refinanceAmount: parseNum(localData.refinanceAmount) || null,
         ourRemit: parseNum(localData.ourRemit) || null,
         totalRemit: parseNum(localData.totalRemit) || null,
       };
@@ -1322,6 +1332,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
             savedFeesPercent != null
               ? formatNumberUS(savedFeesPercent)
               : prev.fees,
+          refinanceAmount:
+            saved.refinanceAmount != null &&
+            String(saved.refinanceAmount).trim() !== ""
+              ? formatNumberUS(saved.refinanceAmount)
+              : "",
           ourRemit:
             saved.ourRemit != null ? formatNumberUS(saved.ourRemit) : "",
           totalRemit:
@@ -1601,6 +1616,16 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         {localData.fees.trim() ? `${localData.fees}%` : "—"}
                       </span>
                     </div>
+                    <div className="grid min-h-[56px] grid-cols-[12rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-slate-50 px-4 py-4 dark:border-slate-700 dark:bg-slate-900/40 md:border-r md:[&:nth-child(3n)]:border-r-0">
+                      <span className="text-[14px] font-semibold text-[#4a5568] dark:text-slate-300">
+                        REFI Amount
+                      </span>
+                      <span className="text-left text-[15px] font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                        {localData.refinanceAmount.trim()
+                          ? `$ ${formatCurrencyDisplayValue(localData.refinanceAmount)}`
+                          : "—"}
+                      </span>
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -1775,6 +1800,31 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 dark:text-slate-500">
                           %
                         </span>
+                      </div>
+                    </div>
+                    <div className="grid min-h-[56px] grid-cols-[12rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-900/40 md:border-r md:[&:nth-child(3n)]:border-r-0">
+                      <label className="text-[14px] font-semibold text-[#4a5568] dark:text-slate-300">
+                        REFI Amount
+                      </label>
+                      <div className="relative min-w-0">
+                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 dark:text-slate-500">
+                          $
+                        </span>
+                        <input
+                          className="w-full min-w-0 rounded-md border border-slate-200 bg-white py-2 pl-6 pr-3 text-[15px] font-bold text-slate-900 outline-none focus:border-[#86b186] disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500"
+                          placeholder="prior balance (REFI)"
+                          value={localData.refinanceAmount}
+                          onChange={(e) =>
+                            setField(
+                              "refinanceAmount",
+                              formatNumberUSForInput(e.target.value),
+                            )
+                          }
+                          onBlur={(e) =>
+                            commitCurrencyField("refinanceAmount", e.target.value)
+                          }
+                          disabled={inputsDisabled}
+                        />
                       </div>
                     </div>
                   </div>

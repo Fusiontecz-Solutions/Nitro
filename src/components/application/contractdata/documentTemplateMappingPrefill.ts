@@ -22,12 +22,11 @@ import {
     formatFunderNameWithDealIdPrefix,
     type BalanceTransferSheetContractPrefillFields,
 } from "./BALANCE_TRANSFER_SHEET_ADDENDUM";
-import { DOCUSIGN_ADDENDUM_TEMPLATE_IDS } from "./docusignAddendumTemplates";
+import { DOCUSIGN_ADDENDUM_TEMPLATE_IDS, DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./docusignAddendumTemplates";
 import {
     isAchAuthorizationLayoutKey,
     isPlatformLayoutKey,
     PLATFORM_DISCLOSURE_FUNDER_NAME,
-    PLATFORM_LAYOUT_KEYS,
 } from "./platformDocumentConfig";
 import {
     buildWoodmereBuyoutBlankAddendumContractPrefillFields,
@@ -1019,20 +1018,20 @@ function resolveAddendumKind(
     const lk = String(layoutKey ?? "").trim().toLowerCase();
     const key = lk || tid;
     if (
-        key === PLATFORM_LAYOUT_KEYS.flexAddendum ||
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM ||
         key.endsWith("_flex_addendum")
     ) {
         return "woodmere_flex";
     }
     if (
-        key === PLATFORM_LAYOUT_KEYS.prePaymentAddendum ||
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.PRE_PAYMENT_ADDENDUM ||
         key.endsWith("_pre_payment_addendum")
     ) {
         return "pre_payment_addendum";
     }
     // Must run before balance_transfer — legacy key ends with `_balance_transfer`.
     if (
-        key === PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum ||
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.CASE_TAKEOVER_ADDENDUM ||
         key.endsWith("_case_takeover_addendum") ||
         key === "case_takeover_balance_transfer" ||
         key.endsWith("_case_takeover_balance_transfer")
@@ -1040,7 +1039,7 @@ function resolveAddendumKind(
         return "case_takeover_addendum";
     }
     if (
-        key === PLATFORM_LAYOUT_KEYS.balanceTransfer ||
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET ||
         key.endsWith("_balance_transfer")
     ) {
         return "balance_transfer_sheet";

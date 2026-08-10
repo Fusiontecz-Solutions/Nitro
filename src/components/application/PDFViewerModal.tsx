@@ -56,10 +56,10 @@ import {
     funderNamesEquivalent,
     formatFunderSelectLabel,
     findFunderProfileById,
-    isTexasContractState,
     isTexasFundingGroupFunderProfile,
-    isWoodmereFunderProfile,
     persistedFunderProfileIdForApi,
+    resolveDefaultFunderNameForState,
+    resolveFunderSwitchOnStateChange,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
 import { fetchLatestContractTemplate } from "@/utils/contractTemplate";
@@ -112,6 +112,7 @@ import { getDocumentRequestsByApplication, removeDocumentRequest } from "@/redux
 import { toast } from "react-toastify";
 import {
     buildContractPrefillFieldsFromApplication,
+    contractPrefillFieldsToPartial,
     contractPrefillToContractColumnUpdate,
     mergeContractPrefillOverrideLayers,
     categorizeDealReviewPrefillFieldId,
@@ -155,6 +156,7 @@ import {
     resolveApplicationUuidForUpdate,
     syncContractPrefillToSourceRecords,
 } from "./contractdata/contractPrefillSourceSync";
+import { MANUAL_NET_TO_MERCHANT_KEY } from "./contractRecipientFundsSync";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
@@ -228,7 +230,6 @@ import {
     CONTRACT_ADDENDUM_DOCUMENT_OPTIONS,
     getPlatformSignerRoleRows,
     isPlatformLayoutKey,
-    PLATFORM_LAYOUT_KEYS,
     PLATFORM_PRIMARY_SIGNER_ROLE,
     supplementalOptionLabel,
 } from "./contractdata/platformDocumentConfig";
@@ -570,7 +571,7 @@ function isContractAddendumTemplateRow(template: {
 }
 
 /**
- * Platform / Woodmere (`documentsSource: platform`) → non-`funder_` templates.
+ * Platform (`documentsSource: platform`) → non-`funder_` templates.
  * Own / shared → only `funder_{docsFunderId}_…` templates.
  */
 function templateMatchesFunderDocuments(
@@ -611,9 +612,7 @@ function isAddendumRefValidForDocsFunder(
     // Platform defaults expose synthetic Flex / Pre-Payment / BT keys (not Case Takeover).
     if (!docsLayoutFunderId) {
         return CONTRACT_ADDENDUM_DOCUMENT_OPTIONS.some(
-            (opt) =>
-                opt.layoutKey !== PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum &&
-                opt.layoutKey === trimmed,
+            (opt) => opt.layoutKey === trimmed,
         );
     }
     return false;
@@ -1198,6 +1197,12 @@ const PDFViewerModal = ({
     const [activeContractTemplateName, setActiveContractTemplateName] = useState<string>("Contract.pdf");
     const [savingContractMeta, setSavingContractMeta] = useState(false);
     const [contractPrefillEditOpen, setContractPrefillEditOpen] = useState(false);
+    /** Local Deal Review edits keyed by DocuSign field id (Summary step). */
+    const [dealReviewDraftById, setDealReviewDraftById] = useState<Record<string, string>>({});
+    const [dealReviewDraftDirty, setDealReviewDraftDirty] = useState(false);
+    const [savingDealReviewPrefill, setSavingDealReviewPrefill] = useState(false);
+    const prevDealReviewOfferMoneyKeyRef = useRef("");
+    const dealReviewDraftFingerprintRef = useRef("");
     const [prefilledBoldSignPdfUrl, setPrefilledBoldSignPdfUrl] = useState<string | null>(null);
     const [prefilledBoldSignPdfLoading, setPrefilledBoldSignPdfLoading] = useState(false);
     const [prefilledBoldSignPdfHint, setPrefilledBoldSignPdfHint] = useState<string | null>(null);
@@ -1863,9 +1868,7 @@ const PDFViewerModal = ({
             fromDb.map((t: any) => templateLayoutKeyToken(t)).filter(Boolean),
         );
         const platformSynthetic = CONTRACT_ADDENDUM_DOCUMENT_OPTIONS.filter(
-            (opt) =>
-                opt.layoutKey !== PLATFORM_LAYOUT_KEYS.caseTakeoverAddendum &&
-                !existingKeys.has(opt.layoutKey),
+            (opt) => !existingKeys.has(opt.layoutKey),
         ).map((opt) => ({
             id: opt.layoutKey,
             layoutKey: opt.layoutKey,
@@ -2158,6 +2161,83 @@ const PDFViewerModal = ({
         [dealPrefillFieldsForDocuSign],
     );
 
+    // Initialize / sync Deal Review draft from CRM prefill.
+    // Full refresh when clean; when dirty, still refresh live money fields if OfferDecision changed.
+    useEffect(() => {
+        if (!isOpen || activeStep !== "summary") return;
+        const offerKey = offerDecisionMoneyKey;
+        const offerChanged =
+            Boolean(prevDealReviewOfferMoneyKeyRef.current) &&
+            prevDealReviewOfferMoneyKeyRef.current !== offerKey;
+        prevDealReviewOfferMoneyKeyRef.current = offerKey;
+
+        const liveMoneyIds = new Set(
+            [
+                "purchase_amount",
+                "purchase_price",
+                "remittance",
+                "refinance_amount",
+                "frequency",
+                "paymentterms",
+                "net_to_merchant",
+                "netfundprovided",
+                "appendix_underwriting_fees",
+                "ach_authorization_account_holder_bank_transaction_fee",
+                "ach_authorization_account_holder_bank_number_of_transactions",
+                "addendum_dated_principal_owner_amount",
+                "addendum_dated_principal_owner_amount2",
+            ].map((id) => id.toLowerCase()),
+        );
+
+        const fingerprint = dealReviewFields
+            .map((f) => `${f.id}=${String(f.value ?? "")}`)
+            .join("|");
+
+        if (!dealReviewDraftDirty) {
+            // Skip setState when values are unchanged — avoids infinite update loops.
+            if (fingerprint === dealReviewDraftFingerprintRef.current) return;
+            const next: Record<string, string> = {};
+            for (const f of dealReviewFields) {
+                next[f.id] = String(f.value ?? "");
+            }
+            dealReviewDraftFingerprintRef.current = fingerprint;
+            setDealReviewDraftById(next);
+            return;
+        }
+
+        if (offerChanged) {
+            setDealReviewDraftById((prev) => {
+                let changed = false;
+                const merged = { ...prev };
+                for (const f of dealReviewFields) {
+                    const idNorm = String(f.id || "").trim().toLowerCase();
+                    if (!liveMoneyIds.has(idNorm)) continue;
+                    const nextVal = String(f.value ?? "");
+                    if (merged[f.id] !== nextVal) {
+                        merged[f.id] = nextVal;
+                        changed = true;
+                    }
+                }
+                return changed ? merged : prev;
+            });
+        }
+    }, [
+        isOpen,
+        activeStep,
+        dealReviewFields,
+        dealReviewDraftDirty,
+        offerDecisionMoneyKey,
+    ]);
+
+    useEffect(() => {
+        if (!isOpen) {
+            setDealReviewDraftById({});
+            setDealReviewDraftDirty(false);
+            prevDealReviewOfferMoneyKeyRef.current = "";
+            dealReviewDraftFingerprintRef.current = "";
+        }
+    }, [isOpen]);
+
     const offerDecisionSummaryRows = useMemo(() => {
         const od = offerDecisionData as Record<string, unknown> | null;
         if (!od) return [];
@@ -2186,6 +2266,7 @@ const PDFViewerModal = ({
             row("Repay per period", firstOf("repayPerPeriod", "paymentAmount")),
             row("Monthly payment", od.monthlyPayment),
             row("Fees", feeDollars > 0 ? feeDollars : od.fees),
+            row("REFI Amount", firstOf("refinanceAmount", "RefinanceAmount")),
             row("Our remit", od.ourRemit),
             row("Total remit", firstOf("repayPerPeriod", "paymentAmount", "daysWeeks")),
             row("Commission", od.commissionAmount),
@@ -2526,6 +2607,169 @@ const PDFViewerModal = ({
         draftPreparedOwnerCountRef.current = null;
         draftPreparedPackageFingerprintRef.current = null;
     }, []);
+
+    const saveDealReviewPrefill = useCallback(async () => {
+        const cid = effectiveContractId;
+        if (cid == null || !Number.isFinite(cid)) {
+            toast.error("Generate or open a contract before saving prefill.");
+            return;
+        }
+        setSavingDealReviewPrefill(true);
+        try {
+            const draftFields = Object.entries(dealReviewDraftById).map(([id, value]) => ({
+                id,
+                value: String(value ?? ""),
+            }));
+            const fromDraft = contractPrefillFieldsToPartial(draftFields);
+            // Preserve empty intentional clears for always-shown money keys.
+            for (const f of dealReviewFields) {
+                const key = (() => {
+                    const id = String(f.id || "").trim().toLowerCase();
+                    if (id === "purchase_amount") return "purchaseAmount" as const;
+                    if (id === "purchase_price") return "purchasePrice" as const;
+                    if (id === "remittance") return "remittance" as const;
+                    if (id === "refinance_amount") return "refinanceAmount" as const;
+                    if (id === "frequency" || id === "paymentterms") return "frequency" as const;
+                    if (id === "net_to_merchant" || id === "netfundprovided") {
+                        return "netToMerchant" as const;
+                    }
+                    return null;
+                })();
+                if (!key) continue;
+                if (!(key in fromDraft) && f.id in dealReviewDraftById) {
+                    (fromDraft as Record<string, string>)[key] = String(
+                        dealReviewDraftById[f.id] ?? "",
+                    );
+                }
+            }
+            const payload: Partial<BuildContractPrefillFieldsArgs> = {
+                ...(contractPrefillFromDb ?? {}),
+                ...fromDraft,
+            };
+            const existingBlob =
+                documentTemplatePrefillByMappingId &&
+                typeof documentTemplatePrefillByMappingId === "object"
+                    ? { ...documentTemplatePrefillByMappingId }
+                    : {};
+            const contractPrefillOverrides: Record<string, unknown> = {
+                ...payload,
+                [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: existingBlob,
+            };
+            const netToMerchantRaw = String(payload.netToMerchant ?? "").trim();
+            if (netToMerchantRaw) {
+                contractPrefillOverrides[MANUAL_NET_TO_MERCHANT_KEY] = true;
+            } else {
+                delete contractPrefillOverrides[MANUAL_NET_TO_MERCHANT_KEY];
+            }
+            const columnSync = contractPrefillToContractColumnUpdate(payload);
+            const approvedAmount = (() => {
+                const n = Number(String(payload.purchaseAmount ?? "").replace(/[$,\s]/g, ""));
+                return Number.isFinite(n) && n > 0 ? n : undefined;
+            })();
+            const totalAmount = (() => {
+                const n = Number(String(payload.purchasePrice ?? "").replace(/[$,\s]/g, ""));
+                return Number.isFinite(n) && n > 0 ? n : undefined;
+            })();
+            const updateRes = await dispatch(
+                updateContract({
+                    id: cid,
+                    data: {
+                        contractPrefillOverrides,
+                        ...columnSync,
+                        ...(approvedAmount != null ? { approvedAmount } : {}),
+                        ...(totalAmount != null ? { totalAmount } : {}),
+                    },
+                }),
+            ).unwrap();
+            let rawOverrides: unknown =
+                (updateRes as { data?: { contractPrefillOverrides?: unknown } })?.data
+                    ?.contractPrefillOverrides ??
+                (updateRes as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides;
+            const appKey = String(applicationIdForLookup ?? "").trim();
+            if (appKey) {
+                try {
+                    const res = await dispatch(getByApplicationIdContract(appKey)).unwrap();
+                    const contract = (res as { data?: unknown })?.data ?? res;
+                    rawOverrides = (contract as { contractPrefillOverrides?: unknown })
+                        ?.contractPrefillOverrides;
+                } catch {
+                    /* use update response */
+                }
+            }
+            const fromDb = stripDocumentTemplateBlobFromPrefillOverrides(
+                normalizeContractPrefillOverrides(rawOverrides) ?? payload,
+            );
+            setContractPrefillFromDb(fromDb ?? payload);
+            setResolvedContract((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          ...columnSync,
+                          contractPrefillOverrides:
+                              fromDb != null
+                                  ? {
+                                        ...(typeof prev.contractPrefillOverrides === "object" &&
+                                        prev.contractPrefillOverrides != null &&
+                                        !Array.isArray(prev.contractPrefillOverrides)
+                                            ? (prev.contractPrefillOverrides as Record<
+                                                  string,
+                                                  unknown
+                                              >)
+                                            : {}),
+                                        ...fromDb,
+                                        [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: existingBlob,
+                                    }
+                                  : prev.contractPrefillOverrides,
+                      }
+                    : prev,
+            );
+            try {
+                await syncContractPrefillToSourceRecords({
+                    dispatch,
+                    applicationData: applicationDataRef.current,
+                    applicationUuid:
+                        resolveApplicationUuidForUpdate(applicationDataRef.current) ||
+                        applicationIdForLookup ||
+                        null,
+                    prefill: payload,
+                    offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
+                    contractGuarantors: contractPrefillRecords?.guarantors ?? null,
+                    contractOwners: contractPrefillRecords?.owners ?? null,
+                    contractAch:
+                        (contractPrefillRecords?.ach as Record<string, unknown> | null) ?? null,
+                    bankDetail: contractPrefillRecords?.bankDetail ?? null,
+                });
+            } catch (syncErr) {
+                console.error(syncErr);
+                toast.warn(
+                    syncErr instanceof Error
+                        ? syncErr.message
+                        : "Prefill saved, but application or offer sync failed.",
+                );
+            }
+            setDealReviewDraftDirty(false);
+            invalidateDocuSignDraftSession();
+            toast.success("Deal Review prefill saved.");
+        } catch (e) {
+            console.error(e);
+            toast.error(
+                e instanceof Error ? e.message : "Failed to save Deal Review prefill.",
+            );
+        } finally {
+            setSavingDealReviewPrefill(false);
+        }
+    }, [
+        effectiveContractId,
+        dealReviewDraftById,
+        dealReviewFields,
+        contractPrefillFromDb,
+        documentTemplatePrefillByMappingId,
+        dispatch,
+        applicationIdForLookup,
+        offerDecisionData,
+        contractPrefillRecords,
+        invalidateDocuSignDraftSession,
+    ]);
 
     /** Saved signer overrides changed after a draft was prepared — force a new envelope on next send. */
     useEffect(() => {
@@ -3238,7 +3482,7 @@ const PDFViewerModal = ({
         // Skip on initial hydration (empty → loaded state from contract).
         if (!prevState.trim()) return;
         if (prevState === selectedState) return;
-        // State dropdown already applied Texas/Woodmere funder switch.
+        // State dropdown already applied funder switch when needed.
         if (userSelectedStateRef.current) return;
         if (userSelectedFunderRef.current) return;
 
@@ -4795,7 +5039,7 @@ const PDFViewerModal = ({
         let mergedPayload = mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
 
         // Same as ContractTab send: selected funder wins for addendum tabs (Flex / BT / Case Takeover).
-        // Disclosure merge otherwise forces platform "Woodmere" onto shared `funder_name`.
+        // Disclosure merge otherwise forces platform funder name onto shared `funder_name`.
         const funderPlainName =
             formatFunderSelectLabel(selectedFunderProfile ?? undefined) ||
             String(selectedFunder || "").trim();
@@ -5664,7 +5908,7 @@ const PDFViewerModal = ({
     }, [contractPrefillFromDb]);
 
     // Legacy contracts may have multiple addendum rows — keep one linked to the dropdown.
-    // Also drop Woodmere/platform addendums when the selected funder uses own/shared docs.
+    // Also drop platform addendums when the selected funder uses own/shared docs.
     useEffect(() => {
         if (!isOpen || effectiveContractId == null || loadingTemplateMappings) return;
         if (addendumTemplateMappings.length <= 1) {
@@ -6707,7 +6951,7 @@ const PDFViewerModal = ({
         : "";
     const selectedFunderUsesOwnContract = selectedFunderProfile
         ? String(selectedLayoutKey).startsWith("funder_") ||
-          selectedLayoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract ||
+          selectedLayoutKey === "texas_funding_group_contract" ||
           isTexasFundingGroupFunderProfile(selectedFunderProfile)
         : false;
 
@@ -6721,7 +6965,7 @@ const PDFViewerModal = ({
                     (activeStep === "documents" ||
                         activeStep === "info" ||
                         activeStep === "summary")
-                  ? // Prefer blank over showing the platform Woodmere PDF for funder-owned contracts.
+                  ? // Prefer blank over showing the platform PDF for funder-owned contracts.
                     uploadedPreviewUrl || ""
                   : fileUrl;
 
@@ -7438,41 +7682,18 @@ const PDFViewerModal = ({
                                                             let nextFunder = selectedFunder;
                                                             let nextFunderProfileId = selectedFunderProfileId;
 
-                                                            if (
-                                                                isTexasContractState(picked) &&
-                                                                !isTexasContractState(previousState)
-                                                            ) {
-                                                                // Non-Texas → Texas: always Texas funder
-                                                                const tfg =
-                                                                    activeFunders.find((f) =>
-                                                                        isTexasFundingGroupFunderProfile(f),
-                                                                    ) ??
-                                                                    activeFunders.find(
-                                                                        (f) =>
-                                                                            String(
-                                                                                f.mainContractLayoutKey ||
-                                                                                    "",
-                                                                            ).trim() ===
-                                                                            "texas_funding_group_contract",
-                                                                    );
-                                                                if (tfg) {
-                                                                    nextFunder = tfg.name;
-                                                                    nextFunderProfileId = tfg.id;
-                                                                }
-                                                            } else if (
-                                                                isTexasContractState(previousState) &&
-                                                                !isTexasContractState(picked)
-                                                            ) {
-                                                                // Texas → non-Texas: always Woodmere
-                                                                const woodmere = activeFunders.find((f) =>
-                                                                    isWoodmereFunderProfile(f),
-                                                                );
-                                                                if (woodmere) {
-                                                                    nextFunder = woodmere.name;
-                                                                    nextFunderProfileId = woodmere.id;
-                                                                }
+                                                            const switched = resolveFunderSwitchOnStateChange({
+                                                                currentFunderName: selectedFunder,
+                                                                previousState,
+                                                                newState: picked,
+                                                                funders: activeFunders,
+                                                            });
+                                                            if (switched) {
+                                                                nextFunder = switched;
+                                                                nextFunderProfileId =
+                                                                    findFunderProfile(activeFunders, switched, picked)
+                                                                        ?.id ?? "";
                                                             } else {
-                                                                // Same Texas-ness: keep funder unless unavailable
                                                                 const currentFunder =
                                                                     findFunderById(selectedFunderProfileId) ??
                                                                     findFunder(selectedFunder);
@@ -7485,8 +7706,19 @@ const PDFViewerModal = ({
                                                                         picked,
                                                                     )
                                                                 ) {
-                                                                    nextFunder = "";
-                                                                    nextFunderProfileId = "";
+                                                                    const fallback =
+                                                                        resolveDefaultFunderNameForState(
+                                                                            activeFunders,
+                                                                            picked,
+                                                                        );
+                                                                    nextFunder = fallback || "";
+                                                                    nextFunderProfileId = fallback
+                                                                        ? findFunderProfile(
+                                                                              activeFunders,
+                                                                              fallback,
+                                                                              picked,
+                                                                          )?.id ?? ""
+                                                                        : "";
                                                                 }
                                                             }
 
@@ -9252,8 +9484,8 @@ const PDFViewerModal = ({
                                                     Deal Review
                                                 </h3>
                                                 <p className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
-                                                    CRM values for your DocuSign field labels. Review here, then use
-                                                    Review & send in DocuSign — signing is completed in DocuSign only.
+                                                    Read-only summary of CRM values for DocuSign labels. Use Edit
+                                                    prefill fields to change values, then Review &amp; send in DocuSign.
                                                 </p>
                                             </div>
                                             {canEditContractPrefill ? (
@@ -9319,19 +9551,24 @@ const PDFViewerModal = ({
                                                     "Appendix",
                                                     "Other",
                                                 ];
-                                                const renderFieldRow = (field: (typeof effectiveFields)[number]) => (
-                                                    <Fragment key={field.id}>
-                                                        <div className="text-slate-500 dark:text-slate-400">
-                                                            {field.label}
-                                                        </div>
-                                                        <div className="font-medium break-all text-slate-900 dark:text-slate-100">
-                                                            {formatDisplayValueForUs(
-                                                                field.id || field.label || "",
-                                                                field.value,
-                                                            )}
-                                                        </div>
-                                                    </Fragment>
-                                                );
+                                                const renderFieldRow = (field: (typeof effectiveFields)[number]) => {
+                                                    const displayValue =
+                                                        dealReviewDraftById[field.id] ??
+                                                        String(field.value ?? "");
+                                                    return (
+                                                        <Fragment key={field.id}>
+                                                            <div className="text-slate-500 dark:text-slate-400">
+                                                                {field.label}
+                                                            </div>
+                                                            <div className="font-medium break-all text-slate-900 dark:text-slate-100">
+                                                                {formatDisplayValueForUs(
+                                                                    field.id || field.label || "",
+                                                                    displayValue,
+                                                                )}
+                                                            </div>
+                                                        </Fragment>
+                                                    );
+                                                };
                                                 const renderCategoryBlock = (cat: string, fields: typeof effectiveFields) => {
                                                     const subGrouped: Record<string, typeof effectiveFields> = {
                                                         "": [],

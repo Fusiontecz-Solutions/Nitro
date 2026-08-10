@@ -21,7 +21,7 @@ export {
 /** Static fallback when API is empty or unavailable (matches DB seed). */
 export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
   {
-    id: "fallback-woodmere-financial",
+    id: "fallback-harbor-view-capital",
     name: CONTRACT_ENVELOPE_LENDER_NAME,
     displayName: CONTRACT_ENVELOPE_LENDER_NAME,
     assignsDealId: true,
@@ -129,7 +129,7 @@ export function isTexasFundingGroupFunderProfile(
     display.includes("texas funding") ||
     name === "tfg" ||
     display === "tfg" ||
-    layoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract
+    layoutKey === "texas_funding_group_contract"
   );
 }
 
@@ -241,7 +241,8 @@ export function formatFunderSelectLabel(
 }
 
 /**
- * Prefer Texas Funding Group when the deal is in Texas; otherwise Woodmere.
+ * Prefer the platform/Harbor funder when available for the state; else first active funder.
+ * Does not hard-code Texas Funding Group.
  */
 export function resolveDefaultFunderNameForState(
   funders: FunderProfile[],
@@ -249,19 +250,9 @@ export function resolveDefaultFunderNameForState(
 ): string {
   const active = funders.filter((f) => f.isActive !== false);
 
-  if (isTexasContractState(state)) {
-    const tfg = findTexasFundingGroupFunder(active);
-    if (tfg?.name && funderAvailableForContractState(tfg, state)) {
-      return tfg.name;
-    }
-  }
-
-  const woodmere = findWoodmereFunder(active);
-  if (woodmere?.name && funderAvailableForContractState(woodmere, state)) {
-    return woodmere.name;
-  }
-  if (woodmere?.name && !isTexasContractState(state)) {
-    return woodmere.name;
+  const platform = findPlatformFunder(active);
+  if (platform?.name && funderAvailableForContractState(platform, state)) {
+    return platform.name;
   }
 
   const fallback = active
@@ -270,28 +261,14 @@ export function resolveDefaultFunderNameForState(
   return fallback?.name ?? "";
 }
 
-function findTexasFundingGroupFunder(
-  funders: FunderProfile[],
-): FunderProfile | undefined {
-  return (
-    funders.find((f) => isTexasFundingGroupFunderProfile(f)) ??
-    funders.find(
-      (f) =>
-        String(f.mainContractLayoutKey || "").trim() ===
-        PLATFORM_LAYOUT_KEYS.texasFundingGroupContract,
-    )
-  );
-}
-
-function findWoodmereFunder(funders: FunderProfile[]): FunderProfile | undefined {
+function findPlatformFunder(funders: FunderProfile[]): FunderProfile | undefined {
   return funders.find((f) => isWoodmereFunderProfile(f));
 }
 
 /**
  * Auto-select funder on contract state change:
- * - Selecting Texas → Texas Funding Group
- * - Leaving Texas → Woodmere
- * - Non-Texas → non-Texas → keep current funder
+ * - Keep current when still allowed for the new state
+ * - Otherwise pick first funder allowed for that state (platform preferred)
  */
 export function resolveFunderSwitchOnStateChange(options: {
   currentFunderName?: string | null;
@@ -303,37 +280,25 @@ export function resolveFunderSwitchOnStateChange(options: {
   if (!pickedState) return null;
 
   const funders = options.funders.filter((f) => f.isActive !== false);
-  const prevTexas = isTexasContractState(options.previousState);
-  const nextTexas = isTexasContractState(pickedState);
   const current = findFunderProfile(
     funders,
     options.currentFunderName,
     pickedState,
   );
 
-  // Selecting Texas (from any non-Texas state, or empty): Texas Funding Group.
-  if (nextTexas && !prevTexas) {
-    const tfg = findTexasFundingGroupFunder(funders);
-    if (!tfg?.name) return null;
-    if (current && isTexasFundingGroupFunderProfile(current)) return null;
-    return tfg.name;
-  }
-
-  // Leaving Texas: Woodmere.
-  if (prevTexas && !nextTexas) {
-    const woodmere = findWoodmereFunder(funders);
-    if (!woodmere?.name) {
-      return resolveDefaultFunderNameForState(funders, pickedState) || null;
-    }
-    if (current && isWoodmereFunderProfile(current)) return null;
-    return woodmere.name;
-  }
-
-  // Same Texas-ness: keep funder unless it is unavailable for the new state.
   if (current && funderAvailableForContractState(current, pickedState)) {
     return null;
   }
-  return resolveDefaultFunderNameForState(funders, pickedState) || null;
+
+  const next = resolveDefaultFunderNameForState(funders, pickedState);
+  if (!next) return null;
+  if (
+    funderNamesEquivalent(next, options.currentFunderName) ||
+    next === String(options.currentFunderName ?? "").trim()
+  ) {
+    return null;
+  }
+  return next;
 }
 
 export function findFunderProfileById(
@@ -359,28 +324,14 @@ export function funderProfilesForContractState(
 
 export function resolveMainContractLayoutKeyFromProfile(
   profile: FunderProfile,
-  state?: string | null,
+  _state?: string | null,
 ): string {
   const profileKey = String(profile.mainContractLayoutKey || "").trim();
   if (profileKey.startsWith("funder_")) {
     return profileKey;
   }
-
-  if (isTexasFundingGroupFunderProfile(profile)) {
-    return isTexasContractState(state)
-      ? PLATFORM_LAYOUT_KEYS.texasFundingGroupContract
-      : profileKey && profileKey !== PLATFORM_LAYOUT_KEYS.texasFundingGroupContract
-        ? profileKey
-        : PLATFORM_LAYOUT_KEYS.contract;
-  }
-
-  if (profileKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract) {
-    return isTexasContractState(state)
-      ? PLATFORM_LAYOUT_KEYS.texasFundingGroupContract
-      : PLATFORM_LAYOUT_KEYS.contract;
-  }
-
-  return profileKey || PLATFORM_LAYOUT_KEYS.contract;
+  // Deleted platform layouts (texas_funding_group_contract, etc.) map to Harbor contract.
+  return PLATFORM_LAYOUT_KEYS.contract;
 }
 
 export function resolveMainContractLayoutKeyFromFunders(
@@ -406,15 +357,7 @@ export function contractPreviewNameForFunder(
   state?: string | null,
 ): string {
   const profile = findFunderProfile(funders, funderName, state);
-  if (profile && isTexasFundingGroupFunderProfile(profile)) {
-    const fromProfile = String(profile.contractPdfFileName ?? "").trim();
-    return fromProfile || `${TEXAS_FUNDING_GROUP_FUNDER_LABEL}.pdf`;
-  }
   if (profile?.contractPdfFileName) return profile.contractPdfFileName;
-  const layoutKey = resolveMainContractLayoutKeyFromFunders(funders, funderName, state);
-  if (layoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract) {
-    return `${TEXAS_FUNDING_GROUP_FUNDER_LABEL}.pdf`;
-  }
   return "Contract.pdf";
 }
 
@@ -424,10 +367,8 @@ export function resolveContractEnvelopeLenderNameForFunder(
   state?: string | null,
 ): string {
   const profile = findFunderProfile(funders, funderName, state);
-  if (profile && isTexasFundingGroupFunderProfile(profile)) {
-    return TEXAS_FUNDING_GROUP_FUNDER_LABEL;
-  }
-  return CONTRACT_ENVELOPE_LENDER_NAME;
+  const fromProfile = String(profile?.displayName || profile?.name || "").trim();
+  return fromProfile || CONTRACT_ENVELOPE_LENDER_NAME;
 }
 
 export { CONTRACT_ENVELOPE_LENDER_NAME, TEXAS_FUNDING_GROUP_FUNDER_LABEL };

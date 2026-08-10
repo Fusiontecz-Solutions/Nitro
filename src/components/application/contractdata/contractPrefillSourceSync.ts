@@ -310,6 +310,8 @@ export function buildOfferDecisionUpsertFromPrefill(
     const offer = parseMoney(prefill.purchaseAmount);
     const totalRemit = parseMoney(prefill.purchasePrice);
     const repayPerPeriod = parseMoney(prefill.remittance);
+    const hasRefinanceKey = Object.prototype.hasOwnProperty.call(prefill, "refinanceAmount");
+    const refinanceAmount = parseMoney(prefill.refinanceAmount);
     const frequency = sanitizePaymentFrequencyForPersist(prefill.frequency);
     const fees = parseMoney(prefill.appendixUnderwritingFees);
 
@@ -317,6 +319,7 @@ export function buildOfferDecisionUpsertFromPrefill(
         offer == null &&
         totalRemit == null &&
         repayPerPeriod == null &&
+        !hasRefinanceKey &&
         !frequency &&
         fees == null
     ) {
@@ -331,6 +334,7 @@ export function buildOfferDecisionUpsertFromPrefill(
     if (offer != null) payload.offer = offer;
     if (totalRemit != null) payload.totalRemit = totalRemit;
     if (repayPerPeriod != null) payload.repayPerPeriod = repayPerPeriod;
+    if (hasRefinanceKey) payload.refinanceAmount = refinanceAmount ?? 0;
     if (frequency) payload.frequency = frequency;
     if (fees != null) payload.fees = fees;
 

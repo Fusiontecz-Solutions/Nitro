@@ -21,8 +21,6 @@ import {
 import {
     isTexasContractState,
     isTexasFundingGroupFunder,
-    resolveMainContractLayoutKey,
-    PLATFORM_LAYOUT_KEYS,
 } from "./platformDocumentConfig";
 
 export interface ContractPrefillField {
@@ -59,6 +57,8 @@ export interface BuildContractPrefillFieldsArgs {
     purchaseAmount?: string;
     purchasePercent?: string;
     remittance?: string;
+    /** Refinance / REFI amount subtracted from offer when computing recipient funds. DocuSign: `refinance_amount`. */
+    refinanceAmount?: string;
     /** Payment frequency (e.g. Daily, Weekly). DocuSign data label: `frequency`; BoldSign may use `paymentTerms`. */
     frequency?: string;
     /** Recipient funds / net cash to merchant (offer − fees − refinance). DocuSign: `net_to_merchant`. */
@@ -222,6 +222,7 @@ const FIELD_IDS = {
     purchaseAmount: ["purchase_amount"],
     purchasePercent: ["purchase_percent", "specified_percentage"],
     remittance: ["remittance"],
+    refinanceAmount: ["refinance_amount"],
     frequency: ["frequency", "paymentTerms"],
     /** DocuSign: `net_to_merchant`; BoldSign template tabs often use `NetFundProvided`. */
     netToMerchant: ["net_to_merchant", "NetFundProvided"],
@@ -484,6 +485,7 @@ export const buildContractPrefillFields = ({
     purchaseAmount = "",
     purchasePercent = "",
     remittance = "",
+    refinanceAmount = "",
     frequency = "",
     netToMerchant = "",
 
@@ -631,6 +633,7 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.purchaseAmount, "Purchase Amount", purchaseAmount),
         ...mapIds(FIELD_IDS.purchasePercent, "Specific Percentage", purchasePercent),
         ...mapIds(FIELD_IDS.remittance, "Remittance", remittance),
+        ...mapIds(FIELD_IDS.refinanceAmount, "REFI Amount", refinanceAmount),
         ...mapIds(FIELD_IDS.frequency, "Frequency", frequency),
         ...mapIds(FIELD_IDS.netToMerchant, "Recipient funds", netToMerchant),
         ...mapIds(FIELD_IDS.clientName, "Client Name", clientName),
@@ -1013,6 +1016,8 @@ const TEXAS_CONTRACT_USD_MONEY_FIELD_IDS = new Set([
     "netToMerchant",
     "NetFundProvided",
     "netfundprovided",
+    "refinance_amount",
+    "refinanceAmount",
     "remittance",
     "daily_payment",
     "dailypayment",
@@ -1042,7 +1047,7 @@ export function shouldFormatTexasContractUsdAmounts(options?: {
 }): boolean {
     const layoutKey = String(options?.layoutKey ?? "").trim();
     if (
-        layoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract ||
+        layoutKey === "texas_funding_group_contract" ||
         layoutKey === "texas_funding_group" ||
         layoutKey === "alliance_bridge_contract"
     ) {
@@ -1052,8 +1057,7 @@ export function shouldFormatTexasContractUsdAmounts(options?: {
     const state = String(options?.state ?? "").trim();
     if (!funderName || !isTexasContractState(state)) return false;
     if (isTexasFundingGroupFunder(funderName)) return true;
-    return resolveMainContractLayoutKey(funderName, state) ===
-        PLATFORM_LAYOUT_KEYS.texasFundingGroupContract;
+    return false;
 }
 
 /** Prefix Texas contract money tabs with `$` (e.g. `$12,000.00`) for DocuSign. */
@@ -1119,6 +1123,8 @@ function prefillIsoDate(value: unknown): string {
 const MONEY_STRING_PREFILL_KEYS: readonly (keyof BuildContractPrefillFieldsArgs)[] = [
     "purchasePrice",
     "purchaseAmount",
+    "remittance",
+    "refinanceAmount",
     "netToMerchant",
     "appendixUnderwritingFees",
     "addendumDatedPrincipalOwnerAmount",
@@ -1422,6 +1428,7 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
         coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
         coerceToFiniteNumber(odEff?.refinanceAmount) ??
         coerceToFiniteNumber(odEff?.RefinanceAmount) ??
+        coerceToFiniteNumber(sources.prefill?.refinanceAmount) ??
         0;
 
     return Math.max(0, Math.round((advance - (fees || 0) - refinance) * 100) / 100);
@@ -1469,6 +1476,7 @@ export function deriveOfferFeesDollarsForNetToMerchant(
         coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
         coerceToFiniteNumber(odEff?.refinanceAmount) ??
         coerceToFiniteNumber(odEff?.RefinanceAmount) ??
+        coerceToFiniteNumber(sources.prefill?.refinanceAmount) ??
         0;
 
     return Math.max(
@@ -1882,6 +1890,7 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
         if (norm === "purchase_amount") return PLATFORM_LABEL.offerAmount;
         if (norm === "purchase_percent" || norm === "specified_percentage") return PLATFORM_LABEL.specificPercentage;
         if (norm === "remittance") return PLATFORM_LABEL.totalRemit;
+        if (norm === "refinance_amount") return PLATFORM_LABEL.refiAmount;
         if (norm === "frequency" || norm === "paymentterms") return PLATFORM_LABEL.frequency;
     }
 
@@ -1929,6 +1938,7 @@ export function categorizeDealReviewPrefillFieldId(id: string): string {
         s.startsWith("purchase_") ||
         s === "specified_percentage" ||
         s === "remittance" ||
+        s === "refinance_amount" ||
         s === "frequency" ||
         s === "paymentterms" ||
         s === "net_to_merchant" ||
@@ -2044,6 +2054,7 @@ const PLATFORM_LABEL = {
     specificPercentage: "Specific Percentage",
     term: "Term",
     frequency: "Frequency",
+    refiAmount: "REFI Amount",
     netToMerchant: "Recipient funds",
     underwritingFees: "Underwriting fees",
     repayPerPeriod: "Repay per period",
@@ -2141,6 +2152,7 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     purchase_percent: PLATFORM_LABEL.specificPercentage,
     specified_percentage: PLATFORM_LABEL.specificPercentage,
     remittance: PLATFORM_LABEL.totalRemit,
+    refinance_amount: PLATFORM_LABEL.refiAmount,
     frequency: PLATFORM_LABEL.frequency,
     paymentterms: PLATFORM_LABEL.frequency,
     authorization_application: "Merchant name",
@@ -2274,6 +2286,47 @@ export function prepareDealReviewPrefillDisplay(fields: ContractPrefillField[]):
         if (seenSection.has(dedupeKey)) continue;
         seenSection.add(dedupeKey);
         out.push(field);
+    }
+    return ensureDealReviewKeyMoneyFields(out);
+}
+
+/** Key deal-term money/cadence rows always shown on Summary so users can fill blanks. */
+const DEAL_REVIEW_ALWAYS_SHOW_MONEY_FIELDS: ReadonlyArray<{
+    id: string;
+    label: string;
+    aliases?: readonly string[];
+}> = [
+    { id: "purchase_amount", label: PLATFORM_LABEL.offerAmount },
+    { id: "purchase_price", label: PLATFORM_LABEL.paybackAmount },
+    { id: "remittance", label: PLATFORM_LABEL.totalRemit },
+    { id: "frequency", label: PLATFORM_LABEL.frequency, aliases: ["paymentterms"] },
+    { id: "refinance_amount", label: PLATFORM_LABEL.refiAmount },
+    {
+        id: "net_to_merchant",
+        label: PLATFORM_LABEL.netToMerchant,
+        aliases: ["netfundprovided"],
+    },
+];
+
+/**
+ * Ensure Summary Deal Review always includes core money fields (even when empty)
+ * so users can edit/fill them without opening Verify Prefill.
+ */
+export function ensureDealReviewKeyMoneyFields(fields: ContractPrefillField[]): ContractPrefillField[] {
+    const presentIds = new Set(fields.map((f) => normalizeDealReviewFieldId(f.id)));
+    const presentLabels = new Set(
+        fields
+            .filter((f) => categorizeDealReviewPrefillFieldId(f.id) === "Deal Terms")
+            .map((f) => f.label.toLowerCase()),
+    );
+    const out = [...fields];
+    for (const def of DEAL_REVIEW_ALWAYS_SHOW_MONEY_FIELDS) {
+        const aliases = [def.id, ...(def.aliases ?? [])].map(normalizeDealReviewFieldId);
+        if (aliases.some((id) => presentIds.has(id))) continue;
+        if (presentLabels.has(def.label.toLowerCase())) continue;
+        out.push({ id: def.id, label: def.label, value: "" });
+        presentIds.add(normalizeDealReviewFieldId(def.id));
+        presentLabels.add(def.label.toLowerCase());
     }
     return out;
 }
@@ -3334,6 +3387,13 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         frequency,
         netToMerchant,
         remittance: resolveRemittancePrefillValue({ contract: row, offerDecision: offer }),
+        refinanceAmount: (() => {
+            const n =
+                coerceToFiniteNumber(offer?.refinanceAmount) ??
+                coerceToFiniteNumber(offer?.RefinanceAmount) ??
+                coerceToFiniteNumber(row.refinanceAmount);
+            return n !== undefined ? truncateDecimalPrefill(n) : "";
+        })(),
         clientName: str(row.customerName) || str(row.clientName),
         securityBusinessName: str(row.securityBusinessName),
         securityTaxEin: str(row.securityTaxEin),
@@ -4042,6 +4102,7 @@ export const LIVE_OFFER_MONEY_PREFILL_KEYS: ReadonlyArray<keyof BuildContractPre
     "purchaseAmount",
     "purchasePrice",
     "remittance",
+    "refinanceAmount",
     "frequency",
     "netToMerchant",
     "appendixUnderwritingFees",
@@ -4092,6 +4153,11 @@ function pickLiveOfferMoneyOverlay(
             if (looksLikePaymentFrequencyLabel(value)) {
                 (overlay as Record<string, unknown>)[key] = value;
             }
+            continue;
+        }
+        // REFI of 0 is meaningful (cleared refinance) — still sync so stale amounts drop.
+        if (key === "refinanceAmount") {
+            (overlay as Record<string, unknown>)[key] = value;
             continue;
         }
         if (!isZeroMoneyPrefillValue(value)) {
@@ -4334,12 +4400,20 @@ function getLiveOfferPrefillArgs(
     const paybackNum = resolvePaybackAmountDollars(sources);
     const paybackAmount = paybackNum !== undefined ? truncateDecimalPrefill(paybackNum) : "";
     const appendixPartial = applyAppendixUnderwritingFeesAmount({}, sources);
+    const refinanceNum =
+        coerceToFiniteNumber(odRoot?.refinanceAmount) ??
+        coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
+        coerceToFiniteNumber(odEff?.refinanceAmount) ??
+        coerceToFiniteNumber(odEff?.RefinanceAmount);
+    const refinanceAmount =
+        refinanceNum !== undefined ? truncateDecimalPrefill(refinanceNum) : "";
 
     const fromOfferDecision: Partial<BuildContractPrefillFieldsArgs> = {
         purchaseAmount: offerAmount,
         purchasePrice: paybackAmount,
         frequency: resolveOfferFrequencyLabel(sources),
         remittance,
+        refinanceAmount,
         netToMerchant: formatNetToMerchantPrefillValue(computeNetToMerchantDollars(sources)),
         appendixUnderwritingFees: str(appendixPartial.appendixUnderwritingFees),
         achAuthorizationAccountHolderBankTransactionFee: remittance,

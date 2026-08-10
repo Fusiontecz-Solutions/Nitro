@@ -32,9 +32,10 @@ export function normalizeLegacyFunderName(value: unknown): string {
   const v = String(value ?? "").trim();
   if (!v) return "";
   if (funderNamesEquivalent(v, DEFAULT_FUNDER_NAME)) return DEFAULT_FUNDER_NAME;
+  // Legacy TFG rows: keep the profile name from Settings when present; never invent a TFG label.
   if (isTexasFundingGroupFunder(v)) {
     const profile = findFunderProfile(FALLBACK_FUNDER_PROFILES, v);
-    return profile?.name ?? TEXAS_FUNDING_GROUP_FUNDER_LABEL;
+    return profile?.name ?? v;
   }
   return v;
 }

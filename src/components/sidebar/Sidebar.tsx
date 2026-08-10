@@ -5,6 +5,7 @@ import AccountBalance from "@mui/icons-material/AccountBalance";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import Description from "@mui/icons-material/Description";
 import People from "@mui/icons-material/People";
+import Settings from "@mui/icons-material/Settings";
 import {
   Sidebar as UISidebar,
   SidebarHeader,
@@ -44,10 +45,13 @@ type PipelineAccent = "contract-pending" | "contract-sent" | "contract-signed";
 
 type SidebarNavChildItem = {
   label: string;
-  operationsStatus: string;
-  pipelineAccent: PipelineAccent;
+  /** Pipeline stage filter (Contract → Pending / Sent / Signed). */
+  operationsStatus?: string;
+  pipelineAccent?: PipelineAccent;
   /** Peach/amber action pill under the label (matches screenshot). */
   actionHint?: string;
+  /** Absolute or relative path including optional query (Settings tabs). */
+  url?: string;
 };
 
 type SidebarNavItem = {
@@ -137,6 +141,21 @@ const contractWorkflowSections: SidebarNavSection[] = [
       },
     ],
   },
+  {
+    title: "SETTINGS",
+    items: [
+      {
+        label: "Settings",
+        url: "/user-setting",
+        icon: Settings,
+        children: [
+          { label: "Profile", url: "/user-setting" },
+          { label: "Funders", url: "/user-setting?tab=funders" },
+          { label: "DocuSign", url: "/user-setting?tab=docusign" },
+        ],
+      },
+    ],
+  },
 ];
 
 function isOperationsPipelineItemActive(
@@ -152,6 +171,45 @@ function isOperationsPipelineItemActive(
   );
 }
 
+function parseNavHref(href: string): { pathname: string; searchParams: URLSearchParams } {
+  const [pathPart, queryPart = ""] = href.split("?");
+  return {
+    pathname: pathPart || "/",
+    searchParams: new URLSearchParams(queryPart),
+  };
+}
+
+function isSettingsTabHrefActive(
+  pathname: string,
+  searchParams: URLSearchParams,
+  href: string,
+): boolean {
+  const target = parseNavHref(href);
+  if (pathname !== target.pathname && !pathname.startsWith(`${target.pathname}/`)) {
+    return false;
+  }
+  if (target.pathname !== "/user-setting") {
+    return pathname === target.pathname || pathname.startsWith(`${target.pathname}/`);
+  }
+  const currentTab = (searchParams.get("tab") || "profile").toLowerCase();
+  const targetTab = (target.searchParams.get("tab") || "profile").toLowerCase();
+  return currentTab === targetTab;
+}
+
+function isNavChildActive(
+  pathname: string,
+  searchParams: URLSearchParams,
+  child: SidebarNavChildItem,
+): boolean {
+  if (child.operationsStatus) {
+    return isOperationsPipelineItemActive(pathname, searchParams, child.operationsStatus);
+  }
+  if (child.url) {
+    return isSettingsTabHrefActive(pathname, searchParams, child.url);
+  }
+  return false;
+}
+
 function buildNavHref(item: SidebarNavItem): string {
   if (item.workflow) {
     return `/applications?workflow=${item.workflow}`;
@@ -160,6 +218,14 @@ function buildNavHref(item: SidebarNavItem): string {
     return buildOperationsPipelineApplicationsUrl(item.operationsStatus);
   }
   return item.url;
+}
+
+function buildChildNavHref(child: SidebarNavChildItem, parent: SidebarNavItem): string {
+  if (child.url) return child.url;
+  if (child.operationsStatus) {
+    return buildOperationsPipelineApplicationsUrl(child.operationsStatus);
+  }
+  return parent.url;
 }
 
 function isNavItemActive(
@@ -174,9 +240,10 @@ function isNavItemActive(
   const childItems = item.children ?? [];
   if (childItems.length > 0) {
     return (
-      childItems.some((child) =>
-        isOperationsPipelineItemActive(pathname, searchParams, child.operationsStatus),
-      ) || isOperationsPipelineItemActive(pathname, searchParams, item.operationsStatus)
+      childItems.some((child) => isNavChildActive(pathname, searchParams, child)) ||
+      isOperationsPipelineItemActive(pathname, searchParams, item.operationsStatus) ||
+      (item.url.startsWith("/user-setting") &&
+        isSettingsTabHrefActive(pathname, searchParams, item.url))
     );
   }
 
@@ -196,6 +263,10 @@ function isNavItemActive(
       (pathname === "/applications" && !currentWorkflow && !isOpsView) ||
       pathname.startsWith("/create-applications")
     );
+  }
+
+  if (item.url.includes("?")) {
+    return isSettingsTabHrefActive(pathname, searchParams, item.url);
   }
 
   return pathname === item.url || pathname.startsWith(`${item.url}/`);
@@ -381,22 +452,23 @@ const Sidebar = () => {
                           </SidebarMenuButton>
                           <SidebarMenuSub className="mx-1.5 border-l px-2">
                             {childItems.map((child) => {
-                              const childTo = buildOperationsPipelineApplicationsUrl(
-                                child.operationsStatus,
-                              );
-                              const childActive = isOperationsPipelineItemActive(
+                              const childTo = buildChildNavHref(child, item);
+                              const childActive = isNavChildActive(
                                 pathname,
                                 searchParams,
-                                child.operationsStatus,
+                                child,
                               );
-                              const childCount =
-                                stageCounts[
-                                  child.operationsStatus as keyof ContractStageCounts
-                                ] ?? 0;
-                              const showChildCount = childCount > 0;
-                              const actionAccent = resolveSidebarPipelineActionAccent(
-                                child.operationsStatus,
+                              const childCount = child.operationsStatus
+                                ? (stageCounts[
+                                    child.operationsStatus as keyof ContractStageCounts
+                                  ] ?? 0)
+                                : 0;
+                              const showChildCount = Boolean(
+                                child.operationsStatus && childCount > 0,
                               );
+                              const actionAccent = child.operationsStatus
+                                ? resolveSidebarPipelineActionAccent(child.operationsStatus)
+                                : null;
 
                               return (
                                 <SidebarMenuSubItem key={child.label}>
