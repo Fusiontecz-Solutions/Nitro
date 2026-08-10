@@ -9,10 +9,8 @@ import {
 import prisma from '../config/prismaClient';
 import {
   isAllianceBridgeFunder,
-  isTexasContractState,
   isTexasFundingGroupFunder,
 } from '../services/docusign/utils/resolve-main-contract-layout';
-import { DOCUMENT_LAYOUT_KEYS } from '../services/docusign/layouts/document-layout.registry';
 import { CONTRACT_ENVELOPE_LENDER_NAME } from '../utils/contractEnvelopeEmailSubject';
 
 export type { SerializedFunderProfile };
@@ -80,7 +78,7 @@ export function isTexasFundingGroupFunderProfile(profile: {
     isTexasFundingGroupFunder(profile.organization) ||
     isTexasFundingGroupFunder(profile.legalName) ||
     String(profile.mainContractLayoutKey || '').trim() ===
-      DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract
+      'texas_funding_group_contract'
   );
 }
 
@@ -101,37 +99,19 @@ export function resolveDefaultFunderNameForState(
   const normalizedState = normalizeFunderToken(state);
   const active = profiles.filter((p) => p.isActive !== false);
 
-  if (isTexasContractState(normalizedState)) {
-    const tfg = active.find((p) => isTexasFundingGroupFunderProfile(p));
-    if (
-      tfg?.name &&
-      funderAvailableForState(
-        tfg.allowedStates ?? [],
-        tfg.excludedStates ?? [],
-        normalizedState,
-      )
-    ) {
-      return String(tfg.name).trim();
-    }
-  }
-
-  const woodmere = active.find((p) => isWoodmereFunderProfile(p));
+  const platform = active.find((p) => isWoodmereFunderProfile(p));
   if (
-    woodmere?.name &&
+    platform?.name &&
     funderAvailableForState(
-      woodmere.allowedStates ?? [],
-      woodmere.excludedStates ?? [],
+      platform.allowedStates ?? [],
+      platform.excludedStates ?? [],
       normalizedState,
     )
   ) {
-    return String(woodmere.name).trim();
-  }
-  if (woodmere?.name && !isTexasContractState(normalizedState)) {
-    return String(woodmere.name).trim();
+    return String(platform.name).trim();
   }
 
   const fallback = active
-    .filter((p) => !isTexasFundingGroupFunderProfile(p))
     .filter((p) =>
       funderAvailableForState(
         p.allowedStates ?? [],
@@ -145,9 +125,8 @@ export function resolveDefaultFunderNameForState(
 
 /**
  * Auto-select funder on contract state change:
- * - Selecting Texas → Texas Funding Group
- * - Leaving Texas → Woodmere
- * - Same Texas-ness → keep current funder
+ * - Keep current when still allowed for the new state
+ * - Otherwise prefer platform/Harbor funder, then first allowed funder
  */
 export function resolveFunderSwitchOnStateChange(options: {
   currentFunderName?: string | null;
@@ -174,34 +153,7 @@ export function resolveFunderSwitchOnStateChange(options: {
     options.currentFunderName,
     pickedState,
   );
-  const prevTexas = isTexasContractState(options.previousState);
-  const nextTexas = isTexasContractState(pickedState);
 
-  // Selecting Texas (from any non-Texas state): Texas Funding Group.
-  if (nextTexas && !prevTexas) {
-    const tfg =
-      profiles.find((p) => isTexasFundingGroupFunderProfile(p)) ??
-      profiles.find(
-        (p) =>
-          String(p.mainContractLayoutKey || '').trim() ===
-          DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
-      );
-    if (!tfg?.name) return null;
-    if (current && isTexasFundingGroupFunderProfile(current)) return null;
-    return String(tfg.name).trim();
-  }
-
-  // Leaving Texas: Woodmere.
-  if (prevTexas && !nextTexas) {
-    const woodmere = profiles.find((p) => isWoodmereFunderProfile(p));
-    if (woodmere?.name) {
-      if (current && isWoodmereFunderProfile(current)) return null;
-      return String(woodmere.name).trim();
-    }
-    return resolveDefaultFunderNameForState(profiles, pickedState);
-  }
-
-  // Same Texas-ness: keep funder unless it is unavailable for the new state.
   if (
     current &&
     funderAvailableForState(
@@ -212,7 +164,11 @@ export function resolveFunderSwitchOnStateChange(options: {
   ) {
     return null;
   }
-  return resolveDefaultFunderNameForState(profiles, pickedState);
+
+  const next = resolveDefaultFunderNameForState(profiles, pickedState);
+  if (!next) return null;
+  if (funderNamesEquivalent(next, options.currentFunderName)) return null;
+  return next;
 }
 
 export async function getFunderWithDocuSignCredentialsResolved(options: {

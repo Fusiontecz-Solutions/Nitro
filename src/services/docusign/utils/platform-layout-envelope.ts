@@ -169,9 +169,22 @@ export async function loadMainContractLayoutPackage(
         documentBase64,
       };
     }
-    // No funder upload — fall back to platform default contract PDF.
-    const documentBase64 = await loadPlatformDocumentPdfBase64(coordinateKey);
-    return { ...layout, key, name: layout.name, documentBase64 };
+    // Funder row missing PDF — fall back to platform contract / ContractTemplate upload.
+    try {
+      const platformPack = await loadMainContractLayoutPackage(
+        DOCUMENT_LAYOUT_KEYS.contract,
+        contractState,
+      );
+      return {
+        ...platformPack,
+        key,
+        name: layout.name || platformPack.name,
+      };
+    } catch {
+      throw new Error(
+        `No contract PDF uploaded for this funder (layoutKey "${key}"). Upload via Settings → Funders → Main contract PDF, or Contract Templates.`,
+      );
+    }
   }
 
   const platformKey = isDocumentLayoutKey(key) ? key : DOCUMENT_LAYOUT_KEYS.contract;
@@ -180,19 +193,21 @@ export async function loadMainContractLayoutPackage(
     const documentBase64 = await loadPlatformDocumentPdfBase64(platformKey);
     return { ...layout, documentBase64 };
   } catch (primaryErr) {
+    // Platform BoldSignTemplate missing — fall back to latest ContractTemplate upload (Cloudinary URL in DB).
     if (platformKey === DOCUMENT_LAYOUT_KEYS.contract) {
       const latest = await prisma.contractTemplate.findFirst({
         orderBy: { createdAt: 'desc' },
       });
-      if (latest?.url) {
-        const documentBase64 = await fetchPdfAsBase64(latest.url);
+      const url = String(latest?.url || '').trim();
+      if (url && /^https?:\/\//i.test(url)) {
+        const documentBase64 = await fetchPdfAsBase64(url);
         return { ...layout, documentBase64 };
       }
     }
     throw primaryErr instanceof Error
       ? primaryErr
       : new Error(
-          `No PDF configured for "${layout.name}". Upload to Cloudinary or ensure the default DocuSign template is available.`,
+          `No PDF configured for "${layout.name}". Upload via Settings → Funders → Main contract PDF, or Contract Templates.`,
         );
   }
 }

@@ -66,13 +66,8 @@ function getUploadedSupplementalFile(
   return Array.isArray(raw) ? raw[0] : raw;
 }
 
-const SUPPLEMENTAL_UPLOAD_FIELDS: Record<string, FunderSupplementalLayoutType> = {
-  flexAddendum: 'flex_addendum',
-  balanceTransfer: 'balance_transfer',
-  caseTakeoverBalanceTransfer: 'case_takeover_addendum',
-  caseTakeoverAddendum: 'case_takeover_addendum',
-  achAuthorization: 'ach_authorization',
-};
+/** Platform supplemental layout uploads removed — use funder named-addendum upload instead. */
+const SUPPLEMENTAL_UPLOAD_FIELDS: Record<string, FunderSupplementalLayoutType> = {};
 
 function parseAllowedStates(raw: unknown): string[] | undefined {
   if (raw == null || raw === '') return undefined;

@@ -34,7 +34,7 @@ function buildStyledCtaButton(
 
 /**
  * Gmail / Outlook-safe HTML for the ISO "offer updated" resend email.
- * Woodmere brand palette — aligned with the document-request template.
+ * Harbor brand palette — aligned with the document-request template.
  */
 export function renderOfferUpdatedEmailHtml(
   values: Record<string, string | undefined>,

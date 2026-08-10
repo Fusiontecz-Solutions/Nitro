@@ -264,7 +264,7 @@ export function isAllianceBridgeContractLayoutKey(layoutKey?: string | null): bo
 export function isTexasFundingGroupContractLayoutKey(layoutKey?: string | null): boolean {
   const key = String(layoutKey ?? '').trim();
   return (
-    key === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract ||
+    key === 'texas_funding_group_contract' ||
     key === 'texas_funding_group' ||
     key === ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY
   );
@@ -315,9 +315,8 @@ export async function resolveAllianceBridgeCoordinateLayoutKey(options: {
 }): Promise<string | null> {
   const layoutKey = String(options.mainContractLayoutKey ?? '').trim();
   if (isTexasFundingGroupContractLayoutKey(layoutKey)) {
-    return layoutKey === ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY
-      ? ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY
-      : DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract;
+    // Platform Texas / Alliance layouts were removed — always use Harbor contract coords.
+    return DOCUMENT_LAYOUT_KEYS.contract;
   }
   if (isFunderContractLayoutKey(layoutKey)) {
     const funderId = layoutKey.replace(/^funder_/i, '');

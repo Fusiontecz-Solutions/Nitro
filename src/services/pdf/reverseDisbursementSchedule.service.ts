@@ -16,8 +16,8 @@ import {
 } from '../docusign/utils/resolve-main-contract-layout';
 import { isWoodmereFunderProfile } from '../../utils/funderProfileResolver';
 
-/** Default Woodmere brand logo on the disbursement schedule page. */
-const DEFAULT_WOODMERE_LOGO_URL =
+/** Default platform brand logo on the disbursement schedule page. */
+const DEFAULT_PLATFORM_LOGO_URL =
   'https://res.cloudinary.com/dehrku8og/image/upload/v1786111779/ChatGPT_Image_Aug_7_2026_07_39_08_PM_zri2ha.png';
 
 const DEFAULT_TEXAS_FUNDING_GROUP_LOGO_URL =
@@ -293,7 +293,7 @@ function resolveFallbackLogoUrl(funderName?: string | null): string {
     return DEFAULT_TEXAS_FUNDING_GROUP_LOGO_URL;
   }
 
-  return DEFAULT_WOODMERE_LOGO_URL;
+  return DEFAULT_PLATFORM_LOGO_URL;
 }
 
 async function resolveFunderLogoUrl(funderName?: string | null): Promise<string> {
