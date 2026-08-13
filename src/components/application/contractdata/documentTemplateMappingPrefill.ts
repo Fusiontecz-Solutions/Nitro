@@ -4,18 +4,11 @@ import type {
     ContractPrefillField,
 } from "./Contract";
 import {
-    buildWoodmereFlexAddendumContractPrefillFields,
-    formatFlexAddendumMoneyDisplay,
-    type WoodmereFlexAddendumContractPrefillFields,
-} from "./WOODMERE_FLEX_ADDENDUM";
-import {
     buildContractPrefillFieldsFromApplication,
     getApplicationPrimaryRecipientName,
     getContractPrefillEditDefaultsFromApplication,
     resolveBalanceTransferMerchantContext,
     resolveContractBusinessLegalNameForPrefill,
-    resolveOfferAmountDollarsForUnderwritingFees,
-    resolveRemittancePrefillValue,
 } from "./Contract";
 import {
     buildBalanceTransferSheetContractPrefillFields,
@@ -28,14 +21,6 @@ import {
     isPlatformLayoutKey,
     PLATFORM_DISCLOSURE_FUNDER_NAME,
 } from "./platformDocumentConfig";
-import {
-    buildWoodmereBuyoutBlankAddendumContractPrefillFields,
-    type WoodmereBuyoutBlankAddendumContractPrefillFields,
-} from "./WOODMERE_BUYOUT_BLANK_ADDENDUM";
-import {
-    buildWoodmereFlexDatedAddendumContractPrefillFields,
-    type WoodmereFlexDatedAddendumContractPrefillFields,
-} from "./WOODMERE_FLEX_DATED_ADDENDUM";
 import {
     buildDiscoverAdvanceEpoAddendumContractPrefillFields,
     type DiscoverAdvanceEpoAddendumContractPrefillFields,
@@ -52,6 +37,23 @@ import {
     buildCaseTakeoverAddendumContractPrefillFields,
     type CaseTakeoverAddendumContractPrefillFields,
 } from "./CASE_TAKEOVER_ADDENDUM";
+import {
+    buildAddendumPContractPrefillFields,
+    type AddendumPContractPrefillFields,
+} from "./ADDENDUM_P";
+import {
+    buildAddendumCaContractPrefillFields,
+    type AddendumCaContractPrefillFields,
+} from "./ADDENDUM_CA";
+import {
+    buildAddendumNyContractPrefillFields,
+    type AddendumNyContractPrefillFields,
+} from "./ADDENDUM_NY";
+import {
+    buildAddendumVaContractPrefillFields,
+    type AddendumVaContractPrefillFields,
+} from "./ADDENDUM_VA";
+import { resolveRefiLabelName } from "./refinanceDealCalculations";
 import {
     buildStateDisclosurePrefillContextFromContract,
     getStateDisclosureEditorFieldDefinitions,
@@ -628,24 +630,6 @@ function dotBalanceTransfer(): BalanceTransferSheetContractPrefillFields {
     };
 }
 
-function dotWoodmereFlex(): WoodmereFlexAddendumContractPrefillFields {
-    return {
-        addendumDate: DUMMY,
-        agreementDate: DUMMY,
-        merchantName: DUMMY,
-        clientName: DUMMY,
-        businessName2: DUMMY,
-        installmentDay1: "1",
-        installmentDay2: "16",
-        dailyPayment1: DUMMY,
-        receivablePurchase1: DUMMY,
-        dailyPayment2: DUMMY,
-        receivablePurchase2: DUMMY,
-        funderName: DUMMY,
-        dealIdPrefix: DUMMY,
-    };
-}
-
 function currentUsDate(): string {
     return new Intl.DateTimeFormat("en-US", {
         month: "2-digit",
@@ -733,159 +717,6 @@ function buildBalanceTransferComputed(
     });
 }
 
-function buildWoodmereFlexComputed(
-    contract: Record<string, unknown> | null,
-    sctx: StateDisclosureContext,
-    application?: Record<string, unknown> | null,
-): ContractPrefillField[] {
-    const c = contract ?? {};
-    const app = application ?? null;
-    const overrides = (c.contractPrefillOverrides as Record<string, unknown> | undefined) ?? {};
-    const offerDecision =
-        (app?.offerDecision as Record<string, unknown> | undefined) ??
-        (app?.OfferDecision as Record<string, unknown> | undefined) ??
-        (c.offer as Record<string, unknown> | undefined) ??
-        null;
-    const legal =
-        str(c.legalName) ||
-        str(c.clientLegalName) ||
-        sctx.recipientName ||
-        "";
-    const primaryRecipient = getApplicationPrimaryRecipientName(app);
-    const clientName =
-        str(c.customerName) ||
-        str(c.clientName) ||
-        str(c.owner1GuarantorName) ||
-        primaryRecipient ||
-        sctx.recipientName ||
-        "";
-    const agreementDate =
-        str(c.agreement_date) ||
-        sctx.signatureDate ||
-        str(c.agreementDate) ||
-        "";
-    const addendumDate = str(c.addendum_date) || agreementDate;
-    const legacyDailyPayment =
-        str(c.daily_payment) ||
-        str(c.remittance) ||
-        resolveRemittancePrefillValue({
-            application: app ?? undefined,
-            contract,
-            offerDecision,
-        });
-    const offerAmountNum = resolveOfferAmountDollarsForUnderwritingFees({
-        contract,
-        application: app ?? undefined,
-        offerDecision,
-    });
-    const offerAmountStr =
-        offerAmountNum !== undefined && offerAmountNum > 0
-            ? formatFlexAddendumMoneyDisplay(String(offerAmountNum))
-            : str(offerDecision?.offer) || str(c.approvedAmount) || "";
-    const dailyPayment1 =
-        str(c.daily_payment_1) ||
-        str(c.dailyPayment1) ||
-        legacyDailyPayment;
-    const receivablePurchase1 =
-        str(c.receivable_purchase_1) ||
-        str(c.receivablePurchase1) ||
-        str(c.receivable_purchase) ||
-        str(c.receivablePurchase) ||
-        offerAmountStr;
-    const dailyPayment2 =
-        str(c.daily_payment_2) || str(c.dailyPayment2) || dailyPayment1;
-    const receivablePurchase2 =
-        str(c.receivable_purchase_2) ||
-        str(c.receivablePurchase2) ||
-        receivablePurchase1;
-    const businessName2 =
-        str(c.merchant2Name) ||
-        str(c.owner2GuarantorName) ||
-        str(c.merchant2_name) ||
-        str(c.owner2_guarantor_name) ||
-        str(c.business_name_2) ||
-        "";
-    const funderName =
-        str(c.funderDisplayName) ||
-        str(overrides.funderDisplayName) ||
-        str(c.funderName) ||
-        str(overrides.funderName);
-    const dealIdPrefix = str(c.dealIdPrefix) || str(overrides.dealIdPrefix);
-    return buildWoodmereFlexAddendumContractPrefillFields({
-        addendumDate,
-        agreementDate,
-        merchantName: legal,
-        clientName,
-        businessName2,
-        dailyPayment1,
-        receivablePurchase1,
-        dailyPayment2,
-        receivablePurchase2,
-        funderName,
-        dealIdPrefix,
-    });
-}
-
-function buildWoodmereBuyoutComputed(
-    contract: Record<string, unknown> | null,
-    sctx: StateDisclosureContext,
-): ContractPrefillField[] {
-    const c = contract ?? {};
-    return buildWoodmereBuyoutBlankAddendumContractPrefillFields({
-        addendumEnteredDate: sctx.signatureDate,
-        addendumAgreementDate: sctx.signatureDate,
-        clientName: sctx.recipientName,
-        agreeName: sctx.recipientName,
-        advanceRemit: sctx.estimatedPayment,
-        agreementTo: str(c.authorizationApplication),
-        amountOfDirecltyDisbursed: sctx.fundingDisbursed,
-        transferFundTo: "",
-        nameOfBank: str(c.authorizationClientBankName),
-        abaRouting: str(c.authorizationClientBankRouting),
-        checkingAccount: str(c.authorizationClientBankAccount),
-        transferAmount: sctx.totalRepayment,
-        ownerName: sctx.recipientName,
-    });
-}
-
-function dotWoodmereBuyout(): WoodmereBuyoutBlankAddendumContractPrefillFields {
-    return {
-        addendumEnteredDate: DUMMY,
-        addendumAgreementDate: DUMMY,
-        clientName: DUMMY,
-        agreeName: DUMMY,
-        advanceRemit: DUMMY,
-        agreementTo: DUMMY,
-        amountOfDirecltyDisbursed: DUMMY,
-        transferFundTo: DUMMY,
-        nameOfBank: DUMMY,
-        abaRouting: DUMMY,
-        checkingAccount: DUMMY,
-        transferAmount: DUMMY,
-        ownerName: DUMMY,
-    };
-}
-
-function buildWoodmereFlexDatedComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
-    const c = contract ?? {};
-    const personName = str(c.customerName) || str(c.clientName) || sctx.recipientName;
-    return buildWoodmereFlexDatedAddendumContractPrefillFields({
-        addendumDated: sctx.signatureDate,
-        agreementDate: sctx.signatureDate,
-        clientNameAddendum: personName,
-        clientName: personName,
-    });
-}
-
-function dotWoodmereFlexDated(): WoodmereFlexDatedAddendumContractPrefillFields {
-    return {
-        addendumDated: DUMMY,
-        agreementDate: DUMMY,
-        clientNameAddendum: DUMMY,
-        clientName: DUMMY,
-    };
-}
-
 function buildDiscoverEpoComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
     const c = contract ?? {};
     const offer = (c.offer ?? null) as Record<string, unknown> | null;
@@ -932,8 +763,8 @@ function buildDiscoverRefiComputed(contract: Record<string, unknown> | null, sct
     return buildDiscoverRefiBalanceTransferAddendumContractPrefillFields({
         loanAgreementDated: sctx.signatureDate,
         borrowerName: sctx.recipientName,
-        borrowerPay: sctx.estimatedPayment,
-        financialDate: sctx.signatureDate,
+        borrowerPay: sctx.previousRefiBalance || sctx.estimatedPayment,
+        financialDate: sctx.previousDealDate || sctx.signatureDate,
         previousFinancingDirectlyTo: "",
         borrowerName1: str(c.clientName) || sctx.recipientName,
         borrowerTitle1: str(c["ownerTitle"]),
@@ -959,11 +790,147 @@ function buildCaseTakeoverAddendumComputed(
         loanAgreementDated: sctx.signatureDate,
         borrowerName: sctx.recipientName,
         borrowerPay: sctx.estimatedPayment,
-        financialDate: sctx.signatureDate,
+        financialDate: sctx.previousDealDate || sctx.signatureDate,
         previousFinancingDirectlyTo: "",
         borrowerName1: str(c.clientName) || sctx.recipientName,
         borrowerTitle1: str(c["ownerTitle"]),
     });
+}
+
+function todayUsDate(): string {
+    const d = new Date();
+    return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+function buildAddendumPComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const today = todayUsDate();
+    const label = resolveRefiLabelName(
+        sctx.funderName || str(c.funderName) || PLATFORM_DISCLOSURE_FUNDER_NAME,
+    );
+    return buildAddendumPContractPrefillFields({
+        addendumDated: today,
+        agreementDated: today,
+        funderAndBusinessName: sctx.recipientName,
+        payUpToAmount: sctx.previousRefiBalance,
+        agreementToLabelName: label,
+        printName: sctx.merchantName || str(c.clientName) || sctx.recipientName,
+        printTitle: "OWNER",
+    });
+}
+
+function buildAddendumCaComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const today = todayUsDate();
+    const printName = sctx.merchantName || str(c.clientName) || sctx.recipientName;
+    return buildAddendumCaContractPrefillFields({
+        agreementDated: today,
+        agreementDated2: today,
+        funderAndBusinessName: sctx.recipientName,
+        agreementAprPercent: sctx.estimatedAnnualPercentageRate,
+        printName,
+        printTitle: "OWNER",
+        agreementDatedPage3: today,
+        agreementDatedPage3b: today,
+        funderAndBusinessNamePage3: sctx.recipientName,
+        printNamePage3: printName,
+        printTitlePage3: "OWNER",
+    });
+}
+
+function buildAddendumNyComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const today = todayUsDate();
+    return buildAddendumNyContractPrefillFields({
+        agreementDated: today,
+        agreementDated2: today,
+        funderAndBusinessName: sctx.recipientName,
+        printName: sctx.merchantName || str(c.clientName) || sctx.recipientName,
+        printTitle: "OWNER",
+    });
+}
+
+function buildAddendumVaComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const today = todayUsDate();
+    const printName = sctx.merchantName || str(c.clientName) || sctx.recipientName;
+    return buildAddendumVaContractPrefillFields({
+        agreementDated: today,
+        agreementDated2: today,
+        funderAndBusinessName: sctx.recipientName,
+        printName,
+        printTitle: "OWNER",
+        agreementDatedPage2: today,
+        agreementDatedPage2b: today,
+        funderAndBusinessNamePage2: sctx.recipientName,
+        printNamePage2: printName,
+        printTitlePage2: "OWNER",
+    });
+}
+
+function dotAddendumP(): AddendumPContractPrefillFields {
+    return {
+        addendumDated: DUMMY,
+        agreementDated: DUMMY,
+        funderAndBusinessName: DUMMY,
+        payUpToAmount: DUMMY,
+        agreementToLabelName: DUMMY,
+        printName: DUMMY,
+        printTitle: "OWNER",
+    };
+}
+
+function dotAddendumCa(): AddendumCaContractPrefillFields {
+    return {
+        agreementDated: DUMMY,
+        agreementDated2: DUMMY,
+        funderAndBusinessName: DUMMY,
+        agreementAprPercent: DUMMY,
+        printName: DUMMY,
+        printTitle: "OWNER",
+        agreementDatedPage3: DUMMY,
+        agreementDatedPage3b: DUMMY,
+        funderAndBusinessNamePage3: DUMMY,
+        printNamePage3: DUMMY,
+        printTitlePage3: "OWNER",
+    };
+}
+
+function dotAddendumNy(): AddendumNyContractPrefillFields {
+    return {
+        agreementDated: DUMMY,
+        agreementDated2: DUMMY,
+        funderAndBusinessName: DUMMY,
+        printName: DUMMY,
+        printTitle: "OWNER",
+    };
+}
+
+function dotAddendumVa(): AddendumVaContractPrefillFields {
+    return {
+        agreementDated: DUMMY,
+        agreementDated2: DUMMY,
+        funderAndBusinessName: DUMMY,
+        printName: DUMMY,
+        printTitle: "OWNER",
+        agreementDatedPage2: DUMMY,
+        agreementDatedPage2b: DUMMY,
+        funderAndBusinessNamePage2: DUMMY,
+        printNamePage2: DUMMY,
+        printTitlePage2: "OWNER",
+    };
 }
 
 function dotDiscoverRefi(): DiscoverRefiBalanceTransferAddendumContractPrefillFields {
@@ -998,12 +965,13 @@ function matches(norm: string, ...needles: string[]): boolean {
 type AddendumKind =
     | "balance_transfer_sheet"
     | "case_takeover_addendum"
-    | "woodmere_flex"
     | "pre_payment_addendum"
-    | "woodmere_buyout_blank"
-    | "woodmere_flex_dated"
     | "discover_epo"
-    | "discover_refi_balance";
+    | "discover_refi_balance"
+    | "addendum_p"
+    | "addendum_ca"
+    | "addendum_ny"
+    | "addendum_va";
 
 const ADDENDUM_GUID = Object.fromEntries(
     Object.entries(DOCUSIGN_ADDENDUM_TEMPLATE_IDS).map(([k, v]) => [k, String(v).trim().toLowerCase()]),
@@ -1017,12 +985,6 @@ function resolveAddendumKind(
     const tid = String(templateId ?? "").trim().toLowerCase();
     const lk = String(layoutKey ?? "").trim().toLowerCase();
     const key = lk || tid;
-    if (
-        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM ||
-        key.endsWith("_flex_addendum")
-    ) {
-        return "woodmere_flex";
-    }
     if (
         key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.PRE_PAYMENT_ADDENDUM ||
         key.endsWith("_pre_payment_addendum")
@@ -1044,24 +1006,51 @@ function resolveAddendumKind(
     ) {
         return "balance_transfer_sheet";
     }
-    if (tid === ADDENDUM_GUID.WOODMERE_FLEX) return "woodmere_flex";
+    if (
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ADDENDUM_P ||
+        key.endsWith("_addendum_p") ||
+        key.endsWith("_addendum_p_refi")
+    ) {
+        return "addendum_p";
+    }
+    if (
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ADDENDUM_CA ||
+        key.endsWith("_addendum_ca")
+    ) {
+        return "addendum_ca";
+    }
+    if (
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ADDENDUM_NY ||
+        key.endsWith("_addendum_ny")
+    ) {
+        return "addendum_ny";
+    }
+    if (
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ADDENDUM_VA ||
+        key.endsWith("_addendum_va")
+    ) {
+        return "addendum_va";
+    }
     if (tid === ADDENDUM_GUID.WOODMERE_BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
     if (matches(normName, "case", "takeover")) return "case_takeover_addendum";
     if (matches(normName, "balance", "transfer") && !normName.includes("discover") && !normName.includes("refi"))
         return "balance_transfer_sheet";
-    if (normName.includes("woodmere") && normName.includes("flex") && (normName.includes("dated") || normName.includes("agreement")))
-        return "woodmere_flex_dated";
-    if (normName.includes("woodmere") && normName.includes("flex")) return "woodmere_flex";
-    if (normName.includes("flex") && !normName.includes("dated")) return "woodmere_flex";
     if (
         (normName.includes("pre_payment") || normName.includes("prepayment")) &&
         normName.includes("addendum")
     )
         return "pre_payment_addendum";
-    if (normName.includes("buyout") && normName.includes("blank")) return "woodmere_buyout_blank";
     if (normName.includes("discover") && normName.includes("epo")) return "discover_epo";
     if (normName.includes("discover") && (normName.includes("refi") || normName.includes("balance_transfer")))
         return "discover_refi_balance";
+    if (/\baddendum\s*p\b/.test(normName) || (normName.includes("addendum") && normName.includes("_p") && normName.includes("refi")))
+        return "addendum_p";
+    if (normName.includes("addendum") && (normName.includes(" ca") || normName.endsWith("_ca") || normName.includes("california")))
+        return "addendum_ca";
+    if (normName.includes("addendum") && (normName.includes(" ny") || normName.endsWith("_ny") || normName.includes("new_york") || normName.includes("new york")))
+        return "addendum_ny";
+    if (normName.includes("addendum") && (normName.includes(" va") || normName.endsWith("_va") || normName.includes("virginia")))
+        return "addendum_va";
     return null;
 }
 
@@ -1140,18 +1129,20 @@ function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
             return buildBalanceTransferSheetContractPrefillFields(dotBalanceTransfer());
         case "case_takeover_addendum":
             return buildCaseTakeoverAddendumContractPrefillFields(dotCaseTakeoverAddendum());
-        case "woodmere_flex":
-            return buildWoodmereFlexAddendumContractPrefillFields(dotWoodmereFlex());
         case "pre_payment_addendum":
             return buildPrePaymentAddendumContractPrefillFields(dotPrePaymentAddendum());
-        case "woodmere_buyout_blank":
-            return buildWoodmereBuyoutBlankAddendumContractPrefillFields(dotWoodmereBuyout());
-        case "woodmere_flex_dated":
-            return buildWoodmereFlexDatedAddendumContractPrefillFields(dotWoodmereFlexDated());
         case "discover_epo":
             return buildDiscoverAdvanceEpoAddendumContractPrefillFields(dotDiscoverEpo());
         case "discover_refi_balance":
             return buildDiscoverRefiBalanceTransferAddendumContractPrefillFields(dotDiscoverRefi());
+        case "addendum_p":
+            return buildAddendumPContractPrefillFields(dotAddendumP());
+        case "addendum_ca":
+            return buildAddendumCaContractPrefillFields(dotAddendumCa());
+        case "addendum_ny":
+            return buildAddendumNyContractPrefillFields(dotAddendumNy());
+        case "addendum_va":
+            return buildAddendumVaContractPrefillFields(dotAddendumVa());
         default:
             return [];
     }
@@ -1168,18 +1159,20 @@ function addendumComputed(
             return buildBalanceTransferComputed(contract, sctx, application);
         case "case_takeover_addendum":
             return buildCaseTakeoverAddendumComputed(contract, sctx);
-        case "woodmere_flex":
-            return buildWoodmereFlexComputed(contract, sctx, application);
         case "pre_payment_addendum":
             return buildPrePaymentAddendumComputed(contract, application, sctx);
-        case "woodmere_buyout_blank":
-            return buildWoodmereBuyoutComputed(contract, sctx);
-        case "woodmere_flex_dated":
-            return buildWoodmereFlexDatedComputed(contract, sctx);
         case "discover_epo":
             return buildDiscoverEpoComputed(contract, sctx);
         case "discover_refi_balance":
             return buildDiscoverRefiComputed(contract, sctx);
+        case "addendum_p":
+            return buildAddendumPComputed(contract, sctx);
+        case "addendum_ca":
+            return buildAddendumCaComputed(contract, sctx);
+        case "addendum_ny":
+            return buildAddendumNyComputed(contract, sctx);
+        case "addendum_va":
+            return buildAddendumVaComputed(contract, sctx);
         default:
             return [];
     }
@@ -1334,6 +1327,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     savedOverridesForMapping?: Record<string, string> | null;
     bankDetail?: Record<string, unknown> | null;
+    bankAnalyses?: unknown;
     documentType?: string | null;
 }): ContractPrefillField[] {
     const effectiveContract = buildEffectiveContractForTemplatePrefill({
@@ -1348,6 +1342,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
         contract: effectiveContract,
         application: options.application ?? null,
         agreementDate: options.agreementDate,
+        bankAnalyses: options.bankAnalyses,
     });
 
     const name = options.templateName;
@@ -1535,6 +1530,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
+    bankAnalyses?: unknown;
 }): ContractPrefillField[] {
     const blob = parseDocumentTemplatePrefillByMappingId(args.contractPrefillOverridesRaw);
     const mergedSet = new Set([
@@ -1571,6 +1567,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             mainPrefillOverrides: args.mainPrefillOverrides,
             savedOverridesForMapping: perMap,
             bankDetail: args.bankDetail ?? null,
+            bankAnalyses: args.bankAnalyses,
             documentType: row.documentType ?? null,
         });
         const isDisclosureRow =
@@ -1676,7 +1673,10 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         }
     }
 
-    return Array.from(byId.values());
+    return Array.from(byId.values()).map((field) => ({
+        ...field,
+        value: String(field.value ?? "").trim().toUpperCase(),
+    }));
 }
 
 /** Ensures disclosure merchant + funder names are on the send payload when a CRM disclosure PDF is merged. */
@@ -1688,6 +1688,7 @@ export function mergeStateDisclosurePrefillFallback(args: {
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
+    bankAnalyses?: unknown;
 }): ContractPrefillField[] {
     const supplementalIds = (args.supplementalRefs || [])
         .map((x) => String(x).trim())
@@ -1719,6 +1720,7 @@ export function mergeStateDisclosurePrefillFallback(args: {
         contract: effectiveContract,
         application: args.application ?? null,
         agreementDate: args.agreementDate,
+        bankAnalyses: args.bankAnalyses,
     });
     const fields = getStateDisclosurePrefillFieldsByStateFrequency({
         state,
@@ -1774,7 +1776,10 @@ export function mergeStateDisclosurePrefillFallback(args: {
         upsertPrefillFieldValue(byId, "disclosure_name", merchant);
         upsertPrefillFieldValue(byId, "disclosure_merchant_name", merchant);
     }
-    return Array.from(byId.values());
+    return Array.from(byId.values()).map((field) => ({
+        ...field,
+        value: String(field.value ?? "").trim().toUpperCase(),
+    }));
 }
 
 type DisclosureMappingRow = {
@@ -1799,6 +1804,7 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
+    bankAnalyses?: unknown;
 }): Array<{ id: string; value: string }> {
     const row = args.mappingRow;
     if (!row || String(row.documentType || "").toLowerCase() !== "disclosure") {
@@ -1820,6 +1826,7 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
         mainPrefillOverrides: args.mainPrefillOverrides,
         savedOverridesForMapping: args.savedOverridesForMapping ?? null,
         bankDetail: args.bankDetail ?? null,
+        bankAnalyses: args.bankAnalyses,
         documentType: "disclosure",
     });
 
@@ -1862,7 +1869,10 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
     }
 
     return Object.entries(expanded)
-        .map(([id, value]) => ({ id, value: String(value ?? "").trim() }))
+        .map(([id, value]) => ({
+            id,
+            value: String(value ?? "").trim().toUpperCase(),
+        }))
         .filter((f) => f.id && f.value);
 }
 
@@ -1920,5 +1930,8 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
                 : { id, value: v, label: String(field.label ?? "").trim() },
         );
     }
-    return Array.from(byId.values());
+    return Array.from(byId.values()).map((field) => ({
+        ...field,
+        value: String(field.value ?? "").trim().toUpperCase(),
+    }));
 }

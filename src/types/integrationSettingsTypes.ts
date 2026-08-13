@@ -9,6 +9,7 @@ export type DocuSignAccountProfile = {
   hasRsaPrivateKey?: boolean;
   accountId?: string | null;
   baseUri?: string | null;
+  defaultCcEmail?: string | null;
   isActive: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -37,6 +38,7 @@ export type FunderProfile = {
   addressZip?: string | null;
   docusignAccountProfileId?: string | null;
   docusignAccountName?: string | null;
+  docusignDefaultCcEmail?: string | null;
   sortOrder: number;
   isActive: boolean;
   documentsSource?: "platform" | "own" | "shared";
@@ -69,6 +71,7 @@ export type DocuSignAccountProfileInput = {
   rsaPrivateKey?: string;
   accountId?: string;
   baseUri?: string;
+  defaultCcEmail?: string;
   isActive?: boolean;
 };
 

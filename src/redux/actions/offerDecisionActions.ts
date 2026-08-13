@@ -9,8 +9,6 @@ export const getOfferDecisionByApplication = createAsyncThunk(
         params: { application: applicationId },
       })
 
-      console.log("response", response.data)
-      console.log("applicationId", applicationId)
       return response.data
     } catch (error: any) {
       console.error("Get offer decision error:", error)

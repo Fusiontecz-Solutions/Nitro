@@ -12,11 +12,18 @@ export function funderDisclosureLayoutKeyForState(
   funderId: string,
   state: string,
   frequency: string,
+  dealType?: "refi" | "norefi" | null,
 ): string {
   const id = String(funderId || "").trim();
   const stateToken = slugifyFunderDocumentToken(state);
   const freqToken = slugifyFunderDocumentToken(frequency);
-  return `funder_${id}_disclosure_${stateToken}_${freqToken}`;
+  const base = `funder_${id}_disclosure_${stateToken}_${freqToken}`;
+  const kind = String(dealType ?? "")
+    .trim()
+    .toLowerCase();
+  if (kind === "refi") return `${base}_refi`;
+  if (kind === "norefi") return `${base}_norefi`;
+  return base;
 }
 
 export function funderNamedAddendumLayoutKey(funderId: string, slug: string): string {
@@ -25,7 +32,14 @@ export function funderNamedAddendumLayoutKey(funderId: string, slug: string): st
   return token ? `funder_${id}_addendum_${token}` : `funder_${id}_addendum`;
 }
 
-export const FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS = [] as const;
+/** Coordinate / upload types for funder addendum PDFs (Settings → Funder → Upload PDFs). */
+export const FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS = [
+  { value: "addendum_p", label: "Addendum P (REFI)" },
+  { value: "addendum_ca", label: "Addendum CA" },
+  { value: "addendum_ny", label: "Addendum NY" },
+  { value: "addendum_va", label: "Addendum VA" },
+  { value: "ach_authorization", label: "ACH Authorization" },
+] as const;
 
 export const DISCLOSURE_FREQUENCY_OPTIONS = [
   { value: "daily", label: "Daily" },
@@ -33,6 +47,13 @@ export const DISCLOSURE_FREQUENCY_OPTIONS = [
   { value: "biweekly", label: "Biweekly" },
   { value: "monthly", label: "Monthly" },
 ] as const;
+
+export const DISCLOSURE_DEAL_TYPE_OPTIONS = [
+  { value: "norefi", label: "No Refi" },
+  { value: "refi", label: "Refi" },
+] as const;
+
+export type DisclosureDealType = (typeof DISCLOSURE_DEAL_TYPE_OPTIONS)[number]["value"];
 
 export type FunderDocumentTemplateRow = {
   id: string;
@@ -44,6 +65,26 @@ export type FunderDocumentTemplateRow = {
   pdfUrl: string | null;
   createdAt: string;
 };
+
+/** Infer Refi / No Refi from layout key or template name. */
+export function disclosureDealTypeFromRow(
+  row: Pick<FunderDocumentTemplateRow, "layoutKey" | "name">,
+): DisclosureDealType | null {
+  const key = String(row.layoutKey || "").toLowerCase();
+  const name = String(row.name || "").toLowerCase();
+  if (
+    key.endsWith("_norefi") ||
+    name.includes("no refi") ||
+    name.includes("norefi") ||
+    name.includes("no_refi")
+  ) {
+    return "norefi";
+  }
+  if (key.endsWith("_refi") || name.includes(" refi") || name.endsWith("refi")) {
+    return "refi";
+  }
+  return null;
+}
 
 export function isFunderDisclosureRow(row: FunderDocumentTemplateRow): boolean {
   return row.type === "disclosure" || String(row.layoutKey || "").includes("_disclosure_");
@@ -58,6 +99,10 @@ export function isFunderAddendumRow(row: FunderDocumentTemplateRow): boolean {
     key.endsWith("_case_takeover_addendum") ||
     key.endsWith("_case_takeover_balance_transfer") ||
     key.endsWith("_balance_transfer") ||
+    key.endsWith("_addendum_p") ||
+    key.endsWith("_addendum_ca") ||
+    key.endsWith("_addendum_ny") ||
+    key.endsWith("_addendum_va") ||
     key.endsWith("_ach_authorization") ||
     key.endsWith("_ach_authorization_texas") ||
     key.includes("_ach_authorization")
@@ -67,8 +112,9 @@ export function isFunderAddendumRow(row: FunderDocumentTemplateRow): boolean {
 /** Platform Woodmere disclosures — exclude funder-owned layout keys from state/frequency lookup. */
 export function isPlatformScopedBoldSignTemplateRow(row: {
   layoutKey?: string | null;
+  templateId?: string | null;
 }): boolean {
-  const key = String(row?.layoutKey ?? "").trim();
+  const key = String(row?.layoutKey ?? row?.templateId ?? "").trim();
   if (!key) return true;
   return !key.startsWith("funder_");
 }

@@ -47,7 +47,7 @@ export function buildCaseTakeoverAddendumContractPrefillFields(
 ): ContractPrefillField[] {
     const out: ContractPrefillField[] = [];
     for (const { id, label } of FIELD_DEFS) {
-        const v = String(values[id] ?? "").trim();
+        const v = String(values[id] ?? "").trim().toUpperCase();
         out.push({
             id: CASE_TAKEOVER_ADDENDUM_TAB_LABEL_BY_KEY[id],
             label,

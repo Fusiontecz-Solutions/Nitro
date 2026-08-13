@@ -17,7 +17,6 @@ import {
   FileInput,
 } from "lucide-react";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
-import RestoreApplicationToScrubberModal from "@/components/application/RestoreApplicationToScrubberModal";
 import { motion } from "framer-motion";
 import { useLocation, useNavigate } from "react-router";
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
@@ -29,6 +28,7 @@ import {
   getApplicationStats,
   deleteApplication,
   permanentlyDeleteApplication,
+  restoreApplication,
   extractBusinessDetails,
 } from "@/redux/actions/applicationActions";
 import {
@@ -92,7 +92,6 @@ import {
   applicationsListSortFromTable,
 } from "@/lib/applicationsListParams";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { prefetchApplicationsList } from "@/lib/applicationsListCache";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
 import { getOperationsPipelineStageTabId } from "@/constants/operationsPipelineTabs";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
@@ -106,8 +105,6 @@ import {
 } from "@/lib/contractSignedQueueBadge";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
 import { resolveApplicationRequestAmount } from "@/lib/applicationLoanAmount";
-import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
-import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
 import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
 import {
   normalizeRoleKey,
@@ -196,8 +193,6 @@ const Applications = () => {
   const [statusFilter, setStatusFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).statusFilter,
   );
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
@@ -219,8 +214,7 @@ const Applications = () => {
     return underwriterClaimFromPoolTab(underwriterPoolTab, sessionRoleKey);
   }, [sessionRoleKey, underwriterPoolTab]);
   const [claimBusyAppId, setClaimBusyAppId] = useState<string | null>(null);
-  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
-  const [restoreTargetIds, setRestoreTargetIds] = useState<string[]>([]);
+  const [restoreLoading, setRestoreLoading] = useState(false);
   const [permanentDeleteLoading, setPermanentDeleteLoading] = useState(false);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [isExtractingPDF, setIsExtractingPDF] = useState(false);
@@ -567,14 +561,49 @@ const Applications = () => {
     );
   }, [dashboardStateFilter, effectiveRoleKey]);
 
-  const openRestoreModal = useCallback((ids: string[]) => {
-    const validIds = ids.filter(
-      (id) => typeof id === "string" && id.length > 0 && id !== "undefined",
-    );
-    if (validIds.length === 0) return;
-    setRestoreTargetIds(validIds);
-    setRestoreModalOpen(true);
-  }, []);
+  const handleRestoreApplications = useCallback(
+    async (ids: string[]) => {
+      const validIds = ids.filter(
+        (id) => typeof id === "string" && id.length > 0 && id !== "undefined",
+      );
+      if (validIds.length === 0) return;
+
+      const confirmed = window.confirm(
+        validIds.length === 1
+          ? "Restore this application to its previous state?"
+          : `Restore ${validIds.length} selected application(s) to their previous state?`,
+      );
+      if (!confirmed) return;
+
+      setRestoreLoading(true);
+      try {
+        await Promise.all(
+          validIds.map((id) => dispatch(restoreApplication(id)).unwrap()),
+        );
+        toast.success(
+          validIds.length === 1
+            ? "Application restored to previous state!"
+            : `${validIds.length} applications restored to previous state!`,
+        );
+        setRowSelection({});
+        void fetchApplicationsRef.current?.();
+        dispatch(getApplicationStats());
+        void dispatch(fetchOperationsDashboardSummary());
+      } catch (err: unknown) {
+        const message =
+          typeof err === "string"
+            ? err
+            : err && typeof err === "object" && "message" in err
+              ? String((err as { message: string }).message)
+              : "Failed to restore application(s)";
+        toast.error(message);
+        void fetchApplicationsRef.current?.();
+      } finally {
+        setRestoreLoading(false);
+      }
+    },
+    [dispatch],
+  );
 
   // Define columns
   const columns: ColumnDef<Application>[] = useMemo(() => {
@@ -990,7 +1019,8 @@ const Applications = () => {
                     variant="outline"
                     className="h-8 text-xs gap-1"
                     disabled={!appUuid}
-                    onClick={() => openRestoreModal([String(appUuid)])}
+                    loading={restoreLoading}
+                    onClick={() => handleRestoreApplications([String(appUuid)])}
                   >
                     <Undo2 className="size-3.5" />
                     Revert
@@ -1000,7 +1030,8 @@ const Applications = () => {
                     size="sm"
                     variant="destructive"
                     className="h-8 text-xs gap-1"
-                    disabled={!appUuid || permanentDeleteLoading}
+                    disabled={!appUuid}
+                    loading={permanentDeleteLoading}
                     onClick={() => {
                       const confirmed = window.confirm(
                         "Permanently delete this application? This cannot be undone.",
@@ -1037,9 +1068,9 @@ const Applications = () => {
         : []),
       {
         id: "view",
-        size: 90,
+        size: 72,
         header: () => (
-          <span className="font-medium text-foreground uppercase tracking-wide">
+          <span className="flex w-full justify-center font-medium text-foreground uppercase tracking-wide">
             VIEW
           </span>
         ),
@@ -1050,10 +1081,10 @@ const Applications = () => {
               e.stopPropagation();
               handleOpenApplicationDetails(row.original);
             }}
-            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
+            className="mx-auto flex h-8 w-8 items-center justify-center rounded-full bg-transparent text-[var(--brand)] hover:bg-transparent hover:text-[var(--brand-accent-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/30 cursor-pointer"
             aria-label="View application in drawer"
           >
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current bg-transparent text-xs font-bold">
               <EyeIcon className="h-4 w-4" />
             </span>
           </button>
@@ -1085,7 +1116,8 @@ const Applications = () => {
     isOperationsDashboardView,
     dashboardStateFilter,
     isRecentlyDeletedView,
-    openRestoreModal,
+    handleRestoreApplications,
+    restoreLoading,
     permanentDeleteLoading,
     dispatch,
   ]);
@@ -1152,8 +1184,6 @@ const Applications = () => {
       searchTerm: debouncedSearchTerm,
       dashboardStateFilter,
       statusFilter,
-      typeFilter,
-      priorityFilter,
       underwriterFilter: "all",
       useDashboardStageFilter: isOperationsDashboardView,
       ...sort,
@@ -1161,8 +1191,6 @@ const Applications = () => {
   }, [
     dashboardStateFilter,
     statusFilter,
-    typeFilter,
-    priorityFilter,
     isOperationsDashboardView,
     showUwDealPoolUi,
     underwriterPoolTab,
@@ -1222,13 +1250,6 @@ const Applications = () => {
     location.state,
     navigate,
   ]);
-
-  /** Warm cache only for the active list filter (DB-filtered key). No bulk stage prefetch. */
-  useEffect(() => {
-    if (!isListFilterInitialized) return;
-    prefetchApplicationsList(listFetchParams);
-    // listFetchKey encodes operationsStatus / queue / search — one request per filter change
-  }, [isListFilterInitialized, listFetchKey, listFetchParams]);
 
   // Initialize list filter from dashboard query params
   useEffect(() => {
@@ -1421,7 +1442,7 @@ const Applications = () => {
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [searchTerm, typeFilter, priorityFilter]);
+  }, [searchTerm]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
@@ -1639,11 +1660,8 @@ const Applications = () => {
                 <Button
                   className="px-4 py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                   onClick={handleExtractBusinessDetails}
-                  disabled={isExtractingPDF}
+                  loading={isExtractingPDF}
                 >
-                  {isExtractingPDF && (
-                    <Loader2 className="size-4 animate-spin" />
-                  )}
                   Upload File
                 </Button>
               )}
@@ -1817,22 +1835,6 @@ const Applications = () => {
               }}
             />
           ) : null}
-          <>
-              <ApplicationTypeFilterDropdown
-                value={typeFilter}
-                onChange={(next) => {
-                  setTypeFilter(next);
-                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                }}
-              />
-              <ApplicationPriorityFilterDropdown
-                value={priorityFilter}
-                onChange={(next) => {
-                  setPriorityFilter(next);
-                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                }}
-              />
-            </>
           <div className="relative min-w-[12rem] flex-1 max-w-xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
@@ -1931,8 +1933,13 @@ const Applications = () => {
                   variant="outline"
                   size="sm"
                   className="gap-1 cursor-pointer text-xs shrink-0"
-                  disabled={selectedApplicationIds.length === 0}
-                  onClick={() => openRestoreModal(selectedApplicationIds)}
+                  disabled={
+                    selectedApplicationIds.length === 0
+                  }
+                  loading={restoreLoading}
+                  onClick={() =>
+                    handleRestoreApplications(selectedApplicationIds)
+                  }
                 >
                   <Undo2 className="size-3" />
                   Revert
@@ -1942,9 +1949,10 @@ const Applications = () => {
                   size="sm"
                   className="gap-1 cursor-pointer text-xs shrink-0"
                   disabled={
-                    selectedApplicationIds.length === 0 || permanentDeleteLoading
+                    selectedApplicationIds.length === 0
                   }
-                  onClick={() => void handleBulkPermanentDelete()}
+                  loading={permanentDeleteLoading}
+                  onClick={() => handleBulkPermanentDelete()}
                 >
                   <Trash2 className="size-3" />
                   Delete Permanently
@@ -1955,7 +1963,8 @@ const Applications = () => {
                 variant="destructive"
                 size="sm"
                 className="gap-1 cursor-pointer text-xs shrink-0"
-                disabled={selectedApplicationIds.length === 0 || deleteLoading}
+                disabled={selectedApplicationIds.length === 0}
+                loading={deleteLoading}
                 onClick={handleBulkDelete}
               >
                 <Trash2 className="size-3" />
@@ -1969,7 +1978,7 @@ const Applications = () => {
             }`}
         >
           {listViewMode === "list" ? (
-            <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable] min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
+            <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable]">
               <DataTableContent
                 table={table}
                 fixedLayout
@@ -2042,7 +2051,7 @@ const Applications = () => {
               </p>
             </div>
           ) : (
-            <div className="p-3 md:p-4 min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
+            <div className="p-3 md:p-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {table.getRowModel().rows.map((row) => {
                   const app = row.original;
@@ -2334,17 +2343,6 @@ const Applications = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <RestoreApplicationToScrubberModal
-        open={restoreModalOpen}
-        onOpenChange={setRestoreModalOpen}
-        applicationIds={restoreTargetIds}
-        onRestored={() => {
-          setRowSelection({});
-          fetchApplications();
-          dispatch(getApplicationStats());
-        }}
-      />
     </div>
   );
 };

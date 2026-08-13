@@ -6,8 +6,9 @@ import {
     getCachedApplicationsList,
     invalidateApplicationsListCache,
     setCachedApplicationsList,
+    coalesceApplicationsListFetch,
 } from '@/lib/applicationsListCache';
-import { recordApplicationDetailResponse } from '@/lib/applicationDetailCache';
+import { recordApplicationDetailResponse, invalidateApplicationDetailCache } from '@/lib/applicationDetailCache';
 import type {
     CreateApplicationPayload,
     UpdateApplicationPayload,
@@ -62,14 +63,16 @@ export async function executeApplicationsListFetch(params: GetApplicationsParams
         requestTimeoutMs,
         ...fetchParams
     } = params;
+    const bypassCacheRead = Boolean(skipListCache || skipListCacheRead);
     const axiosListConfig =
         requestTimeoutMs != null && Number.isFinite(requestTimeoutMs)
-            ? { timeout: requestTimeoutMs }
-            : undefined;
+            ? { timeout: requestTimeoutMs, skipCache: bypassCacheRead }
+            : bypassCacheRead
+              ? { skipCache: true }
+              : undefined;
     const cacheKey = applicationsListParamsCacheKey(
         fetchAllPages ? { ...fetchParams, fetchAllPages: true } : fetchParams,
     );
-    const bypassCacheRead = Boolean(skipListCache || skipListCacheRead);
     if (!bypassCacheRead) {
         const cached = getCachedApplicationsList(cacheKey);
         if (cached !== undefined) {
@@ -119,11 +122,18 @@ export async function executeApplicationsListFetch(params: GetApplicationsParams
     }
 
     const url = buildApplicationsListUrl(fetchParams);
-    const response = await axiosGet(url, axiosListConfig);
-    if (!skipListCache) {
-        setCachedApplicationsList(cacheKey, response.data);
+    if (bypassCacheRead) {
+        const response = await axiosGet(url, axiosListConfig);
+        if (!skipListCache) {
+            setCachedApplicationsList(cacheKey, response.data);
+        }
+        return response.data;
     }
-    return response.data;
+
+    return coalesceApplicationsListFetch(cacheKey, async () => {
+        const response = await axiosGet(url, axiosListConfig);
+        return response.data;
+    });
 }
 
 // Upload documents to an existing application
@@ -326,7 +336,9 @@ export function normalizeApplicationStatsData(raw: unknown): ApplicationStatsDat
     };
 }
 
-type SliceWithAppStats = { applicationStats: { loading: boolean } };
+type SliceWithAppStats = {
+    applicationStats: { loading: boolean; isRefreshing?: boolean };
+};
 
 export const getApplicationStats = createAsyncThunk(
     'application/getStats',
@@ -351,7 +363,7 @@ export const getApplicationStats = createAsyncThunk(
         // Avoid duplicate cold-load requests (e.g. login + layout) racing the same empty state.
         condition: (_, { getState }) => {
             const s = getState() as SliceWithAppStats;
-            return !s.applicationStats?.loading;
+            return !s.applicationStats?.loading && !s.applicationStats?.isRefreshing;
         },
     },
 );
@@ -632,6 +644,7 @@ export const updateApplication = createAsyncThunk(
         try {
             const response = await axiosPut(`/applications/${id}`, data);
             await invalidateApplicationsListCache();
+            invalidateApplicationDetailCache(id);
             return response.data;
         } catch (error: any) {
             console.error('Update application error:', error);
@@ -649,6 +662,7 @@ export const updateApplicationQueue = createAsyncThunk(
         try {
             const response = await axiosPatch(`/applications/${id}/queue`, data);
             await invalidateApplicationsListCache();
+            invalidateApplicationDetailCache(id);
             return response.data;
         } catch (error: any) {
             console.error('Update application queue error:', error);
@@ -666,6 +680,7 @@ export const updateApplicationState = createAsyncThunk(
         try {
             const response = await axiosPatch(`/applications/${id}/state`, data);
             await invalidateApplicationsListCache();
+            invalidateApplicationDetailCache(id);
             return response.data;
         } catch (error: any) {
             console.error('Update application state error:', error);
@@ -771,29 +786,23 @@ export const permanentlyDeleteApplication = createAsyncThunk(
     },
 );
 
-// Restore a soft-deleted application to a scrubber's claimed queue
-export const restoreApplicationToScrubber = createAsyncThunk(
-    'application/restoreToScrubber',
-    async (
-        {
-            applicationId,
-            scrubberId,
-        }: { applicationId: string; scrubberId: string },
-        { rejectWithValue },
-    ) => {
+// Restore a soft-deleted application to its previous queue/state
+export const restoreApplication = createAsyncThunk(
+    'application/restore',
+    async (applicationId: string, { rejectWithValue }) => {
         try {
             const response = await axiosPost(
-                `/applications/${encodeURIComponent(applicationId)}/restore-to-scrubber`,
-                { scrubberId },
+                `/applications/${encodeURIComponent(applicationId)}/restore`,
+                {},
             );
             await invalidateApplicationsListCache();
-            return response.data;
+            return { ...response.data, restoredId: applicationId };
         } catch (error: any) {
-            console.error('Restore application to scrubber error:', error);
+            console.error('Restore application error:', error);
             return rejectWithValue(
                 error.response?.data?.message ||
                     error?.message ||
-                    'Failed to restore application to scrubber',
+                    'Failed to restore application',
             );
         }
     },

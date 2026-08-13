@@ -97,6 +97,8 @@ export function DisclosureCalculationModal({
     const [originationFeeText, setOriginationFeeText] = useState("");
     const [brokerFeeText, setBrokerFeeText] = useState("");
     const [aprText, setAprText] = useState("");
+    const [refinanceAmountText, setRefinanceAmountText] = useState("");
+    const [previousDealDateText, setPreviousDealDateText] = useState("");
 
     const seededForOpenRef = useRef(false);
     const bankRevenuesMergedRef = useRef(false);
@@ -124,6 +126,14 @@ export function DisclosureCalculationModal({
                 (seedInputs.brokerFeePaidByFunder ?? 0) +
                     (seedInputs.brokerFeePaidByMerchant ?? 0),
             ),
+        );
+        setRefinanceAmountText(
+            seedInputs.isRefinance
+                ? formatMoneyFromNumber(seedInputs.refinanceAmount ?? 0)
+                : "",
+        );
+        setPreviousDealDateText(
+            seedInputs.isRefinance ? String(seedInputs.previousDealDate ?? "").trim() : "",
         );
         setMonthlyRevenueText(
             seedInputs.monthlyRevenues.length > 0
@@ -158,11 +168,24 @@ export function DisclosureCalculationModal({
             originationFee: parseInputMoney(originationFeeText),
             brokerFeePaidByFunder: parseInputMoney(brokerFeeText),
             brokerFeePaidByMerchant: 0,
+            refinanceAmount: parseInputMoney(refinanceAmountText),
+            isRefinance:
+                Boolean(form.isRefinance) || parseInputMoney(refinanceAmountText) > 0,
+            previousDealDate: previousDealDateText.trim() || form.previousDealDate,
             monthlyRevenues: monthlyRevenueText
                 .map((v) => parseInputMoney(v))
                 .filter((v) => v > 0),
         };
-    }, [form, purchasePriceText, factorRateText, originationFeeText, brokerFeeText, monthlyRevenueText]);
+    }, [
+        form,
+        purchasePriceText,
+        factorRateText,
+        originationFeeText,
+        brokerFeeText,
+        refinanceAmountText,
+        previousDealDateText,
+        monthlyRevenueText,
+    ]);
 
     const revenuePurchasedPreview = useMemo(() => {
         if (!resolvedForm) return "";
@@ -185,7 +208,7 @@ export function DisclosureCalculationModal({
 
     const resultRows = useMemo(() => {
         if (!metrics) return [];
-        return [
+        const rows = [
             {
                 label: "Estimated merchant average monthly revenue",
                 value: `$${formatDisclosureUsd(metrics.estimatedMerchantAverageMonthlyRevenue)}`,
@@ -216,6 +239,25 @@ export function DisclosureCalculationModal({
             },
             { label: "Estimated term (days)", value: String(metrics.estimatedTermDays) },
         ];
+        if (metrics.isRefinance) {
+            rows.splice(
+                2,
+                0,
+                {
+                    label: "Net contracted funding",
+                    value: `$${formatDisclosureUsd(metrics.netContractedFunding ?? 0)}`,
+                },
+                {
+                    label: "Previous REFI balance",
+                    value: `$${formatDisclosureUsd(metrics.previousRefiBalance ?? 0)}`,
+                },
+                {
+                    label: "Actual disbursement",
+                    value: `$${formatDisclosureUsd(metrics.actualDisbursement ?? 0)}`,
+                },
+            );
+        }
+        return rows;
     }, [metrics, resolvedForm]);
 
     const updateForm = <K extends keyof DisclosureCalculatorInputs>(
@@ -421,6 +463,49 @@ export function DisclosureCalculationModal({
                                         </div>
                                     </div>
                                 </div>
+
+                                {(form?.isRefinance ||
+                                    parseInputMoney(refinanceAmountText) > 0) && (
+                                    <div>
+                                        <p className={`${SECTION_LABEL_CLASS} mb-2`}>
+                                            Refinance (REFI)
+                                        </p>
+                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                            <div className="space-y-1.5">
+                                                <Label className="text-xs">
+                                                    Previous REFI balance
+                                                </Label>
+                                                <Input
+                                                    inputMode="decimal"
+                                                    className={`${MONEY_INPUT_CLASS} ${EDITABLE_INPUT_CLASS}`}
+                                                    value={refinanceAmountText}
+                                                    onChange={(e) =>
+                                                        setRefinanceAmountText(e.target.value)
+                                                    }
+                                                    onBlur={(e) =>
+                                                        setRefinanceAmountText(
+                                                            formatMoneyInputValue(e.target.value),
+                                                        )
+                                                    }
+                                                    placeholder="$0.00"
+                                                />
+                                            </div>
+                                            <div className="space-y-1.5">
+                                                <Label className="text-xs">
+                                                    Previous deal date
+                                                </Label>
+                                                <Input
+                                                    className={EDITABLE_INPUT_CLASS}
+                                                    value={previousDealDateText}
+                                                    onChange={(e) =>
+                                                        setPreviousDealDateText(e.target.value)
+                                                    }
+                                                    placeholder="MM/DD/YYYY"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
                                     <p className={`${SECTION_LABEL_CLASS} mb-2`}>Payment term</p>

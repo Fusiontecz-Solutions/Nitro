@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { fetchFunderProfiles } from "@/redux/actions/integrationSettingsActions";
 import type { FunderProfile } from "@/types/integrationSettingsTypes";
 import {
@@ -383,27 +384,29 @@ export function funderAssignsDealId(
 }
 
 export function useFunderProfiles(contractState?: string | null) {
-  const [funders, setFunders] = useState<FunderProfile[]>(FALLBACK_FUNDER_PROFILES);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: ["funder-profiles"],
+    queryFn: () => fetchFunderProfiles(null),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
 
+  const funders =
+    query.data && query.data.length > 0
+      ? query.data
+      : FALLBACK_FUNDER_PROFILES;
+  const loading = query.isLoading;
+  const error =
+    query.error instanceof Error
+      ? query.error.message
+      : query.error
+        ? "Failed to load funders"
+        : null;
+
+  const { refetch } = query;
   const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const rows = await fetchFunderProfiles(null);
-      setFunders(rows.length ? rows : FALLBACK_FUNDER_PROFILES);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load funders");
-      setFunders(FALLBACK_FUNDER_PROFILES);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+    await refetch();
+  }, [refetch]);
 
   const funderOptions = useMemo(
     () => funderNamesForContractState(funders, contractState),

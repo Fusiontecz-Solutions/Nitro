@@ -168,6 +168,7 @@ export default function FundersSettings() {
                 <DetailRow
                   label="Default CC"
                   value={
+                    row.docusignDefaultCcEmail?.trim() ||
                     row.defaultCcEmail?.trim() ||
                     getTenantDefaultContractCcEmail() ||
                     "—"

@@ -29,6 +29,7 @@ const emptyForm: DocuSignAccountProfileInput = {
   integrationKey: "",
   impersonatedUserId: "",
   rsaPrivateKey: "",
+  defaultCcEmail: "",
   isActive: true,
 };
 
@@ -62,6 +63,7 @@ export default function DocuSignAccountModal({
         impersonatedUserId: initial.impersonatedUserId,
         accountId: initial.accountId ?? "",
         baseUri: initial.baseUri ?? "",
+        defaultCcEmail: initial.defaultCcEmail ?? "",
         isActive: initial.isActive,
         rsaPrivateKey: "",
         clientSecret: "",
@@ -87,6 +89,7 @@ export default function DocuSignAccountModal({
       name: form.name.trim(),
       integrationKey: form.integrationKey.trim(),
       impersonatedUserId: form.impersonatedUserId.trim(),
+      defaultCcEmail: form.defaultCcEmail?.trim() || "",
       rsaPrivateKey: form.rsaPrivateKey?.trim()
         ? normalizePemKey(form.rsaPrivateKey)
         : form.rsaPrivateKey,
@@ -161,6 +164,20 @@ export default function DocuSignAccountModal({
                   onChange={(e) => set("baseUri", e.target.value)}
                   placeholder="https://na4.docusign.net"
                 />
+              </Field>
+              <Field className="sm:col-span-2">
+                <Label htmlFor="ds-default-cc">Default CC email(s)</Label>
+                <Input
+                  id="ds-default-cc"
+                  type="text"
+                  value={form.defaultCcEmail ?? ""}
+                  onChange={(e) => set("defaultCcEmail", e.target.value)}
+                  placeholder="ops@funder.com, or comma-separated list"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Used as the contract CC when a funder is linked to this DocuSign account. Separate
+                  multiple addresses with commas.
+                </p>
               </Field>
             </div>
           </div>

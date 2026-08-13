@@ -19,6 +19,7 @@ import {
     parseContractSignerOverridesFromPrefill,
 } from "./templateRecipients";
 import {
+    DISCLOSURE_PLATFORM_FEE_USD,
     isTexasContractState,
     isTexasFundingGroupFunder,
 } from "./platformDocumentConfig";
@@ -32,6 +33,8 @@ export interface ContractPrefillField {
 export interface BuildContractPrefillFieldsArgs {
     customerName: string;
     entityType?: string;
+    ownerPrintTitle?: string;
+    guarantorPrintTitle?: string;
     legalName?: string;
     doingBusinessAs?: string;
     businessAddress?: string;
@@ -59,7 +62,7 @@ export interface BuildContractPrefillFieldsArgs {
     remittance?: string;
     /** Refinance / REFI amount subtracted from offer when computing recipient funds. DocuSign: `refinance_amount`. */
     refinanceAmount?: string;
-    /** Payment frequency (e.g. Daily, Weekly). DocuSign data label: `frequency`; BoldSign may use `paymentTerms`. */
+    /** Payment frequency (Day / Week on the contract PDF). DocuSign: `frequency`; BoldSign may use `paymentTerms`. */
     frequency?: string;
     /** Recipient funds / net cash to merchant (offer − fees − refinance). DocuSign: `net_to_merchant`. */
     netToMerchant?: string;
@@ -202,6 +205,8 @@ const FIELD_IDS = {
     doingBusinessAs: ["doing_business_as"],
     federalTaxIdEin: ["federal_tax_id_EIN"],
     entityType: ["entity_type"],
+    ownerPrintTitle: ["owner_print_title"],
+    guarantorPrintTitle: ["guarantor_print_title"],
     businessAddress: ["business_address"],
     businessAddressCity: ["business_address_city"],
     businessAddressState: ["business_address_state"],
@@ -263,6 +268,8 @@ const FIELD_IDS = {
         "underwriter_fee",
         "underwriterfee",
         "underwriter_fees",
+        "originationFee",
+        "origination_fee",
     ],
     appendixClientName: ["appendix_client_name"],
     authorizationApplication: ["authorization_application"],
@@ -372,18 +379,41 @@ function formatUsNumberString(value: string): string {
     }).format(truncated);
 }
 
+/** Contract / addendum / disclosure PDF + DocuSign text — always ALL CAPS. */
+export function toContractDocumentUppercase(value: string): string {
+    return String(value ?? "").toUpperCase();
+}
+
+/** Uppercase every prefill value before it goes onto contract / addendum / disclosure docs. */
+export function uppercaseContractDocumentPrefillFields<
+    T extends { id?: string; value?: string; label?: string },
+>(fields: T[]): T[] {
+    return (fields || []).map((field) => {
+        const value = String(field?.value ?? "").trim();
+        if (!value) return field;
+        return { ...field, value: toContractDocumentUppercase(value) };
+    });
+}
+
 function normalizePrefillValueForUsFormat(id: string, value: string): string {
     const k = String(id || "").trim().toLowerCase();
-    if (!k) return value;
+    if (!k) return toContractDocumentUppercase(value);
 
+    let formatted = value;
     if (
         k.includes("date") ||
         /^epo_received_date_\d+$/.test(k)
     ) {
-        return formatUsDateString(value);
-    }
-
-    if (
+        formatted = formatUsDateString(value);
+    } else if (isContractOriginationFeeFieldId(k)) {
+        /** Contract PDF origination / underwriting fees = applicable fees + $50 platform. */
+        const applicable = coerceToFiniteNumber(value);
+        if (applicable !== undefined) {
+            formatted = truncateDecimalPrefill(
+                Math.max(0, applicable) + DISCLOSURE_PLATFORM_FEE_USD,
+            );
+        }
+    } else if (
         k.includes("amount") ||
         k.includes("price") ||
         k.includes("fees") ||
@@ -393,15 +423,37 @@ function normalizePrefillValueForUsFormat(id: string, value: string): string {
         /^epo_amount_received_\d+$/.test(k) ||
         k === "remittance"
     ) {
-        return formatUsNumberString(value);
+        formatted = formatUsNumberString(value);
+    } else if (k === "purchase_percent" || k === "specified_percentage") {
+        formatted = formatRateUS(value) || value;
+    } else if (
+        k === "frequency" ||
+        k === "paymentterms" ||
+        k === "payment_terms" ||
+        k === "paymentfrequency"
+    ) {
+        formatted = formatContractDocumentFrequencyLabel(value) || value;
     }
 
-    if (k === "purchase_percent" || k === "specified_percentage") {
-        const formatted = formatRateUS(value);
-        return formatted || value;
-    }
+    return toContractDocumentUppercase(formatted);
+}
 
-    return value;
+/** Main-contract origination / underwriting fee DocuSign labels (not disclosure_* tabs). */
+function isContractOriginationFeeFieldId(id: string): boolean {
+    const k = String(id || "")
+        .trim()
+        .toLowerCase()
+        .replace(/__/g, "_");
+    return (
+        k === "appendix_underwriting_fees" ||
+        k === "appendixunderwritingfees" ||
+        k === "underwriter_fee" ||
+        k === "underwriterfee" ||
+        k === "underwriter_fees" ||
+        k === "underwriterfees" ||
+        k === "originationfee" ||
+        k === "origination_fee"
+    );
 }
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
@@ -460,6 +512,8 @@ function normalizeEntityTypeForBoldSignDropdown(raw: string): string {
 export const buildContractPrefillFields = ({
     customerName,
     entityType = "",
+    ownerPrintTitle = "OWNER",
+    guarantorPrintTitle = "OWNER",
     legalName = customerName,
     doingBusinessAs = "",
     businessAddress = "",
@@ -626,6 +680,16 @@ export const buildContractPrefillFields = ({
             FIELD_IDS.entityType,
             "Entity Type",
             String(entityType ?? "").trim(),
+        ),
+        ...mapIds(
+            FIELD_IDS.ownerPrintTitle,
+            "Owner Title",
+            String(ownerPrintTitle || "OWNER").trim() || "OWNER",
+        ),
+        ...mapIds(
+            FIELD_IDS.guarantorPrintTitle,
+            "Guarantor Title",
+            String(guarantorPrintTitle || ownerPrintTitle || "OWNER").trim() || "OWNER",
         ),
         ...mapIds(FIELD_IDS.federalTaxIdEin, "Federal Tax ID EIN", federalTaxIdEin),
         ...mapIds(FIELD_IDS.agreementDate, "Agreement Date", agreementDate),
@@ -1423,6 +1487,9 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
                 ? appendixFees
                 : 0;
 
+    /** Always include the $50 platform fee so Final Calculation matches disclosures. */
+    const feesWithPlatform = (fees || 0) + DISCLOSURE_PLATFORM_FEE_USD;
+
     const refinance =
         coerceToFiniteNumber(odRoot?.refinanceAmount) ??
         coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
@@ -1431,7 +1498,7 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
         coerceToFiniteNumber(sources.prefill?.refinanceAmount) ??
         0;
 
-    return Math.max(0, Math.round((advance - (fees || 0) - refinance) * 100) / 100);
+    return Math.max(0, Math.round((advance - feesWithPlatform - refinance) * 100) / 100);
 }
 
 /** Alias — DocuSign `net_to_merchant` is recipient funds, not offer amount. */
@@ -1446,6 +1513,71 @@ export function netToMerchantLooksLikeOfferAmount(
     const offer = resolvePurchaseAmountDollars(sources);
     if (stored === undefined || offer === undefined) return false;
     return Math.abs(stored - offer) < 0.005;
+}
+
+/**
+ * True when stored net equals advance − fees − refinance but forgot the $50 platform fee.
+ * Those values must be refreshed so Net Funds Provided is $50 less.
+ */
+export function netToMerchantMissingPlatformFee(
+    storedNet: unknown,
+    sources: NetToMerchantPrefillSources,
+): boolean {
+    const stored = coerceToFiniteNumber(storedNet);
+    if (stored === undefined) return false;
+    const withPlatform = computeNetToMerchantDollars(sources);
+    if (withPlatform === undefined) return false;
+    if (Math.abs(stored - withPlatform) < 0.02) return false;
+
+    const advance = resolvePurchaseAmountDollars(sources);
+    if (advance === undefined) return false;
+
+    const app = sources.application;
+    const contract = sources.contract;
+    const odRoot =
+        sources.offerDecision ??
+        (contract?.offer as Record<string, unknown> | undefined) ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+    const liveFees = resolveOfferFeeAmountForDeal({
+        fundedAmount: advance,
+        factorRate: odEff?.rate ?? odRoot?.rate ?? terms0?.factorRate,
+        feesRaw: odEff?.fees ?? odRoot?.fees,
+        termsCommissionPercent: terms0?.commissionPercent,
+        applicationCommissionPercentage: app?.commissionPercentage,
+    });
+    const appendixFees = coerceToFiniteNumber(
+        sources.prefill?.appendixUnderwritingFees ?? contract?.appendixUnderwritingFees,
+    );
+    const applicable =
+        appendixFees !== undefined && appendixFees > 0
+            ? appendixFees
+            : liveFees > 0
+              ? liveFees
+              : appendixFees !== undefined
+                ? appendixFees
+                : 0;
+    const refinance =
+        coerceToFiniteNumber(odRoot?.refinanceAmount) ??
+        coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
+        coerceToFiniteNumber(odEff?.refinanceAmount) ??
+        coerceToFiniteNumber(odEff?.RefinanceAmount) ??
+        coerceToFiniteNumber(sources.prefill?.refinanceAmount) ??
+        0;
+    const withoutPlatform = Math.max(
+        0,
+        Math.round((advance - applicable - refinance) * 100) / 100,
+    );
+    return Math.abs(stored - withoutPlatform) < 0.02;
 }
 
 /**
@@ -1479,10 +1611,12 @@ export function deriveOfferFeesDollarsForNetToMerchant(
         coerceToFiniteNumber(sources.prefill?.refinanceAmount) ??
         0;
 
-    return Math.max(
+    /** Total gap includes the $50 platform fee; persist applicable fee only. */
+    const totalFees = Math.max(
         0,
         Math.round((advance - refinance - netToMerchantDollars) * 100) / 100,
     );
+    return Math.max(0, Math.round((totalFees - DISCLOSURE_PLATFORM_FEE_USD) * 100) / 100);
 }
 
 export function formatNetToMerchantPrefillValue(amount: number | undefined): string {
@@ -1491,9 +1625,13 @@ export function formatNetToMerchantPrefillValue(amount: number | undefined): str
 }
 
 const PAYMENT_FREQUENCY_LABELS = new Set([
+    "day",
     "daily",
+    "week",
     "weekly",
+    "month",
     "monthly",
+    "biweek",
     "biweekly",
 ]);
 
@@ -1503,11 +1641,11 @@ export function looksLikePaymentFrequencyLabel(value: string): boolean {
     if (!trimmed) return false;
     const compact = trimmed.toLowerCase().replace(/[^a-z]/g, "");
     if (PAYMENT_FREQUENCY_LABELS.has(compact)) return true;
-    return /^(daily|weekly|monthly|bi[-\s]?weekly)$/i.test(trimmed);
+    return /^(day|daily|week|weekly|month|monthly|bi[-\s]?week(ly)?)$/i.test(trimmed);
 }
 
 /**
- * Normalize offer/contract frequency to Daily / Weekly / etc.
+ * Normalize offer/contract frequency to Daily / Weekly / etc. (CRM persistence / dropdowns).
  * Rejects percents & bare numbers (disclosure % was incorrectly expanded onto DocuSign
  * labels `frequency` / `paymentTerms`, which polluted Contract / OfferDecision / ACH).
  */
@@ -1518,14 +1656,45 @@ export function coercePaymentFrequencyLabel(raw: unknown): string {
     const asNum = coerceToFiniteNumber(text);
     if (asNum !== undefined && !looksLikePaymentFrequencyLabel(text)) return "";
 
-    const normalized = text.replace(/_/g, " ").trim();
+    const normalized = text.replace(/_/g, " ").trim().toLowerCase().replace(/\s+/g, " ");
     if (!normalized) return "";
     if (!looksLikePaymentFrequencyLabel(normalized)) return "";
+
+    if (normalized === "day" || normalized === "daily") return "Daily";
+    if (normalized === "week" || normalized === "weekly") return "Weekly";
+    if (normalized === "month" || normalized === "monthly") return "Monthly";
+    if (
+        normalized === "bi week" ||
+        normalized === "bi-week" ||
+        normalized === "biweekly" ||
+        normalized === "bi-weekly"
+    ) {
+        return "Bi-Weekly";
+    }
 
     return normalized
         .split(/\s+/)
         .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
         .join(" ");
+}
+
+/**
+ * Contract PDF “$___ per ____” blank: DAY / WEEK (not DAILY / WEEKLY).
+ * DocuSign uppercases the value, so return Title Case here.
+ */
+export function formatContractDocumentFrequencyLabel(raw: unknown): string {
+    const coerced = coercePaymentFrequencyLabel(raw);
+    const text = (coerced || str(raw))
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ");
+    if (!text) return "";
+    if (text === "day" || text === "daily") return "Day";
+    if (text === "week" || text === "weekly") return "Week";
+    if (text === "bi week" || text === "biweekly") return "Bi-Week";
+    if (text === "month" || text === "monthly") return "Month";
+    return coerced || str(raw);
 }
 
 /** Persist-only: cadence label or null (never save "0.00%" / bare numbers as frequency). */
@@ -1534,7 +1703,7 @@ export function sanitizePaymentFrequencyForPersist(raw: unknown): string | null 
     return label || null;
 }
 
-/** Human-readable payment frequency for contract / DocuSign prefill. */
+/** Human-readable payment frequency for contract / DocuSign prefill (Day / Week). */
 export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources): string {
     const app = sources.application;
     const contract = sources.contract;
@@ -1563,7 +1732,7 @@ export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources)
         contract?.frequency,
     ];
     for (const raw of candidates) {
-        const label = coercePaymentFrequencyLabel(raw);
+        const label = formatContractDocumentFrequencyLabel(raw);
         if (label) return label;
     }
     return "";
@@ -1914,6 +2083,8 @@ const DEAL_REVIEW_APPENDIX_FEE_IDS = new Set([
     "underwriter_fee",
     "underwriterfee",
     "underwriter_fees",
+    "originationfee",
+    "origination_fee",
 ]);
 
 /** Labels deduped globally (same value shown once across sections). */
@@ -2476,6 +2647,8 @@ const APPENDIX_FEE_OVERRIDE_ALIASES = [
     "underwriter_fee",
     "underwriterfee",
     "underwriter_fees",
+    "originationFee",
+    "origination_fee",
 ] as const;
 
 /** Map legacy / DocuSign fee field keys onto `appendixUnderwritingFees` for merge + display. */
@@ -2582,6 +2755,18 @@ export function contractPrefillFieldsToPartial(
             const freq = sanitizePaymentFrequencyForPersist(value);
             if (!freq) continue;
             partial.frequency = freq;
+            continue;
+        }
+        // DocuSign / Deal Review show origination as fees + $50; persist applicable fees only.
+        if (key === "appendixUnderwritingFees") {
+            const withPlatform = coerceToFiniteNumber(value);
+            if (withPlatform !== undefined) {
+                (partial as Record<string, string>)[key] = truncateDecimalPrefill(
+                    Math.max(0, withPlatform - DISCLOSURE_PLATFORM_FEE_USD),
+                );
+            } else {
+                (partial as Record<string, string>)[key] = value;
+            }
             continue;
         }
         (partial as Record<string, string>)[key] = value;
@@ -3822,6 +4007,11 @@ export function getContractPrefillEditDefaultsFromApplication(
                         application: anyApp as Record<string, unknown> | undefined,
                         contract: rec?.contract ?? null,
                         offerDecision: options?.offerDecision ?? null,
+                    }) &&
+                    !netToMerchantMissingPlatformFee(recordPartial.netToMerchant, {
+                        application: anyApp as Record<string, unknown> | undefined,
+                        contract: rec?.contract ?? null,
+                        offerDecision: options?.offerDecision ?? null,
                     })
                         ? {}
                         : netComputed
@@ -4002,12 +4192,18 @@ export function buildContractPrefillFieldsFromApplication(
     } else if (
         !hasFinalCalcMoney &&
         !(savedOverrides as Record<string, unknown>)?._manualNetToMerchant &&
-        netToMerchantLooksLikeOfferAmount(moneyMerged.netToMerchant, {
+        (netToMerchantLooksLikeOfferAmount(moneyMerged.netToMerchant, {
             application: anyApp as Record<string, unknown> | undefined,
             contract: rec?.contract ?? null,
             offerDecision: options?.offerDecision ?? null,
             prefill: moneyMerged,
-        })
+        }) ||
+            netToMerchantMissingPlatformFee(moneyMerged.netToMerchant, {
+                application: anyApp as Record<string, unknown> | undefined,
+                contract: rec?.contract ?? null,
+                offerDecision: options?.offerDecision ?? null,
+                prefill: moneyMerged,
+            }))
     ) {
         const computed = formatNetToMerchantPrefillValue(
             computeNetToMerchantDollars({
@@ -4137,12 +4333,16 @@ function pickLiveOfferMoneyOverlay(
             key === "netToMerchant" &&
             saved &&
             !preserved._manualNetToMerchant &&
-            netToMerchantLooksLikeOfferAmount(saved, {
+            (netToMerchantLooksLikeOfferAmount(saved, {
                 prefill: { ...liveOfferArgs, ...preservedOverrides },
                 offerDecision: null,
-            })
+            }) ||
+                netToMerchantMissingPlatformFee(saved, {
+                    prefill: { ...liveOfferArgs, ...preservedOverrides },
+                    offerDecision: null,
+                }))
         ) {
-            // fall through — allow live recipient-funds value to replace offer-echo
+            // fall through — replace offer-echo or net that forgot the $50 platform fee
         } else if (!force && saved) {
             continue;
         }
@@ -4237,7 +4437,10 @@ export function getFinalCalculationPrefillOverlayFromApplication(
     );
     const remit = truncateDecimalPrefill(cv.estimatedPaymentInput);
     const recipientFunds = truncateDecimalPrefill(cv.recipientFundsInput);
-    const fees = truncateDecimalPrefill(cv.financeChargeInput);
+    /**
+     * Guide: financeChargeInput = Total Payback − Contract (total interest),
+     * NOT origination fee. Do not map it onto appendixUnderwritingFees.
+     */
     const frequency = str(cv.frequencyInput);
     const numPayments = str(cv.numberOfPaymentsInput).replace(/[^\d.]/g, "");
 
@@ -4255,9 +4458,6 @@ export function getFinalCalculationPrefillOverlayFromApplication(
     }
     if (recipientFunds) {
         out.netToMerchant = recipientFunds;
-    }
-    if (fees) {
-        out.appendixUnderwritingFees = fees;
     }
     if (frequency && looksLikePaymentFrequencyLabel(frequency)) {
         out.frequency = frequency;

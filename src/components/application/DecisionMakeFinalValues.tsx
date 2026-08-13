@@ -311,7 +311,6 @@ export default function DecisionMakeFinalValues({
         actionsAtTop
         showPreviewBadge
         onPreviewModeChange={setIsPreviewMode}
-        showLeverageTable
         onSummaryMetricsChange={onSummaryMetricsChange}
         onApprove={useDeferredSave ? handleApproveSaveAll : undefined}
         aboveOffer={aboveOffer}

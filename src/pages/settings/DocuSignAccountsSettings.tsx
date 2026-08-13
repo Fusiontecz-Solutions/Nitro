@@ -147,6 +147,7 @@ export default function DocuSignAccountsSettings() {
                 <DetailRow label="Impersonated user" value={row.impersonatedUserId} />
                 <DetailRow label="Account ID" value={row.accountId} />
                 <DetailRow label="Base URI" value={row.baseUri} />
+                <DetailRow label="Default CC" value={row.defaultCcEmail} />
                 <DetailRow label="RSA key" value={row.hasRsaPrivateKey ? "Configured" : "Missing"} />
               </CardContent>
             </Card>

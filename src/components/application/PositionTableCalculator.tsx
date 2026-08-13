@@ -251,11 +251,11 @@ function normalizeFrequencyOption(freq?: string): string {
   return f;
 }
 
-/** FREQUENCY_MULTIPLIER: payments per month (Daily=22, Weekly=4.2, Bi-weekly=2, Monthly=1). */
+/** FREQUENCY_MULTIPLIER: payments per month (Daily=20, Weekly=4, Bi-weekly=2, Monthly=1) — synced with disclosure Guide. */
 function getPaymentsPerMonth(freq?: string): number {
   const f = (freq || "").toLowerCase().replace(/\s+/g, "");
-  if (f === "daily") return 22;
-  if (f === "weekly") return 4.2;
+  if (f === "daily") return 20;
+  if (f === "weekly") return 4;
   if (f === "bi-weekly" || f === "biweekly") return 2;
   if (f === "monthly") return 1;
   return 0;

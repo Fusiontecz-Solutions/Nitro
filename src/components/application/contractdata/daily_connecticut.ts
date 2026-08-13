@@ -25,10 +25,13 @@ const FIELD_IDS = {
     paymentExceedPercent: ["payment_exceed_percent"],
     signature1Date: ["signature1_date"],
     signature2Date: ["signature2_date"],
+    outstandingSalesBasedFinancing: ["outstanding_sales_based_financing"],
+    totalAmountNewFinancing: ["total_amount_new_financing"],
+    unpaidFinanceCharges: ["unpaid_finance_charges"],
 } as const;
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
-    const trimmed = String(value || "").trim();
+    const trimmed = String(value || "").trim().toUpperCase();
     if (!trimmed) return [];
     return ids.map((id) => ({ id, label, value: trimmed }));
 };
@@ -59,6 +62,10 @@ export interface DailyConnecticutContractPrefillFields {
     paymentExceedPercent?: string;
     signature1Date?: string;
     signature2Date?: string;
+    /** CT renewal financing — REFI balance only; leave sibling renewal fields blank. */
+    outstandingSalesBasedFinancing?: string;
+    totalAmountNewFinancing?: string;
+    unpaidFinanceCharges?: string;
 }
 
 export function buildDailyConnecticutContractPrefillFields({
@@ -86,6 +93,9 @@ export function buildDailyConnecticutContractPrefillFields({
     paymentExceedPercent = "",
     signature1Date = "",
     signature2Date = "",
+    outstandingSalesBasedFinancing = "",
+    totalAmountNewFinancing = "",
+    unpaidFinanceCharges = "",
 }: DailyConnecticutContractPrefillFields = {}): ContractPrefillField[] {
     return [
         ...mapIds(FIELD_IDS.totalCommericalFinancing, "Total Commerical Financing", totalCommericalFinancing),
@@ -120,5 +130,12 @@ export function buildDailyConnecticutContractPrefillFields({
         ...mapIds(FIELD_IDS.paymentExceedPercent, "Payment Exceed Percent", paymentExceedPercent),
         ...mapIds(FIELD_IDS.signature1Date, "Signature1 Date", signature1Date),
         ...mapIds(FIELD_IDS.signature2Date, "Signature2 Date", signature2Date),
+        ...mapIds(
+            FIELD_IDS.outstandingSalesBasedFinancing,
+            "Outstanding Sales Based Financing",
+            outstandingSalesBasedFinancing,
+        ),
+        ...mapIds(FIELD_IDS.totalAmountNewFinancing, "Total Amount New Financing", totalAmountNewFinancing),
+        ...mapIds(FIELD_IDS.unpaidFinanceCharges, "Unpaid Finance Charges", unpaidFinanceCharges),
     ];
 }

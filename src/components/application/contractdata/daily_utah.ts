@@ -4,6 +4,7 @@ import type {
     DisclosureCalculatorResult,
 } from "./disclosureAprCalculator";
 import {
+    applyDisclosurePlatformFee,
     formatDisclosurePercent,
     formatDisclosureUsd,
 } from "./disclosureAprCalculator";
@@ -20,7 +21,7 @@ const FIELD_IDS = {
 } as const;
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
-    const trimmed = String(value || "").trim();
+    const trimmed = String(value || "").trim().toUpperCase();
     if (!trimmed) return [];
     return ids.map((id) => ({ id, label, value: trimmed }));
 };
@@ -95,16 +96,25 @@ export function mapUtahDisclosureCalculatorToPdfFields(
         Math.max(0, inputs.brokerFeePaidByMerchant ?? 0);
     return {
         purchase_amount: formatDisclosureUsd(inputs.purchasePrice),
+        /** Purchase Price on disclosure = funding amount (not payback). */
+        purchase_price: formatDisclosureUsd(inputs.purchasePrice),
+        /** Receivables / repayment amount merchant must repay. */
+        receivables: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        revenue_purchased: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        total_of_payments: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        payment_total: formatDisclosureUsd(metrics.estimatedTotalPayment),
         net_to_merchant: formatDisclosureUsd(metrics.recipientFunds),
-        purchase_price: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        NetFundProvided: formatDisclosureUsd(metrics.recipientFunds),
         finance_charge: formatDisclosureUsd(metrics.financeCharge),
         remittance: formatDisclosureUsd(metrics.estimatedPayment),
         monthly_income: formatDisclosureUsd(metrics.estimatedMerchantAverageMonthlyRevenue),
-        appendix_underwriting_fees: formatDisclosureUsd(brokerFeePaidToBroker),
+        appendix_underwriting_fees: formatDisclosureUsd(
+            applyDisclosurePlatformFee(brokerFeePaidToBroker),
+        ),
         payment_terms_percent: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
         disclosure_payment_terms: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
         payment_exceed_percent: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
-        // Never write percent into bare `frequency` — that label is Daily/Weekly on the main contract.
+        // Never write percent into bare `frequency` — that label is cadence (DAY / WEEK).
     };
 }
 

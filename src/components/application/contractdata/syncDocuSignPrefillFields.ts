@@ -2,6 +2,7 @@ import { axiosPatch } from "@/redux/axios";
 import { formatDate } from "@/lib/utils";
 import { toast } from "react-toastify";
 import type { BuildContractPrefillFieldsArgs } from "./Contract";
+import { uppercaseContractDocumentPrefillFields } from "./Contract";
 import {
     applyDocumentTemplateMappingPrefillOverrides,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
@@ -111,22 +112,24 @@ export function buildAchDocuSignPrefillFieldsPayload(args: {
         ),
     ];
 
-    return applyDocumentTemplateMappingPrefillOverrides({
-        prefillFieldsPayload: [],
-        mergedTemplateIds: [],
-        mergedLayoutKeys,
-        templateMappingRows: mappingRows,
-        contractPrefillOverridesRaw,
-        contract: args.contract,
-        application: args.application,
-        agreementDate: formatDate(new Date()),
-        mainPrefillOverrides: mainPrefill as Partial<BuildContractPrefillFieldsArgs> | null,
-    })
-        .map((field) => ({
-            id: field.id,
-            value: String(field.value ?? "").trim(),
-        }))
-        .filter((field) => field.id && field.value);
+    return uppercaseContractDocumentPrefillFields(
+        applyDocumentTemplateMappingPrefillOverrides({
+            prefillFieldsPayload: [],
+            mergedTemplateIds: [],
+            mergedLayoutKeys,
+            templateMappingRows: mappingRows,
+            contractPrefillOverridesRaw,
+            contract: args.contract,
+            application: args.application,
+            agreementDate: formatDate(new Date()),
+            mainPrefillOverrides: mainPrefill as Partial<BuildContractPrefillFieldsArgs> | null,
+        })
+            .map((field) => ({
+                id: field.id,
+                value: String(field.value ?? "").trim(),
+            }))
+            .filter((field) => field.id && field.value),
+    );
 }
 
 export function docuSignPrefillSyncToast(

@@ -111,15 +111,15 @@ const FIELD_LABELS = {
     state: "State of incorporation",
     businessAddressCity: "City",
     businessAddressState: "State",
-    businessAddressZip: "ZIP",
+    businessAddressZip: "Business ZIP",
     businessAddressContract: "Street",
     businessAddressContractCity: "City",
     businessAddressContractState: "State",
-    businessAddressContractZip: "ZIP",
+    businessAddressContractZip: "Contract ZIP",
     guarantorAddress: "Street",
     guarantorAddressCity: "City",
     guarantorAddressState: "State",
-    guarantorAddressZip: "ZIP",
+    guarantorAddressZip: "Guarantor ZIP",
     clientEmail: "Email",
     guarantorEmail: "Email",
     guarantorPhone: "Phone",
@@ -132,6 +132,8 @@ const FIELD_LABELS = {
     frequency: "Frequency",
     netToMerchant: "Recipient funds",
     clientName: "Name",
+    ownerPrintTitle: "Print title",
+    guarantorPrintTitle: "Print title",
     owner1GuarantorName: "Name",
     owner2GuarantorName: "Name",
     merchant2Name: "Name",
@@ -143,7 +145,7 @@ const FIELD_LABELS = {
     securityBusinessAddress: "Street",
     securityBusinessAddressCity: "City",
     securityBusinessAddressState: "State",
-    securityBusinessAddressZip: "ZIP",
+    securityBusinessAddressZip: "Security ZIP",
     securityGuarantor: "Guarantor",
     guarantyClientName: "Name",
     guarantySs: "SSN",
@@ -282,6 +284,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                     "legalName",
                     "entityType",
                     "doingBusinessAs",
+                    "federalTaxIdEin",
                     "clientName",
                     "clientPhone",
                     "clientEmail",
@@ -295,9 +298,35 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         description: "Business, contract/mailing, and guarantor address lines on the Harbor MCA.",
         Icon: Building2,
         groups: [
-            { heading: "Business", keys: ["businessAddress"] },
-            { heading: "Contract / mailing", keys: ["businessAddressContract"] },
-            { heading: "Guarantor", keys: ["guarantorAddress", "guarantorEmail", "guarantorPhone"] },
+            {
+                heading: "Business",
+                keys: [
+                    "businessAddress",
+                    "businessAddressCity",
+                    "businessAddressState",
+                    "businessAddressZip",
+                ],
+            },
+            {
+                heading: "Contract / mailing",
+                keys: [
+                    "businessAddressContract",
+                    "businessAddressContractCity",
+                    "businessAddressContractState",
+                    "businessAddressContractZip",
+                ],
+            },
+            {
+                heading: "Guarantor",
+                keys: [
+                    "guarantorAddress",
+                    "guarantorAddressCity",
+                    "guarantorAddressState",
+                    "guarantorAddressZip",
+                    "guarantorEmail",
+                    "guarantorPhone",
+                ],
+            },
         ],
     },
     {
@@ -349,6 +378,15 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                 ],
             },
             { heading: "Tax ID", keys: ["securityTaxEin"] },
+            {
+                heading: "Security address",
+                keys: [
+                    "securityBusinessAddress",
+                    "securityBusinessAddressCity",
+                    "securityBusinessAddressState",
+                    "securityBusinessAddressZip",
+                ],
+            },
         ],
     },
     {
@@ -362,6 +400,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                     "authorizationClientBankName",
                     "authorizationClientBankRouting",
                     "authorizationClientBankAccount",
+                    "authorizationClientTaxId",
                     "authorizationClientName",
                     "authorizedBusinessPhone",
                 ],
@@ -461,7 +500,7 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
     {
         id: "ein",
         label: "EIN / Tax ID",
-        keys: ["securityTaxEin"],
+        keys: ["federalTaxIdEin", "securityTaxEin", "authorizationClientTaxId"],
     },
     {
         id: "dba",
@@ -895,7 +934,138 @@ function firstSectionIdWithFieldErrors(errors: FieldErrors): string | null {
     for (const section of CONTRACT_PREFILL_SECTIONS) {
         if (contractPrefillSectionKeys(section).some((key) => Boolean(errors[key]))) return section.id;
     }
+    for (const key of Object.keys(errors) as (keyof BuildContractPrefillFieldsArgs)[]) {
+        if (!errors[key]) continue;
+        const fallback = FIELD_ERROR_SECTION_FALLBACK[key];
+        if (fallback) return fallback;
+    }
     return null;
+}
+
+type PrefillErrorSectionHint = {
+    id: string;
+    title: string;
+    fieldKeys: (keyof BuildContractPrefillFieldsArgs)[];
+};
+
+/**
+ * Validated keys that may not appear in CONTRACT_PREFILL_SECTIONS yet still need a real
+ * outline target (never invent an "Other fields" stage).
+ */
+const FIELD_ERROR_SECTION_FALLBACK: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {
+    customerName: "merchant",
+    federalTaxIdEin: "merchant",
+    state: "merchant",
+    authorizationClientTaxId: "ach_deposit",
+    authorizationClientDate: "ach_deposit",
+    businessAddressCity: "addresses",
+    businessAddressState: "addresses",
+    businessAddressZip: "addresses",
+    businessAddressContractCity: "addresses",
+    businessAddressContractState: "addresses",
+    businessAddressContractZip: "addresses",
+    guarantorAddressCity: "addresses",
+    guarantorAddressState: "addresses",
+    guarantorAddressZip: "addresses",
+    securityBusinessAddress: "owners",
+    securityBusinessAddressCity: "owners",
+    securityBusinessAddressState: "owners",
+    securityBusinessAddressZip: "owners",
+    achAuthorizationAccountHolderDate: "ach_account_bank",
+    achAuthorizationConcentAccountHolderDate: "ach_account_bank",
+};
+
+/** Group validation errors by outline section so the user knows where to go. */
+function collectPrefillErrorSections(errors: FieldErrors): PrefillErrorSectionHint[] {
+    const bySectionId = new Map<string, PrefillErrorSectionHint>();
+
+    const addToSection = (sectionId: string, fieldKey: keyof BuildContractPrefillFieldsArgs) => {
+        const section =
+            CONTRACT_PREFILL_SECTIONS.find((s) => s.id === sectionId) ?? CONTRACT_PREFILL_SECTIONS[0];
+        if (!section) return;
+        const existing = bySectionId.get(section.id);
+        if (existing) {
+            if (!existing.fieldKeys.includes(fieldKey)) existing.fieldKeys.push(fieldKey);
+            return;
+        }
+        bySectionId.set(section.id, {
+            id: section.id,
+            title: section.title,
+            fieldKeys: [fieldKey],
+        });
+    };
+
+    const claimed = new Set<string>();
+    for (const section of CONTRACT_PREFILL_SECTIONS) {
+        for (const key of contractPrefillSectionKeys(section)) {
+            if (!errors[key]) continue;
+            claimed.add(key);
+            addToSection(section.id, key);
+        }
+    }
+
+    for (const key of Object.keys(errors) as (keyof BuildContractPrefillFieldsArgs)[]) {
+        if (!errors[key] || claimed.has(key)) continue;
+        addToSection(FIELD_ERROR_SECTION_FALLBACK[key] ?? "merchant", key);
+    }
+
+    // Preserve outline order.
+    const ordered: PrefillErrorSectionHint[] = [];
+    for (const section of CONTRACT_PREFILL_SECTIONS) {
+        const hint = bySectionId.get(section.id);
+        if (hint) ordered.push(hint);
+    }
+    return ordered;
+}
+
+function fieldLabelForPrefillKey(key: keyof BuildContractPrefillFieldsArgs): string {
+    return FIELD_LABELS[key as keyof typeof FIELD_LABELS] ?? String(key);
+}
+
+function firstErroredFieldKey(
+    errors: FieldErrors,
+    sectionId?: string | null,
+): keyof BuildContractPrefillFieldsArgs | null {
+    if (sectionId) {
+        const section = CONTRACT_PREFILL_SECTIONS.find((s) => s.id === sectionId);
+        if (section) {
+            const inSection = contractPrefillSectionKeys(section).find((key) => Boolean(errors[key]));
+            if (inSection) return inSection;
+        }
+    }
+    for (const section of CONTRACT_PREFILL_SECTIONS) {
+        const key = contractPrefillSectionKeys(section).find((k) => Boolean(errors[k]));
+        if (key) return key;
+    }
+    const any = (Object.keys(errors) as (keyof BuildContractPrefillFieldsArgs)[]).find((k) =>
+        Boolean(errors[k]),
+    );
+    return any ?? null;
+}
+
+function buildPrefillValidationErrorMessage(
+    errors: FieldErrors,
+    sections: PrefillErrorSectionHint[],
+): string {
+    const count = Object.keys(errors).length;
+    const fieldWord = count === 1 ? "field" : "fields";
+    if (sections.length === 0) {
+        return count === 1
+            ? "Fix the highlighted field, then save again."
+            : `Fix ${count} highlighted ${fieldWord}, then save again.`;
+    }
+    if (sections.length === 1) {
+        const section = sections[0]!;
+        const labels = section.fieldKeys.map(fieldLabelForPrefillKey);
+        const shown = labels.slice(0, 4);
+        const labelPart =
+            shown.join(", ") + (labels.length > shown.length ? `, +${labels.length - shown.length} more` : "");
+        return `Fix ${count} highlighted ${fieldWord} in “${section.title}” (${labelPart}).`;
+    }
+    const sectionList = sections
+        .map((s) => `“${s.title}” (${s.fieldKeys.length})`)
+        .join(", ");
+    return `Fix ${count} highlighted ${fieldWord} in: ${sectionList}. Use the outline (or buttons below) to jump to each section.`;
 }
 
 export type LinkedAddendumMappingRef = {
@@ -956,6 +1126,8 @@ export type ContractPrefillEditFormProps = {
     additionalContractPrefillJson?: Record<string, unknown> | null;
     /** Live Contract Signers from the PDF modal (unsaved rows still count for owner-2 prefill sections). */
     liveContractSignerOverrides?: ContractSignerOverrideRow[] | null;
+    /** Bank-analysis rows for disclosure monthly income / lookback months. */
+    bankAnalyses?: unknown;
 };
 
 function isPasswordPrefillKey(key: keyof BuildContractPrefillFieldsArgs): boolean {
@@ -984,6 +1156,7 @@ export function ContractPrefillEditForm({
     readOnly = false,
     additionalContractPrefillJson = null,
     liveContractSignerOverrides = null,
+    bankAnalyses = null,
 }: ContractPrefillEditFormProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
@@ -992,8 +1165,10 @@ export function ContractPrefillEditForm({
     const [saving, setSaving] = useState(false);
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
     const [saveError, setSaveError] = useState<string | null>(null);
+    const [saveErrorSections, setSaveErrorSections] = useState<PrefillErrorSectionHint[]>([]);
     const [activeSectionId, setActiveSectionId] = useState(CONTRACT_PREFILL_SECTIONS[0]?.id ?? "merchant");
     const purchasePercentTouchedRef = useRef(false);
+    const pendingFocusFieldKeyRef = useRef<keyof BuildContractPrefillFieldsArgs | null>(null);
     const [spaModalOpen, setSpaModalOpen] = useState(false);
     const [savingSpaCalculation, setSavingSpaCalculation] = useState(false);
 
@@ -1103,6 +1278,7 @@ export function ContractPrefillEditForm({
             mainPrefillOverrides: strippedMainPrefillOverrides ?? undefined,
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
+            bankAnalyses,
         });
     }, [
         linkedDisclosureMapping,
@@ -1116,6 +1292,7 @@ export function ContractPrefillEditForm({
         applicationData,
         agreementDateForDefaults,
         strippedMainPrefillOverrides,
+        bankAnalyses,
     ]);
 
     const linkedAddendumSectionTitle = useMemo(() => {
@@ -1423,6 +1600,8 @@ export function ContractPrefillEditForm({
         if (!open) {
             setFieldErrors({});
             setSaveError(null);
+            setSaveErrorSections([]);
+            pendingFocusFieldKeyRef.current = null;
         }
     }, [open]);
 
@@ -1448,6 +1627,42 @@ export function ContractPrefillEditForm({
         activeIdx >= 0 && activeIdx < navSections.length - 1 ? navSections[activeIdx + 1] : null;
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
     const isLinkedDisclosureSection = activeSectionId === LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID;
+
+    /** After validation jumps sections, scroll/focus the first highlighted input. */
+    useEffect(() => {
+        const key = pendingFocusFieldKeyRef.current;
+        if (!key || !open) return;
+        const timer = window.setTimeout(() => {
+            if (pendingFocusFieldKeyRef.current !== key) return;
+            const el = document.getElementById(`prefill-${key}`);
+            if (el) {
+                el.scrollIntoView({ behavior: "smooth", block: "center" });
+                if (typeof (el as HTMLElement).focus === "function") {
+                    (el as HTMLElement).focus({ preventScroll: true });
+                }
+            }
+            pendingFocusFieldKeyRef.current = null;
+        }, 60);
+        return () => window.clearTimeout(timer);
+    }, [activeSectionId, fieldErrors, open]);
+
+    const jumpToPrefillErrorSection = useCallback(
+        (sectionId: string) => {
+            pendingFocusFieldKeyRef.current = firstErroredFieldKey(fieldErrors, sectionId);
+            setActiveSectionId(sectionId);
+        },
+        [fieldErrors],
+    );
+
+    const sectionErrorCounts = useMemo(() => {
+        const counts: Record<string, number> = {};
+        for (const section of navSections) {
+            if (!section.groups.length) continue;
+            const n = contractPrefillSectionKeys(section).filter((key) => Boolean(fieldErrors[key])).length;
+            if (n > 0) counts[section.id] = n;
+        }
+        return counts;
+    }, [navSections, fieldErrors]);
 
     const activeSectionSyncGroups = useMemo(() => {
         if (!activeSection || isLinkedAddendumSection || isLinkedDisclosureSection) {
@@ -1583,6 +1798,7 @@ export function ContractPrefillEditForm({
 
     const handleSave = async () => {
         setSaveError(null);
+        setSaveErrorSections([]);
         const cid = parsePositiveContractId(contractId);
         if (cid == null) {
             const msg = "Cannot save: open or create a contract for this application first.";
@@ -1593,18 +1809,18 @@ export function ContractPrefillEditForm({
         const validation = validatePrefillValues(values);
         if (Object.keys(validation).length > 0) {
             setFieldErrors(validation);
-            const firstSection = firstSectionIdWithFieldErrors(validation);
+            const errorSections = collectPrefillErrorSections(validation);
+            const firstSection = firstSectionIdWithFieldErrors(validation) ?? errorSections[0]?.id ?? null;
             if (firstSection) setActiveSectionId(firstSection);
-            const count = Object.keys(validation).length;
-            const msg =
-                count === 1
-                    ? "Fix the highlighted field, then save again."
-                    : `Fix ${count} highlighted fields, then save again.`;
+            pendingFocusFieldKeyRef.current = firstErroredFieldKey(validation, firstSection);
+            const msg = buildPrefillValidationErrorMessage(validation, errorSections);
+            setSaveErrorSections(errorSections);
             setSaveError(msg);
             toast.error(msg);
             return;
         }
         setFieldErrors({});
+        setSaveErrorSections([]);
         setSaving(true);
         try {
             const rawPayload = toPayload(values);
@@ -1967,7 +2183,24 @@ export function ContractPrefillEditForm({
                         className="mx-6 mt-3 shrink-0 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
                         role="alert"
                     >
-                        {saveError}
+                        <p>{saveError}</p>
+                        {saveErrorSections.length > 0 ? (
+                            <div className="mt-2.5 flex flex-wrap gap-2">
+                                {saveErrorSections.map((section) => (
+                                    <button
+                                        key={section.id}
+                                        type="button"
+                                        onClick={() => jumpToPrefillErrorSection(section.id)}
+                                        className="inline-flex items-center gap-1.5 rounded-md border border-destructive/35 bg-white/80 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 dark:bg-slate-950/60"
+                                    >
+                                        Go to {section.title}
+                                        <span className="rounded-full bg-destructive/15 px-1.5 py-0.5 text-[10px] tabular-nums">
+                                            {section.fieldKeys.length}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
                     </div>
                 ) : null}
 
@@ -1981,11 +2214,14 @@ export function ContractPrefillEditForm({
                             <SelectValue placeholder="Choose section" />
                         </SelectTrigger>
                         <SelectContent position="popper" className="z-[10200] max-h-[min(70vh,420px)]">
-                            {navSections.map((s) => (
-                                <SelectItem key={s.id} value={s.id}>
-                                    {s.title}
-                                </SelectItem>
-                            ))}
+                            {navSections.map((s) => {
+                                const errCount = sectionErrorCounts[s.id] ?? 0;
+                                return (
+                                    <SelectItem key={s.id} value={s.id}>
+                                        {errCount > 0 ? `${s.title} (${errCount} to fix)` : s.title}
+                                    </SelectItem>
+                                );
+                            })}
                         </SelectContent>
                     </Select>
                 </div>
@@ -2002,20 +2238,37 @@ export function ContractPrefillEditForm({
                         </p>
                         {navSections.map((s) => {
                             const isActive = s.id === activeSectionId;
+                            const errCount = sectionErrorCounts[s.id] ?? 0;
                             return (
                                 <button
                                     key={s.id}
                                     type="button"
-                                    onClick={() => setActiveSectionId(s.id)}
+                                    onClick={() => {
+                                        if (errCount > 0) {
+                                            jumpToPrefillErrorSection(s.id);
+                                        } else {
+                                            setActiveSectionId(s.id);
+                                        }
+                                    }}
                                     className={cn(
                                         "flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
                                         isActive
                                             ? "bg-[var(--brand)]/12 font-medium text-[var(--brand)] ring-1 ring-[var(--brand)]/25 dark:bg-[var(--brand)]/20 dark:text-[#7eb8e8]"
-                                            : "text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800",
+                                            : errCount > 0
+                                              ? "text-destructive hover:bg-destructive/10 dark:hover:bg-destructive/15"
+                                              : "text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800",
                                     )}
                                 >
                                     <s.Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
-                                    <span className="leading-snug">{s.title}</span>
+                                    <span className="min-w-0 flex-1 leading-snug">{s.title}</span>
+                                    {errCount > 0 ? (
+                                        <span
+                                            className="mt-0.5 shrink-0 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white"
+                                            aria-label={`${errCount} fields to fix`}
+                                        >
+                                            {errCount}
+                                        </span>
+                                    ) : null}
                                 </button>
                             );
                         })}

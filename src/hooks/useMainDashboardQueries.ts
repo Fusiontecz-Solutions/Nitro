@@ -90,8 +90,8 @@ export function useMainDashboardQueries(options: {
 
   const queryDefaults = {
     staleTime: DASHBOARD_STALE_MS,
-    refetchOnMount: "always" as const,
-    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
     refetchInterval: dashboardRefetchWhenVisible,
     enabled,
   };

@@ -1,3 +1,6 @@
+import { axiosGet } from "@/redux/axios";
+import { isCloudinaryPdfUrl, isCloudinaryRawPdfUrl } from "@/utils/cloudinaryPdfUrl";
+
 /** BoldSign / DocuSign template row shape from `GET /contract/templates`. */
 export type BoldSignTemplateRow = {
     id?: string | null;
@@ -9,6 +12,32 @@ export type BoldSignTemplateRow = {
     pdf_url?: string | null;
     layoutKey?: string | null;
 };
+
+/** Authenticated proxy — direct `res.cloudinary.com` fetches often 401 in the browser. */
+async function fetchTemplatePdfViaInlinePreview(
+    pdfUrl: string,
+    name = "document.pdf",
+): Promise<Blob> {
+    const response = await axiosGet("/uploads/inline-preview", {
+        params: { url: pdfUrl, name, mimeType: "application/pdf" },
+        responseType: "blob",
+    });
+    const rawBlob =
+        response.data instanceof Blob
+            ? response.data
+            : new Blob([response.data as BlobPart], { type: "application/pdf" });
+    if (rawBlob.type && rawBlob.type.includes("json")) {
+        const text = await rawBlob.text();
+        let message = "Failed to load template PDF.";
+        try {
+            message = String(JSON.parse(text)?.message || message);
+        } catch {
+            /* keep default */
+        }
+        throw new Error(message);
+    }
+    return new Blob([rawBlob], { type: "application/pdf" });
+}
 
 export function getBoldSignTemplatePdfUrl(
     template: BoldSignTemplateRow | null | undefined,
@@ -73,8 +102,31 @@ export async function loadBoldSignTemplatePdfBlob(options: {
     const pdfUrl = getBoldSignTemplatePdfUrl(options.template);
     const layoutKey = String(options.template?.layoutKey || "").trim();
 
-    // Prefer the uploaded Cloudinary PDF (funder profile Case Takeover, Flex, etc.).
+    const templateName =
+        String(options.template?.name || "").trim() || "document.pdf";
+
+    // Prefer the uploaded Cloudinary PDF via authenticated proxy (direct fetch → 401).
     if (pdfUrl && !pdfUrl.startsWith("platform://")) {
+        const useProxy =
+            isCloudinaryPdfUrl(pdfUrl, templateName) ||
+            isCloudinaryRawPdfUrl(pdfUrl) ||
+            /res\.cloudinary\.com/i.test(pdfUrl);
+        if (useProxy) {
+            try {
+                return await fetchTemplatePdfViaInlinePreview(pdfUrl, templateName);
+            } catch (proxyErr) {
+                // Fall through to DocuSign/layout download when proxy fails.
+                const proxyMessage =
+                    proxyErr instanceof Error ? proxyErr.message : String(proxyErr);
+                try {
+                    return await downloadTemplatePdfByRef(options, layoutKey, proxyMessage);
+                } catch {
+                    throw new Error(
+                        `Could not load PDF from Cloudinary: ${proxyMessage}`,
+                    );
+                }
+            }
+        }
         try {
             const response = await fetch(pdfUrl);
             if (!response.ok) {
@@ -83,12 +135,27 @@ export async function loadBoldSignTemplatePdfBlob(options: {
             return await response.blob();
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            throw new Error(
-                `Could not load PDF from Cloudinary: ${message}`,
-            );
+            throw new Error(`Could not load PDF from Cloudinary: ${message}`);
         }
     }
 
+    return downloadTemplatePdfByRef(options, layoutKey);
+}
+
+async function downloadTemplatePdfByRef(
+    options: {
+        template?: BoldSignTemplateRow | null;
+        axiosGet: (
+            url: string,
+            config?: { responseType?: "blob"; params?: Record<string, string> },
+        ) => Promise<{ data?: unknown }>;
+        funderName?: string | null;
+        funderProfileId?: string | null;
+        state?: string | null;
+    },
+    layoutKey: string,
+    _priorError?: string,
+): Promise<Blob> {
     const templateId = getBoldSignTemplateDocuSignId(options.template);
     const downloadRef =
         layoutKey ||

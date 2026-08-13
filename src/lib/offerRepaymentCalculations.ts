@@ -29,10 +29,8 @@ export type OfferCalcResult = Pick<
   monthlyPayment: number;
 };
 
-const WEEKLY_TO_MONTHLY_FACTOR = 4.2;
-// Bi-Weekly = every 2 weeks → ~26 payments/year ÷ 12 months ≈ 2.166.
-// Kept consistent with the project's WEEKLY_TO_MONTHLY_FACTOR (4.2) by halving it.
-const BIWEEKLY_TO_MONTHLY_FACTOR = 2.1;
+const WEEKLY_TO_MONTHLY_FACTOR = 4;
+const BIWEEKLY_TO_MONTHLY_FACTOR = 2;
 
 function roundMoney(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -154,8 +152,9 @@ export function computeMonthlyPayment(input: {
   const freq = normalizeFrequency(input.frequency);
 
   if (freq === "Daily") {
+    /** Guide disclosure monthly cost uses Daily × 20. */
     return roundMoney(
-      termNum < 22 ? perPeriodPayment * termNum : perPeriodPayment * 22,
+      termNum < 20 ? perPeriodPayment * termNum : perPeriodPayment * 20,
     );
   }
   if (freq === "Weekly") {

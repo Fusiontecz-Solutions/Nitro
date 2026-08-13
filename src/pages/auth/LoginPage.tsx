@@ -13,7 +13,7 @@ function safeAppReturnPath(raw: string | null): string | null {
     return null;
   }
 }
-import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import type { AppDispatch, RootState } from '../../redux/store';
 import { login } from '../../redux/actions/authActions';
 import {
@@ -172,8 +172,10 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full cursor-pointer justify-center py-3 px-4 rounded-full text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-blue-300 hover:from-indigo-700 hover:to-blue-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed  transition-all"
+                aria-busy={loading}
+                className="w-full cursor-pointer inline-flex items-center justify-center gap-2 py-3 px-4 rounded-full text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-blue-300 hover:from-indigo-700 hover:to-blue-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed  transition-all"
               >
+                {loading && <Loader2 className="size-4 animate-spin" aria-hidden />}
                 {loading ? 'Signing In...' : 'Sign In'}
               </button>
             </form>

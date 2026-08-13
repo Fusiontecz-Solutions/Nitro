@@ -1,4 +1,7 @@
-import { isTexasFundingGroupFunderProfile } from "@/hooks/useFunderProfiles";
+import {
+  isTexasFundingGroupFunderProfile,
+  isWoodmereFunderProfile,
+} from "@/hooks/useFunderProfiles";
 
 export const FUNDER_DOCUMENTS_SOURCES = ["platform", "own", "shared"] as const;
 export type FunderDocumentsSource = (typeof FUNDER_DOCUMENTS_SOURCES)[number];
@@ -31,6 +34,15 @@ type DocumentsSourceProfile = {
   sharedDisclosureFunderId?: string | null;
 };
 
+export type ResolveDisclosureLayoutFunderOptions = {
+  /**
+   * Harbor View Capital / Woodmere funder id — platform disclosure PDFs are
+   * uploaded under that funder's `funder_{id}_disclosure_*` keys and shared
+   * by other funders with disclosureDocumentsSource = "platform".
+   */
+  platformDisclosureFunderId?: string | null;
+};
+
 /** Addendum/ACH PDF source — falls back to legacy documentsSource. */
 export function resolveAddendumDocumentsSource(
   profile: Pick<
@@ -43,7 +55,12 @@ export function resolveAddendumDocumentsSource(
   return normalizeFunderDocumentsSource(profile.documentsSource);
 }
 
-/** State disclosure PDF source — falls back to legacy documentsSource. */
+/**
+ * State disclosure PDF source.
+ * Unset dedicated source → platform (common shared pack for all states).
+ * Do not inherit documentsSource "own" from contract uploads — that breaks
+ * every state for funders that share the common disclosure funder set.
+ */
 export function resolveDisclosureDocumentsSource(
   profile: Pick<
     DocumentsSourceProfile,
@@ -52,7 +69,11 @@ export function resolveDisclosureDocumentsSource(
 ): FunderDocumentsSource {
   const dedicated = String(profile.disclosureDocumentsSource ?? "").trim();
   if (dedicated) return normalizeFunderDocumentsSource(dedicated);
-  return normalizeFunderDocumentsSource(profile.documentsSource);
+  const legacy = String(profile.documentsSource ?? "")
+    .trim()
+    .toLowerCase();
+  if (legacy === "shared") return "shared";
+  return "platform";
 }
 
 function resolveSharedFunderIdForKind(
@@ -103,12 +124,30 @@ export function resolveAddendumDocumentsLayoutFunderId(
 
 export function resolveDisclosureDocumentsLayoutFunderId(
   profile: DocumentsSourceProfile,
+  options?: ResolveDisclosureLayoutFunderOptions,
 ): string | null {
-  return resolveLayoutFunderIdForSource(
-    profile,
-    resolveDisclosureDocumentsSource(profile),
-    "disclosure",
-  );
+  const source = resolveDisclosureDocumentsSource(profile);
+  const platformOwner = String(options?.platformDisclosureFunderId ?? "").trim();
+  // Platform = the shared Harbor View Capital disclosure set (not non-funder_ rows).
+  // Both funders reuse those uploads for every disclosure state.
+  if (source === "platform") {
+    if (isWoodmereFunderProfile(profile)) {
+      return String(profile.id || "").trim() || null;
+    }
+    return platformOwner || null;
+  }
+  if (source === "shared") {
+    const sharedId = resolveSharedFunderIdForKind(profile, "disclosure");
+    // Missing share target → common platform pack (all states), not this funder's empty scope.
+    return sharedId || platformOwner || profile.id;
+  }
+  // "own" on a non-platform funder (e.g. Clear Capital) still consumes the
+  // common Harbor View disclosure pack. Own contract PDFs must not hide
+  // state disclosures that were only uploaded under the platform funder.
+  if (!isWoodmereFunderProfile(profile) && platformOwner) {
+    return platformOwner;
+  }
+  return resolveLayoutFunderIdForSource(profile, source, "disclosure");
 }
 
 /** @deprecated Prefer resolveAddendumDocumentsLayoutFunderId */
@@ -130,6 +169,8 @@ export function canManageFunderAddendums(
 export function canManageFunderDisclosures(
   profile: DocumentsSourceProfile,
 ): boolean {
+  // Harbor View Capital owns the shared disclosure pack used by every funder.
+  if (isWoodmereFunderProfile(profile)) return true;
   const source = resolveDisclosureDocumentsSource(profile);
   if (source === "platform") return false;
   const layoutFunderId = resolveDisclosureDocumentsLayoutFunderId(profile);

@@ -154,6 +154,12 @@ export interface CreateApplicationPayload {
     loanAmount?: number | string | null;
     note?: string;
     documents?: File[];
+    /** Prior deal UUID/applicationId when type is Refinance. */
+    previousApplicationId?: string | null;
+    /** Payoff / REFI balance seeded from the selected prior deal. */
+    refinanceAmount?: number | string | null;
+    /** Prior deal date (MM/DD/YYYY or ISO) for disclosures. */
+    previousDealDate?: string | null;
 }
 
 export interface UpdateApplicationPayload {

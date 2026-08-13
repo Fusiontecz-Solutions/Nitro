@@ -32,8 +32,9 @@ const MetricCell = ({
 
 type Frequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly" | "";
 
-const WEEKLY_TO_MONTHLY_FACTOR = 4.2;
-const BIWEEKLY_TO_MONTHLY_FACTOR = 2.1;
+/** Guide / disclosure sync: Weekly × 4, Bi-Weekly × 2. */
+const WEEKLY_TO_MONTHLY_FACTOR = 4;
+const BIWEEKLY_TO_MONTHLY_FACTOR = 2;
 
 function computeFallbackAvgNetCredit(
   bankTables?: Array<{ rows?: Array<{ netCredit?: number | string | null }> }>,

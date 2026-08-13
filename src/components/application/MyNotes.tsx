@@ -22,6 +22,8 @@ interface MyNotesProps {
     compact?: boolean;
     /** Extra vertical space when embedded in compact panels. */
     tall?: boolean;
+    /** Stretch to the parent column (Offer + Notes side-by-side). */
+    fillHeight?: boolean;
 }
 
 const MyNotes = ({
@@ -31,6 +33,7 @@ const MyNotes = ({
     onNoteDelete,
     compact = false,
     tall = false,
+    fillHeight = false,
 }: MyNotesProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const { applicationId: applicationIdFromRoute } = useParams<{ applicationId?: string }>();
@@ -222,12 +225,16 @@ const MyNotes = ({
     };
 
     return (
-        <Card className={`gap-2 w-full border shadow-[0px_4px_20px_0px_#00000005] p-0 rounded-b-md flex flex-col ${
-            compact ? (tall ? 'h-[560px] pb-2' : 'h-auto pb-2') : 'pb-3 h-[500px]'
+        <Card className={`gap-0 w-full border shadow-[0px_4px_20px_0px_#00000005] p-0 rounded-b-md flex flex-col ${
+            compact
+                ? (tall ? 'h-[560px] pb-2' : 'h-auto pb-2')
+                : fillHeight
+                  ? 'h-full min-h-0'
+                  : 'h-auto'
         } ${
             isDark ? 'bg-[#141517] border-[#374151]' : 'border-[#FDFDFD]'
         }`}>
-            <CardHeader className={`${compact ? 'px-3 py-1.5' : 'px-4 py-2'} ${
+            <CardHeader className={`shrink-0 ${compact ? 'px-3 py-1.5' : 'px-4 py-2'} ${
                 isDark ? 'bg-[#2A2B2F]' : 'bg-[#F9FAFD]'
             }`}>
                 <CardTitle
@@ -238,9 +245,9 @@ const MyNotes = ({
                     My Notes
                 </CardTitle>
             </CardHeader>
-            <CardContent className={`${compact ? 'px-3 pb-2' : 'px-4 pb-4'} flex-1 min-h-0 flex flex-col`}>
-                {/* Add Notes Section */}
-                <div className={compact ? 'space-y-2' : 'space-y-4'}>
+            <CardContent className={`${compact ? 'px-3 pb-2' : 'px-4 pb-4'} flex-1 min-h-0 flex flex-col gap-3`}>
+                {/* Add Notes Section — content-sized so it never overlaps the list */}
+                <div className={`shrink-0 ${compact ? 'space-y-2' : 'space-y-3'}`}>
                     <p
                         className={`${compact ? 'text-xs' : 'text-sm'} font-semibold uppercase tracking-wide ${
                             isDark ? 'text-white' : 'text-[#374151]'
@@ -252,7 +259,11 @@ const MyNotes = ({
                         value={newNote}
                         onChange={(e) => setNewNote(e.target.value)}
                         placeholder="Write your notes here.."
-                        className={`${compact ? (tall ? 'min-h-[140px]' : 'min-h-[72px]') : 'min-h-[120px]'} resize-none rounded-sm text-sm outline-none focus:ring-2 focus:ring-[var(--brand)]/20 ${
+                        className={`${
+                            compact
+                                ? (tall ? 'min-h-[140px]' : 'min-h-[72px]')
+                                : 'min-h-[96px] max-h-[160px]'
+                        } resize-y rounded-sm text-sm outline-none focus:ring-2 focus:ring-[var(--brand)]/20 ${
                             isDark ? 'bg-[#141517] border-[#374151] text-white' : 'border-border'
                         }`}
                     />
@@ -311,14 +322,24 @@ const MyNotes = ({
                         border: 2px solid rgba(20, 21, 23, 0.7);
                     }
                 `}</style>
-                <div className={`notes-scroll space-y-2 ${compact ? (tall ? 'mt-2 max-h-[400px]' : 'mt-2 max-h-[180px]') : 'mt-6 flex-1'} min-h-0 overflow-y-auto pr-2`}>
+                <div
+                    className={`notes-scroll space-y-2 min-h-0 overflow-y-auto pr-2 ${
+                        compact
+                            ? tall
+                                ? 'mt-0 max-h-[400px]'
+                                : 'mt-0 max-h-[180px]'
+                            : fillHeight
+                              ? 'flex-1 border-t border-slate-100 pt-3 dark:border-slate-700'
+                              : 'max-h-[280px] border-t border-slate-100 pt-3 dark:border-slate-700'
+                    }`}
+                >
                     {notesLoading ? (
-                        <div className={`text-center ${compact ? 'py-3' : 'py-8'}`}>
+                        <div className={`text-center ${compact ? 'py-3' : 'py-4'}`}>
                             <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
                             <p className={`text-sm mt-2 ${isDark ? 'text-white' : 'text-gray-500'}`}>Loading notes...</p>
                         </div>
                     ) : notes.length === 0 ? (
-                        <div className={`text-center ${compact ? 'py-2' : 'py-8'} ${isDark ? 'text-white' : 'text-gray-500'}`}>
+                        <div className={`text-center ${compact ? 'py-2' : 'py-3'} ${isDark ? 'text-white' : 'text-gray-500'}`}>
                             <p className="text-xs">No notes yet. Add your first note above!</p>
                         </div>
                     ) : (

@@ -222,15 +222,9 @@ const BankAnalysis = ({
 
     /** Bulk-save hook registered by {@link PositionTableCalculator} for Approve & Save. */
     const saveAllPositionsRef = useRef<(() => Promise<boolean>) | null>(null);
-    const handleRegisterSaveAllPositions = useCallback((saveAll: () => Promise<boolean>) => {
-        saveAllPositionsRef.current = saveAll;
-    }, []);
 
     /** Bulk-save hook registered by {@link BankAnalysisTable} for Approve & Save. */
     const saveAllBanksRef = useRef<(() => Promise<boolean>) | null>(null);
-    const handleRegisterSaveAllBanks = useCallback((saveAll: () => Promise<boolean>) => {
-        saveAllBanksRef.current = saveAll;
-    }, []);
 
     /**
      * Persist the requested loan amount as part of the combined "Approve & Save"
@@ -333,7 +327,7 @@ const BankAnalysis = ({
         totalMonthlyFromPositions: number;
         totalDailyFromPositions: number;
     } | null>(null);
-    const [bankNetCreditAvg, setBankNetCreditAvg] = useState<number | null>(null);
+    const [bankNetCreditAvg] = useState<number | null>(null);
     const [offerDecisionState, setOfferDecisionState] = useState<"approved" | "declined" | null>(null);
     const [isPreviewMode, setIsPreviewMode] = useState(false);
     const componentsReadOnly = readOnly || isPreviewMode;
@@ -365,7 +359,6 @@ const BankAnalysis = ({
 
     const [uploadedBankFiles, setUploadedBankFiles] = useState<string[]>([]);
     const [livePositions, setLivePositions] = useState<any[]>([]);
-    const [bankAllocationOptions, setBankAllocationOptions] = useState<Array<{ id: number; label: string }>>([]);
     // Track which transaction amount fields are being edited (to show raw value)
     // const [editingAmounts, setEditingAmounts] = useState<Set<string>>(new Set());
 
@@ -724,14 +717,6 @@ const BankAnalysis = ({
         });
     }, [scopedPositions]);
 
-    /** Prefer in-table edits over an empty Redux snapshot while positions refetch after save. */
-    const positionsForCalculator = useMemo(() => {
-        if (positionsHaveMeaningfulData(livePositions)) {
-            return livePositions;
-        }
-        return calculatorPositions;
-    }, [livePositions, calculatorPositions]);
-
     useEffect(() => {
         livePositionsRef.current = livePositions;
     }, [livePositions]);
@@ -768,26 +753,6 @@ const BankAnalysis = ({
 
         setLivePositions(calculatorPositions as any[]);
     }, [resolvedApplicationId, calculatorPositions]);
-
-    const handleRowsChange = useCallback((nextRows: any[]) => {
-        setLivePositions((prev) => (prev === nextRows ? prev : (nextRows || [])));
-    }, []);
-
-    const handleBanksMetaChange = useCallback((banks: Array<{ id: number; accountNumber: string }>) => {
-        const next = banks.map((b, i) => ({
-            id: b.id,
-            label: b.accountNumber?.trim()
-                ? `Bank Analysis ${i + 1} (${b.accountNumber.trim()})`
-                : `Bank Analysis ${i + 1}`,
-        }));
-
-        setBankAllocationOptions((prev) => {
-            if (prev.length === next.length && prev.every((p, i) => p.id === next[i]?.id && p.label === next[i]?.label)) {
-                return prev;
-            }
-            return next;
-        });
-    }, []);
 
     // Handle add bank
     // const handleAddBank = async () => {
@@ -1608,6 +1573,7 @@ const BankAnalysis = ({
                                 setOfferDecisionState("declined");
                             }}
                         />
+                        {/* Temporarily hidden on Create Offer tab
                         <BankAnalysisTable
                             readOnly={componentsReadOnly}
                             disableCreate={componentsReadOnly || !enableCreate}
@@ -1618,8 +1584,10 @@ const BankAnalysis = ({
                             onRegisterSaveAll={readOnly ? undefined : handleRegisterSaveAllBanks}
                             autoSave={scrubbingAutoSave}
                         />
+                        */}
                     </div>
                  
+                    {/* Temporarily hidden on Create Offer tab
                     <div className="flex min-w-0 w-full flex-col gap-4">
                         <PositionTableCalculator
                             applicationId={resolvedApplicationId || undefined}
@@ -1635,6 +1603,7 @@ const BankAnalysis = ({
                             autoSave={scrubbingAutoSave}
                         />
                     </div>
+                    */}
                 </div>
 
                 {/* Right Column - My Notes */}

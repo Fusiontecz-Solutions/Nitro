@@ -29,6 +29,7 @@ import {
 } from "lucide-react"
 import { getClientByClientId } from "@/redux/actions/clientActions"
 import { getApplicationByApplicationId } from "@/redux/actions/applicationActions"
+import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch"
 
 type ApplicationDetailsSheetProps = {
   application: Application | null
@@ -123,6 +124,9 @@ export default function ApplicationDetailsSheet({
     (state: RootState) => state.clientDetail
   )
   const positionsState = useSelector((state: RootState) => state.positions)
+  const applicationDetail = useSelector(
+    (state: RootState) => state.applicationDetail.data,
+  )
   const loginUser = useSelector((state: RootState) => state.login?.data?.user)
   const canEditDecisionMaking = useMemo(
     () => canRoleEditDecisionMakingTab(resolveEffectiveRole(loginUser)),
@@ -166,8 +170,19 @@ export default function ApplicationDetailsSheet({
 
   useEffect(() => {
     if (!open || !dealApplicationId) return
-    dispatch(getApplicationByApplicationId(dealApplicationId))
-    dispatch(getPositions({ application: dealApplicationId }))
+    const alreadyLoaded =
+      String(positionsState.currentApplicationId ?? "") === dealApplicationId
+    if (!alreadyLoaded) {
+      void dispatch(getPositions({ application: dealApplicationId }))
+    }
+    const alreadyHasDetail =
+      !!applicationDetail &&
+      routeParamMatchesApplication(dealApplicationId, applicationDetail)
+    if (!alreadyHasDetail) {
+      void dispatch(getApplicationByApplicationId(dealApplicationId))
+    }
+    // Only re-run when the sheet opens for a different deal — not when positions finish loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- positions snapshot is read once per open
   }, [open, dealApplicationId, dispatch])
 
   const scopedPositions = useMemo(() => {
@@ -406,24 +421,13 @@ export default function ApplicationDetailsSheet({
                   <Separator />
 
                   <section className="space-y-6">
-                    <div
-                      className="hidden"
-                      aria-hidden="true"
-                      style={{ position: "absolute", left: -9999, top: 0 }}
-                    >
-                      <BankAnalysisTable
-                        showOnlyTotals
-                        onNetCreditAverageChange={(avg) => setBankNetCreditAvg(avg)}
-                        applicationId={appId}
-                        positions={bankAnalysisPositions as any}
-                      />
-                    </div>
                     <BankAnalysisTable
                       showOnlyTotals={!canEditDecisionMaking}
                       readOnly={!canEditDecisionMaking}
                       disableCreate={!canEditDecisionMaking}
                       applicationId={appId}
                       positions={bankAnalysisPositions as any}
+                      onNetCreditAverageChange={(avg) => setBankNetCreditAvg(avg)}
                     />
                   </section>
 

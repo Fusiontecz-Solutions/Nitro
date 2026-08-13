@@ -1,5 +1,16 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
+import {
+    clearHttpGetCache,
+    clearInFlightGet,
+    getInFlightGet,
+    httpGetCacheKey,
+    readCachedGetResponse,
+    setInFlightGet,
+    shouldUseGetResponseCache,
+    toCachedAxiosResponse,
+    writeCachedGetResponse,
+} from '@/lib/httpGetCache';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api/v1';
 
@@ -90,12 +101,46 @@ axiosInstance.interceptors.response.use(
     }
 );
 
-// export default axiosInstance;
-export const axiosGet = (url: string, config?: AxiosRequestConfig) => axiosInstance.get(url, config);
-export const axiosPost = (url: string, payload?: any, config?: AxiosRequestConfig) => axiosInstance.post(url, payload, config);
-export const axiosPut = (url: string, payload?: any, config?: AxiosRequestConfig) => axiosInstance.put(url, payload, config);
-export const axiosPatch = (url: string, payload?: any, config?: AxiosRequestConfig) => axiosInstance.patch(url, payload, config);
-export const axiosDelete = (url: string, config?: AxiosRequestConfig) => axiosInstance.delete(url, config);
+function cachedGet(url: string, config?: AxiosRequestConfig) {
+    const key = httpGetCacheKey(url, config);
+    const inflight = getInFlightGet(key);
+    if (inflight) return inflight;
+
+    if (shouldUseGetResponseCache(url, config)) {
+        const cached = readCachedGetResponse(key);
+        if (cached) {
+            return Promise.resolve(toCachedAxiosResponse(cached, config));
+        }
+    }
+
+    const request = axiosInstance.get(url, config).then((response) => {
+        if (shouldUseGetResponseCache(url, config)) {
+            writeCachedGetResponse(key, response);
+        }
+        return response;
+    });
+    setInFlightGet(key, request);
+    void request.finally(() => clearInFlightGet(key));
+    return request;
+}
+
+function afterSuccessfulMutation<T>(promise: Promise<T>): Promise<T> {
+    return promise.then((result) => {
+        clearHttpGetCache();
+        return result;
+    });
+}
+
+export const axiosGet = (url: string, config?: AxiosRequestConfig) =>
+    cachedGet(url, config);
+export const axiosPost = (url: string, payload?: any, config?: AxiosRequestConfig) =>
+    afterSuccessfulMutation(axiosInstance.post(url, payload, config));
+export const axiosPut = (url: string, payload?: any, config?: AxiosRequestConfig) =>
+    afterSuccessfulMutation(axiosInstance.put(url, payload, config));
+export const axiosPatch = (url: string, payload?: any, config?: AxiosRequestConfig) =>
+    afterSuccessfulMutation(axiosInstance.patch(url, payload, config));
+export const axiosDelete = (url: string, config?: AxiosRequestConfig) =>
+    afterSuccessfulMutation(axiosInstance.delete(url, config));
 
 // FormData upload helper – interceptor clears Content-Type so browser sets multipart/form-data + boundary
 export const axiosPostFormData = (
@@ -103,11 +148,15 @@ export const axiosPostFormData = (
     formData: FormData,
     config?: AxiosRequestConfig
 ) =>
-    axiosInstance.post(url, formData, { timeout: 120000, ...config });
+    afterSuccessfulMutation(
+        axiosInstance.post(url, formData, { timeout: 120000, ...config }),
+    );
 
 export const axiosPatchFormData = (
     url: string,
     formData: FormData,
     config?: AxiosRequestConfig
 ) =>
-    axiosInstance.patch(url, formData, { timeout: 120000, ...config });
+    afterSuccessfulMutation(
+        axiosInstance.patch(url, formData, { timeout: 120000, ...config }),
+    );

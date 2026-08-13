@@ -79,6 +79,6 @@ export function buildBalanceTransferSheetContractPrefillFields({
     return BALANCE_TRANSFER_SHEET_FIELD_DEFS.map(({ id, label }) => ({
         id,
         label,
-        value: String(values[id] ?? "").trim(),
+        value: String(values[id] ?? "").trim().toUpperCase(),
     }));
 }

@@ -40,5 +40,7 @@ export const mainDashboardQueryKeys = {
  */
 export function invalidateDashboardData(dispatch: AppDispatch): void {
   void appQueryClient.invalidateQueries({ queryKey: mainDashboardQueryKeys.all });
+  void appQueryClient.invalidateQueries({ queryKey: ["operations-dashboard-summary"] });
+  void appQueryClient.invalidateQueries({ queryKey: ["operations-dashboard-recent-cases"] });
   void dispatch(getApplicationStats());
 }

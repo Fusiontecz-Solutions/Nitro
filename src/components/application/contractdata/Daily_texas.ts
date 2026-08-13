@@ -20,7 +20,7 @@ const FIELD_IDS = {
 } as const;
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
-    const trimmed = String(value || "").trim();
+    const trimmed = String(value || "").trim().toUpperCase();
     if (!trimmed) return [];
     return ids.map((id) => ({ id, label, value: trimmed }));
 };
@@ -31,7 +31,7 @@ const mapIdsWithDefault = (
     value: string | undefined,
     defaultValue: string,
 ): ContractPrefillField[] => {
-    const trimmed = String(value ?? "").trim() || defaultValue;
+    const trimmed = (String(value ?? "").trim() || defaultValue).toUpperCase();
     return ids.map((id) => ({ id, label, value: trimmed }));
 };
 

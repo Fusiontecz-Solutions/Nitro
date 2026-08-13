@@ -43,6 +43,8 @@ export interface OfferFormValue {
   fees: string;
   /** Prior deal payoff / REFI balance (dollars). Empty = not a REFI deal. */
   refinanceAmount: string;
+  /** Prior deal / agreement date for REFI disclosures (MM/DD/YYYY). */
+  previousDealDate: string;
   notes: string;
   frequency: Frequency;
   daysWeeks: string;
@@ -125,6 +127,7 @@ function isSameOfferForm(a: OfferFormValue, b: OfferFormValue): boolean {
     a.term === b.term &&
     a.fees === b.fees &&
     a.refinanceAmount === b.refinanceAmount &&
+    a.previousDealDate === b.previousDealDate &&
     a.notes === b.notes &&
     a.frequency === b.frequency &&
     a.daysWeeks === b.daysWeeks &&
@@ -136,10 +139,8 @@ function isSameOfferForm(a: OfferFormValue, b: OfferFormValue): boolean {
 
 const DEFAULT_OFFER_RATE = "1.499";
 const DEFAULT_FEES_PERCENT = "10";
-const WEEKLY_TO_MONTHLY_FACTOR = 4.2;
-// Bi-Weekly = 26 payments/yr ÷ 12 months ≈ 2.166. Kept proportional to the
-// project's WEEKLY_TO_MONTHLY_FACTOR (4.2 instead of 4.333) by halving it.
-const BIWEEKLY_TO_MONTHLY_FACTOR = 2.1;
+const WEEKLY_TO_MONTHLY_FACTOR = 4;
+const BIWEEKLY_TO_MONTHLY_FACTOR = 2;
 
 const DEFAULT_FORM_STATE: OfferFormValue = {
   position: "",
@@ -148,6 +149,7 @@ const DEFAULT_FORM_STATE: OfferFormValue = {
   term: "",
   fees: DEFAULT_FEES_PERCENT,
   refinanceAmount: "",
+  previousDealDate: "",
   notes: "",
   frequency: "",
   daysWeeks: "",
@@ -381,6 +383,23 @@ function mapApiOfferDecisionToLocalData(
       String(apiData.refinanceAmount).trim() !== ""
         ? formatNumberUS(apiData.refinanceAmount)
         : "",
+    previousDealDate: (() => {
+      const raw = apiData.previousDealDate ?? apiData.PreviousDealDate;
+      if (raw == null || String(raw).trim() === "") return "";
+      const t = String(raw).trim();
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) return t;
+      if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
+        return `${t.slice(5, 7)}/${t.slice(8, 10)}/${t.slice(0, 4)}`;
+      }
+      const d = new Date(t);
+      if (Number.isNaN(d.getTime())) return t;
+      return new Intl.DateTimeFormat("en-US", {
+        month: "2-digit",
+        day: "2-digit",
+        year: "numeric",
+        timeZone: "UTC",
+      }).format(d);
+    })(),
     ourRemit:
       apiData.ourRemit != null ? formatNumberUS(apiData.ourRemit) : "",
     totalRemit:
@@ -429,7 +448,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     disabled,
     // showDecisionButtons = true,
     showFooterActions = true,
-    showLeverageTable = true,
+    showLeverageTable = false,
     showNotesPanel = false,
     activePositionCountOverride,
     existingRemitOverride,
@@ -1325,6 +1344,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         monthlyPayment: parseNum(localData.monthlyPayment) || null,
         fees: feesDollarsForDb,
         refinanceAmount: parseNum(localData.refinanceAmount) || null,
+        previousDealDate: localData.previousDealDate?.trim() || null,
         ourRemit: parseNum(localData.ourRemit) || null,
         totalRemit: parseNum(localData.totalRemit) || null,
       };
@@ -1370,6 +1390,18 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
             String(saved.refinanceAmount).trim() !== ""
               ? formatNumberUS(saved.refinanceAmount)
               : "",
+          previousDealDate: (() => {
+            const raw =
+              (saved as Record<string, unknown>).previousDealDate ??
+              (saved as Record<string, unknown>).PreviousDealDate;
+            if (raw == null || String(raw).trim() === "") return "";
+            const t = String(raw).trim();
+            if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) return t;
+            if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
+              return `${t.slice(5, 7)}/${t.slice(8, 10)}/${t.slice(0, 4)}`;
+            }
+            return t;
+          })(),
           ourRemit:
             saved.ourRemit != null ? formatNumberUS(saved.ourRemit) : "",
           totalRemit:
@@ -1560,18 +1592,18 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       )}
       {/* ACTION BUTTONS */}
 
-      <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+      <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-3">
+        {actionsAtTop && renderDecisionActions()}
+        {aboveOffer}
         <div
           className={
             showNotesPanel
-              ? "grid grid-cols-1 xl:grid-cols-12 xl:items-start xl:gap-4"
+              ? "grid grid-cols-1 items-start gap-4 xl:grid-cols-12"
               : "space-y-4"
           }
         >
-          <div className={showNotesPanel ? "xl:col-span-9 space-y-3" : "space-y-3"}>
-            {actionsAtTop && renderDecisionActions()}
-            {aboveOffer}
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-md dark:border-slate-700 dark:bg-[#141517]">
+          <div className={showNotesPanel ? "flex min-h-0 flex-col xl:col-span-9" : "space-y-3"}>
+            <div className="flex w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-md dark:border-slate-700 dark:bg-[#141517]">
               <div className="bg-[#559955bf] px-5 py-3 font-bold text-lg text-white tracking-wider">
                 OFFER
               </div>
@@ -1672,6 +1704,14 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         {localData.refinanceAmount.trim()
                           ? `$ ${formatCurrencyDisplayValue(localData.refinanceAmount)}`
                           : "—"}
+                      </span>
+                    </div>
+                    <div className="grid min-h-[56px] grid-cols-[12rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-slate-50 px-4 py-4 dark:border-slate-700 dark:bg-slate-900/40 md:border-r md:[&:nth-child(3n)]:border-r-0">
+                      <span className="text-[14px] font-semibold text-[#4a5568] dark:text-slate-300">
+                        Previous Deal Date
+                      </span>
+                      <span className="text-left text-[15px] font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                        {localData.previousDealDate.trim() || "—"}
                       </span>
                     </div>
                   </div>
@@ -1850,32 +1890,8 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         </span>
                       </div>
                     </div>
-                    <div className="grid min-h-[56px] grid-cols-[12rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-900/40 md:border-r md:[&:nth-child(3n)]:border-r-0">
-                      <label className="text-[14px] font-semibold text-[#4a5568] dark:text-slate-300">
-                        REFI Amount
-                      </label>
-                      <div className="relative min-w-0">
-                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 dark:text-slate-500">
-                          $
-                        </span>
-                        <input
-                          className="w-full min-w-0 rounded-md border border-slate-200 bg-white py-2 pl-6 pr-3 text-[15px] font-bold text-slate-900 outline-none focus:border-[#86b186] disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500"
-                          placeholder="prior balance (REFI)"
-                          value={localData.refinanceAmount}
-                          onChange={(e) =>
-                            setField(
-                              "refinanceAmount",
-                              formatNumberUSForInput(e.target.value),
-                            )
-                          }
-                          onBlur={(e) =>
-                            commitCurrencyField("refinanceAmount", e.target.value)
-                          }
-                          disabled={inputsDisabled}
-                        />
-                      </div>
-                    </div>
                   </div>
+                  {/* REFI Amount / Previous Deal Date are selected on Create Application (type Refinance), not edited here. */}
                   {/* <div className="col-span-1 md:col-span-3 mt-1">
                 <label className="text-sm font-semibold text-slate-700 block mb-2">
                   Notes
@@ -1900,6 +1916,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                 </div>
               )}
             </div>
+            {(showLeverageTable || !actionsAtTop) && (
             <div className="flex w-full min-w-0 flex-col gap-1.5">
               <ApprovedOfferDisplay
                 offer={localData.offer}
@@ -1917,10 +1934,13 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
               />
               {!actionsAtTop && renderDecisionActions()}
             </div>
+            )}
           </div>
           {showNotesPanel && (
-            <div className="xl:col-span-3">
-              <MyNotes applicationId={applicationId ?? undefined} />
+            <div className="min-h-0 xl:col-span-3">
+              <MyNotes
+                applicationId={applicationId ?? undefined}
+              />
             </div>
           )}
         </div>

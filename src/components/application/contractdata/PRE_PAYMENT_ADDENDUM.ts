@@ -32,6 +32,6 @@ export function buildPrePaymentAddendumContractPrefillFields(
     return FIELD_DEFS.map(({ id, label, tabId }) => ({
         id: tabId,
         label,
-        value: String(values[id] ?? "").trim(),
+        value: String(values[id] ?? "").trim().toUpperCase(),
     }));
 }

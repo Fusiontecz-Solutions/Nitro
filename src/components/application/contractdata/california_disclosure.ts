@@ -52,75 +52,58 @@ const dateField = (
     bounds: { x, y, width: 120, height: 22 },
 });
 
-/** California daily disclosure PDF field coordinates. */
+/** California daily disclosure PDF field coordinates (NO REFI default). */
 export const californiaDisclosureMergeRoleFormFields: CaliforniaDisclosureMergeRoleFormField[] =
     [
-        textField("funding_provided", 1, 183, 99),
-        textField("funding_provided", 1, 345, 139),
-        textField("estimated_annual_percentage_rate", 1, 178, 236),
-        textField("avarage_monthly_income", 1, 330, 316),
-        textField("disclosure_merchant_name", 1, 383, 301, 160),
-        textField("funder_name", 1, 433, 376, 160),
-        textField("finance_charge", 1, 182, 421),
-        textField("payment_total", 1, 184, 441),
-        textField("estimated_monthly_cost", 1, 182, 477),
-        textField("funder_name", 1, 348, 489, 160),
-        textField("estimated_payment", 1, 182, 538),
-        textField("funder_name", 1, 174, 555, 160),
-        textField("payement_exceeded_percent", 1, 426, 620),
-        textField("client_name", 1, 180, 635),
-        textField("monthly_income", 1, 360, 648),
-        textField("payement_exceeded_percent", 1, 405, 677),
-        textField("estimated_term", 2, 198, 69),
-        textField("disclosure_merchant_name", 2, 361, 82, 140),
-        textField("avarage_monthly_income", 2, 454, 110),
-        textField("finance_charge", 2, 355, 159),
-        signatureField("Signature1", 2, 92, 260),
-        dateField("signature_date", 2, 90, 336),
-        signatureField("Signature2", 2, 429, 259),
-        dateField("signature_date_owner2", 2, 434, 335),
-        textField("disclosure_recipient_funds", 3, 446, 88),
-        textField("disclosure_page3_line_1", 3, 446, 109),
-        textField("disclosure_page3_line_2", 3, 446, 142),
-        textField("disclosure_page3_subtotal", 3, 448, 164),
-        textField("disclosure_broker_fee", 3, 448, 183),
-        textField("disclosure_page3_net", 3, 447, 206),
+        textField("funding_provided", 1, 188, 124),
+        textField("funding_provided_direct", 1, 345, 149),
+        textField("estimated_annual_percentage_rate", 1, 185, 292, 70),
+        textField("avarage_monthly_income", 1, 293, 348),
+        textField("finance_charge", 1, 187, 444),
+        textField("payment_total", 1, 187, 497),
+        textField("estimated_monthly_cost", 1, 189, 529),
+        textField("estimated_payment", 1, 188, 583),
+        textField("estimated_payment", 1, 312, 676),
+        textField("payement_exceeded_percent", 1, 439, 676, 40),
+        textField("monthly_income", 1, 411, 688),
+        textField("payement_exceeded_percent", 2, 184, 160, 40),
+        textField("estimated_term", 2, 184, 349, 60),
+        textField("avarage_monthly_income", 2, 350, 402),
+        textField("finance_charge", 2, 371, 437),
+        signatureField("Signature1", 2, 72, 544),
+        dateField("signature_date", 2, 252, 544),
+        textField("disclosure_recipient_funds", 3, 445, 118),
+        textField("disclosure_page3_line_1", 3, 446, 145),
+        textField("disclosure_page3_subtotal", 3, 445, 174),
+        textField("disclosure_broker_fee", 3, 447, 202),
+        textField("disclosure_page3_net", 3, 444, 229),
     ];
 
-/** California weekly disclosure PDF field coordinates (distinct from daily). */
+/** California weekly disclosure PDF field coordinates (NO REFI default). */
 export const weeklyCaliforniaDisclosureMergeRoleFormFields: CaliforniaDisclosureMergeRoleFormField[] =
     [
-        textField("funding_provided", 1, 183, 99),
-        textField("funding_provided", 1, 345, 139),
-        textField("funder_name", 1, 415, 96, 160),
-        textField("estimated_annual_percentage_rate", 1, 178, 236),
-        textField("avarage_monthly_income", 1, 330, 316),
-        textField("disclosure_merchant_name", 1, 383, 301, 160),
-        textField("funder_name", 1, 433, 376, 160),
-        textField("finance_charge", 1, 183, 408),
-        textField("payment_total", 1, 183, 429),
-        textField("estimated_monthly_cost", 1, 184, 462),
-        textField("funder_name", 1, 349, 476, 160),
-        textField("estimated_payment", 1, 183, 525),
-        textField("funder_name", 1, 240, 541, 160),
-        textField("payement_exceeded_percent", 1, 425, 605),
-        textField("client_name", 1, 180, 620),
-        textField("monthly_income", 1, 361, 633),
-        textField("payement_exceeded_percent", 1, 405, 664),
-        textField("estimated_term", 2, 198, 69),
-        textField("disclosure_merchant_name", 2, 361, 82, 140),
-        textField("avarage_monthly_income", 2, 454, 110),
-        textField("finance_charge", 2, 355, 159),
-        signatureField("Signature1", 2, 92, 260),
-        dateField("signature_date", 2, 90, 336),
-        signatureField("Signature2", 2, 429, 259),
-        dateField("signature_date_owner2", 2, 434, 335),
-        textField("disclosure_recipient_funds", 3, 434, 88),
-        textField("disclosure_page3_line_1", 3, 434, 109),
-        textField("disclosure_page3_line_2", 3, 434, 142),
-        textField("disclosure_page3_subtotal", 3, 434, 164),
-        textField("disclosure_broker_fee", 3, 434, 183),
-        textField("disclosure_page3_net", 3, 434, 206),
+        textField("funding_provided", 1, 190, 146),
+        textField("funding_provided_direct", 1, 443, 123),
+        textField("estimated_annual_percentage_rate", 1, 183, 289, 70),
+        textField("avarage_monthly_income", 1, 310, 342),
+        textField("finance_charge", 1, 186, 448),
+        textField("payment_total", 1, 188, 498),
+        textField("estimated_monthly_cost", 1, 190, 533),
+        textField("estimated_payment", 1, 181, 587),
+        textField("estimated_payment", 2, 305, 103),
+        textField("payement_exceeded_percent", 2, 462, 103, 40),
+        textField("monthly_income", 2, 442, 114),
+        textField("payement_exceeded_percent", 2, 184, 172, 40),
+        textField("estimated_term", 2, 181, 360, 80),
+        textField("avarage_monthly_income", 2, 346, 402),
+        textField("finance_charge", 2, 369, 437),
+        signatureField("Signature1", 2, 72, 544),
+        dateField("signature_date", 2, 252, 544),
+        textField("disclosure_recipient_funds", 3, 447, 116),
+        textField("disclosure_page3_line_1", 3, 446, 145),
+        textField("disclosure_page3_subtotal", 3, 446, 172),
+        textField("disclosure_broker_fee", 3, 445, 201),
+        textField("disclosure_page3_net", 3, 446, 227),
     ];
 
 export function californiaDisclosureMergeRoleFormFieldsForRole(
@@ -143,6 +126,10 @@ export function weeklyCaliforniaDisclosureMergeRoleFormFieldsForRole(
 
 export interface CaliforniaDisclosureContractPrefillFields {
     fundingProvided?: string;
+    /** CA REFI right-side “provided to you directly” (actual disbursement). */
+    fundingProvidedDirect?: string;
+    /** Previous deal date for REFI “agreement with us dated ___”. */
+    previousAgreementDate?: string;
     estimatedAnnualPercentageRate?: string;
     estimatedPayment?: string;
     estimatedMonthlyCost?: string;
@@ -165,6 +152,8 @@ export interface CaliforniaDisclosureContractPrefillFields {
 
 const FIELD_IDS = {
     fundingProvided: ["funding_provided"],
+    fundingProvidedDirect: ["funding_provided_direct"],
+    previousAgreementDate: ["previous_agreement_date", "previous_deal_date"],
     estimatedAnnualPercentageRate: ["estimated_annual_percentage_rate"],
     estimatedPayment: ["estimated_payment"],
     estimatedMonthlyCost: ["estimated_monthly_cost"],
@@ -186,13 +175,15 @@ const FIELD_IDS = {
 } as const;
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
-    const trimmed = String(value || "").trim();
+    const trimmed = String(value || "").trim().toUpperCase();
     if (!trimmed) return [];
     return ids.map((id) => ({ id, label, value: trimmed }));
 };
 
 export function buildCaliforniaDisclosureContractPrefillFields({
     fundingProvided = "",
+    fundingProvidedDirect = "",
+    previousAgreementDate = "",
     estimatedAnnualPercentageRate = "",
     estimatedPayment = "",
     estimatedMonthlyCost = "",
@@ -212,8 +203,16 @@ export function buildCaliforniaDisclosureContractPrefillFields({
     page3Net = "",
     signatureDate = "",
 }: CaliforniaDisclosureContractPrefillFields = {}): ContractPrefillField[] {
+    const direct =
+        String(fundingProvidedDirect || "").trim() || String(fundingProvided || "").trim();
     return [
         ...mapIds(FIELD_IDS.fundingProvided, "Funding Provided", fundingProvided),
+        ...mapIds(FIELD_IDS.fundingProvidedDirect, "Funding Provided Direct", direct),
+        ...mapIds(
+            FIELD_IDS.previousAgreementDate,
+            "Previous Agreement Date",
+            previousAgreementDate,
+        ),
         ...mapIds(
             FIELD_IDS.estimatedAnnualPercentageRate,
             "Estimated Annual Percentage Rate",
@@ -252,9 +251,7 @@ function formatUsdAmount(amount: number): string {
     return amount.toFixed(2);
 }
 
-const BUSINESS_DAYS_PER_WEEK = 5;
-
-/** California page-2 estimated term must be payment days, not term weeks. */
+/** Guide CA/NY: estimated term is always calendar days (weekly or daily weeks × 7). */
 export function resolveCaliforniaEstimatedTermDays(args: {
     estimatedTermDays?: string;
     estimatedNumberOfPayments?: string;
@@ -263,27 +260,38 @@ export function resolveCaliforniaEstimatedTermDays(args: {
     const fromDays = String(args.estimatedTermDays ?? "").trim();
     if (fromDays) return fromDays;
 
-    const weeks = Number.parseInt(String(args.estimatedNumberOfPayments ?? "").trim(), 10);
+    const periods = Number.parseInt(String(args.estimatedNumberOfPayments ?? "").trim(), 10);
+    if (!(periods > 0) || periods >= 40) return "";
+
     const frequency = String(args.frequency ?? "")
         .trim()
         .toLowerCase();
-    if (weeks > 0 && weeks < 40 && frequency.startsWith("day")) {
-        return String(weeks * BUSINESS_DAYS_PER_WEEK);
+    const isWeekly = frequency.startsWith("week");
+    /** Note: "daily".startsWith("day") is false — match "daily" explicitly. */
+    const isDaily = frequency.startsWith("daily") || frequency === "day";
+    if (isWeekly || isDaily || !frequency) {
+        return String(periods * 7);
     }
     return "";
 }
 
 /**
  * California / NY-style page 3 amounts:
- *   subtotal = recipient_funds (offer line) + line_1 + line_2
- *   net      = subtotal − broker_fee
+ *   No-Refi: subtotal = recipient_funds + line_1 + line_2; net = subtotal − broker_fee
+ *   REFI:    1=actual disbursement, 2=origination, 3=refi balance → subtotal=1+2+3; net=subtotal−origination
  */
 export function buildCaliforniaDisclosurePage3Amounts(args: {
     recipientFunds?: string;
     page3Line1?: string;
     page3Line2?: string;
     brokerFee?: string;
-}): { page3Subtotal: string; page3Net: string } {
+    isRefinance?: boolean;
+}): {
+    page3Line1: string;
+    page3Line2: string;
+    page3Subtotal: string;
+    page3Net: string;
+} {
     const recipient = parseMoney(args.recipientFunds);
     const line1 = parseMoney(args.page3Line1);
     const line2 = parseMoney(args.page3Line2);
@@ -291,8 +299,38 @@ export function buildCaliforniaDisclosurePage3Amounts(args: {
     const subtotal = recipient + line1 + line2;
     const net = Math.max(0, subtotal - broker);
     return {
+        page3Line1: formatUsdAmount(line1),
+        page3Line2: formatUsdAmount(line2),
         page3Subtotal: formatUsdAmount(subtotal),
         page3Net: formatUsdAmount(net),
+    };
+}
+
+/** REFI page-3 itemization values from normalized REFI money fields. */
+export function buildCaliforniaRefinancePage3Amounts(args: {
+    actualDisbursement: number;
+    originationFee: number;
+    previousRefiBalance: number;
+}): {
+    recipientFunds: string;
+    page3Line1: string;
+    page3Line2: string;
+    page3Subtotal: string;
+    page3Net: string;
+    brokerFee: string;
+} {
+    const netAmount = Math.max(0, args.actualDisbursement);
+    const origination = Math.max(0, args.originationFee);
+    const refiBalance = Math.max(0, args.previousRefiBalance);
+    const subtotal = netAmount + origination + refiBalance;
+    const net = Math.max(0, subtotal - origination);
+    return {
+        recipientFunds: formatUsdAmount(netAmount),
+        page3Line1: formatUsdAmount(origination),
+        page3Line2: formatUsdAmount(refiBalance),
+        page3Subtotal: formatUsdAmount(subtotal),
+        page3Net: formatUsdAmount(net),
+        brokerFee: formatUsdAmount(origination),
     };
 }
 

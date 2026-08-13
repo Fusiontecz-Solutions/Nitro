@@ -990,7 +990,8 @@ export default function Clients() {
               variant="destructive"
               size="sm"
               className="gap-1 cursor-pointer    text-xs shrink-0"
-              disabled={selectedClientIds.length === 0 || deleteLoading}
+              disabled={selectedClientIds.length === 0}
+              loading={deleteLoading}
               onClick={handleBulkDelete}
             >
               <Trash2 className="size-3" />

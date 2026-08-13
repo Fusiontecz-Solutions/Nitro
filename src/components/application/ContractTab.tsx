@@ -63,13 +63,12 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Ban, FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
+import { Ban, Eye, FileText, Landmark, Loader2, RefreshCw } from "lucide-react";
 import {
     filterBankDetailsForApplication,
 } from "@/lib/bankDetailUtils";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
-import ReverseDisbursementScheduleSection from "./ReverseDisbursementScheduleSection";
 import ACHFormViewerModal from "./ACHFormViewerModal";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 // import { US_STATES } from "@/constants/usStates";
@@ -90,6 +89,7 @@ import {
     contractPrefillFieldsToPartial,
     contractPrefillToContractColumnUpdate,
     mergeSyncedPartialIntoPrefillFields,
+    uppercaseContractDocumentPrefillFields,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
     type ContractPrefillField,
@@ -417,7 +417,7 @@ export default function ContractTab({
     const [achTemplateMappings, setAchTemplateMappings] = useState<AchDocumentTemplateMappingRow[]>([]);
     const [loadingAchMappings, setLoadingAchMappings] = useState(false);
     const [achViewerOpen, setAchViewerOpen] = useState(false);
-    const [preparingAchViewer, setPreparingAchViewer] = useState(false);
+    const [, setPreparingAchViewer] = useState(false);
     /** Which Info Required ACH row feeds the ACH Form modal (first / last picked). */
     const [selectedAchRecordId, setSelectedAchRecordId] = useState<string | null>(null);
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -921,7 +921,6 @@ export default function ContractTab({
         applicationData as Record<string, unknown> | null,
     );
 
-    const contractsForTable = termsOffers ?? [];
     const hasGeneratedContract = useMemo(() => {
         const fetchedId = Number((fetchedContract as { id?: unknown } | null)?.id);
         if (Number.isFinite(fetchedId) && fetchedId > 0) return true;
@@ -998,12 +997,14 @@ export default function ContractTab({
 
     const paymentsPerMonth =
         decisionFrequency === "Daily"
-            ? 22
+            ? 20
             : decisionFrequency === "Weekly"
-                ? 4
+              ? 4
+              : decisionFrequency === "Bi-Weekly" || decisionFrequency === "BiWeekly"
+                ? 2
                 : decisionFrequency === "Monthly"
-                    ? 1
-                    : 0;
+                  ? 1
+                  : 0;
 
     const approvedAmount =
         resolveOfferDecisionFundedAmount(offerRecord) ??
@@ -1075,12 +1076,19 @@ export default function ContractTab({
     const refinanceAmountNum = parseMaybeNumber(offerRecord?.refinanceAmount) ?? 0;
     const recipientFunds =
         computeNetToMerchantDollars({
-            application: applicationData as Record<string, unknown> | undefined,
+            application: applicationData as unknown as Record<string, unknown> | undefined,
             offerDecision: offerRecord,
         }) ?? Math.max(0, approvedAmount - commissionAmount - refinanceAmountNum);
     const feeAmount = commissionAmount;
-
     const estimatedTotalPayment = repaymentStack?.payback ?? paybackAmount;
+    /** Guide: Finance Charge = Total Payback − Contract Amount (not origination fee). */
+    const financeChargeAmount =
+        estimatedTotalPayment > 0 && amountFinanced > 0
+            ? Math.max(
+                  0,
+                  Math.round((estimatedTotalPayment - amountFinanced) * 100) / 100,
+              )
+            : 0;
 
     const ensureAchTemplateLinked = useCallback(
         async (contractId: number) => {
@@ -1153,8 +1161,7 @@ export default function ContractTab({
             "";
         const offerIdRaw =
             (offerDecision as { id?: unknown; _id?: unknown } | null)?.id ??
-            (offerDecision as { id?: unknown; _id?: unknown } | null)?._id ??
-            latestTermsOffer?._id;
+            (offerDecision as { id?: unknown; _id?: unknown } | null)?._id;
         const referringIsoId = parseMaybeNumber(
             anyApp?.referringIsoId ??
                 (anyApp?.referringISO as { id?: unknown } | undefined)?.id ??
@@ -1220,7 +1227,6 @@ export default function ContractTab({
         dispatch,
         estimatedTotalPayment,
         fetchedContract,
-        latestTermsOffer?._id,
         loginData?.user,
         offerDecision,
         selectedContractId,
@@ -1319,7 +1325,6 @@ export default function ContractTab({
     const [numberOfPaymentsInput, setNumberOfPaymentsInput] =
         useState<string>("");
     const [termLengthInput, setTermLengthInput] = useState<string>("");
-    const [contractValuesSaved, setContractValuesSaved] = useState(false);
     const [savingContractValues, setSavingContractValues] = useState(false);
     const [isEditingContractValues, setIsEditingContractValues] = useState(false);
     const [savedContractValuesSnapshot, setSavedContractValuesSnapshot] =
@@ -1360,8 +1365,9 @@ export default function ContractTab({
             );
             setRefinanceAmountInput(formatRefinanceAmountDisplay(offerRecord?.refinanceAmount));
             setFinanceChargeInput(
-                String(persisted.financeChargeInput || "").trim() ||
-                    (feeAmount ? formatCurrencyFull(feeAmount) : ""),
+                financeChargeAmount
+                    ? formatCurrencyFull(financeChargeAmount)
+                    : String(persisted.financeChargeInput || "").trim(),
             );
             setEstimatedTotalPaymentInput(
                 String(persisted.estimatedTotalPaymentInput || ""),
@@ -1374,19 +1380,19 @@ export default function ContractTab({
             setFrequencyInput(String(persisted.frequencyInput || ""));
             setNumberOfPaymentsInput(String(persisted.numberOfPaymentsInput || ""));
             setTermLengthInput(String(persisted.termLengthInput || ""));
-            setContractValuesSaved(true);
             setIsEditingContractValues(false);
             setSavedContractValuesSnapshot(persisted);
             return;
         }
 
-        setContractValuesSaved(false);
         setIsEditingContractValues(false);
         setSavedContractValuesSnapshot(null);
         setAmountFinancedInput(amountFinanced ? formatCurrencyFull(amountFinanced) : "");
         setRecipientFundsInput(recipientFunds ? formatCurrencyFull(recipientFunds) : "");
         setRefinanceAmountInput(formatRefinanceAmountDisplay(offerRecord?.refinanceAmount));
-        setFinanceChargeInput(feeAmount ? formatCurrencyFull(feeAmount) : "");
+        setFinanceChargeInput(
+            financeChargeAmount ? formatCurrencyFull(financeChargeAmount) : "",
+        );
         setEstimatedTotalPaymentInput(
             estimatedTotalPayment ? formatCurrencyFull(estimatedTotalPayment) : "",
         );
@@ -1404,6 +1410,7 @@ export default function ContractTab({
         applicationData,
         amountFinanced,
         recipientFunds,
+        financeChargeAmount,
         feeAmount,
         estimatedTotalPayment,
         paymentTotal,
@@ -1986,8 +1993,7 @@ export default function ContractTab({
             "";
         const offerIdRaw =
             (offerDecision as any)?.id ??
-            (offerDecision as any)?._id ??
-            latestTermsOffer?._id;
+            (offerDecision as any)?._id;
         const referringIsoId = parseMaybeNumber(
             anyApp?.referringIsoId ??
             anyApp?.referringISO?.id ??
@@ -2108,6 +2114,8 @@ export default function ContractTab({
             ccEmails: string[];
             /** CRM document-template row id for optional addendum PDF. */
             addendumDocumentRef?: string | null;
+            /** Multiple addendum template refs merged into the envelope (preferred). */
+            addendumDocumentRefs?: string[] | null;
             /** @deprecated use addendumDocumentRef */
             addendumBoldSignTemplateId?: string | null;
             /** CRM document-template row id for state disclosure PDF. */
@@ -2144,9 +2152,14 @@ export default function ContractTab({
             throw new Error(message);
         };
 
-        const addendumDocumentRef = String(
-            sendPayload.addendumDocumentRef ?? sendPayload.addendumBoldSignTemplateId ?? "",
-        ).trim();
+        const addendumDocumentRefs = [
+            ...((sendPayload.addendumDocumentRefs || [])
+                .map((r) => String(r || "").trim())
+                .filter(Boolean)),
+            String(
+                sendPayload.addendumDocumentRef ?? sendPayload.addendumBoldSignTemplateId ?? "",
+            ).trim(),
+        ].filter(Boolean);
         const disclosureDocumentRef = String(sendPayload.disclosureDocumentRef ?? "").trim();
         const achDocumentRef = String(sendPayload.achDocumentRef ?? "").trim();
         const standaloneAchOnly = sendPayload.standaloneAchOnly === true;
@@ -2170,7 +2183,7 @@ export default function ContractTab({
                 "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
             );
         } else if (!includeMainContract) {
-            const supplementalOnlyRefs = [addendumDocumentRef, disclosureDocumentRef].filter(
+            const supplementalOnlyRefs = [...addendumDocumentRefs, disclosureDocumentRef].filter(
                 Boolean,
             );
             if (!supplementalOnlyRefs.length) {
@@ -2187,12 +2200,12 @@ export default function ContractTab({
                 : includeMainContract
                   ? {
                         includeMainContract: true,
-                        includeAddendum: Boolean(addendumDocumentRef),
+                        includeAddendum: addendumDocumentRefs.length > 0,
                         includeDisclosure: Boolean(disclosureDocumentRef),
                     }
                   : {
                         includeMainContract: false,
-                        includeAddendum: Boolean(addendumDocumentRef),
+                        includeAddendum: addendumDocumentRefs.length > 0,
                         includeDisclosure: Boolean(disclosureDocumentRef),
                     });
 
@@ -2210,7 +2223,9 @@ export default function ContractTab({
             formatFunderSelectLabel(funderProfileForSend ?? undefined) ||
             DOCUSIGN_EMAIL_LENDER_NAME;
         const funderDefaultCcEmail =
-            String(funderProfileForSend?.defaultCcEmail ?? "").trim() || null;
+            String(funderProfileForSend?.docusignDefaultCcEmail ?? "").trim() ||
+            String(funderProfileForSend?.defaultCcEmail ?? "").trim() ||
+            null;
         const effectiveCcEmails = mergeWithDefaultCcEmails(userCcEmails, {
             funderDefaultCcEmail,
         });
@@ -2426,7 +2441,7 @@ export default function ContractTab({
 
             const supplementalDocumentRefs = standaloneAchOnly
                 ? []
-                : [addendumDocumentRef, disclosureDocumentRef].filter(Boolean);
+                : [...new Set([...addendumDocumentRefs, disclosureDocumentRef].filter(Boolean))];
             const mergedTemplateIdsForPrefill = standaloneAchOnly
                 ? [achDocumentRef]
                 : supplementalDocumentRefs;
@@ -2658,6 +2673,14 @@ export default function ContractTab({
                                 id: contractNumericIdPersist,
                                 data: {
                                     ...columnUpdate,
+                                    approvedAmount:
+                                        approvedAmount != null
+                                            ? Number(approvedAmount)
+                                            : undefined,
+                                    totalAmount:
+                                        estimatedTotalPayment != null
+                                            ? Number(estimatedTotalPayment)
+                                            : undefined,
                                     contractPrefillOverrides: nextOverrides,
                                 },
                             }),
@@ -2665,6 +2688,16 @@ export default function ContractTab({
                         setFetchedContract({
                             ...(latestContract as Record<string, unknown>),
                             ...columnUpdate,
+                            approvedAmount:
+                                approvedAmount != null
+                                    ? Number(approvedAmount)
+                                    : (latestContract as { approvedAmount?: unknown })
+                                          ?.approvedAmount,
+                            totalAmount:
+                                estimatedTotalPayment != null
+                                    ? Number(estimatedTotalPayment)
+                                    : (latestContract as { totalAmount?: unknown })
+                                          ?.totalAmount,
                             contractPrefillOverrides: nextOverrides,
                         });
                         try {
@@ -2772,6 +2805,7 @@ export default function ContractTab({
                     layoutKey: mainContractLayoutKey,
                 },
             );
+            prefillFieldsPayload = uppercaseContractDocumentPrefillFields(prefillFieldsPayload);
             const mergeRequest = {
                 ...(standaloneAchOnly
                     ? {
@@ -3031,6 +3065,7 @@ export default function ContractTab({
     const prepareDocuSignDraft = async (payload: {
         ccEmails: string[];
         addendumDocumentRef?: string | null;
+        addendumDocumentRefs?: string[] | null;
         addendumBoldSignTemplateId?: string | null;
         disclosureDocumentRef?: string | null;
         achDocumentRef?: string | null;
@@ -3405,8 +3440,8 @@ export default function ContractTab({
         : "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200";
 
     const isContractValuesReadOnly = isReadOnly || !isEditingContractValues;
-    /** Saved grid for anyone when values are persisted (incl. Operations read-only) — avoids disabled-input fade. */
-    const showSavedContractGrid = contractValuesSaved;
+    /** Read-only summary grid by default; field inputs only while editing. */
+    const showSavedContractGrid = !isEditingContractValues;
 
     const brandActionButtonClass = isDark
         ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
@@ -3511,6 +3546,32 @@ export default function ContractTab({
               (viewingSignedEnvelopeId
                   ? viewingSignedEnvelopeId === rowEnvelopeId
                   : row.isCurrent);
+        const viewDocumentTitle = isAchRow
+            ? rowFullySigned
+                ? "View signed ACH form"
+                : rowIsVoided
+                  ? "View voided ACH form"
+                  : "View ACH form"
+            : isPackageRow
+              ? rowFullySigned
+                  ? "View signed supplemental documents"
+                  : rowIsVoided
+                    ? "View voided supplemental documents"
+                    : "View supplemental documents"
+              : rowFullySigned
+                ? "View signed contract"
+                : rowIsVoided
+                  ? "View voided contract"
+                  : "View contract";
+        const handleViewRowDocument = () => {
+            if (isAchRow) {
+                void (row.isCurrent
+                    ? handleViewAchDocument()
+                    : handleViewSignedContract(rowEnvelopeId));
+                return;
+            }
+            void handleViewSignedContract(rowEnvelopeId);
+        };
 
         return (
             <TableRow key={row.key} className={tableRowClass}>
@@ -3532,7 +3593,23 @@ export default function ContractTab({
                                 aria-hidden
                             />
                         )}
-                        {row.label}
+                        {rowEnvelopeId ? (
+                            <button
+                                type="button"
+                                onClick={handleViewRowDocument}
+                                disabled={isViewingRow}
+                                title={viewDocumentTitle}
+                                className={`text-left underline-offset-2 hover:underline disabled:opacity-60 ${
+                                    isDark
+                                        ? "text-[#5AACEA] hover:text-[#7BBDEF]"
+                                        : "text-[var(--brand)] hover:text-[var(--brand)]/80"
+                                }`}
+                            >
+                                {row.label}
+                            </button>
+                        ) : (
+                            row.label
+                        )}
                     </span>
                 </TableCell>
                 <TableCell className={tableCellClass}>
@@ -3582,34 +3659,10 @@ export default function ContractTab({
                                         type="button"
                                         variant="ghost"
                                         size="icon"
-                                        onClick={() =>
-                                            isAchRow
-                                                ? void (row.isCurrent
-                                                      ? handleViewAchDocument()
-                                                      : handleViewSignedContract(rowEnvelopeId))
-                                                : void handleViewSignedContract(rowEnvelopeId)
-                                        }
+                                        onClick={handleViewRowDocument}
                                         disabled={isViewingRow}
                                         className={`h-7 w-7 shrink-0 ${brandActionButtonClass}`}
-                                        title={
-                                            isAchRow
-                                                ? rowFullySigned
-                                                    ? "View signed ACH form"
-                                                    : rowIsVoided
-                                                      ? "View voided ACH form"
-                                                      : "View ACH form"
-                                                : isPackageRow
-                                                  ? rowFullySigned
-                                                      ? "View signed supplemental documents"
-                                                      : rowIsVoided
-                                                        ? "View voided supplemental documents"
-                                                        : "View supplemental documents"
-                                                  : rowFullySigned
-                                                    ? "View signed contract"
-                                                    : rowIsVoided
-                                                      ? "View voided contract"
-                                                      : "View contract"
-                                        }
+                                        title={viewDocumentTitle}
                                     >
                                         {isViewingRow ? (
                                             <Loader2
@@ -3617,7 +3670,7 @@ export default function ContractTab({
                                                 aria-hidden
                                             />
                                         ) : (
-                                            <Info className="h-3.5 w-3.5" aria-hidden />
+                                            <Eye className="h-3.5 w-3.5" aria-hidden />
                                         )}
                                     </Button>
                                     {row.isCurrent && !rowFullySigned && !rowIsVoided ? (
@@ -3764,7 +3817,6 @@ export default function ContractTab({
                 await dispatch(getOfferDecisionByApplication(applicationUuid)).unwrap();
             }
 
-            setContractValuesSaved(true);
             setIsEditingContractValues(false);
             setSavedContractValuesSnapshot(payload);
             toast.success("Contract values saved.");
@@ -3779,7 +3831,6 @@ export default function ContractTab({
     const handleEditContractValues = () => {
         setSavedContractValuesSnapshot(getCurrentContractValues());
         setIsEditingContractValues(true);
-        setContractValuesSaved(false);
     };
 
     const handleCancelContractValuesEdit = () => {
@@ -3803,7 +3854,6 @@ export default function ContractTab({
             setTermLengthInput(savedContractValuesSnapshot.termLengthInput || "");
         }
         setIsEditingContractValues(false);
-        setContractValuesSaved(true);
     };
 
     return (
@@ -3817,45 +3867,21 @@ export default function ContractTab({
 
                     </div>
                     <div className="flex items-center gap-3">
-                        {!isReadOnly && applicationUuid ? (
-                            <Button
-                                type="button"
-                                onClick={() => void openAchViewer()}
-                                disabled={creatingEnvelope || preparingAchViewer}
-                                className="rounded-md bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
-                            >
-                                {preparingAchViewer ? (
-                                    <span className="inline-flex items-center gap-2">
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                        Opening ACH form...
-                                    </span>
-                                ) : (
-                                    "Send ACH Form"
-                                )}
-                            </Button>
-                        ) : null}
                         <Button
                             type="button"
                             onClick={handleGenerateContract}
-                            disabled={creatingEnvelope || regeneratingContract}
+                            loading={creatingEnvelope || regeneratingContract}
                             className="rounded-md bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer  px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
-
-
                         >
-                            {creatingEnvelope || regeneratingContract ? (
-                                <span className="inline-flex items-center gap-2">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    {regeneratingContract
-                                        ? "Reinitiating contract..."
-                                        : "Generating contract..."}
-                                </span>
-                            ) : needsContractReinitiation ? (
-                                "Regenerate Contract"
-                            ) : isReadOnly || hasGeneratedContract ? (
-                                "View Contract"
-                            ) : (
-                                "Generate Contract"
-                            )}
+                            {creatingEnvelope || regeneratingContract
+                                ? regeneratingContract
+                                    ? "Reinitiating contract..."
+                                    : "Generating contract..."
+                                : needsContractReinitiation
+                                  ? "Regenerate Contract"
+                                  : isReadOnly || hasGeneratedContract
+                                    ? "View Contract"
+                                    : "Generate Contract"}
                         </Button>
 
                     </div>
@@ -3863,25 +3889,13 @@ export default function ContractTab({
 
             </div>
 
-            <ReverseDisbursementScheduleSection
-                contractId={selectedContractId}
-                fetchedContract={
-                    fetchedContract && typeof fetchedContract === "object"
-                        ? (fetchedContract as Record<string, unknown>)
-                        : null
-                }
-                readOnly={isReadOnly}
-                isDark={isDark}
-                onSaved={reloadFetchedContract}
-            />
-
             {/* Final Calculations - White background */}
             <div
                 className={`rounded-lg border p-6 ${isDark ? "bg-[#1F2021] border-[#374151]" : "bg-white border-[#D1D5DB]"}`}
             >
                 <div className="mb-4 flex items-center justify-between gap-3">
                     <h3
-                        className={`text-base font-semibold ${isDark ? "text-gray-200" : "text-[#374151]"} ${isReadOnly && !contractValuesSaved ? "opacity-70" : ""}`}
+                        className={`text-base font-semibold ${isDark ? "text-gray-200" : "text-[#374151]"}`}
                     >
                         Final Calculation
                     </h3>
@@ -3951,7 +3965,26 @@ export default function ContractTab({
                                 onChange={(e) => {
                                     const stripped = e.target.value.replace(/^\$\s*/, "");
                                     const formatted = formatNumberUSForInput(stripped);
-                                    setAmountFinancedInput(formatted ? `$ ${formatted}` : "");
+                                    const next = formatted ? `$ ${formatted}` : "";
+                                    setAmountFinancedInput(next);
+                                    const offer = parseNumberUS(next);
+                                    const payback =
+                                        parseNumberUS(estimatedTotalPaymentInput) ??
+                                        estimatedTotalPayment;
+                                    if (
+                                        offer != null &&
+                                        Number.isFinite(offer) &&
+                                        payback != null &&
+                                        Number.isFinite(payback)
+                                    ) {
+                                        const nextFc = Math.max(
+                                            0,
+                                            Math.round((payback - offer) * 100) / 100,
+                                        );
+                                        setFinanceChargeInput(
+                                            nextFc ? formatCurrencyFull(nextFc) : "",
+                                        );
+                                    }
                                 }}
                                 className={calculationInputClass}
                             />
@@ -3971,7 +4004,7 @@ export default function ContractTab({
                                     const next = formatted ? `$ ${formatted}` : "";
                                     setRefinanceAmountInput(next);
                                     const offer = parseNumberUS(amountFinancedInput) ?? approvedAmount;
-                                    const fees = parseNumberUS(financeChargeInput) ?? feeAmount;
+                                    const fees = feeAmount;
                                     const refi = parseNumberUS(next) ?? 0;
                                     if (offer != null && Number.isFinite(offer)) {
                                         const nextRecipient = Math.max(
@@ -4046,9 +4079,26 @@ export default function ContractTab({
                                 onChange={(e) => {
                                     const stripped = e.target.value.replace(/^\$\s*/, "");
                                     const formatted = formatNumberUSForInput(stripped);
-                                    setEstimatedTotalPaymentInput(
-                                        formatted ? `$ ${formatted}` : "",
-                                    );
+                                    const next = formatted ? `$ ${formatted}` : "";
+                                    setEstimatedTotalPaymentInput(next);
+                                    setPaymentTotalInput(next);
+                                    const payback = parseNumberUS(next);
+                                    const offer =
+                                        parseNumberUS(amountFinancedInput) ?? approvedAmount;
+                                    if (
+                                        payback != null &&
+                                        Number.isFinite(payback) &&
+                                        offer != null &&
+                                        Number.isFinite(offer)
+                                    ) {
+                                        const nextFc = Math.max(
+                                            0,
+                                            Math.round((payback - offer) * 100) / 100,
+                                        );
+                                        setFinanceChargeInput(
+                                            nextFc ? formatCurrencyFull(nextFc) : "",
+                                        );
+                                    }
                                 }}
                                 className={calculationInputClass}
                             />
@@ -4172,7 +4222,7 @@ export default function ContractTab({
                         <Button
                             type="button"
                             onClick={handleSaveContractValues}
-                            disabled={savingContractValues}
+                            loading={savingContractValues}
                             className="h-9 px-4 bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
                         >
                             {savingContractValues ? "Saving..." : "Save Values"}
@@ -4227,21 +4277,12 @@ export default function ContractTab({
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {(!hasGeneratedContract && contractsForTable.length === 0) ? (
-                                <TableRow className={tableRowClass}>
-                                    <TableCell
-                                        colSpan={11}
-                                        className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
-                                    >
-                                        No contracts generated yet.
-                                    </TableCell>
-                                </TableRow>
-                            ) : contractSendTableRows.length > 0 ? (
+                            {contractSendTableRows.length > 0 ? (
                                 contractSendTableRows.map(renderContractSendTableRow)
                             ) : hasGeneratedContract ? (
                                 <TableRow className={tableRowClass}>
                                     <TableCell
-                                        colSpan={11}
+                                        colSpan={12}
                                         className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
                                     >
                                         No DocuSign sends yet. Rows appear here after a
@@ -4252,55 +4293,14 @@ export default function ContractTab({
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                contractsForTable.map((offer) => (
-                                    <TableRow
-                                        key={offer._id}
-                                        className={tableRowClass}
+                                <TableRow className={tableRowClass}>
+                                    <TableCell
+                                        colSpan={12}
+                                        className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
                                     >
-                                        <TableCell className={tableCellClass}>
-                                            {offer.position || "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.termLength ?? "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            1
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(offer.approvedAmount)}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(offer.paybackAmount)}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(
-                                                offer.paymentAmount ??
-                                                    contractTableMetrics.perPeriodPayment,
-                                            )}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.buyRate != null
-                                                ? `${offer.buyRate}%`
-                                                : contractTableMetrics.buyRate}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.percentOfGross != null
-                                                ? `${offer.percentOfGross}%`
-                                                : contractTableMetrics.upsell}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.factorRate != null
-                                                ? String(offer.factorRate)
-                                                : contractTableMetrics.factor}
-                                        </TableCell>
-                                        <TableCell>
-                                            <span className={statusBadgeClass}>
-                                                Generated
-                                            </span>
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>—</TableCell>
-                                    </TableRow>
-                                ))
+                                        No contracts generated yet.
+                                    </TableCell>
+                                </TableRow>
                             )}
                         </TableBody>
                     </Table>

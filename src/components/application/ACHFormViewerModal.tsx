@@ -98,6 +98,7 @@ import {
 } from "./contractdata/achFormEditConfig";
 import {
     normalizeContractPrefillOverrides,
+    uppercaseContractDocumentPrefillFields,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./contractdata/Contract";
@@ -701,7 +702,10 @@ export default function ACHFormViewerModal({
     );
 
     const selectedFunderDefaultCcEmail = useMemo(
-        () => String(selectedFunderProfile?.defaultCcEmail ?? "").trim() || null,
+        () =>
+            String(selectedFunderProfile?.docusignDefaultCcEmail ?? "").trim() ||
+            String(selectedFunderProfile?.defaultCcEmail ?? "").trim() ||
+            null,
         [selectedFunderProfile],
     );
 
@@ -711,7 +715,7 @@ export default function ACHFormViewerModal({
 
     const contractCcMergeOptions = useMemo(() => {
         const knownFunderDefaultCcEmails = collectKnownFunderDefaultCcEmails(
-            funders.map((f) => f.defaultCcEmail),
+            funders.flatMap((f) => [f.docusignDefaultCcEmail, f.defaultCcEmail]),
         );
         const apiResolved =
             tenantContractCcDefaults?.ccEmails?.length
@@ -1483,6 +1487,7 @@ export default function ACHFormViewerModal({
             fields = rows
                 .map((f) => ({ id: f.id, value: String(f.value ?? "").trim() }))
                 .filter((f) => f.id && f.value);
+            fields = uppercaseContractDocumentPrefillFields(fields);
         }
         if (!fields.length) return false;
 

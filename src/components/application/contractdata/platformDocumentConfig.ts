@@ -4,6 +4,10 @@ import { DOCUSIGN_PRIMARY_SIGNER_ROLE } from "./docusignTemplateConfig";
 
 export const PLATFORM_LAYOUT_KEYS = {
     contract: "contract",
+    addendum_p: "addendum_p",
+    addendum_ca: "addendum_ca",
+    addendum_ny: "addendum_ny",
+    addendum_va: "addendum_va",
 } as const;
 
 export type PlatformLayoutKey =
@@ -11,6 +15,13 @@ export type PlatformLayoutKey =
 
 /** Legal funder name on state disclosure forms (not Contract.funderName legacy variants). */
 export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Harbor View Capital";
+
+/**
+ * Flat platform fee on every deal:
+ * - Origination fee on disclosures = applicable fee + this amount
+ * - Net / recipient funds = funding − (applicable fee + this amount) − refinance
+ */
+export const DISCLOSURE_PLATFORM_FEE_USD = 50;
 
 /** DocuSign envelope role names — must match template / backend DOCUSIGN_DEFAULT_ROLE_NAME. */
 export const PLATFORM_PRIMARY_SIGNER_ROLE = DOCUSIGN_PRIMARY_SIGNER_ROLE;

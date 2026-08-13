@@ -49,6 +49,7 @@ import {
   formatDate as formatDateUtil,
   cn,
 } from "@/lib/utils";
+import { parseMoneyInput, formatUSDShort } from "@/utils/formatCurrency";
 import { axiosGet } from "@/redux/axios";
 import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY } from "@/constants/operationsDashboardApplications";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
@@ -277,15 +278,18 @@ export const OperationsDashboard = () => {
         const payload = response?.data ?? {};
         const rows = Array.isArray(payload?.data)
           ? (payload.data as PaymentTrendPoint[])
-          : [];
+          : Array.isArray(payload)
+            ? (payload as PaymentTrendPoint[])
+            : [];
         return rows.map((row) => ({
           label: String(row.label ?? ""),
-          pending: Number(row.pending ?? 0) || 0,
-          approved: Number(row.approved ?? 0) || 0,
+          pending: parseMoneyInput(row.pending) ?? 0,
+          approved: parseMoneyInput(row.approved) ?? 0,
         }));
       },
+      staleTime: 60_000,
       refetchOnMount: true,
-      refetchOnWindowFocus: true,
+      refetchOnWindowFocus: false,
     });
 
   const recentCasesQuery = useQuery({
@@ -654,8 +658,8 @@ export const OperationsDashboard = () => {
                 Payment Performance
               </h3>
               <p className="text-xs text-muted-foreground">
-                Contract pending vs approved (contract signed) money across the{" "}
-                {paymentPeriodHelper}.
+                Pending (not yet signed) vs approved (contract signed) money
+                across the {paymentPeriodHelper}.
               </p>
             </div>
             <div className="flex flex-col items-end gap-3">
@@ -738,7 +742,7 @@ export const OperationsDashboard = () => {
                   tickLine={false}
                   axisLine={false}
                   tick={{ fontSize: 11, fill: isDark ? "#e5e7eb" : "#4b5563" }}
-                  tickFormatter={(value) => formatCurrency(value as number)}
+                  tickFormatter={(value) => formatUSDShort(value as number)}
                 />
                 <Tooltip
                   cursor={{ stroke: "rgba(15,23,42,0.1)", strokeWidth: 1 }}

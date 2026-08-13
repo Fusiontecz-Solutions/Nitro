@@ -1,6 +1,7 @@
 import * as React from "react"
 import { Slot } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
+import { Loader2 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -39,17 +40,38 @@ const buttonVariants = cva(
   }
 )
 
+function nodeHasSpinner(node: React.ReactNode): boolean {
+  if (node == null || typeof node === "boolean") return false
+  if (Array.isArray(node)) return node.some(nodeHasSpinner)
+  if (!React.isValidElement(node)) return false
+  const className = String(
+    (node.props as { className?: unknown }).className ?? "",
+  )
+  if (className.includes("animate-spin")) return true
+  return nodeHasSpinner((node.props as { children?: React.ReactNode }).children)
+}
+
 function Button({
   className,
   variant,
   size,
   asChild = false,
+  loading = false,
+  disabled,
+  children,
+  onClick,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
+    /** Shows a spinner and disables the control while work is in progress. */
+    loading?: boolean
   }) {
   const Comp = asChild ? Slot : "button"
+  const [pending, setPending] = React.useState(false)
+  const isLoading = Boolean(loading || pending)
+  const isIconOnly =
+    size === "icon" || size === "icon-sm" || size === "icon-lg"
 
   // Keep primary CTAs on the platform gradient even when callers pass solid brand bg overrides.
   const normalizedClassName =
@@ -60,12 +82,43 @@ function Button({
           .replace(/\bhover:bg-\[var\(--brand-hover\)\]\b/g, "hover:opacity-90")
       : className
 
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (isLoading || disabled) {
+      event.preventDefault()
+      return
+    }
+    const result = onClick?.(event)
+    if (asChild) return
+    if (result != null && typeof (result as Promise<unknown>).then === "function") {
+      setPending(true)
+      void Promise.resolve(result).finally(() => setPending(false))
+    }
+  }
+
+  const spinner = <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+  const childrenAlreadySpin = nodeHasSpinner(children)
+
   return (
     <Comp
       data-slot="button"
+      data-loading={isLoading ? "true" : undefined}
+      aria-busy={isLoading || undefined}
+      disabled={disabled || isLoading}
       className={cn(buttonVariants({ variant, size }), normalizedClassName)}
+      onClick={handleClick}
       {...props}
-    />
+    >
+      {asChild ? (
+        children
+      ) : isLoading ? (
+        <>
+          {!childrenAlreadySpin && spinner}
+          {isIconOnly && !childrenAlreadySpin ? null : children}
+        </>
+      ) : (
+        children
+      )}
+    </Comp>
   )
 }
 

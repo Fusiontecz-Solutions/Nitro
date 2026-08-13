@@ -108,6 +108,7 @@ export type ContractCcDefaults = {
   defaultCcEmail: string | null;
   resolvedCcEmail: string | null;
   ccEmails: string[];
+  source?: "docusign" | "funder" | "platform" | "none";
 };
 
 export type FetchContractCcDefaultsParams = {
@@ -155,6 +156,13 @@ export async function fetchContractCcDefaults(
     defaultCcEmail,
     resolvedCcEmail,
     ccEmails: ccEmails.length ? ccEmails : resolvedCcEmail ? [resolvedCcEmail] : [],
+    source:
+      data?.source === "docusign" ||
+      data?.source === "funder" ||
+      data?.source === "platform" ||
+      data?.source === "none"
+        ? data.source
+        : undefined,
   };
 }
 
@@ -208,11 +216,19 @@ export async function fetchFunderDocuments(funderId: string): Promise<FunderDocu
 
 export async function uploadFunderDisclosureDocument(
   funderId: string,
-  args: { state: string; frequency: string; file: File },
+  args: {
+    state: string;
+    frequency: string;
+    file: File;
+    dealType?: "refi" | "norefi" | null;
+  },
 ): Promise<void> {
   const formData = new FormData();
   formData.append("state", args.state);
   formData.append("frequency", args.frequency);
+  if (args.dealType === "refi" || args.dealType === "norefi") {
+    formData.append("dealType", args.dealType);
+  }
   formData.append("file", args.file);
   await axiosPostFormData(`/integration-settings/funders/${funderId}/disclosures`, formData);
 }

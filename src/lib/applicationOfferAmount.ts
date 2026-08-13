@@ -10,20 +10,25 @@ function parseMoney(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Latest terms-offer or offer-decision amount (excludes declined decisions). */
+/**
+ * Underwritten offer amount for lists/overview.
+ * Prefer live OfferDecision (source of truth), then TermsOffer mirror.
+ * Matches `resolveApplicationOfferAmount` / BE dashboard precedence.
+ */
 export function getApplicationApprovedAmount(app: Application): number | null {
-  const termsOffers = app.termsOffers;
-  const fromTerms =
-    termsOffers && termsOffers.length > 0
-      ? parseMoney(termsOffers[0].approvedAmount)
-      : null;
-
   const od = app.OfferDecision;
   const decisionNorm = od?.decision ? String(od.decision).toLowerCase() : "";
   const fromOfferDecision =
     od && decisionNorm !== "declined"
       ? resolveOfferDecisionFundedAmount(od as Record<string, unknown>)
       : null;
+  if (fromOfferDecision != null && fromOfferDecision > 0) return fromOfferDecision;
 
-  return fromTerms ?? fromOfferDecision;
+  const termsOffers = app.termsOffers;
+  const fromTerms =
+    termsOffers && termsOffers.length > 0
+      ? parseMoney(termsOffers[0].approvedAmount)
+      : null;
+
+  return fromTerms;
 }

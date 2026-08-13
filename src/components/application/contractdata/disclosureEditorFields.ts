@@ -4,6 +4,8 @@ import type {
     DisclosureCalculatorResult,
 } from "./disclosureAprCalculator";
 import {
+    applyDisclosurePlatformFee,
+    formatDisclosurePaymentFrequencyLabel,
     formatDisclosurePercent,
     formatDisclosureUsd,
     formatDisclosureUsDate,
@@ -13,8 +15,14 @@ import {
     mapUtahDisclosureCalculatorToPdfFields,
 } from "./daily_utah";
 import { buildNewYorkDisclosurePage3Amounts } from "./new_york_disclosure";
-import { buildCaliforniaDisclosurePage3Amounts } from "./california_disclosure";
-import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
+import {
+    buildCaliforniaDisclosurePage3Amounts,
+    buildCaliforniaRefinancePage3Amounts,
+} from "./california_disclosure";
+import {
+    DISCLOSURE_PLATFORM_FEE_USD,
+    PLATFORM_DISCLOSURE_FUNDER_NAME,
+} from "./platformDocumentConfig";
 import type { StateDisclosureContext } from "./stateDisclosurePrefill";
 
 /**
@@ -358,6 +366,45 @@ export function expandDisclosureEditorValuesToPdfFields(
 
     applyConnecticutPage1AmountFields(editorValues, out);
 
+    const INLINE_PERCENT_TAB_IDS = new Set([
+        "payement_exceeded_percent",
+        "payment_exceeded_percent",
+        "payment_exceed_percent",
+        "percent_of_business_income",
+        "disclosure_payment_terms",
+        "payment_terms_percent",
+        "payment_fallen_below_percent",
+        "consistent_with_percent",
+        "exceeded_percent",
+        "payments_fallen_below_percent",
+        "exceeded_payment",
+        "payment_fallen",
+        "estimated_percent",
+        "out_estimated_percent",
+        "payment_exceeded",
+    ]);
+    for (const id of INLINE_PERCENT_TAB_IDS) {
+        const raw = String(out[id] ?? "").trim();
+        if (raw.endsWith("%")) out[id] = raw.replace(/%+\s*$/, "").trim();
+    }
+
+    // Disclosure PDF text: ALL CAPS; payment cadence as DAY / WEEK (not DAILY / WEEKLY).
+    for (const [id, raw] of Object.entries(out)) {
+        let value = String(raw ?? "").trim();
+        if (!value) continue;
+        const idNorm = id.toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (
+            idNorm === "paymentfrequency" ||
+            idNorm === "disclosurepaymentfrequency" ||
+            idNorm === "frequency" ||
+            idNorm === "paymentterms"
+        ) {
+            const freq = formatDisclosurePaymentFrequencyLabel(value);
+            value = freq || value;
+        }
+        out[id] = value.toUpperCase();
+    }
+
     return out;
 }
 
@@ -365,37 +412,61 @@ export function buildDisclosureEditorFieldsFromContext(
     ctx: StateDisclosureContext,
 ): ContractPrefillField[] {
     const disclosureDate = formatDisclosureUsDate(ctx.signatureDate) || "";
-    const page3TopLine = ctx.fundingProvided || "";
+    const netFunding =
+        ctx.netContractedFunding || ctx.fundingDisbursed || ctx.fundingProvided || "";
+    const page3TopLine = ctx.isRefinance
+        ? ctx.actualDisbursement || netFunding
+        : netFunding;
+    const originationFee =
+        ctx.feesDeducted?.trim() ||
+        (coercePositiveMoney(ctx.brokerFeePaidToBroker)
+            ? String(ctx.brokerFeePaidToBroker).trim()
+            : "");
     const page3 = buildCaliforniaDisclosurePage3Amounts({
         recipientFunds: page3TopLine,
-        page3Line1: ctx.page3Line1,
-        page3Line2: ctx.page3Line2,
-        brokerFee: ctx.brokerFeePaidToBroker,
+        page3Line1: originationFee || ctx.page3Line1,
+        page3Line2: ctx.isRefinance ? ctx.previousRefiBalance || ctx.page3Line2 : ctx.page3Line2,
+        brokerFee: originationFee || ctx.brokerFeePaidToBroker,
     });
     const nyLines = buildNewYorkDisclosurePage3Amounts({
         recipientFunds: page3TopLine,
-        page3Line1: ctx.page3Line1,
+        page3Line1: originationFee || ctx.page3Line1,
         page3Line2: ctx.page3Line2,
-        brokerFee: ctx.brokerFeePaidToBroker,
+        brokerFee: originationFee || ctx.brokerFeePaidToBroker,
     });
 
     const values: Record<string, string> = {
         disclosure_avg_monthly_revenue: ctx.averageMonthlyIncome ?? "",
-        disclosure_amount_financed: ctx.amountBusinessFund || ctx.fundingProvided || "",
-        /** Same offer amount as funding_provided (CA page-3 top line uses this id). */
+        /** Purchase Price = Funding Amount. */
+        disclosure_purchase_price: ctx.fundingProvided || ctx.amountBusinessFund || "",
+        total_amount_business_fund: ctx.fundingProvided || ctx.amountBusinessFund || "",
+        purchase_amount: ctx.fundingProvided || ctx.amountBusinessFund || "",
+        disclosure_amount_financed: netFunding || ctx.amountBusinessFund || "",
+        /** Guide: page-3 amount given directly = net funding (NO REFI) / actual disbursement (REFI). */
         disclosure_recipient_funds: page3TopLine,
-        funding_provided: ctx.fundingProvided || "",
-        disclosure_fees_deducted: ctx.feesDeducted || "",
+        NetFundProvided: page3TopLine,
+        funding_provided:
+            ctx.isRefinance
+                ? ctx.netContractedFunding || netFunding
+                : netFunding || ctx.fundingProvided || "",
+        funding_provided_direct: ctx.isRefinance
+            ? ctx.actualDisbursement || netFunding
+            : netFunding || ctx.fundingProvidedDirect || ctx.fundingProvided || "",
+        disclosure_fees_deducted: originationFee || ctx.feesDeducted || "",
         disclosure_apr: ctx.estimatedAnnualPercentageRate ?? "",
         disclosure_finance_charge: ctx.financeCharge || ctx.totalDollarCost || "",
+        /** Receivables = repayment amount. */
         disclosure_total_payment: ctx.totalRepayment ?? "",
+        receivables: ctx.totalRepayment ?? "",
+        revenue_purchased: ctx.totalRepayment ?? "",
+        payment_total: ctx.totalRepayment ?? "",
         disclosure_estimated_payment: ctx.estimatedPayment ?? "",
         disclosure_monthly_cost: ctx.estimatedMonthlyCost ?? "",
         disclosure_payment_terms: ctx.percentOfBusinessIncome || ctx.paymentExceededPercent || "",
         disclosure_term_days: ctx.estimatedTermDays ?? ctx.estimatedTerm ?? "",
-        disclosure_broker_fee: ctx.brokerFeePaidToBroker ?? "0.00",
-        disclosure_page3_line_1: nyLines.page3Line1,
-        disclosure_page3_line_2: nyLines.page3Line2,
+        disclosure_broker_fee: originationFee || ctx.brokerFeePaidToBroker || "",
+        disclosure_page3_line_1: nyLines.page3Line1 || page3.page3Line1 || originationFee,
+        disclosure_page3_line_2: nyLines.page3Line2 || page3.page3Line2 || "",
         disclosure_page3_subtotal: page3.page3Subtotal,
         disclosure_page3_net: page3.page3Net,
         client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
@@ -407,6 +478,9 @@ export function buildDisclosureEditorFieldsFromContext(
         funder_email: String(ctx.funderEmail ?? "").trim(),
         deal_id_prefix: String(ctx.dealIdPrefix ?? "").trim(),
         disclosure_date: disclosureDate,
+        payment_frequency: formatDisclosurePaymentFrequencyLabel(ctx.frequency) || "",
+        disclosure_payment_frequency:
+            formatDisclosurePaymentFrequencyLabel(ctx.frequency) || "",
     };
 
     return DISCLOSURE_EDITOR_FIELD_CATALOG.map((field) => ({
@@ -414,6 +488,11 @@ export function buildDisclosureEditorFieldsFromContext(
         label: field.label,
         value: values[field.id] ?? "",
     }));
+}
+
+function coercePositiveMoney(value: unknown): boolean {
+    const n = Number.parseFloat(String(value ?? "").replace(/[$,%\s]/g, ""));
+    return Number.isFinite(n) && n > 0;
 }
 
 export function mapDisclosureMetricsToEditorFieldOverrides(
@@ -426,6 +505,7 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
             DisclosureCalculatorInputs,
             | "purchasePrice"
             | "frequency"
+            | "originationFee"
             | "brokerFeePaidByFunder"
             | "brokerFeePaidByMerchant"
             | "state"
@@ -436,43 +516,133 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
         .trim()
         .toUpperCase();
     const disclosureDate = formatDisclosureUsDate(options?.signatureDate ?? "");
-    const isUtah = isUtahDisclosureState(options?.state ?? options?.inputs?.state);
-    const fundsProvided =
-        options?.inputs?.purchasePrice != null && options.inputs.purchasePrice > 0
-            ? options.inputs.purchasePrice
-            : metrics.amountFinanced;
+    const stateKey = String(options?.state ?? options?.inputs?.state ?? "")
+        .trim()
+        .toLowerCase();
+    const isUtah = isUtahDisclosureState(stateKey);
+    const isCaOrNy =
+        stateKey === "california" ||
+        stateKey === "ca" ||
+        stateKey === "new york" ||
+        stateKey === "ny" ||
+        stateKey === "new_york";
 
-    const amountFinancedForFees = isUtah ? fundsProvided : metrics.amountFinanced;
-    const offerAmount =
+    const purchasePrice =
         options?.inputs?.purchasePrice != null && options.inputs.purchasePrice > 0
             ? options.inputs.purchasePrice
             : metrics.purchasePrice;
+    const netFunding = Math.max(
+        0,
+        metrics.netContractedFunding ?? metrics.amountFinanced ?? metrics.recipientFunds,
+    );
+    const actualDisbursement = Math.max(
+        0,
+        metrics.actualDisbursement ?? metrics.recipientFunds,
+    );
+    const isRefinance = Boolean(metrics.isRefinance);
+    /**
+     * Origination on PDF = applicable fee + $50.
+     * Prefer calculator inputs (applicable); else back-solve from funding − net (already includes $50).
+     */
+    const originationFee =
+        options?.inputs?.originationFee != null && options.inputs.originationFee >= 0
+            ? applyDisclosurePlatformFee(options.inputs.originationFee)
+            : purchasePrice > 0
+              ? Math.max(
+                    DISCLOSURE_PLATFORM_FEE_USD,
+                    Math.round((purchasePrice - netFunding) * 100) / 100,
+                )
+              : DISCLOSURE_PLATFORM_FEE_USD;
+    const brokerFeeTotal =
+        (options?.inputs?.brokerFeePaidByFunder ?? 0) +
+        (options?.inputs?.brokerFeePaidByMerchant ?? 0);
+
+    /**
+     * Purchase Price / Funding Amount = contract funding.
+     * CA/NY “funding provided” boxes stay net (Guide); FL-group provided = funding.
+     * Net Funds / recipient = funding − (fee + $50).
+     */
+    const fundingProvidedPrimary = isCaOrNy ? netFunding : purchasePrice;
+    const fundingProvidedDirect = isRefinance ? actualDisbursement : fundingProvidedPrimary;
+    const page3AmountGiven = isRefinance ? actualDisbursement : netFunding;
+    const frequencyLabel = formatDisclosurePaymentFrequencyLabel(
+        options?.inputs?.frequency ?? "",
+    );
+
+    const page3 = isRefinance
+        ? buildCaliforniaRefinancePage3Amounts({
+              actualDisbursement: page3AmountGiven,
+              originationFee,
+              previousRefiBalance: metrics.previousRefiBalance ?? 0,
+          })
+        : {
+              ...buildCaliforniaDisclosurePage3Amounts({
+                  recipientFunds: formatDisclosureUsd(page3AmountGiven),
+                  page3Line1: formatDisclosureUsd(originationFee),
+                  page3Line2: "0.00",
+                  brokerFee: formatDisclosureUsd(originationFee),
+              }),
+              page3Line1: formatDisclosureUsd(originationFee),
+              page3Line2: "0.00",
+          };
+
+    const avgMonthly = metrics.estimatedMerchantAverageMonthlyRevenue;
+    const avgMonthlyStr =
+        avgMonthly > 0 ? formatDisclosureUsd(avgMonthly) : "";
+
+    /**
+     * CA page-3 `disclosure_broker_fee` tab = prepaid origination fee (Guide).
+     * Utah uses the same editor id for broker fee paid to broker.
+     */
+    const disclosureBrokerFeeForPdf = isUtah
+        ? formatDisclosureUsd(brokerFeeTotal)
+        : formatDisclosureUsd(originationFee);
+
     const editorFields: Record<string, string> = {
-        disclosure_avg_monthly_revenue: formatDisclosureUsd(
-            metrics.estimatedMerchantAverageMonthlyRevenue,
-        ),
-        disclosure_amount_financed: formatDisclosureUsd(amountFinancedForFees),
-        /** Offer / amount financed on the deal — never recipient funds. */
-        funding_provided: formatDisclosureUsd(offerAmount),
-        /** Offer amount — CA page-3 `disclosure_recipient_funds` tab uses this id. */
-        disclosure_recipient_funds: formatDisclosureUsd(offerAmount),
-        disclosure_fees_deducted: formatDisclosureUsd(
-            Math.max(0, amountFinancedForFees - metrics.recipientFunds),
-        ),
+        ...(avgMonthlyStr
+            ? { disclosure_avg_monthly_revenue: avgMonthlyStr }
+            : {}),
+        /** Purchase Price = Funding Amount. */
+        disclosure_purchase_price: formatDisclosureUsd(purchasePrice),
+        total_amount_business_fund: formatDisclosureUsd(purchasePrice),
+        purchase_amount: formatDisclosureUsd(purchasePrice),
+        disclosure_amount_financed: formatDisclosureUsd(netFunding),
+        /** Net Funds Provided / recipient funds. */
+        disclosure_recipient_funds: formatDisclosureUsd(page3AmountGiven),
+        NetFundProvided: formatDisclosureUsd(page3AmountGiven),
+        net_to_merchant: formatDisclosureUsd(page3AmountGiven),
+        funding_provided: formatDisclosureUsd(fundingProvidedPrimary),
+        funding_provided_direct: formatDisclosureUsd(fundingProvidedDirect),
+        disclosure_fees_deducted: formatDisclosureUsd(originationFee),
+        disclosure_origination_fee: formatDisclosureUsd(originationFee),
         disclosure_apr: formatDisclosurePercent(metrics.estimatedAnnualPercentageRate),
         disclosure_finance_charge: formatDisclosureUsd(metrics.financeCharge),
+        /** Receivables = repayment amount. */
         disclosure_total_payment: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        receivables: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        revenue_purchased: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        payment_total: formatDisclosureUsd(metrics.estimatedTotalPayment),
         disclosure_estimated_payment: formatDisclosureUsd(metrics.estimatedPayment),
         disclosure_monthly_cost: formatDisclosureUsd(metrics.estimatedMonthlyCost),
-        disclosure_payment_terms: formatDisclosurePercent(metrics.percentOfDailyIncomePurchased),
-        disclosure_term_days: String(metrics.estimatedTermDays),
-        disclosure_broker_fee: formatDisclosureUsd(
-            (options?.inputs?.brokerFeePaidByFunder ?? 0) +
-                (options?.inputs?.brokerFeePaidByMerchant ?? 0),
+        disclosure_payment_terms: formatDisclosurePercent(
+            metrics.percentOfDailyIncomePurchased,
+            "",
         ),
+        disclosure_term_days: String(metrics.estimatedTermDays),
+        disclosure_broker_fee: disclosureBrokerFeeForPdf,
+        disclosure_page3_line_1: page3.page3Line1,
+        disclosure_page3_line_2: page3.page3Line2,
+        disclosure_page3_subtotal: page3.page3Subtotal,
+        disclosure_page3_net: page3.page3Net,
         ...(merchant ? { client_name: merchant } : {}),
         funder_name: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         ...(disclosureDate ? { disclosure_date: disclosureDate } : {}),
+        ...(frequencyLabel
+            ? {
+                  payment_frequency: frequencyLabel,
+                  disclosure_payment_frequency: frequencyLabel,
+              }
+            : {}),
     };
 
     if (isUtah && options?.inputs) {

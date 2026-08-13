@@ -11,26 +11,30 @@ import {
     getApplicationByApplicationId,
     getApplicationById,
     uploadApplicationDocuments,
-    parseApplicationPdfForClientPrefill,
+    getApplicationsByClient,
 } from '@/redux/actions/applicationActions'
-import { getClients } from '@/redux/actions/clientActions'
+import { getClients, createClient } from '@/redux/actions/clientActions'
 import {
     resetCreateApplication,
     resetUpdateApplication,
     clearApplicationDetail,
     resetUploadDocuments,
 } from '@/redux/slices/applicationSlice'
+import { resetCreateClient } from '@/redux/slices/clientSlice'
 import { toast } from 'react-toastify'
 import {
     ArrowLeft,
     Trash2,
     Loader2,
     Eye,
+    Repeat,
+    UserPlus,
 } from 'lucide-react'
 import uploadIcon from '../../../assets/folder.svg'
 
 import { Button } from '@/components/ui/button'
-// import { Input } from '@/components/ui/input'
+import { Input } from '@/components/ui/input'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import {
     Select,
@@ -53,7 +57,11 @@ import {
 } from '@/components/ui/table'
 import { useTheme } from '@/context/ThemeContext'
 import PDFViewerDocsModal from '@/components/application/PDFViewerDocsModal'
-import { cn, formatNumberUSForInput, parseNumberUS } from '@/lib/utils'
+import {
+    RefinanceDealSelectModal,
+    type ClientDealForRefinance,
+} from '@/components/application/RefinanceDealSelectModal'
+import { cn, formatNumberUS, formatNumberUSForInput, parseNumberUS } from '@/lib/utils'
 import { UsCurrencyInput } from '@/components/ui/us-currency-input'
 import { resolveSessionUser } from '@/lib/sessionRole'
 
@@ -67,17 +75,37 @@ interface UploadedFile {
 }
 
 interface ApplicationFormValues {
-    priority: string
-    type: string
     client: string
     loanAmount: string
+    createRefiDeal: boolean
+    createNewClient: boolean
+    newBusinessName: string
+    newOwnerFirstName: string
+    newOwnerLastName: string
+    newEin: string
+    newBusinessPhone: string
+}
+
+const DEFAULT_APPLICATION_PRIORITY = 'High'
+const DEFAULT_APPLICATION_TYPE = 'New'
+const REFINANCE_APPLICATION_TYPE = 'Refinance'
+const emptyClientAddress = {
+    address1: '',
+    address2: '',
+    city: '',
+    state: '',
+    zipCode: '',
 }
 
 // Validation Schema
 const applicationSchema = yup.object({
-    priority: yup.string().required('Priority is required'),
-    type: yup.string().required('Application Type is required'),
-    client: yup.string().required('Client is required'),
+    createNewClient: yup.boolean().default(false),
+    createRefiDeal: yup.boolean().default(false),
+    client: yup.string().when('createNewClient', {
+        is: true,
+        then: (schema) => schema.optional().nullable(),
+        otherwise: (schema) => schema.required('Client is required'),
+    }),
     loanAmount: yup
         .string()
         .default('')
@@ -87,6 +115,19 @@ const applicationSchema = yup.object({
             const n = parseNumberUS(value)
             return !Number.isNaN(n) && n >= 0
         }),
+    newBusinessName: yup.string().when('createNewClient', {
+        is: true,
+        then: (schema) => schema.trim().required('Business name is required'),
+        otherwise: (schema) => schema.optional(),
+    }),
+    newOwnerFirstName: yup.string().when('createNewClient', {
+        is: true,
+        then: (schema) => schema.trim().required('Owner first name is required'),
+        otherwise: (schema) => schema.optional(),
+    }),
+    newOwnerLastName: yup.string().optional(),
+    newEin: yup.string().optional(),
+    newBusinessPhone: yup.string().optional(),
 })
 
 // Select Options
@@ -95,19 +136,67 @@ interface SelectOption {
     label: string
 }
 
-const priorityOptions: SelectOption[] = [
-    { value: 'Low', label: 'Low' },
-    { value: 'Medium', label: 'Medium' },
-    { value: 'High', label: 'High' },
-    { value: 'Urgent', label: 'Urgent' },
-]
+function isRefinanceApplicationType(type: string | null | undefined): boolean {
+    const t = String(type ?? '').trim().toLowerCase()
+    return t === 'refinance' || t === 'refi'
+}
 
-const applicationTypeOptions: SelectOption[] = [
-    { value: 'New', label: 'New Application' },
-    { value: 'Renewal', label: 'Renewal' },
-    { value: 'Modification', label: 'Modification' },
-    // { value: 'Cancellation', label: 'Cancellation' },
-]
+function formatDealUsDate(value: unknown): string {
+    if (value == null) return ''
+    const t = String(value).trim()
+    if (!t) return ''
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) return t
+    if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
+        return `${t.slice(5, 7)}/${t.slice(8, 10)}/${t.slice(0, 4)}`
+    }
+    const d = new Date(t)
+    if (Number.isNaN(d.getTime())) return t
+    return new Intl.DateTimeFormat('en-US', {
+        month: '2-digit',
+        day: '2-digit',
+        year: 'numeric',
+        timeZone: 'UTC',
+    }).format(d)
+}
+
+function mapApiDealToRefinanceOption(raw: Record<string, unknown>): ClientDealForRefinance {
+    const id = String(raw._id ?? raw.id ?? '').trim()
+    const positions = Array.isArray(raw.positions)
+        ? (raw.positions as Array<Record<string, unknown>>)
+        : []
+    const balanceFromPositions = positions.reduce((sum, pos) => {
+        const bal = Number(pos.mcaEstBalance)
+        return Number.isFinite(bal) && bal > 0 ? sum + bal : sum
+    }, 0)
+    const explicitBalance = Number(raw.refinanceBalance)
+    const loanAmount = Number(raw.loanAmount)
+    const refinanceBalance =
+        (Number.isFinite(explicitBalance) && explicitBalance > 0
+            ? explicitBalance
+            : null) ??
+        (balanceFromPositions > 0 ? balanceFromPositions : null) ??
+        (Number.isFinite(loanAmount) && loanAmount > 0 ? loanAmount : 0)
+
+    const fundingDateFromPos = positions
+        .map((p) => p.fundingDate)
+        .find((d) => d != null && String(d).trim())
+
+    return {
+        id,
+        applicationId: (raw.applicationId as number | string | null) ?? null,
+        dealId: (raw.dealId as string | null) ?? null,
+        type: (raw.type as string | null) ?? null,
+        loanAmount: (raw.loanAmount as number | string | null) ?? null,
+        currentQueue: (raw.currentQueue as string | null) ?? null,
+        currentState: (raw.currentState as string | null) ?? null,
+        createdAt: (raw.createdAt as string | null) ?? null,
+        refinanceBalance,
+        previousDealDate:
+            formatDealUsDate(fundingDateFromPos) ||
+            formatDealUsDate(raw.createdAt) ||
+            '',
+    }
+}
 
 // Utility function to format file size
 const formatFileSize = (bytes: number): string => {
@@ -120,10 +209,15 @@ const formatFileSize = (bytes: number): string => {
 }
 
 const defaultFormValues: ApplicationFormValues = {
-    priority: '',
-    type: '',
     client: '',
     loanAmount: '',
+    createRefiDeal: false,
+    createNewClient: false,
+    newBusinessName: '',
+    newOwnerFirstName: '',
+    newOwnerLastName: '',
+    newEin: '',
+    newBusinessPhone: '',
 }
 
 const CreateApplication = () => {
@@ -131,7 +225,6 @@ const CreateApplication = () => {
     const dispatch = useDispatch<AppDispatch>()
     const { applicationId } = useParams<{ applicationId: string }>()
     const fileInputRef = useRef<HTMLInputElement>(null)
-    const autoClientPdfInputRef = useRef<HTMLInputElement>(null)
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
     const [isDragOver, setIsDragOver] = useState(false)
     const [clientOptions, setClientOptions] = useState<SelectOption[]>([])
@@ -140,7 +233,12 @@ const CreateApplication = () => {
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
     const [pdfMimeTypeHint, setPdfMimeTypeHint] = useState<string>("")
     const [pdfFileName, setPdfFileName] = useState<string>('')
-    const [isAutoCreatingClient, setIsAutoCreatingClient] = useState(false)
+    const [refinanceDealModalOpen, setRefinanceDealModalOpen] = useState(false)
+    const [selectedRefinanceDeal, setSelectedRefinanceDeal] =
+        useState<ClientDealForRefinance | null>(null)
+    const [clientDeals, setClientDeals] = useState<ClientDealForRefinance[]>([])
+    const [clientDealsLoading, setClientDealsLoading] = useState(false)
+    const [creatingClient, setCreatingClient] = useState(false)
 
     // Determine if we're in edit mode
     const isEditMode = !!applicationId
@@ -177,11 +275,80 @@ const CreateApplication = () => {
         handleSubmit,
         formState: { errors, isValid },
         reset,
+        watch,
+        setValue,
     } = useForm<ApplicationFormValues>({
         resolver: yupResolver(applicationSchema) as any,
         mode: 'all',
         defaultValues: defaultFormValues,
     })
+
+    const watchedClient = watch('client')
+    const isCreatingNewClient = Boolean(watch('createNewClient')) && !isEditMode
+    const isRefinanceType = Boolean(watch('createRefiDeal')) && !isCreatingNewClient
+
+    const selectedClientLabel = useMemo(() => {
+        return clientOptions.find((o) => o.value === watchedClient)?.label || ''
+    }, [clientOptions, watchedClient])
+
+    const loadClientDeals = useCallback(
+        async (clientId: string) => {
+            if (!clientId) {
+                setClientDeals([])
+                return
+            }
+            setClientDealsLoading(true)
+            try {
+                const result = (await dispatch(
+                    getApplicationsByClient(clientId) as any,
+                )) as {
+                    payload?: { data?: unknown }
+                    meta: { requestStatus: 'fulfilled' | 'rejected' }
+                }
+                if (result.meta.requestStatus !== 'fulfilled') {
+                    setClientDeals([])
+                    toast.error('Failed to load client deals')
+                    return
+                }
+                const raw = result.payload?.data
+                const list = Array.isArray(raw)
+                    ? raw
+                    : Array.isArray((raw as { data?: unknown } | undefined)?.data)
+                      ? ((raw as { data: unknown[] }).data)
+                      : []
+                const mapped = (list as Record<string, unknown>[])
+                    .map(mapApiDealToRefinanceOption)
+                    .filter((d) => d.id)
+                setClientDeals(mapped)
+            } catch {
+                setClientDeals([])
+                toast.error('Failed to load client deals')
+            } finally {
+                setClientDealsLoading(false)
+            }
+        },
+        [dispatch],
+    )
+
+    // When Refinance is selected with a client, open deal picker and load deals.
+    useEffect(() => {
+        if (!isRefinanceType) {
+            setSelectedRefinanceDeal(null)
+            setRefinanceDealModalOpen(false)
+            return
+        }
+        if (!watchedClient) {
+            setSelectedRefinanceDeal(null)
+            return
+        }
+        void loadClientDeals(watchedClient)
+        setRefinanceDealModalOpen(true)
+    }, [isRefinanceType, watchedClient, loadClientDeals])
+
+    // Clear selected REFI deal when client changes.
+    useEffect(() => {
+        setSelectedRefinanceDeal(null)
+    }, [watchedClient])
 
     // Fetch clients on mount
     useEffect(() => {
@@ -227,13 +394,18 @@ const CreateApplication = () => {
             : applicationData.client?._id || ''
 
         const formData: ApplicationFormValues = {
-            priority: applicationData.priority || '',
-            type: applicationData.type || '',
             client: clientId,
             loanAmount:
                 applicationData.loanAmount != null
                     ? formatNumberUSForInput(String(applicationData.loanAmount))
                     : '',
+            createRefiDeal: isRefinanceApplicationType(applicationData.type),
+            createNewClient: false,
+            newBusinessName: '',
+            newOwnerFirstName: '',
+            newOwnerLastName: '',
+            newEin: '',
+            newBusinessPhone: '',
         }
 
         reset(formData)
@@ -300,87 +472,6 @@ const CreateApplication = () => {
 
         setUploadedFiles((prev) => [...prev, ...newFiles])
     }, [])
-
-    // Handle Auto-Create Client from PDF
-    const handleAutoCreateClientFromPDF = useCallback(
-        async (file: File | null) => {
-            console.log('[AutoCreate] handler called with file:', file)
-
-            if (!file) {
-                toast.error('Please select a PDF file first')
-                return
-            }
-
-            setIsAutoCreatingClient(true)
-            try {
-                const result = (await dispatch(
-                    parseApplicationPdfForClientPrefill(file) as any
-                )) as {
-                    payload?: any
-                    meta: { requestStatus: 'fulfilled' | 'rejected' }
-                }
-
-                console.log('[AutoCreate] thunk result:', result)
-
-                if (result.meta.requestStatus !== 'fulfilled') {
-                    const errorMessage =
-                        (result as any)?.payload ||
-                        'Failed to parse application PDF'
-                    console.error('[AutoCreate] parse failed:', errorMessage)
-                    toast.error(errorMessage)
-                    return
-                }
-
-                const rawPayload = result.payload
-                const rawData = rawPayload?.data
-
-                console.log('[AutoCreate] raw payload/data from backend:', {
-                    rawPayload,
-                    rawData,
-                })
-
-                if (!rawData || !rawData.application || !rawData.client) {
-                    toast.error('Failed to auto-create client/application from PDF')
-                    return
-                }
-
-                const { existingClient } = rawData as { existingClient?: boolean }
-
-                const application = rawData.application as {
-                    _id?: string
-                    id?: string
-                    applicationId?: number
-                }
-                const mongoId = application?._id || application?.id
-                if (!mongoId) {
-                    toast.error('Application was created but could not determine its id.')
-                    return
-                }
-
-                if (existingClient) {
-                    toast.success(
-                        'Client already exists. Application has been created for the existing client.'
-                    )
-                } else {
-                    toast.success('Client created successfully and application generated.')
-                }
-
-                if (autoClientPdfInputRef.current) {
-                    autoClientPdfInputRef.current.value = ''
-                }
-
-                navigate('/applications', {
-                    state: { refreshApplicationsList: true },
-                })
-            } catch (error) {
-                console.error('[AutoCreate] unexpected error:', error)
-                toast.error('Failed to parse application PDF')
-            } finally {
-                setIsAutoCreatingClient(false)
-            }
-        },
-        [dispatch, navigate]
-    )
 
     // Handle drag events
     const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -474,20 +565,116 @@ const CreateApplication = () => {
     }, [uploadSuccess, uploadError, dispatch, applicationData])
 
     // Form submit handler
-    const onSubmit: SubmitHandler<ApplicationFormValues> = (data) => {
+    const onSubmit: SubmitHandler<ApplicationFormValues> = async (data) => {
         if (!currentUserId) {
             toast.error('Unable to determine the logged-in user. Please sign in again.')
             return
         }
+        const createNewClient = Boolean(data.createNewClient) && !isEditMode
+        if (!createNewClient && isRefinanceType && !selectedRefinanceDeal?.id) {
+            toast.error('Select a previous deal to refinance before creating this application.')
+            setRefinanceDealModalOpen(true)
+            if (data.client) void loadClientDeals(data.client)
+            return
+        }
+
+        let clientId = String(data.client ?? '').trim()
+        if (createNewClient) {
+            const businessName = String(data.newBusinessName ?? '').trim()
+            const ownerFirstName = String(data.newOwnerFirstName ?? '').trim()
+            if (!businessName || !ownerFirstName) {
+                toast.error('Business name and owner first name are required to create a client.')
+                return
+            }
+            setCreatingClient(true)
+            try {
+                const created = await dispatch(
+                    createClient({
+                        business: {
+                            name: businessName,
+                            email: '',
+                            number: String(data.newBusinessPhone ?? '').trim(),
+                            website: '',
+                            incorporationDate: '',
+                            incorporationState: '',
+                            businessEntityType: '',
+                            einNumber: String(data.newEin ?? '').trim(),
+                            monthlyRevenue: '',
+                            address: { ...emptyClientAddress },
+                        },
+                        owners: [
+                            {
+                                firstName: ownerFirstName,
+                                middleName: '',
+                                lastName: String(data.newOwnerLastName ?? '').trim(),
+                                email: '',
+                                mobileNumber: '',
+                                dateOfBirth: '',
+                                ssn: '',
+                                ficoScore: '',
+                                ownershipStartDate: '',
+                                ownershipPercentage: '',
+                                address: { ...emptyClientAddress },
+                            },
+                        ],
+                    }),
+                ).unwrap()
+                const createdClient = (created as { data?: { _id?: string; id?: string } })?.data ?? created
+                clientId = String(
+                    (createdClient as { _id?: string; id?: string })?._id ??
+                        (createdClient as { id?: string })?.id ??
+                        '',
+                ).trim()
+                if (!clientId) {
+                    toast.error('Client was created but its id could not be determined.')
+                    return
+                }
+                dispatch(resetCreateClient())
+                void dispatch(getClients({ limit: 100 }))
+            } catch (err: unknown) {
+                const message =
+                    typeof err === 'string'
+                        ? err
+                        : (err as { message?: string })?.message || 'Failed to create client'
+                toast.error(String(message))
+                return
+            } finally {
+                setCreatingClient(false)
+            }
+        }
+
+        if (!clientId) {
+            toast.error('Client is required.')
+            return
+        }
+
+        const existingType = String(applicationData?.type ?? '').trim()
         const payload = {
-            ...data,
-            // Hidden from UI — API still requires salesRepresentative; use current Super Admin.
-            salesRepresentative: currentUserId,
+            client: clientId,
             loanAmount: (() => {
                 if (!data.loanAmount || !String(data.loanAmount).trim()) return null
                 const n = parseNumberUS(data.loanAmount)
                 return Number.isNaN(n) ? null : n
             })(),
+            // Hidden from UI — API still requires these fields.
+            priority:
+                (isEditMode && applicationData?.priority
+                    ? String(applicationData.priority)
+                    : DEFAULT_APPLICATION_PRIORITY) || DEFAULT_APPLICATION_PRIORITY,
+            type: isRefinanceType
+                ? REFINANCE_APPLICATION_TYPE
+                : isEditMode && existingType && !isRefinanceApplicationType(existingType)
+                  ? existingType
+                  : DEFAULT_APPLICATION_TYPE,
+            // Hidden from UI — API still requires salesRepresentative; use current Super Admin.
+            salesRepresentative: currentUserId,
+            ...(isRefinanceType && selectedRefinanceDeal
+                ? {
+                      previousApplicationId: selectedRefinanceDeal.id,
+                      refinanceAmount: selectedRefinanceDeal.refinanceBalance ?? 0,
+                      previousDealDate: selectedRefinanceDeal.previousDealDate || '',
+                  }
+                : {}),
         }
         if (isEditMode && applicationData) {
             const id = applicationData._id
@@ -536,6 +723,20 @@ const CreateApplication = () => {
             ? 'border-slate-600/50 bg-[#232428] text-slate-100'
             : 'border-slate-200/90 bg-[#f8fafc] text-slate-800',
     )
+    const fieldLabelClass = `text-sm font-medium font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`
+    const fieldInputClass = `h-10 w-full rounded-md bg-background border ${isDark ? 'border-[#374151]' : 'border-[#E5E7EB]'}`
+    const optionCardClass = (active: boolean, disabled = false) =>
+        cn(
+            'flex min-w-[220px] flex-1 items-start gap-3 rounded-xl border px-4 py-3.5 text-left transition-colors',
+            disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+            active
+                ? isDark
+                    ? 'border-[var(--brand)] bg-[var(--brand)]/15 shadow-[0_0_0_1px_var(--brand)]'
+                    : 'border-[var(--brand)] bg-[var(--brand)]/5 shadow-[0_0_0_1px_var(--brand)]'
+                : isDark
+                    ? 'border-[#374151] bg-[#1a1b1e] hover:border-[#5AACEA]/50'
+                    : 'border-[#E5E7EB] bg-white hover:border-[var(--brand)]/50 hover:bg-slate-50',
+        )
 
     return (
         <div className="min-h-[calc(100vh-64px)] w-full bg-background p-4 md:p-6 lg:p-8">
@@ -553,8 +754,8 @@ const CreateApplication = () => {
                             >
                                 <ArrowLeft className={`size-5 ${isDark ? 'text-white' : 'text-[#111827]'}`} />
                             </Button>
-                            <span className={`text-[1.2rem] font-semibold uppercase ${isDark ? 'text-white' : 'text-[#111827]'}`}>
-                                {isEditMode ? 'Edit Application' : 'Create New Application'}
+                            <span className={`text-[1.2rem] font-semibold ${isDark ? 'text-white' : 'text-[#111827]'}`}>
+                                {isEditMode ? 'Edit Application' : 'Create new client + application'}
                             </span>
                         </CardContent>
                     </Card>
@@ -564,85 +765,250 @@ const CreateApplication = () => {
                         {/* Business Profile Section */}
                         <Card className={`overflow-hidden rounded-sm border box-border p-0 pb-5 shadow-[0px_4px_20px_0px_#00000005] ${isDark ? 'border-[#374151] bg-[#141517]' : 'border-[#FDFDFD]'
                             }`}>
-                            <CardContent className="space-y-3 p-0">
+                            <CardContent className="space-y-5 p-0 pb-6">
                                 <h2 className={sectionHeaderBarClass}>
-                                    Application Details
+                                    {isCreatingNewClient ? 'Create new client + application' : 'Application Details'}
                                 </h2>
 
-                                {/* First Row — Priority + Application Type */}
-                                <div className="px-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    {/* Priority */}
-                                    <div className="space-y-1.5">
-                                        <Label className={`text-sm font-[400] font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`}>
-                                            Priority <span className="text-red-500">*</span>
-                                        </Label>
+                                <div className="grid grid-cols-1 gap-3 px-6 sm:grid-cols-2">
+                                    <Controller
+                                        control={control}
+                                        name="createRefiDeal"
+                                        render={({ field }) => {
+                                            const active = Boolean(field.value) && !isCreatingNewClient
+                                            return (
+                                            <label
+                                                className={optionCardClass(active, isCreatingNewClient)}
+                                            >
+                                                <Checkbox
+                                                    checked={active}
+                                                    disabled={isCreatingNewClient}
+                                                    className="mt-0.5 size-5 rounded-[6px] [&_svg]:size-4"
+                                                    onCheckedChange={(checked: boolean | 'indeterminate') => {
+                                                        const next = checked === true
+                                                        field.onChange(next)
+                                                        if (next) {
+                                                            if (watchedClient) {
+                                                                void loadClientDeals(watchedClient)
+                                                                setRefinanceDealModalOpen(true)
+                                                            }
+                                                        } else {
+                                                            setSelectedRefinanceDeal(null)
+                                                            setRefinanceDealModalOpen(false)
+                                                        }
+                                                    }}
+                                                />
+                                                <span className="flex min-w-0 items-start gap-2.5">
+                                                    <Repeat
+                                                        className={`mt-0.5 h-5 w-5 shrink-0 ${
+                                                            active
+                                                                ? 'text-[var(--brand)]'
+                                                                : isDark
+                                                                  ? 'text-slate-400'
+                                                                  : 'text-slate-500'
+                                                        }`}
+                                                        aria-hidden
+                                                    />
+                                                    <span className="min-w-0">
+                                                        <span className={`block text-sm font-semibold font-roboto ${isDark ? 'text-white' : 'text-[#111827]'}`}>
+                                                            Create a refi deal
+                                                        </span>
+                                                        <span className={`mt-0.5 block text-xs leading-snug ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                                                            {isCreatingNewClient
+                                                                ? 'Unavailable while creating a new client'
+                                                                : watchedClient
+                                                                  ? 'Pick a previous deal for this client'
+                                                                  : 'Select a client below, then choose the prior deal'}
+                                                        </span>
+                                                    </span>
+                                                </span>
+                                            </label>
+                                            )
+                                        }}
+                                    />
+                                    {!isEditMode && (
                                         <Controller
                                             control={control}
-                                            name="priority"
-                                            render={({ field }) => (
-                                                <Select
-                                                    value={field.value}
-                                                    onValueChange={field.onChange}
-                                                >
-                                                    <SelectTrigger className="h-9 w-full rounded-md bg-background border border-[#E5E7EB]">
-                                                        <SelectValue placeholder="Select Priority" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {priorityOptions.map((option) => (
-                                                            <SelectItem key={option.value} value={option.value}>
-                                                                {option.label}
-                                                            </SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                            )}
+                                            name="createNewClient"
+                                            render={({ field }) => {
+                                                const active = Boolean(field.value)
+                                                return (
+                                                <label className={optionCardClass(active)}>
+                                                    <Checkbox
+                                                        checked={active}
+                                                        className="mt-0.5 size-5 rounded-[6px] [&_svg]:size-4"
+                                                        onCheckedChange={(checked: boolean | 'indeterminate') => {
+                                                            const next = checked === true
+                                                            field.onChange(next)
+                                                            setValue('createNewClient', next, { shouldValidate: true })
+                                                            if (next) {
+                                                                setValue('createRefiDeal', false, { shouldValidate: true })
+                                                                setValue('client', '', { shouldValidate: true })
+                                                                setSelectedRefinanceDeal(null)
+                                                                setRefinanceDealModalOpen(false)
+                                                            }
+                                                        }}
+                                                    />
+                                                    <span className="flex min-w-0 items-start gap-2.5">
+                                                        <UserPlus
+                                                            className={`mt-0.5 h-5 w-5 shrink-0 ${
+                                                                active
+                                                                    ? 'text-[var(--brand)]'
+                                                                    : isDark
+                                                                      ? 'text-slate-400'
+                                                                      : 'text-slate-500'
+                                                            }`}
+                                                            aria-hidden
+                                                        />
+                                                        <span className="min-w-0">
+                                                            <span className={`block text-sm font-semibold font-roboto ${isDark ? 'text-white' : 'text-[#111827]'}`}>
+                                                                Create new client + application
+                                                            </span>
+                                                            <span className={`mt-0.5 block text-xs leading-snug ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                                                                Enter business and owner details, then submit once
+                                                            </span>
+                                                        </span>
+                                                    </span>
+                                                </label>
+                                                )
+                                            }}
                                         />
-                                        {errors.priority && (
-                                            <p className="text-xs text-red-500 mt-1">
-                                                {errors.priority.message}
-                                            </p>
-                                        )}
-                                    </div>
-
-                                    {/* Application Type */}
-                                    <div className="space-y-1.5">
-                                        <Label className={`text-sm font-[400] font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`}>
-                                            Application Type <span className="text-red-500">*</span>
-                                        </Label>
-                                        <Controller
-                                            control={control}
-                                            name="type"
-                                            render={({ field }) => (
-                                                <Select
-                                                    value={field.value}
-                                                    onValueChange={field.onChange}
-                                                >
-                                                    <SelectTrigger className="h-9 w-full rounded-md bg-background border border-[#E5E7EB]">
-                                                        <SelectValue placeholder="Select Application Type" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {applicationTypeOptions.map((option) => (
-                                                            <SelectItem key={option.value} value={option.value}>
-                                                                {option.label}
-                                                            </SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                            )}
-                                        />
-                                        {errors.type && (
-                                            <p className="text-xs text-red-500 mt-1">
-                                                {errors.type.message}
-                                            </p>
-                                        )}
-                                    </div>
+                                    )}
                                 </div>
 
-                                {/* Second Row — lg: flex row so Client / Loan / buttons share one control baseline (spacer label matches Client label height) */}
-                                <div className="grid grid-cols-1 gap-4 px-6 sm:grid-cols-2 lg:flex lg:flex-row lg:flex-nowrap lg:items-start lg:gap-x-4">
-                                    {/* Client */}
-                                    <div className="flex min-w-0 flex-col gap-1.5 lg:flex-1">
-                                        <Label className={`text-sm font-[400] font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`}>
+                                {isCreatingNewClient ? (
+                                    <div
+                                        className={`mx-6 rounded-xl border px-4 py-4 space-y-4 ${
+                                            isDark
+                                                ? 'border-[var(--brand)]/40 bg-[#1a1b1e]'
+                                                : 'border-[var(--brand)]/25 bg-[var(--brand)]/[0.03]'
+                                        }`}
+                                    >
+                                        <div>
+                                            <p className={`text-sm font-semibold font-roboto ${isDark ? 'text-white' : 'text-[#111827]'}`}>
+                                                Create new client + application
+                                            </p>
+                                            <p className={`mt-0.5 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                                                Fill in the client, then submit to create both together.
+                                            </p>
+                                        </div>
+                                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                                            <div className="flex min-w-0 flex-col gap-1.5">
+                                                <Label className={fieldLabelClass}>
+                                                    Business Name <span className="text-red-500">*</span>
+                                                </Label>
+                                                <Controller
+                                                    control={control}
+                                                    name="newBusinessName"
+                                                    render={({ field }) => (
+                                                        <Input
+                                                            {...field}
+                                                            placeholder="Enter business name"
+                                                            className={fieldInputClass}
+                                                        />
+                                                    )}
+                                                />
+                                                {errors.newBusinessName && (
+                                                    <p className="text-xs text-red-500">
+                                                        {errors.newBusinessName.message}
+                                                    </p>
+                                                )}
+                                            </div>
+                                            <div className="flex min-w-0 flex-col gap-1.5">
+                                                <Label className={fieldLabelClass}>
+                                                    Owner First Name <span className="text-red-500">*</span>
+                                                </Label>
+                                                <Controller
+                                                    control={control}
+                                                    name="newOwnerFirstName"
+                                                    render={({ field }) => (
+                                                        <Input
+                                                            {...field}
+                                                            placeholder="Enter first name"
+                                                            className={fieldInputClass}
+                                                        />
+                                                    )}
+                                                />
+                                                {errors.newOwnerFirstName && (
+                                                    <p className="text-xs text-red-500">
+                                                        {errors.newOwnerFirstName.message}
+                                                    </p>
+                                                )}
+                                            </div>
+                                            <div className="flex min-w-0 flex-col gap-1.5">
+                                                <Label className={fieldLabelClass}>
+                                                    Owner Last Name
+                                                </Label>
+                                                <Controller
+                                                    control={control}
+                                                    name="newOwnerLastName"
+                                                    render={({ field }) => (
+                                                        <Input
+                                                            {...field}
+                                                            placeholder="Enter last name"
+                                                            className={fieldInputClass}
+                                                        />
+                                                    )}
+                                                />
+                                            </div>
+                                            <div className="flex min-w-0 flex-col gap-1.5">
+                                                <Label className={fieldLabelClass}>EIN</Label>
+                                                <Controller
+                                                    control={control}
+                                                    name="newEin"
+                                                    render={({ field }) => (
+                                                        <Input
+                                                            {...field}
+                                                            placeholder="XX-XXXXXXX"
+                                                            className={fieldInputClass}
+                                                        />
+                                                    )}
+                                                />
+                                            </div>
+                                            <div className="flex min-w-0 flex-col gap-1.5">
+                                                <Label className={fieldLabelClass}>
+                                                    Business Phone
+                                                </Label>
+                                                <Controller
+                                                    control={control}
+                                                    name="newBusinessPhone"
+                                                    render={({ field }) => (
+                                                        <Input
+                                                            {...field}
+                                                            placeholder="(XXX) XXX-XXXX"
+                                                            className={fieldInputClass}
+                                                        />
+                                                    )}
+                                                />
+                                            </div>
+                                            <div className="flex min-w-0 flex-col gap-1.5">
+                                                <Label className={fieldLabelClass}>Loan Amount</Label>
+                                                <Controller
+                                                    control={control}
+                                                    name="loanAmount"
+                                                    render={({ field }) => (
+                                                        <UsCurrencyInput
+                                                            value={field.value ?? ''}
+                                                            onChange={field.onChange}
+                                                            onBlur={field.onBlur}
+                                                            name={field.name}
+                                                            ref={field.ref}
+                                                            className={fieldInputClass}
+                                                        />
+                                                    )}
+                                                />
+                                                {errors.loanAmount && (
+                                                    <p className="text-xs text-red-500">
+                                                        {errors.loanAmount.message}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                <div className="grid grid-cols-1 gap-4 px-6 sm:grid-cols-2">
+                                    <div className="flex min-w-0 flex-col gap-1.5">
+                                        <Label className={fieldLabelClass}>
                                             Client <span className="text-red-500">*</span>
                                         </Label>
                                         <Controller
@@ -651,10 +1017,17 @@ const CreateApplication = () => {
                                             render={({ field }) => (
                                                 <Select
                                                     value={field.value}
-                                                    onValueChange={field.onChange}
+                                                    onValueChange={(value: string) => {
+                                                        field.onChange(value)
+                                                        setSelectedRefinanceDeal(null)
+                                                        if (isRefinanceType && value) {
+                                                            void loadClientDeals(value)
+                                                            setRefinanceDealModalOpen(true)
+                                                        }
+                                                    }}
                                                     disabled={clientsLoading}
                                                 >
-                                                    <SelectTrigger className="h-9 w-full rounded-md bg-background border border-[#E5E7EB]">
+                                                    <SelectTrigger className={`${fieldInputClass} w-full`}>
                                                         <SelectValue placeholder={clientsLoading ? "Loading clients..." : "Select Client"} />
                                                     </SelectTrigger>
                                                     <SelectContent>
@@ -668,15 +1041,13 @@ const CreateApplication = () => {
                                             )}
                                         />
                                         {errors.client && (
-                                            <p className="text-xs text-red-500 mt-1">
+                                            <p className="text-xs text-red-500">
                                                 {errors.client.message}
                                             </p>
                                         )}
                                     </div>
-
-                                    {/* Loan Amount */}
-                                    <div className="flex min-w-0 flex-col gap-1.5 lg:flex-1">
-                                        <Label className={`text-sm font-[400] font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`}>
+                                    <div className="flex min-w-0 flex-col gap-1.5">
+                                        <Label className={fieldLabelClass}>
                                             Loan Amount
                                         </Label>
                                         <Controller
@@ -689,81 +1060,78 @@ const CreateApplication = () => {
                                                     onBlur={field.onBlur}
                                                     name={field.name}
                                                     ref={field.ref}
-                                                    className={`h-9 w-full rounded-md bg-background border ${isDark ? 'border-[#374151]' : 'border-[#E5E7EB]'}`}
+                                                    className={fieldInputClass}
                                                 />
                                             )}
                                         />
                                         {errors.loanAmount && (
-                                            <p className="text-xs text-red-500 mt-1">
+                                            <p className="text-xs text-red-500">
                                                 {errors.loanAmount.message}
                                             </p>
                                         )}
                                     </div>
+                                </div>
+                                )}
 
-                                    {/* Add / Auto-Create — invisible label mirrors Client row so h-9 buttons line up with Select/Input */}
-                                    <div className="flex flex-col gap-1.5 sm:col-span-2 lg:shrink-0">
-                                        <Label
-                                            aria-hidden
-                                            tabIndex={-1}
-                                            className={cn(
-                                                'pointer-events-none hidden select-none lg:flex lg:opacity-0',
-                                                `text-sm font-[400] font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`,
-                                            )}
-                                        >
-                                            Client <span className="text-red-500">*</span>
-                                        </Label>
-                                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:flex-nowrap">
+                                {isRefinanceType && (
+                                    <div className={`mx-6 rounded-xl border px-4 py-4 ${
+                                        isDark
+                                            ? 'border-dashed border-slate-600 bg-slate-900/40'
+                                            : 'border-dashed border-[#D7DEE8] bg-slate-50'
+                                    }`}>
+                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                            <div className="space-y-1 text-sm">
+                                                <p className={`font-semibold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>
+                                                    Previous deal for refinance
+                                                </p>
+                                                {selectedRefinanceDeal ? (
+                                                    <p className="text-muted-foreground">
+                                                        Deal{" "}
+                                                        <span className={`font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                                                            {selectedRefinanceDeal.dealId ||
+                                                                (selectedRefinanceDeal.applicationId != null
+                                                                    ? `#${selectedRefinanceDeal.applicationId}`
+                                                                    : selectedRefinanceDeal.id.slice(0, 8))}
+                                                        </span>
+                                                        {" · "}
+                                                        REFI{" "}
+                                                        <span className="font-semibold tabular-nums">
+                                                            $
+                                                            {formatNumberUS(
+                                                                selectedRefinanceDeal.refinanceBalance ?? 0,
+                                                            )}
+                                                        </span>
+                                                        {" · "}
+                                                        Date{" "}
+                                                        <span className="font-semibold">
+                                                            {selectedRefinanceDeal.previousDealDate || "—"}
+                                                        </span>
+                                                    </p>
+                                                ) : (
+                                                    <p className="text-amber-700 dark:text-amber-400">
+                                                        {watchedClient
+                                                            ? 'Select a prior deal for this client to continue.'
+                                                            : 'Select a client first, then pick the previous deal.'}
+                                                    </p>
+                                                )}
+                                            </div>
                                             <Button
                                                 type="button"
-                                                className="h-9 shrink-0 px-4 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
-                                                onClick={() => navigate('/create-clients')}
+                                                variant="outline"
+                                                className="h-10 shrink-0"
+                                                disabled={!watchedClient}
+                                                loading={clientDealsLoading}
+                                                onClick={() => {
+                                                    if (!watchedClient) return
+                                                    void loadClientDeals(watchedClient)
+                                                    setRefinanceDealModalOpen(true)
+                                                }}
                                             >
-                                                Add Client
+                                                {selectedRefinanceDeal ? 'Change deal' : 'Select deal'}
                                             </Button>
-                                            <div className="flex shrink-0">
-                                                <input
-                                                    ref={autoClientPdfInputRef}
-                                                    type="file"
-                                                    accept="application/pdf"
-                                                    className="hidden"
-                                                    onChange={(e) =>
-                                                        handleAutoCreateClientFromPDF(
-                                                            e.target.files?.[0] || null,
-                                                        )
-                                                    }
-                                                />
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    className="h-9 whitespace-nowrap px-4 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
-                                                    onClick={() => autoClientPdfInputRef.current?.click()}
-                                                    disabled={isAutoCreatingClient}
-                                                >
-                                                    {isAutoCreatingClient && (
-                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                    )}
-                                                    Auto-Create from PDF
-                                                </Button>
-                                            </div>
                                         </div>
                                     </div>
-
-                                    {/* Note */}
-                                    {/* <div className="space-y-1.5">
-                                         <Label className={`text-sm font-[400] font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`}>Note</Label>
-                                        <Controller
-                                            control={control}
-                                            name="note"
-                                            render={({ field }) => (
-                                                <Input
-                                                    {...field}
-                                                    placeholder="Add your notes here..."
-                                                    className="mb-1.5 w-full rounded-[5px] bg-background border border-[#E5E7EB]"
-                                                />
-                                            )}
-                                        />
-                                    </div> */}
-                                </div>
+                                )}
                             </CardContent>
                         </Card>
 
@@ -832,9 +1200,9 @@ const CreateApplication = () => {
                                         type="button"
                                         onClick={handleDocumentSubmit}
                                         className="h-9 px-4 bg-primary text-primary-foreground hover:bg-primary/90"
-                                        disabled={uploadedFiles.length === 0 || uploadLoading}
+                                        disabled={uploadedFiles.length === 0}
+                                        loading={uploadLoading}
                                     >
-                                        {uploadLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                                         Upload Documents
                                     </Button>
                                 )}
@@ -973,10 +1341,13 @@ const CreateApplication = () => {
                             <Button
                                 type="submit"
                                 className="px-4 shadow-[0px_0px_0px_1px_#5E5ADB] py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
-                                disabled={isLoading || !isValid}
+                                loading={isLoading || creatingClient}
+                                disabled={
+                                    !isValid ||
+                                    (isRefinanceType && !selectedRefinanceDeal)
+                                }
                             >
-                                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                {isEditMode ? 'Update' : 'Submit'}
+                                {isEditMode ? 'Update' : isCreatingNewClient ? 'Create client + application' : 'Submit'}
                             </Button>
                         </div>
                     </form>
@@ -990,6 +1361,20 @@ const CreateApplication = () => {
                 fileUrl={pdfFileUrl}
                 fileName={pdfFileName}
                 mimeTypeHint={pdfMimeTypeHint}
+            />
+
+            <RefinanceDealSelectModal
+                open={refinanceDealModalOpen}
+                onOpenChange={setRefinanceDealModalOpen}
+                deals={clientDeals}
+                loading={clientDealsLoading}
+                selectedDealId={selectedRefinanceDeal?.id ?? null}
+                clientLabel={selectedClientLabel}
+                onSelect={(deal) => {
+                    setSelectedRefinanceDeal(deal)
+                    setRefinanceDealModalOpen(false)
+                    toast.success('Previous deal selected for refinance')
+                }}
             />
         </div>
     )

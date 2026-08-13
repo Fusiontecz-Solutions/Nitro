@@ -7,8 +7,34 @@ import {
     roundMoney,
 } from "@/lib/offerRepaymentCalculations";
 import { resolveAppendixUnderwritingFeesDollars, getApplicationClientPrefillArgs } from "./Contract";
+import { DISCLOSURE_PLATFORM_FEE_USD } from "./platformDocumentConfig";
+
+export { DISCLOSURE_PLATFORM_FEE_USD };
 
 export type DisclosureCalculatorFrequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly";
+
+/** Origination fee shown on disclosures = applicable fee + $50. */
+export function applyDisclosurePlatformFee(applicableFee: number): number {
+    return roundMoney(Math.max(0, applicableFee) + DISCLOSURE_PLATFORM_FEE_USD);
+}
+
+/**
+ * Disclosure payment frequency labels: DAY / WEEK (not DAILY / WEEKLY).
+ * Main contract / template keys still use Daily / Weekly elsewhere.
+ */
+export function formatDisclosurePaymentFrequencyLabel(raw: unknown): string {
+    const text = String(raw ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ");
+    if (!text) return "";
+    if (text === "day" || text === "daily") return "DAY";
+    if (text === "week" || text === "weekly") return "WEEK";
+    if (text === "bi weekly" || text === "biweekly") return "BI-WEEK";
+    if (text === "month" || text === "monthly") return "MONTH";
+    return text.toUpperCase();
+}
 
 export interface DisclosureCalculatorInputs {
     state: string;
@@ -20,6 +46,10 @@ export interface DisclosureCalculatorInputs {
     brokerFeePaidByMerchant?: number;
     brokerFeePaidByFunder?: number;
     isRefinance?: boolean;
+    /** Previous deal payoff / REFI balance (dollars). Used only when isRefinance. */
+    refinanceAmount?: number;
+    /** Previous deal / agreement date (MM/DD/YYYY or ISO). */
+    previousDealDate?: string;
     numberOfPayments: number;
     numberOfPaymentDays: number;
     disbursementDate: string;
@@ -44,12 +74,18 @@ export interface DisclosureCalculatorResult {
     percentOfDailyIncomePurchased: number;
     estimatedTermDays: number;
     checkValue: number;
+    /** Present when isRefinance — keep separate from recipientFunds / amountFinanced. */
+    isRefinance?: boolean;
+    netContractedFunding?: number;
+    previousRefiBalance?: number;
+    actualDisbursement?: number;
+    previousDealDate?: string;
 }
 
 const WEEKS_PER_MONTH = 4.3;
 const BUSINESS_DAYS_PER_WEEK = 5;
-/** APR term adjustment for daily deals (12 wk / 60 day). */
-const APR_TERM_DAYS_PER_WEEK = 49 / 12;
+/** Business days treated as one month for APR term (50 days → 3 months). */
+const APR_BUSINESS_DAYS_PER_MONTH = 20;
 
 function parseMoney(value: unknown): number {
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -136,54 +172,127 @@ export function computePercentOfMerchantDailyIncomePurchased(args: {
     return roundMoney((estimatedPayment / averageMonthlyRevenue) * 100);
 }
 
+/** PDF / APR term: 50 business days = 2.5 months → round up to 3. */
+export function computeAprTermMonthsFromBusinessDays(businessDays: number): number {
+    const days = Math.max(0, businessDays);
+    if (!(days > 0)) return 0;
+    return Math.max(1, Math.ceil(days / APR_BUSINESS_DAYS_PER_MONTH));
+}
+
 /**
- * Disclosure APR: finance charge over purchase price, annualized with adjusted term days.
- * Matches the reference example (≈446.38% for $20k / 1.499 / 60 daily payments).
+ * Estimated term in months for simple APR annualization.
+ * Monthly uses payment-period count; daily/weekly use business-days ÷ 20.
+ */
+export function computeDisclosureTermMonths(args: {
+    frequency: DisclosureCalculatorFrequency;
+    numberOfPayments: number;
+    numberOfPaymentDays: number;
+    numberOfWeeks: number;
+}): number {
+    const { frequency, numberOfPayments, numberOfPaymentDays, numberOfWeeks } = args;
+    const periods = Math.max(1, Math.trunc(numberOfPayments) || 1);
+
+    if (frequency === "Monthly") {
+        return periods;
+    }
+    if (frequency === "Bi-Weekly") {
+        return Math.max(1, Math.ceil(periods / 2));
+    }
+    if (frequency === "Weekly") {
+        return computeAprTermMonthsFromBusinessDays(periods * BUSINESS_DAYS_PER_WEEK);
+    }
+
+    const businessDays =
+        numberOfPaymentDays > 0
+            ? numberOfPaymentDays
+            : Math.max(1, numberOfWeeks) * BUSINESS_DAYS_PER_WEEK;
+    return computeAprTermMonthsFromBusinessDays(businessDays);
+}
+
+/**
+ * Approximate disclosure APR using the MCA APR Calculator inputs from the Guide:
+ *   Amount Borrowed → Contract Amount (purchasePrice)
+ *   Amount to Pay Back → Total Payback
+ *   Estimated Term in Months → deal term in months (business days ÷ 20, rounded up)
+ *
+ * Calculator annualization (same as the MCA APR tool UI):
+ *   Cost Rate = (Payback − Borrowed) / Borrowed = financeCharge / purchasePrice
+ *   APR = (Cost Rate / TermMonths) × 12 × 100
+ *
+ * Example: $10k borrowed, $15k payback, 12 months → cost rate 0.5 → APR 50%.
  */
 export function computeDisclosureApr(args: {
     financeCharge: number;
     purchasePrice: number;
-    numberOfPaymentDays: number;
-    numberOfWeeks: number;
+    termMonths: number;
 }): number {
-    const { financeCharge, purchasePrice, numberOfPaymentDays, numberOfWeeks } = args;
-    if (!(purchasePrice > 0) || !(financeCharge > 0)) return 0;
+    const { financeCharge, purchasePrice, termMonths } = args;
+    if (!(purchasePrice > 0) || !(financeCharge > 0) || !(termMonths > 0)) return 0;
 
-    const aprTermDays =
-        numberOfPaymentDays > 0
-            ? Math.max(1, roundMoney(numberOfWeeks * APR_TERM_DAYS_PER_WEEK))
-            : Math.max(1, numberOfWeeks);
-
-    const apr = (financeCharge / purchasePrice) / (aprTermDays / 365) * 100;
+    const costRate = financeCharge / purchasePrice;
+    const apr = (costRate / termMonths) * 12 * 100;
     return roundMoney(apr);
 }
 
 export function calculateDisclosureMetrics(
     input: DisclosureCalculatorInputs,
 ): DisclosureCalculatorResult {
+    /** Calculator input `purchasePrice` = funding / contract amount (not payback). */
     const purchasePrice = Math.max(0, input.purchasePrice);
     const factorRate = input.factorRate > 0 ? input.factorRate : 1;
-    const originationFee = Math.max(0, input.originationFee);
+    /** Applicable fee from offer/CRM; disclosures always add the $50 platform fee. */
+    const applicableOriginationFee = Math.max(0, input.originationFee);
+    const originationFee = applyDisclosurePlatformFee(applicableOriginationFee);
     const brokerMerchant = Math.max(0, input.brokerFeePaidByMerchant ?? 0);
     const brokerFunder = Math.max(0, input.brokerFeePaidByFunder ?? 0);
+    const isRefinance = Boolean(input.isRefinance);
+    const previousRefiBalance = Math.max(0, input.refinanceAmount ?? 0);
 
+    /** Receivables / repayment amount the merchant must repay. */
     const revenuePurchased = roundMoney(purchasePrice * factorRate);
+    /**
+     * Net Funds Provided = Funding − (applicable fee + $50) − broker-by-merchant.
+     * Same stack as displayed Origination Fee (applicable + $50).
+     */
     const amountFinanced = roundMoney(
         Math.max(0, purchasePrice - originationFee - brokerMerchant),
     );
-    const checkValue = input.isRefinance ? 0 : 0;
-    const recipientFunds = roundMoney(Math.max(0, amountFinanced - checkValue));
-    const financeCharge = roundMoney(Math.max(0, revenuePurchased - recipientFunds - brokerFunder));
+
+    /**
+     * PDF money layer:
+     * - Net Contracted Funding = Contract − Origination (− broker paid by merchant)
+     * - Actual Disbursement (REFI) = Net Contracted − Previous Refi Balance
+     * - Finance Charge = Total Payback − Contract Amount (same REFI / NO-REFI)
+     * Keep Net Contracted and Actual Disbursement as separate values.
+     */
+    const netContractedFunding = amountFinanced;
+    const actualDisbursement = isRefinance
+        ? roundMoney(Math.max(0, netContractedFunding - previousRefiBalance))
+        : netContractedFunding;
+    const checkValue = isRefinance ? previousRefiBalance : 0;
+    /** Disclosure “recipient funds” / page-3 top: net after fees; REFI uses actual disbursement. */
+    const recipientFunds = isRefinance
+        ? actualDisbursement
+        : netContractedFunding;
+    const financeCharge = roundMoney(
+        Math.max(0, revenuePurchased - purchasePrice - brokerFunder),
+    );
     const estimatedTotalPayment = revenuePurchased;
 
     const { numberOfWeeks, actualPaymentCount } = resolveDisclosurePaymentSchedule(input);
     const estimatedPayment = roundMoney(estimatedTotalPayment / actualPaymentCount);
     const paymentTotal = estimatedTotalPayment;
 
+    /** PDF: Daily × 20, Weekly × 4 (do not use 4.3 conversion for disclosure monthly cost). */
     const estimatedMonthlyCost = roundMoney(
         estimatedPayment *
-            (input.numberOfPaymentDays / Math.max(numberOfWeeks, 1)) *
-            WEEKS_PER_MONTH,
+            (input.frequency === "Weekly"
+                ? 4
+                : input.frequency === "Bi-Weekly"
+                  ? 2
+                  : input.frequency === "Monthly"
+                    ? 1
+                    : 20),
     );
 
     const estimatedMerchantAverageMonthlyRevenue = averagePositive(input.monthlyRevenues);
@@ -195,12 +304,23 @@ export function calculateDisclosureMetrics(
         numberOfPaymentDays: input.numberOfPaymentDays,
     });
 
-    const estimatedAnnualPercentageRate = computeDisclosureApr({
-        financeCharge,
-        purchasePrice,
+    const termMonths = computeDisclosureTermMonths({
+        frequency: input.frequency,
+        numberOfPayments: input.numberOfPayments,
         numberOfPaymentDays: input.numberOfPaymentDays,
         numberOfWeeks,
     });
+    const estimatedAnnualPercentageRate = computeDisclosureApr({
+        financeCharge,
+        purchasePrice,
+        termMonths,
+    });
+
+    /** Guide CA/NY: calendar days (weeks × 7). Payment-day count kept for schedules separately. */
+    const estimatedTermCalendarDays =
+        input.frequency === "Weekly" || input.frequency === "Daily"
+            ? Math.max(1, numberOfWeeks * 7)
+            : Math.max(0, Math.trunc(input.numberOfPaymentDays));
 
     return {
         purchasePrice,
@@ -215,8 +335,15 @@ export function calculateDisclosureMetrics(
         estimatedPayment,
         estimatedMonthlyCost,
         percentOfDailyIncomePurchased,
-        estimatedTermDays: Math.max(0, Math.trunc(input.numberOfPaymentDays)),
+        estimatedTermDays: estimatedTermCalendarDays,
         checkValue,
+        isRefinance,
+        netContractedFunding,
+        previousRefiBalance: isRefinance ? previousRefiBalance : 0,
+        actualDisbursement,
+        previousDealDate: isRefinance
+            ? formatDisclosureUsDate(input.previousDealDate ?? "")
+            : undefined,
     };
 }
 
@@ -483,6 +610,22 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         resolvedPaymentDays = Math.max(resolvedPaymentDays, numberOfPayments * BUSINESS_DAYS_PER_WEEK);
     }
 
+    const refinanceAmount =
+        parseMoney(offer?.refinanceAmount) ||
+        parseMoney(contract.refinanceAmount) ||
+        parseMoney(
+            (contract.contractPrefillOverrides as Record<string, unknown> | null)
+                ?.refinanceAmount,
+        );
+    const isRefinance = refinanceAmount > 0;
+    const previousDealDate = formatDisclosureUsDate(
+        offer?.previousDealDate ??
+            contract.previousDealDate ??
+            (contract.contractPrefillOverrides as Record<string, unknown> | null)
+                ?.previousDealDate ??
+            "",
+    );
+
     return {
         state: String(args.state ?? contract.state ?? "").trim(),
         frequency,
@@ -492,7 +635,9 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         originationFee,
         brokerFeePaidByMerchant: 0,
         brokerFeePaidByFunder: 0,
-        isRefinance: false,
+        isRefinance,
+        refinanceAmount: isRefinance ? refinanceAmount : 0,
+        previousDealDate: isRefinance ? previousDealDate : undefined,
         numberOfPayments: Math.max(1, numberOfPayments || 1),
         numberOfPaymentDays: resolvedPaymentDays,
         disbursementDate: args.disbursementDate || defaultDate,
@@ -513,8 +658,22 @@ export function mapDisclosureMetricsToFieldOverrides(
     const includeApr =
         options.includeApr ?? stateDisclosureRequiresApr(options.state, options.frequency);
 
+    const isRefinance = Boolean(metrics.isRefinance);
+    const netContracted =
+        metrics.netContractedFunding ?? metrics.amountFinanced ?? metrics.recipientFunds;
+    const actualDisbursement =
+        metrics.actualDisbursement ?? metrics.recipientFunds;
+    /**
+     * CA/NY funding boxes: Net Amount (Contract − Fee).
+     * REFI CA right box / direct: Actual Disbursement.
+     * FL/GA/KS/LA/MO provided = contract; disbursed = net (never CA refi cash-out).
+     */
+    const fundingProvidedPrimary = netContracted;
+    const fundingProvidedDirect = isRefinance ? actualDisbursement : netContracted;
+
     const overrides: Record<string, string> = {
-        funding_provided: formatDisclosureUsd(metrics.purchasePrice),
+        funding_provided: formatDisclosureUsd(fundingProvidedPrimary),
+        funding_provided_direct: formatDisclosureUsd(fundingProvidedDirect),
         finance_charge: formatDisclosureUsd(metrics.financeCharge),
         estimated_payment: formatDisclosureUsd(metrics.estimatedPayment),
         daily_payment: formatDisclosureUsd(metrics.estimatedPayment),
@@ -528,18 +687,46 @@ export function mapDisclosureMetricsToFieldOverrides(
         estimated_term: String(metrics.estimatedTermDays),
         percent_of_business_income: formatDisclosurePercent(
             metrics.percentOfDailyIncomePurchased,
+            "",
         ),
+        /** Purchase Price / funds provided amount = funding (contract) amount. */
         total_amount_business_fund: formatDisclosureUsd(metrics.purchasePrice),
-        total_amount_of_fund_disbursed: formatDisclosureUsd(metrics.recipientFunds),
+        purchase_amount: formatDisclosureUsd(metrics.purchasePrice),
+        disclosure_purchase_price: formatDisclosureUsd(metrics.purchasePrice),
+        total_amount_of_fund_disbursed: formatDisclosureUsd(netContracted),
+        NetFundProvided: formatDisclosureUsd(netContracted),
+        /** Receivables = repayment amount. */
         total_amount_tobe_paid_to_provider: formatDisclosureUsd(metrics.estimatedTotalPayment),
         total_dollar_cost: formatDisclosureUsd(metrics.financeCharge),
         estimated_payment_amount: formatDisclosureUsd(metrics.estimatedPayment),
         estimated_monthly_cost: formatDisclosureUsd(metrics.estimatedMonthlyCost),
         payment_total: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        receivables: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        revenue_purchased: formatDisclosureUsd(metrics.estimatedTotalPayment),
         payement_exceeded_percent: formatDisclosurePercent(
             metrics.percentOfDailyIncomePurchased,
+            "",
         ),
+        ...(formatDisclosurePaymentFrequencyLabel(options.frequency)
+            ? {
+                  payment_frequency: formatDisclosurePaymentFrequencyLabel(options.frequency),
+                  disclosure_payment_frequency: formatDisclosurePaymentFrequencyLabel(
+                      options.frequency,
+                  ),
+              }
+            : {}),
     };
+
+    if (isRefinance && metrics.previousDealDate) {
+        overrides.previous_agreement_date = metrics.previousDealDate;
+        overrides.previous_deal_date = metrics.previousDealDate;
+    }
+    if (isRefinance && (metrics.previousRefiBalance ?? 0) > 0) {
+        overrides.previous_refi_balance = formatDisclosureUsd(metrics.previousRefiBalance ?? 0);
+        overrides.outstanding_sales_based_financing = formatDisclosureUsd(
+            metrics.previousRefiBalance ?? 0,
+        );
+    }
 
     if (includeApr) {
         overrides.estimated_annual_percentage_rate = formatDisclosurePercent(

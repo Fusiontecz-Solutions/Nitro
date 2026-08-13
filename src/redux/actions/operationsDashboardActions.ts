@@ -198,6 +198,12 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
       return rejectWithValue(message);
     }
   },
+  {
+    condition: (_, { getState }) => {
+      const s = getState() as { operationsDashboard?: { summaryInFlight?: boolean } };
+      return !s.operationsDashboard?.summaryInFlight;
+    },
+  },
 );
 
 export const fetchOperationsDashboardRecentCases = createAsyncThunk<
@@ -239,5 +245,11 @@ export const fetchOperationsDashboardRecentCases = createAsyncThunk<
           : "Failed to load recent cases";
       return rejectWithValue(message);
     }
+  },
+  {
+    condition: (_, { getState }) => {
+      const s = getState() as { operationsDashboard?: { recentInFlight?: boolean } };
+      return !s.operationsDashboard?.recentInFlight;
+    },
   },
 );

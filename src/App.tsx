@@ -1,7 +1,7 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import { RouterProvider, createBrowserRouter } from 'react-router';
 import { Provider } from 'react-redux';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { store } from './redux/store';
 import { ToastContainer } from 'react-toastify';
 import "react-toastify/dist/ReactToastify.css"
@@ -10,9 +10,10 @@ import Routes from './routes';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { TooltipProvider } from './components/ui/tooltip';
 import { SocketProvider } from './context/SocketContext';
-import { QUERY_STALE_TIME_MS } from '@/lib/queryDefaults';
 import { registerApplicationsListQueryInvalidator } from '@/lib/applicationsListQuerySync';
+import { appQueryClient } from '@/lib/queryClient';
 import CrmCacheBootstrap from '@/components/cache/CrmCacheBootstrap';
+import { PersistentCacheBootstrap } from '@/components/PersistentCacheBootstrap';
 
 /** Module-level router so route-table edits apply on full reload (HMR cannot refresh useMemo([])). */
 const router = createBrowserRouter(Routes);
@@ -36,36 +37,23 @@ function AppContent() {
 }
 
 function App() {
-  const queryClient = useMemo(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: {
-            staleTime: QUERY_STALE_TIME_MS,
-            refetchOnWindowFocus: false,
-            retry: 1,
-          },
-        },
-      }),
-    [],
-  );
-
   useEffect(() => {
     registerApplicationsListQueryInvalidator(() => {
-      void queryClient.invalidateQueries({
+      void appQueryClient.invalidateQueries({
         queryKey: ["applications-list"],
         refetchType: "active",
       });
     });
     return () => registerApplicationsListQueryInvalidator(null);
-  }, [queryClient]);
+  }, []);
 
   return (
     <Provider store={store}>
-      <QueryClientProvider client={queryClient}>
+      <QueryClientProvider client={appQueryClient}>
         <ThemeProvider>
           <SocketProvider>
             <CrmCacheBootstrap />
+            <PersistentCacheBootstrap />
             <TooltipProvider>
               <AppContent />
             </TooltipProvider>

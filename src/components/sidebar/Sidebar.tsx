@@ -1,6 +1,7 @@
 import type { SvgIconProps } from "@mui/material/SvgIcon";
 import Logout from "@mui/icons-material/Logout";
 import Article from "@mui/icons-material/Article";
+import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import People from "@mui/icons-material/People";
 import Dashboard from "@mui/icons-material/Dashboard";
@@ -30,9 +31,12 @@ import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashb
 import { toast } from "react-toastify";
 import { APP_SHORT_ICON_SRC, APP_SHORT_ICON_DARK_SRC, resolveAppLogoSrc } from "@/constants/appLogo";
 import { useTheme } from "@/context/ThemeContext";
-import { useEffect, useMemo, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { clearCrmCacheOnLogout } from "@/lib/crmCache";
+import { clearAllPersistentCaches } from "@/lib/persistentCache/clearAllPersistentCaches";
+import { clearHttpGetCache } from "@/lib/httpGetCache";
 import { cn } from "@/lib/utils";
+import { Loader2 } from "lucide-react";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
 import {
   getPipelineCountBadgeClass,
@@ -83,7 +87,7 @@ function NavIcon({ icon: Icon }: { icon: SidebarNavIcon }) {
  * Sidebar layout matching product screenshots:
  * MAIN → Dashboard / Notifications / Clients
  * DEAL PIPELINE → Applications + Contract stages
- * SETTINGS → Profile / Funders / DocuSign
+ * SETTINGS → Settings (Profile / DocuSign / Funders tabs live on the page)
  */
 const sidebarSections: SidebarNavSection[] = [
   {
@@ -118,6 +122,12 @@ const sidebarSections: SidebarNavSection[] = [
           },
         ],
       },
+      {
+        label: "Recently Deleted",
+        url: "/applications",
+        operationsStatus: "Recently_Deleted",
+        icon: DeleteOutline,
+      },
     ],
   },
   {
@@ -127,11 +137,6 @@ const sidebarSections: SidebarNavSection[] = [
         label: "Settings",
         url: "/user-setting",
         icon: Settings,
-        children: [
-          { label: "Profile", url: "/user-setting" },
-          { label: "Funders", url: "/user-setting?tab=funders" },
-          { label: "DocuSign", url: "/user-setting?tab=docusign" },
-        ],
       },
     ],
   },
@@ -221,13 +226,15 @@ function isNavItemActive(
     return pathname === "/notifications" || pathname.startsWith("/notifications/");
   }
 
+  if (item.url === "/user-setting") {
+    return pathname === "/user-setting" || pathname.startsWith("/user-setting/");
+  }
+
   const childItems = item.children ?? [];
   if (childItems.length > 0) {
     return (
       childItems.some((child) => isChildNavActive(pathname, searchParams, child)) ||
-      isOperationsPipelineItemActive(pathname, searchParams, item.operationsStatus) ||
-      (item.url.startsWith("/user-setting") &&
-        isSettingsTabHrefActive(pathname, searchParams, item.url))
+      isOperationsPipelineItemActive(pathname, searchParams, item.operationsStatus)
     );
   }
 
@@ -286,9 +293,13 @@ const Sidebar = () => {
 
   useEffect(() => {
     void dispatch(fetchOperationsDashboardSummary());
-  }, [dispatch, pathname]);
+  }, [dispatch]);
+
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
     try {
       const res = await dispatch(logout()).unwrap();
       if (res?.success) {
@@ -304,6 +315,8 @@ const Sidebar = () => {
       dispatch(clearApplicationDetail());
       dispatch(resetOperationsDashboard());
       clearCrmCacheOnLogout();
+      clearHttpGetCache();
+      void clearAllPersistentCaches();
       localStorage.removeItem("token");
       localStorage.removeItem("user");
       localStorage.removeItem("role");
@@ -578,9 +591,18 @@ const Sidebar = () => {
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton onClick={handleLogout} className={logoutButtonClass}>
-                  <Logout sx={navIconSx} />
-                  <span>Logout</span>
+                <SidebarMenuButton
+                  onClick={() => void handleLogout()}
+                  className={logoutButtonClass}
+                  disabled={loggingOut}
+                  aria-busy={loggingOut}
+                >
+                  {loggingOut ? (
+                    <Loader2 className="size-5 animate-spin" aria-hidden />
+                  ) : (
+                    <Logout sx={navIconSx} />
+                  )}
+                  <span>{loggingOut ? "Logging out..." : "Logout"}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>

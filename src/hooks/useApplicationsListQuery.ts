@@ -4,6 +4,7 @@ import type { AppDispatch } from "@/redux/store";
 import { getApplications } from "@/redux/actions/applicationActions";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
 import { listFetchKeyFromGetApplicationsParams } from "@/lib/applicationsListCache";
+import { QUERY_STALE_TIME_MS } from "@/lib/queryDefaults";
 
 type UseApplicationsListQueryOptions = {
   enabled?: boolean;
@@ -25,14 +26,11 @@ export function useApplicationsListQuery(
     queryKey: ["applications-list", fetchKey],
     enabled: options.enabled ?? true,
     queryFn: async () => {
-      // Redux updates via `getApplications.fulfilled` (requestId guard). Do not
-      // hydrate again here — a slower, older in-flight response would overwrite
-      // the latest list and desync sidebar counts from the table.
-      return dispatch(
-        getApplications({ ...params, skipListCacheRead: true }),
-      ).unwrap();
+      // Redux updates via `getApplications.fulfilled` (requestId guard). Cached
+      // list + HTTP GET cache serve instant revisits; mutations invalidate both.
+      return dispatch(getApplications(params)).unwrap();
     },
-    staleTime: 0,
-    refetchOnMount: "always",
+    staleTime: QUERY_STALE_TIME_MS,
+    refetchOnWindowFocus: false,
   });
 }

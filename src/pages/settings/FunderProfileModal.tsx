@@ -43,10 +43,13 @@ import {
 import type { FunderProfile, FunderProfileInput } from "@/types/integrationSettingsTypes";
 import { getTenantDefaultContractCcEmail } from "@/components/application/docusignCcList";
 import {
+  DISCLOSURE_DEAL_TYPE_OPTIONS,
   DISCLOSURE_FREQUENCY_OPTIONS,
   FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS,
+  disclosureDealTypeFromRow,
   isFunderAddendumRow,
   isFunderDisclosureRow,
+  type DisclosureDealType,
   type FunderDocumentTemplateRow,
 } from "@/utils/funderLayoutKeys";
 import {
@@ -100,10 +103,10 @@ const emptyForm: FunderProfileInput = {
 };
 
 const ADDENDUM_PRESETS = [
-  { name: "Flex Addendum", type: "flex_addendum" },
-  { name: "Pre-Payment Addendum", type: "pre_payment_addendum" },
-  { name: "Balance Transfer", type: "balance_transfer" },
-  { name: "Case Takeover Balance Transfer", type: "case_takeover_addendum" },
+  { name: "Addendum P (REFI)", type: "addendum_p" },
+  { name: "Addendum CA", type: "addendum_ca" },
+  { name: "Addendum NY", type: "addendum_ny" },
+  { name: "Addendum VA", type: "addendum_va" },
   { name: "ACH Authorization", type: "ach_authorization" },
 ] as const;
 
@@ -215,11 +218,12 @@ export default function FunderProfileModal({
 
   const [disclosureState, setDisclosureState] = useState("Texas");
   const [disclosureFrequency, setDisclosureFrequency] = useState("daily");
+  const [disclosureDealType, setDisclosureDealType] = useState<DisclosureDealType>("norefi");
   const [disclosureFile, setDisclosureFile] = useState<File | null>(null);
   const [disclosureUploading, setDisclosureUploading] = useState(false);
 
-  const [addendumName, setAddendumName] = useState("Flex Addendum");
-  const [addendumCoordKey, setAddendumCoordKey] = useState("flex_addendum");
+  const [addendumName, setAddendumName] = useState("Addendum P (REFI)");
+  const [addendumCoordKey, setAddendumCoordKey] = useState("addendum_p");
   const [addendumFile, setAddendumFile] = useState<File | null>(null);
   const [addendumUploading, setAddendumUploading] = useState(false);
 
@@ -260,10 +264,11 @@ export default function FunderProfileModal({
     setLetterLogoRemoved(false);
     setDisclosureFile(null);
     setAddendumFile(null);
-    setAddendumName("Flex Addendum");
-    setAddendumCoordKey("flex_addendum");
+    setAddendumName("Addendum P (REFI)");
+    setAddendumCoordKey("addendum_p");
     setDisclosureState("Texas");
     setDisclosureFrequency("daily");
+    setDisclosureDealType("norefi");
     setDocuments([]);
 
     if (initial) {
@@ -293,7 +298,7 @@ export default function FunderProfileModal({
         addendumDocumentsSource:
           initial.addendumDocumentsSource ?? initial.documentsSource ?? "own",
         disclosureDocumentsSource:
-          initial.disclosureDocumentsSource ?? initial.documentsSource ?? "own",
+          initial.disclosureDocumentsSource ?? "platform",
         sharedAddendumFunderId:
           initial.sharedAddendumFunderId ?? initial.sharedDocumentsFunderId ?? null,
         sharedDisclosureFunderId:
@@ -476,9 +481,10 @@ export default function FunderProfileModal({
 
     if (initial) {
       payload.mainContractLayoutKey = initial.mainContractLayoutKey;
-      payload.assignsDealId = initial.assignsDealId;
       payload.sortOrder = initial.sortOrder;
     }
+    // Assign deal ids whenever a Deal ID prefix is configured.
+    payload.assignsDealId = Boolean(form.dealIdPrefix?.trim());
 
     await onSave(payload, {
       contractFile,
@@ -536,9 +542,13 @@ export default function FunderProfileModal({
       await uploadFunderDisclosureDocument(initial.id, {
         state: disclosureState,
         frequency: disclosureFrequency,
+        dealType: disclosureDealType,
         file: disclosureFile,
       });
-      toast.success(`Saved: ${disclosureState} · ${disclosureFrequency}`);
+      const dealLabel =
+        DISCLOSURE_DEAL_TYPE_OPTIONS.find((o) => o.value === disclosureDealType)?.label ??
+        disclosureDealType;
+      toast.success(`Saved: ${disclosureState} · ${disclosureFrequency} · ${dealLabel}`);
       setDisclosureFile(null);
       if (disclosureInputRef.current) disclosureInputRef.current.value = "";
       await loadDocuments(initial.id);
@@ -910,7 +920,7 @@ export default function FunderProfileModal({
           <TabsContent value="documents" className="space-y-5 mt-2">
             <UploadCard
               title="Addendum source"
-              description="Choose where this funder gets flex / pre-payment / balance-transfer / ACH addendum PDFs. Independent from disclosures. The main contract PDF is always per funder."
+              description="Choose where this funder gets Addendum P / CA / NY / VA and ACH PDFs. Independent from disclosures. The main contract PDF is always per funder."
             >
               <div className="space-y-2">
                 {FUNDER_ADDENDUM_SOURCE_OPTIONS.map((opt) => (
@@ -1066,9 +1076,9 @@ export default function FunderProfileModal({
               <>
             <UploadCard
               title="State disclosure PDFs"
-              description="Some states require a disclosure page on the contract. Upload one PDF for each state + payment schedule combination."
+              description="Some states require a disclosure page on the contract. Upload one PDF for each state + payment schedule + Refi / No Refi combination."
             >
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-3">
                 <div className="grid gap-2">
                   <Label>State</Label>
                   <Select value={disclosureState} onValueChange={setDisclosureState}>
@@ -1092,6 +1102,26 @@ export default function FunderProfileModal({
                     </SelectTrigger>
                     <SelectContent>
                       {DISCLOSURE_FREQUENCY_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label>Refi or no Refi</Label>
+                  <Select
+                    value={disclosureDealType}
+                    onValueChange={(v: string) =>
+                      setDisclosureDealType(v as DisclosureDealType)
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DISCLOSURE_DEAL_TYPE_OPTIONS.map((opt) => (
                         <SelectItem key={opt.value} value={opt.value}>
                           {opt.label}
                         </SelectItem>
@@ -1131,7 +1161,10 @@ export default function FunderProfileModal({
                     Uploading…
                   </>
                 ) : (
-                  `Save disclosure for ${disclosureState} (${disclosureFrequency})`
+                  `Save disclosure for ${disclosureState} (${disclosureFrequency}, ${
+                    DISCLOSURE_DEAL_TYPE_OPTIONS.find((o) => o.value === disclosureDealType)
+                      ?.label ?? disclosureDealType
+                  })`
                 )}
               </Button>
 
@@ -1146,7 +1179,12 @@ export default function FunderProfileModal({
                   </div>
                 ) : disclosureRows.length > 0 ? (
                   <ul className="divide-y rounded-md border text-sm">
-                    {disclosureRows.map((row) => (
+                    {disclosureRows.map((row) => {
+                      const dealType = disclosureDealTypeFromRow(row);
+                      const dealLabel =
+                        DISCLOSURE_DEAL_TYPE_OPTIONS.find((o) => o.value === dealType)?.label ??
+                        null;
+                      return (
                       <li
                         key={row.id}
                         className="flex items-center justify-between gap-3 px-3 py-2.5"
@@ -1154,6 +1192,7 @@ export default function FunderProfileModal({
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <DocBadge>{row.state || "—"}</DocBadge>
                           <DocBadge>{row.frequency || "—"}</DocBadge>
+                          {dealLabel ? <DocBadge>{dealLabel}</DocBadge> : null}
                           <span className="truncate text-muted-foreground">{row.name}</span>
                         </div>
                         <Button
@@ -1172,10 +1211,11 @@ export default function FunderProfileModal({
                           )}
                         </Button>
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                 ) : (
-                  <EmptyDocList message="No disclosures yet. Pick a state, frequency, and PDF above." />
+                  <EmptyDocList message="No disclosures yet. Pick a state, frequency, Refi / No Refi, and PDF above." />
                 )}
               </div>
             </UploadCard>
@@ -1186,7 +1226,7 @@ export default function FunderProfileModal({
               <>
             <UploadCard
               title="Addendum PDFs"
-              description="Upload flex, pre-payment, balance transfer, or ACH addendum PDFs for this funder."
+              description="Upload Addendum P (REFI), state addendums (CA / NY / VA), or ACH. Contract tab auto-selects by refinance and state."
             >
               <div className="flex flex-wrap gap-2">
                 {ADDENDUM_PRESETS.map((preset) => (
@@ -1218,7 +1258,7 @@ export default function FunderProfileModal({
                     id="addendum-name"
                     value={addendumName}
                     onChange={(e) => setAddendumName(e.target.value)}
-                    placeholder="Flex Addendum"
+                    placeholder="Addendum P (REFI)"
                   />
                 </div>
                 <div className="grid gap-2">
