@@ -12,6 +12,7 @@ import { recordContractWorkflowActivityLog } from '../services/contractWorkflowA
 import { syncApplicationToContractPending } from '../services/contractApplicationWorkflowSync';
 import { createApplicationActivityLog } from '../services/applicationActivityLogService';
 import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
+import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -78,6 +79,7 @@ const mapOfferDecisionToApi = (row: any) => {
     ourRemit,
     totalRemit,
     refinanceAmount,
+    previousDealDate,
     declineReason,
     createdAt,
     updatedAt,
@@ -101,6 +103,7 @@ const mapOfferDecisionToApi = (row: any) => {
     ourRemit,
     totalRemit,
     refinanceAmount,
+    previousDealDate,
     declineReason,
     createdAt,
     updatedAt,
@@ -125,6 +128,7 @@ class OfferDecisionController {
         ourRemit,
         totalRemit,
         refinanceAmount,
+        previousDealDate,
       } = req.body;
 
       if (!rawApplication) {
@@ -185,6 +189,9 @@ class OfferDecisionController {
         ourRemit: parseNumber(ourRemit),
         totalRemit: parseNumber(totalRemit),
         refinanceAmount: parseNumber(refinanceAmount),
+        previousDealDate: previousDealDate
+          ? new Date(String(previousDealDate))
+          : null,
         declineReason: null,
       };
 
@@ -205,6 +212,11 @@ class OfferDecisionController {
       if ('ourRemit' in body) updateData.ourRemit = parseNumber(ourRemit);
       if ('totalRemit' in body) updateData.totalRemit = parseNumber(totalRemit);
       if ('refinanceAmount' in body) updateData.refinanceAmount = parseNumber(refinanceAmount);
+      if ('previousDealDate' in body) {
+        updateData.previousDealDate = previousDealDate
+          ? new Date(String(previousDealDate))
+          : null;
+      }
 
       const priorOfferDecision = await prisma.offerDecision.findUnique({
         where: { applicationId: app.id },
@@ -255,11 +267,70 @@ class OfferDecisionController {
       }
 
       /**
+       * Keep TermsOffer in lockstep with OfferDecision so Overview / public approval /
+       * list amounts never show a stale terms snapshot after Live Offer save.
+       */
+      const decisionNorm = String(decision).trim().toLowerCase();
+      if (decisionNorm === 'approved') {
+        try {
+          await syncTermsOfferFromOfferDecision(app.id, authUserFromReq(req)?.id ?? null);
+        } catch (termsSyncErr) {
+          console.error(
+            'OfferDecision upsert: failed to sync TermsOffer from OfferDecision',
+            termsSyncErr,
+          );
+        }
+
+        /**
+         * Draft contracts keep a snapshot of approved/total amounts. Refresh them from
+         * the live offer so Prefill / DocuSign email subjects match Overview.
+         */
+        try {
+          const draftContract = await prisma.contract.findUnique({
+            where: { applicationId: app.id },
+            select: { id: true, status: true, offerId: true },
+          });
+          if (draftContract && draftContract.status === 'DRAFT') {
+            const offerAmt =
+              result.offer != null && Number.isFinite(Number(result.offer))
+                ? Number(result.offer)
+                : null;
+            const totalAmt =
+              result.totalRemit != null && Number.isFinite(Number(result.totalRemit))
+                ? Number(result.totalRemit)
+                : null;
+            const moneyPatch: Record<string, unknown> = {};
+            if (offerAmt != null) {
+              moneyPatch.approvedAmount = offerAmt;
+              moneyPatch.purchaseAmount = String(offerAmt);
+            }
+            if (totalAmt != null) {
+              moneyPatch.totalAmount = totalAmt;
+              moneyPatch.purchasePrice = String(totalAmt);
+            }
+            if (result.id && draftContract.offerId !== result.id) {
+              moneyPatch.offerId = result.id;
+            }
+            if (Object.keys(moneyPatch).length > 0) {
+              await prisma.contract.update({
+                where: { id: draftContract.id },
+                data: moneyPatch,
+              });
+            }
+          }
+        } catch (contractSyncErr) {
+          console.error(
+            'OfferDecision upsert: failed to sync draft Contract amounts from OfferDecision',
+            contractSyncErr,
+          );
+        }
+      }
+
+      /**
        * Create & Save Offer → advance the deal to Contract Pending so Operations
        * can generate the contract. Skips if already Contract Pending or past
        * Contract Signed / Funded / etc.
        */
-      const decisionNorm = String(decision).trim().toLowerCase();
       let movedToContractPending = false;
       if (decisionNorm === 'approved') {
         try {

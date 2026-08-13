@@ -249,11 +249,11 @@ router.post('/:id/payment-mail-logs', applicationController.createPaymentMailLog
 // Duplicate applications (dedupes) - UW/Admin only
 router.get('/:id/duplicates', applicationController.getDuplicates.bind(applicationController));
 
-// Recently Deleted: restore to scrubber (Super Admin / Operations)
+// Recently Deleted: restore to previous queue/state (Super Admin / Operations)
 router.post(
-    '/:id/restore-to-scrubber',
+    '/:id/restore',
     requireRoles('SUPER_ADMIN', 'OPERATIONS'),
-    applicationController.restoreApplicationToScrubber.bind(applicationController),
+    applicationController.restoreApplication.bind(applicationController),
 );
 
 // Recently Deleted: permanent removal (Super Admin / Operations)

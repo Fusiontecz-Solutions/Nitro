@@ -27,10 +27,35 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
     name: 'Harbor View Capital Contract',
     type: 'contract',
   },
+  [DOCUMENT_LAYOUT_KEYS.addendum_p]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.addendum_p,
+    name: 'Addendum P (REFI)',
+    type: 'addendum_p',
+  },
+  [DOCUMENT_LAYOUT_KEYS.addendum_ca]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.addendum_ca,
+    name: 'Addendum CA',
+    type: 'addendum_ca',
+  },
+  [DOCUMENT_LAYOUT_KEYS.addendum_ny]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.addendum_ny,
+    name: 'Addendum NY',
+    type: 'addendum_ny',
+  },
+  [DOCUMENT_LAYOUT_KEYS.addendum_va]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.addendum_va,
+    name: 'Addendum VA',
+    type: 'addendum_va',
+  },
 };
 
 /** Supplemental documents available in the addendum picker (excludes main contract). */
-export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [];
+export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [
+  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.addendum_p],
+  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.addendum_ca],
+  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.addendum_ny],
+  PLATFORM_DOCUMENTS[DOCUMENT_LAYOUT_KEYS.addendum_va],
+];
 
 const LAYOUT_KEY_SET = new Set<string>(Object.values(DOCUMENT_LAYOUT_KEYS));
 
@@ -109,7 +134,7 @@ export async function resolvePlatformDocumentPdfUrl(
   }
 
   throw new Error(
-    `Missing PDF URL for "${def.name}". Upload via Settings → Funders → Main contract PDF, or Contract Templates.`,
+    `Missing PDF URL for "${def.name}". Upload via Settings → Funders → Upload PDFs (contract / addendum), or Contract Templates.`,
   );
 }
 
@@ -140,7 +165,7 @@ export async function loadPlatformDocumentPdfBase64(
   }
 
   throw new Error(
-    `No PDF configured for "${def.name}". Upload from Settings → Funders → Main contract PDF, or upload a Contract Template (Cloudinary URL in DB).`,
+    `No PDF configured for "${def.name}". Upload from Settings → Funders → Upload PDFs (addendum / contract), or upload a Contract Template (Cloudinary URL in DB).`,
   );
 }
 

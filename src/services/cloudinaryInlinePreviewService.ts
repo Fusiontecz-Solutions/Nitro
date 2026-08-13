@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import { fetchCloudinaryAssetBuffer } from './cloudinaryAssetDownload';
 
 /** Safe filename for Content-Disposition (ASCII subset). */
 export function sanitizeInlinePreviewFilename(name: string): string {
@@ -153,8 +154,11 @@ export async function streamCloudinaryInlinePreview(
     return;
   }
 
-  const upstream = await fetch(rawUrl, { redirect: 'follow' });
-  if (!upstream.ok) {
+  let buf: Buffer;
+  try {
+    buf = await fetchCloudinaryAssetBuffer(rawUrl);
+  } catch (error) {
+    console.error('streamCloudinaryInlinePreview fetch error:', error);
     res.status(502).json({
       success: false,
       message: 'Could not fetch file from storage',
@@ -162,15 +166,16 @@ export async function streamCloudinaryInlinePreview(
     return;
   }
 
-  const upstreamCt =
-    upstream.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
   const filename = sanitizeInlinePreviewFilename(nameParam || 'document');
-  const ct = resolveInlineContentType(upstreamCt, rawUrl, nameParam, mimeTypeHint);
+  const ct = resolveInlineContentType(
+    'application/octet-stream',
+    rawUrl,
+    nameParam,
+    mimeTypeHint,
+  );
 
   res.setHeader('Content-Type', ct);
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   res.setHeader('Cache-Control', 'private, max-age=300');
-
-  const buf = Buffer.from(await upstream.arrayBuffer());
   res.send(buf);
 }

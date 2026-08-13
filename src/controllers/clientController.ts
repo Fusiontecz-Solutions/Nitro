@@ -1,5 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import { executePermanentClientDelete } from '../services/applicationDeletionService';
+import { invalidateAllApplicationStatsCache } from '../services/applicationStatsCache';
 import type { AuthenticatedUser } from '../services/applicationService';
 import {
     buildOwnerCreateData,
@@ -479,14 +481,16 @@ class ClientController {
         try {
             const { id } = req.params;
 
-            const client = await prisma.client.delete({ where: { id } });
+            const deleted = await executePermanentClientDelete(id);
 
-            if (!client) {
+            if (!deleted) {
                 return res.status(404).json({
                     success: false,
                     message: 'Client not found',
                 });
             }
+
+            invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
                 success: true,
@@ -494,9 +498,14 @@ class ClientController {
             });
         } catch (error) {
             console.error('Delete client error:', error);
+            const isDev = process.env.NODE_ENV !== 'production';
+            let message = 'Internal server error';
+            if (isDev && error instanceof Error) {
+                message = error.message;
+            }
             return res.status(500).json({
                 success: false,
-                message: 'Internal server error',
+                message: isDev ? message : 'Internal server error',
             });
         }
     }

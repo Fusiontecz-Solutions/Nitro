@@ -1,8 +1,13 @@
 export const DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY = 'contract';
 export const DEFAULT_FUNDER_CONTRACT_FILENAME = 'Contract.pdf';
 
-/** Platform supplemental layout keys removed — funder uploads use `funder_<uuid>_…` keys. */
-export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [] as const;
+/** Funder supplemental upload types — stored as `funder_<uuid>_<type>`. */
+export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [
+  'addendum_p',
+  'addendum_ca',
+  'addendum_ny',
+  'addendum_va',
+] as const;
 
 export type FunderSupplementalLayoutType = string;
 
@@ -47,6 +52,7 @@ export function funderDisclosureLayoutKeyForState(
   funderId: string,
   state: string,
   frequency: string,
+  dealType?: 'refi' | 'norefi' | null,
 ): string {
   const id = String(funderId || '').trim();
   const stateToken = String(state || '')
@@ -57,7 +63,13 @@ export function funderDisclosureLayoutKeyForState(
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_');
-  return `funder_${id}_disclosure_${stateToken}_${freqToken}`;
+  const base = `funder_${id}_disclosure_${stateToken}_${freqToken}`;
+  const kind = String(dealType ?? '')
+    .trim()
+    .toLowerCase();
+  if (kind === 'refi') return `${base}_refi`;
+  if (kind === 'norefi') return `${base}_norefi`;
+  return base;
 }
 
 export function slugifyFunderDocumentToken(value: string): string {

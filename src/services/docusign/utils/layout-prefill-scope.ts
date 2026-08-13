@@ -6,6 +6,10 @@ export const LAYOUT_CRM_PREFIX: Record<string, string> = {
   pre_payment_addendum: 'pre_payment_addendum_',
   balance_transfer: 'balance_transfer_',
   case_takeover_addendum: 'case_takeover_addendum_',
+  addendum_p: 'addendum_p_',
+  addendum_ca: 'addendum_ca_',
+  addendum_ny: 'addendum_ny_',
+  addendum_va: 'addendum_va_',
   ach_authorization: 'ach_form_',
   ach_authorization_standalone: 'ach_form_',
   ach_authorization_texas: 'ach_form_texas_',
@@ -87,6 +91,16 @@ export function resolveCanonicalSupplementalLayoutKey(layoutKey: string): string
     return 'case_takeover_addendum';
   }
   if (k === 'balance_transfer' || k.endsWith('_balance_transfer')) return 'balance_transfer';
+  if (
+    k === 'addendum_p' ||
+    k.endsWith('_addendum_p') ||
+    k.endsWith('_addendum_p_refi')
+  ) {
+    return 'addendum_p';
+  }
+  if (k === 'addendum_ca' || k.endsWith('_addendum_ca')) return 'addendum_ca';
+  if (k === 'addendum_ny' || k.endsWith('_addendum_ny')) return 'addendum_ny';
+  if (k === 'addendum_va' || k.endsWith('_addendum_va')) return 'addendum_va';
   if (
     k === 'ach_authorization' ||
     k === 'ach_authorization_standalone' ||

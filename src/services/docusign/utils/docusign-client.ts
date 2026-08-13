@@ -65,8 +65,7 @@ export const DOCUSIGN_SECONDARY_ROLE_NAME =
   process.env.DOCUSIGN_SECONDARY_ROLE_NAME || 'Owner 2';
 
 /** Always included as a DocuSign carbon-copy recipient on contract envelopes. */
-export const DOCUSIGN_DEFAULT_CC_EMAIL =
-  process.env.DOCUSIGN_DEFAULT_CC_EMAIL || 'subs@woodmerefinancial.com';
+export const DOCUSIGN_DEFAULT_CC_EMAIL = process.env.DOCUSIGN_DEFAULT_CC_EMAIL || '';
 
 /**
  * When true, envelope is set to `sent` after prefill (DocuSign emails signers).

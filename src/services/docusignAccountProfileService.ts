@@ -12,6 +12,7 @@ export type DocuSignAccountProfileInput = {
   rsaPrivateKey?: string;
   accountId?: string | null;
   baseUri?: string | null;
+  defaultCcEmail?: string | null;
   isActive?: boolean;
 };
 
@@ -34,6 +35,7 @@ export function serializeDocuSignAccountProfile(row: Record<string, unknown>) {
     hasRsaPrivateKey: Boolean(row.rsaPrivateKey),
     accountId: row.accountId ?? null,
     baseUri: row.baseUri ?? null,
+    defaultCcEmail: row.defaultCcEmail != null ? String(row.defaultCcEmail) : null,
     isActive: row.isActive !== false,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -93,6 +95,7 @@ export async function createDocuSignAccountProfile(input: DocuSignAccountProfile
       rsaPrivateKey,
       accountId: input.accountId ? String(input.accountId).trim() : null,
       baseUri: input.baseUri ? String(input.baseUri).trim() : null,
+      defaultCcEmail: input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null,
       isActive: input.isActive !== false,
     },
   });
@@ -128,6 +131,9 @@ export async function updateDocuSignAccountProfile(
     data.accountId = input.accountId ? String(input.accountId).trim() : null;
   }
   if (input.baseUri !== undefined) data.baseUri = input.baseUri ? String(input.baseUri).trim() : null;
+  if (input.defaultCcEmail !== undefined) {
+    data.defaultCcEmail = input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null;
+  }
   if (input.isActive !== undefined) data.isActive = Boolean(input.isActive);
 
   const row = await prisma.docuSignAccountProfile.update({

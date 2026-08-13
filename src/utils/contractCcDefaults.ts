@@ -40,10 +40,13 @@ export type ContractCcDefaultsPayload = {
   defaultCcEmail: string | null;
   resolvedCcEmail: string | null;
   ccEmails: string[];
+  /** Where resolved CCs came from for the selected funder. */
+  source: 'docusign' | 'funder' | 'platform' | 'none';
 };
 
 /**
- * Resolve tenant platform default CC + optional funder-profile override.
+ * Resolve tenant platform default CC + DocuSign-account / funder-profile override.
+ * Priority: linked DocuSign account defaultCcEmail → funder defaultCcEmail → platform env.
  * Used by GET /integration-settings/contract-cc-defaults (CRM + Super Admin proxy).
  */
 export async function resolveContractCcDefaultsForApi(options: {
@@ -75,19 +78,41 @@ export async function resolveContractCcDefaultsForApi(options: {
     funderName,
     state,
   });
+
+  let docusignCcRaw: string | null = null;
+  const docusignAccountProfileId = String(profile?.docusignAccountProfileId ?? '').trim();
+  if (docusignAccountProfileId) {
+    const ds = await prisma.docuSignAccountProfile.findUnique({
+      where: { id: docusignAccountProfileId },
+      select: { defaultCcEmail: true },
+    });
+    docusignCcRaw = String(ds?.defaultCcEmail ?? '').trim() || null;
+  }
+
+  const docusignCcs = parseContractCcEmailList(docusignCcRaw);
   const funderCcRaw = String(profile?.defaultCcEmail ?? '').trim() || null;
   const funderCcs = parseContractCcEmailList(funderCcRaw);
-  const ccEmails = funderCcs.length
-    ? funderCcs
-    : defaultCcEmail
-      ? [defaultCcEmail]
-      : [];
+
+  let ccEmails: string[] = [];
+  let source: ContractCcDefaultsPayload['source'] = 'none';
+  if (docusignCcs.length) {
+    ccEmails = docusignCcs;
+    source = 'docusign';
+  } else if (funderCcs.length) {
+    ccEmails = funderCcs;
+    source = 'funder';
+  } else if (defaultCcEmail) {
+    ccEmails = [defaultCcEmail];
+    source = 'platform';
+  }
+
   const resolvedCcEmail = ccEmails[0] ?? null;
 
   return {
     defaultCcEmail,
     resolvedCcEmail,
     ccEmails,
+    source,
   };
 }
 

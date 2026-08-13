@@ -37,6 +37,7 @@ import {
     invalidateAllApplicationStatsCache,
 } from '../services/applicationStatsCache';
 import { DashboardCacheKind, withDashboardCache } from '../services/dashboardCache';
+import { executePermanentApplicationDelete } from '../services/applicationDeletionService';
 import {
     aggregateOperationsDashboardSummary,
     aggregateOperationsPaymentPerformanceTrend,
@@ -1100,13 +1101,39 @@ class ApplicationController {
     // Create a new application
     async create(req: Request, res: Response) {
         try {
-            const { priority, type, referringAgent, salesRepresentative, client, note, loanAmount, isoId } = req.body;
+            const {
+                priority,
+                type,
+                referringAgent,
+                salesRepresentative,
+                client,
+                note,
+                loanAmount,
+                isoId,
+                previousApplicationId,
+                refinanceAmount,
+                previousDealDate,
+            } = req.body;
 
             // Validate required fields
             if (!priority || !type || !salesRepresentative || !client) {
                 return res.status(400).json({
                     success: false,
                     message: 'Priority, application type, sales representative, and client are required',
+                });
+            }
+
+            const typeNorm = String(type || '').trim().toLowerCase();
+            const isRefinanceType =
+                typeNorm === 'refinance' || typeNorm === 'refi' || typeNorm === 'renewal';
+            const previousAppId = String(previousApplicationId || '').trim();
+            if (
+                (typeNorm === 'refinance' || typeNorm === 'refi') &&
+                !previousAppId
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Select a previous deal to refinance before creating this application.',
                 });
             }
 
@@ -1232,6 +1259,82 @@ class ApplicationController {
             );
 
             const populatedApplication = mapApplicationToApi(application);
+
+            // Refinance: seed OfferDecision REFI fields on the new app and mark prior deal Funded.
+            if (isRefinanceType && previousAppId) {
+                try {
+                    const parseMoney = (v: unknown): number | null => {
+                        if (v === undefined || v === null || v === '') return null;
+                        const n =
+                            typeof v === 'number'
+                                ? v
+                                : Number(String(v).replace(/[$,\s]/g, ''));
+                        return Number.isFinite(n) ? n : null;
+                    };
+                    const parseDate = (v: unknown): Date | null => {
+                        if (v === undefined || v === null || String(v).trim() === '') return null;
+                        const t = String(v).trim();
+                        if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) {
+                            const [mm, dd, yyyy] = t.split('/');
+                            const d = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)));
+                            return Number.isNaN(d.getTime()) ? null : d;
+                        }
+                        const d = new Date(t);
+                        return Number.isNaN(d.getTime()) ? null : d;
+                    };
+
+                    const refiAmt = parseMoney(refinanceAmount);
+                    const refiDate = parseDate(previousDealDate);
+
+                    await prisma.offerDecision.upsert({
+                        where: { applicationId: application.id },
+                        create: {
+                            applicationId: application.id,
+                            decision: 'pending',
+                            refinanceAmount: refiAmt,
+                            previousDealDate: refiDate,
+                            userId: createdById || null,
+                        },
+                        update: {
+                            refinanceAmount: refiAmt,
+                            previousDealDate: refiDate,
+                        },
+                    });
+
+                    const priorWhere: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(
+                        previousAppId,
+                    )
+                        ? { applicationId: Number(previousAppId) }
+                        : { id: previousAppId };
+
+                    const priorApp = await prisma.application.findUnique({
+                        where: priorWhere,
+                        select: { id: true, clientId: true },
+                    });
+
+                    if (priorApp && priorApp.id !== application.id) {
+                        if (priorApp.clientId !== clientRecord.id) {
+                            console.warn(
+                                'Refinance previous deal belongs to a different client; queue not updated.',
+                                { previousAppId, newAppId: application.id },
+                            );
+                        } else {
+                            await prisma.application.update({
+                                where: { id: priorApp.id },
+                                data: {
+                                    currentQueue: 'Funded',
+                                    currentState: ApplicationState.FUNDED,
+                                },
+                            });
+                        }
+                    }
+                } catch (refiError) {
+                    console.error(
+                        'Failed to apply refinance previous-deal updates after create:',
+                        refiError,
+                    );
+                }
+            }
 
             // Best-effort activity log (do not block main response)
             try {
@@ -3194,13 +3297,20 @@ class ApplicationController {
             const { page = 1, limit = 10 } = req.query;
 
             const pageNum = Number(page);
-            const limitNum = Number(limit);
+            const limitNum = Math.min(200, Math.max(1, Number(limit) || 10));
             const skip = (pageNum - 1) * limitNum;
 
-            // clientId is numeric application-level clientId
-            const clientRecord = await prisma.client.findUnique({
-                where: { clientId: Number(clientId) },
-            });
+            // Accept numeric Client.clientId or UUID Client.id
+            let clientRecord = null;
+            if (/^\d+$/.test(String(clientId || '').trim())) {
+                clientRecord = await prisma.client.findUnique({
+                    where: { clientId: Number(clientId) },
+                });
+            } else {
+                clientRecord = await prisma.client.findUnique({
+                    where: { id: String(clientId) },
+                });
+            }
             if (!clientRecord) {
                 return res.status(200).json({
                     success: true,
@@ -3230,12 +3340,46 @@ class ApplicationController {
                         createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
                         client: true,
                         iso: true,
+                        positions: {
+                            select: {
+                                id: true,
+                                mcaEstBalance: true,
+                                fundedAmount: true,
+                                status: true,
+                                fundingDate: true,
+                            },
+                        },
+                        OfferDecision: {
+                            select: {
+                                refinanceAmount: true,
+                                previousDealDate: true,
+                                offer: true,
+                                totalRemit: true,
+                            },
+                        },
                     },
                 }),
                 prisma.application.count({ where }),
             ]);
 
-            const applications = apps.map(mapApplicationToApi);
+            const applications = apps.map((app) => {
+                const mapped = mapApplicationToApi(app) as Record<string, unknown>;
+                const positions = Array.isArray((app as any).positions)
+                    ? ((app as any).positions as Array<Record<string, unknown>>)
+                    : [];
+                const refinanceBalance = positions.reduce((sum, pos) => {
+                    const bal = Number(pos.mcaEstBalance);
+                    if (Number.isFinite(bal) && bal > 0) return sum + bal;
+                    return sum;
+                }, 0);
+                mapped.positions = positions;
+                mapped.refinanceBalance =
+                    refinanceBalance > 0
+                        ? refinanceBalance
+                        : Number((app as any).loanAmount) || 0;
+                mapped.OfferDecision = (app as any).OfferDecision ?? null;
+                return mapped;
+            });
 
             return res.status(200).json({
                 success: true,
@@ -5394,7 +5538,7 @@ class ApplicationController {
                 });
             }
 
-            await this.executePermanentApplicationDelete(application.id);
+            await executePermanentApplicationDelete(application.id);
 
             invalidateAllApplicationStatsCache();
 
@@ -5416,8 +5560,11 @@ class ApplicationController {
         }
     }
 
-    /** Super Admin / Operations: restore a soft-deleted deal to a scrubber's claimed queue. */
-    async restoreApplicationToScrubber(req: Request, res: Response) {
+    /**
+     * Super Admin / Operations: restore a soft-deleted application to the
+     * queue/state it had before soft-delete (clears deletedAt only).
+     */
+    async restoreApplication(req: Request, res: Response) {
         try {
             const { id } = req.params;
             const authUser = getAuthenticatedUser(req);
@@ -5433,31 +5580,6 @@ class ApplicationController {
                     success: false,
                     message:
                         'Only Super Admin or Operations can restore deleted applications',
-                });
-            }
-
-            const scrubberId = String(
-                (req.body as { scrubberId?: unknown } | undefined)?.scrubberId ?? '',
-            ).trim();
-            if (!scrubberId) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'scrubberId is required',
-                });
-            }
-
-            const scrubber = await prisma.user.findFirst({
-                where: {
-                    id: scrubberId,
-                    isActive: true,
-                    role: 'SCRUBBING',
-                },
-                select: { id: true, firstName: true, lastName: true, email: true },
-            });
-            if (!scrubber) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Selected scrubber was not found or is inactive',
                 });
             }
 
@@ -5496,26 +5618,14 @@ class ApplicationController {
                 });
             }
 
-            const scrubberName =
-                `${scrubber.firstName || ''} ${scrubber.lastName || ''}`.trim() ||
-                scrubber.email ||
-                'Scrubber';
             const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+            const previousQueueState = `${application.currentQueue} / ${application.currentState}`;
 
             const refreshed = await prisma.application.update({
                 where: { id: application.id },
                 data: {
                     deletedAt: null,
                     deletedById: null,
-                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
-                    currentState: ApplicationState.IN_PROGRESS,
-                    claimedByUnderwriterId: scrubberId,
-                    claimedAt: new Date(),
-                    assignedUnderwriterId: null,
-                    approvedByUnderwriterId: null,
-                    approvedAt: null,
-                    underwriterAction: null,
-                    scrubberRecommendation: null,
                 },
                 include,
             });
@@ -5525,133 +5635,29 @@ class ApplicationController {
                     applicationId: refreshed.id,
                     user: authUser,
                     req,
-                    actionType: 'QUEUE_CHANGED',
-                    actionDescription: `${actorName} restored application from Recently Deleted and assigned it to Scrubber ${scrubberName}.`,
+                    actionType: 'STATUS_CHANGED',
+                    actionDescription: `${actorName} restored application from Recently Deleted to its previous state.`,
                     previousStatus: 'Recently Deleted',
-                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
-                    metadata: { scrubberId, claimedByUnderwriterId: scrubberId },
+                    currentStatus: previousQueueState,
                 });
             } catch (logErr) {
-                console.error('Failed to log restore to scrubber:', logErr);
+                console.error('Failed to log application restore:', logErr);
             }
 
             invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
                 success: true,
-                message: `Application restored and assigned to ${scrubberName}`,
+                message: 'Application restored to previous state',
                 data: mapApplicationToApi(refreshed),
             });
         } catch (error) {
-            console.error('Restore application to scrubber error:', error);
+            console.error('Restore application error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',
             });
         }
-    }
-
-    private async executePermanentApplicationDelete(id: string) {
-        await prisma.$transaction(
-            async (tx: Prisma.TransactionClient) => {
-                const months = await tx.month.findMany({
-                    where: { applicationId: id },
-                    select: { id: true },
-                });
-                const monthIds = months.map((m) => m.id);
-                if (monthIds.length > 0) {
-                    await tx.monthlyTransaction.deleteMany({
-                        where: { monthId: { in: monthIds } },
-                    });
-                }
-                await tx.month.deleteMany({ where: { applicationId: id } });
-
-                const analyses = await tx.bankAnalysis.findMany({
-                    where: { applicationId: id },
-                    select: { id: true },
-                });
-                const analysisIds = analyses.map((a) => a.id);
-                if (analysisIds.length > 0) {
-                    await tx.bankAnalysisRow.deleteMany({
-                        where: { bankAnalysisId: { in: analysisIds } },
-                    });
-                }
-                await tx.bankAnalysis.deleteMany({ where: { applicationId: id } });
-
-                await tx.applicationFile.deleteMany({ where: { applicationId: id } });
-                await tx.comment.deleteMany({ where: { applicationId: id } });
-                await tx.complianceCheck.deleteMany({ where: { applicationId: id } });
-                await tx.note.deleteMany({ where: { applicationId: id } });
-                await tx.position.deleteMany({ where: { applicationId: id } });
-                await tx.applicationQuestionResponse.deleteMany({
-                    where: { applicationId: id },
-                });
-
-                await tx.document.deleteMany({ where: { applicationId: id } });
-                await tx.fundingInfo.deleteMany({ where: { applicationId: id } });
-
-                await tx.docuSignEnvelope.deleteMany({
-                    where: {
-                        OR: [
-                            { termsOffer: { applicationId: id } },
-                            { contract: { applicationId: id } },
-                        ],
-                    },
-                });
-
-                await tx.paymentTerms.deleteMany({
-                    where: { contract: { applicationId: id } },
-                });
-
-                await tx.termsOffer.deleteMany({ where: { applicationId: id } });
-
-                await tx.termsOffer.updateMany({
-                    where: { contracts: { applicationId: id } },
-                    data: { contractId: null },
-                });
-                await tx.aCH.updateMany({
-                    where: { contract: { applicationId: id } },
-                    data: { contractId: null },
-                });
-                await tx.ePO.updateMany({
-                    where: { contract: { applicationId: id } },
-                    data: { contractId: null },
-                });
-                await tx.addendum.updateMany({
-                    where: { contract: { applicationId: id } },
-                    data: { contractId: null },
-                });
-
-                await tx.disclosure.deleteMany({ where: { applicationId: id } });
-                await tx.contract.deleteMany({ where: { applicationId: id } });
-                await tx.offerDecision.deleteMany({ where: { applicationId: id } });
-
-                await tx.bankDetail.deleteMany({ where: { applicationId: id } });
-
-                await tx.documentRequest.deleteMany({ where: { applicationId: id } });
-
-                await tx.clientBankInfo.updateMany({
-                    where: { applicationId: id },
-                    data: { applicationId: null },
-                });
-
-                await tx.notification.updateMany({
-                    where: { applicationId: id },
-                    data: { applicationId: null },
-                });
-
-                await tx.applicationActivityLog.deleteMany({ where: { applicationId: id } });
-                await tx.finalAnswer.deleteMany({ where: { applicationId: id } });
-                await tx.publicApprovalToken.deleteMany({ where: { applicationId: id } });
-                await tx.skippedActumTransactions.deleteMany({ where: { applicationId: id } });
-
-                await tx.application.delete({ where: { id } });
-            },
-            {
-                maxWait: 15_000,
-                timeout: 120_000,
-            },
-        );
     }
 
     // Extract information from PDF using Groq API

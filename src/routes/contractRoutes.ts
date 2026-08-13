@@ -6,6 +6,9 @@ const router = express.Router();
 
 router.use(authenticateToken);
 
+// Static paths must be registered before `/:id/...` so `/templates` is never captured as an id.
+router.get('/templates', contractController.getBoldSignTemplates.bind(contractController));
+
 router.post('/create_contract', contractController.createContract.bind(contractController));
 router.get('/get_all_contracts', contractController.getAllContracts.bind(contractController));
 router.get('/get_contract/:id', contractController.getByIdContract.bind(contractController));
@@ -59,6 +62,5 @@ router.post(
   '/:id/reverse-disbursement/preview',
   contractController.previewReverseDisbursementSchedule.bind(contractController),
 );
-router.get('/templates', contractController.getBoldSignTemplates.bind(contractController));
 
 export default router;

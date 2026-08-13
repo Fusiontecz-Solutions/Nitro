@@ -26,6 +26,12 @@ import {
 } from './pdf/reverseDisbursementSchedule.service';
 import { mergePreservingDocuSignEnvelopeMeta } from './docusign/utils/preserve-docusign-prefill-meta';
 import { resolveApplicationWhere } from './applicationService';
+import { resolveFunderProfile } from './funderProfileService';
+import { buildPrefixedDealId } from '../utils/applyFunderDealIdPrefix';
+import {
+  contractStatesMatch,
+  normalizeContractStateToken,
+} from '../utils/usStateMatch';
 
 const APPLICATION_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,6 +50,59 @@ async function resolveContractApplicationUuid(applicationRef: string): Promise<s
     select: { id: true },
   });
   return app?.id ?? null;
+}
+
+/**
+ * When a contract funder is selected, rewrite `Application.dealId` from the
+ * numeric core (e.g. `3` / `WF3`) to `{prefix}{core}` using the funder's
+ * `dealIdPrefix` from the FunderProfile table (Settings → Funders).
+ * No hardcoded funder/prefix map — prefix and organization come from DB only.
+ */
+async function applyFunderDealIdPrefixToApplication(options: {
+  applicationId?: string | null;
+  funderName?: string | null;
+  funderProfileId?: string | null;
+  state?: string | null;
+  tx?: any;
+}): Promise<void> {
+  const applicationId = String(options.applicationId ?? '').trim();
+  const funderName = String(options.funderName ?? '').trim();
+  if (!applicationId || (!funderName && !options.funderProfileId)) return;
+
+  const db = options.tx ?? prisma;
+  const profile = await resolveFunderProfile({
+    funderProfileId: options.funderProfileId,
+    funderName,
+    state: options.state,
+  });
+  if (!profile) return;
+
+  const prefix = String(profile.dealIdPrefix ?? '')
+    .trim()
+    .toUpperCase();
+  // Presence of a configured Deal ID prefix is enough — Settings UI stores the
+  // prefix without always flipping assignsDealId.
+  if (!prefix) return;
+
+  const app = await db.application.findUnique({
+    where: { id: applicationId },
+    select: { id: true, dealId: true },
+  });
+  if (!app) return;
+
+  const nextDealId = buildPrefixedDealId(app.dealId, prefix);
+  if (!nextDealId || nextDealId === String(app.dealId ?? '').trim()) return;
+
+  const organization = String(profile.organization ?? '').trim() || null;
+  const updateData: Record<string, unknown> = { dealId: nextDealId };
+  if (organization) {
+    updateData.organization = organization;
+  }
+
+  await db.application.update({
+    where: { id: app.id },
+    data: updateData,
+  });
 }
 
 async function resolvePaymentBankDetailForContract(
@@ -907,7 +966,9 @@ class ContractService {
         break;
       }
     }
-    const derivedOfferId = data.offerId ?? application?.termsOffers?.[0]?.id ?? null;
+    // Contract.offerId FK → OfferDecision.id (never TermsOffer.id).
+    const derivedOfferId =
+      data.offerId ?? application?.OfferDecision?.id ?? null;
     const derivedPaymentBankId = resolvedPaymentBank?.id ?? null;
     const derivedContractLength =
       data.contractLenght ??
@@ -926,7 +987,11 @@ class ContractService {
         return end;
       })();
 
-    if (!derivedOfferId) throw new Error('offerId could not be derived from request/application termsOffers');
+    if (!derivedOfferId) {
+      throw new Error(
+        'offerId could not be derived from request/application OfferDecision',
+      );
+    }
     if (!derivedCreatedById) throw new Error('createdById could not be derived');
     if (derivedContractLength == null) throw new Error('contractLenght could not be derived');
     if (derivedApprovedAmount == null) throw new Error('approvedAmount could not be derived');
@@ -1046,175 +1111,230 @@ class ContractService {
     /** Default interactive tx timeout is 5s — this flow runs multiple writes (contract + ACH + addendum + owner + application). */
     const createContractTransactionOptions = { maxWait: 10_000, timeout: 30_000 } as const;
 
-    return (prisma as any).$transaction(async (tx: any) => {
-      const contractData: Record<string, unknown> = {
-        clientId: derivedClientId,
-        applicationId: data.applicationId || null,
-        offerId: derivedOfferId,
-        startDate: derivedStartDate,
-        endDate: derivedEndDate,
-        contractLenght: Number(derivedContractLength),
-        approvedAmount: Number(derivedApprovedAmount),
-        totalAmount: Number(derivedTotalAmount),
-        status: data.status || 'DRAFT',
-        createdById: derivedCreatedById,
-        agreementDate: derivedAgreementDate,
-        paymentBankId: derivedPaymentBankId,
-        state: data.state ?? (businessState || null),
-        ...derivedExtraFields,
-      };
-      if (data.funderName !== undefined) {
-        contractData.funderName =
-          data.funderName === '' || data.funderName == null
-            ? null
-            : String(data.funderName).trim();
+    const contractData: Record<string, unknown> = {
+      clientId: derivedClientId,
+      applicationId: data.applicationId || null,
+      offerId: derivedOfferId,
+      startDate: derivedStartDate,
+      endDate: derivedEndDate,
+      contractLenght: Number(derivedContractLength),
+      approvedAmount: Number(derivedApprovedAmount),
+      totalAmount: Number(derivedTotalAmount),
+      status: data.status || 'DRAFT',
+      createdById: derivedCreatedById,
+      agreementDate: derivedAgreementDate,
+      paymentBankId: derivedPaymentBankId,
+      state: data.state ?? (businessState || null),
+      ...derivedExtraFields,
+    };
+    if (data.funderName !== undefined) {
+      contractData.funderName =
+        data.funderName === '' || data.funderName == null
+          ? null
+          : String(data.funderName).trim();
+    }
+    applyContractExtraFields(contractData, data);
+
+    const buildContractUpdateData = (existingStatusRaw?: string | null) => {
+      // Preserve lifecycle status set by BoldSign/DocuSign webhooks
+      // (SENT/VIEWED/SIGNED/COMPLETED/etc.) when a repeated create is triggered.
+      // Never downgrade an advanced status back to DRAFT.
+      const existingStatus = String(existingStatusRaw ?? '').toUpperCase();
+      const incomingStatusRaw = (contractData as { status?: string }).status;
+      const incomingStatus = String(incomingStatusRaw ?? '').toUpperCase();
+      const lifecycleAdvanced = Boolean(existingStatus && existingStatus !== 'DRAFT');
+      const updateData: Record<string, unknown> = { ...contractData };
+      if (lifecycleAdvanced && (!incomingStatus || incomingStatus === 'DRAFT')) {
+        delete updateData.status;
       }
-      applyContractExtraFields(contractData, data);
+      return updateData;
+    };
 
-      let created: any;
-      // applicationId is unique on Contract. Repeated "create contract" clicks
-      // should update the existing row instead of throwing P2002.
-      if (data.applicationId) {
-        const existing = await tx.contract.findUnique({
-          where: { applicationId: data.applicationId },
-          select: { id: true, status: true },
-        });
+    // Prisma upsert is SELECT-then-INSERT (not ON CONFLICT) with the JS driver adapter,
+    // so concurrent/repeated creates still throw P2002 and abort the Postgres tx.
+    // Retry the whole transaction: after a conflict the next attempt finds the row and updates.
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await (prisma as any).$transaction(async (tx: any) => {
+          const findExistingContractRow = async (): Promise<{ id: number; status: string } | null> => {
+            if (data.applicationId) {
+              const byApp = await tx.contract.findUnique({
+                where: { applicationId: data.applicationId },
+                select: { id: true, status: true },
+              });
+              if (byApp?.id) return byApp;
+            }
+            if (derivedOfferId) {
+              const byOffer = await tx.contract.findUnique({
+                where: { offerId: derivedOfferId },
+                select: { id: true, status: true },
+              });
+              if (byOffer?.id) return byOffer;
+            }
+            return null;
+          };
 
-        if (existing?.id) {
-          // Preserve lifecycle status set by BoldSign webhooks (SENT/VIEWED/SIGNED/COMPLETED/etc.)
-          // when a repeated create is triggered for the same applicationId. Only allow status to
-          // remain at the explicit DRAFT default; never downgrade an advanced status back to DRAFT.
-          const existingStatus = String(existing.status ?? '').toUpperCase();
-          const incomingStatusRaw = (contractData as { status?: string }).status;
-          const incomingStatus = String(incomingStatusRaw ?? '').toUpperCase();
-          const lifecycleAdvanced =
-            existingStatus && existingStatus !== 'DRAFT';
-          const updateData: Record<string, unknown> = { ...contractData };
-          if (lifecycleAdvanced && (!incomingStatus || incomingStatus === 'DRAFT')) {
-            delete updateData.status;
+          let created: any;
+          const existing = await findExistingContractRow();
+          if (existing?.id) {
+            created = await tx.contract.update({
+              where: { id: existing.id },
+              data: buildContractUpdateData(existing.status),
+              include: contractInclude,
+            });
+          } else {
+            // SAVEPOINT so a unique violation does not abort the whole interactive tx;
+            // Prisma upsert is not atomic with the JS driver adapter (SELECT then INSERT).
+            await tx.$executeRaw`SAVEPOINT contract_create_sp`;
+            try {
+              created = await tx.contract.create({
+                data: contractData,
+                include: contractInclude,
+              });
+              await tx.$executeRaw`RELEASE SAVEPOINT contract_create_sp`;
+            } catch (createErr: any) {
+              await tx.$executeRaw`ROLLBACK TO SAVEPOINT contract_create_sp`;
+              if (createErr?.code !== 'P2002') throw createErr;
+              const raced = await findExistingContractRow();
+              if (!raced?.id) throw createErr;
+              created = await tx.contract.update({
+                where: { id: raced.id },
+                data: buildContractUpdateData(raced.status),
+                include: contractInclude,
+              });
+            }
           }
-          created = await tx.contract.update({
-            where: { id: existing.id },
-            data: updateData,
-            include: contractInclude,
+
+          const businessInfoId = normalizeBusinessInfoIdForFk(application?.businessInfo?.id);
+
+          const existingAch = await tx.aCH.findFirst({
+            where: { contractId: created.id },
+            select: { id: true },
           });
-        } else {
-          created = await tx.contract.create({
-            data: contractData,
-            include: contractInclude,
+          if (!existingAch) {
+            await tx.aCH.create({
+              data: {
+                clientId: created.clientId,
+                contractId: created.id,
+                businessInfoId,
+                bankName: bankName || null,
+                accountHolderName: legalName || null,
+                accountNumber: bankAccount || null,
+                routingNumber: bankRouting || null,
+                paymentAmount: purchaseAmount || null,
+                frequency:
+                  sanitizePaymentFrequencyForPersist(offer?.frequency) || null,
+                dba: dba || null,
+                phone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
+                address: businessAddress || null,
+                city: businessCity || null,
+                state: businessState || null,
+                zip: businessZip || null,
+                bankBranchCity: null,
+                bankState: null,
+                bankZip: null,
+              },
+            });
+          }
+
+          const existingAddendum = await tx.addendum.findFirst({
+            where: { contractId: created.id },
+            select: { id: true },
           });
+          if (!existingAddendum) {
+            await tx.addendum.create({
+              data: {
+                clientId: created.clientId,
+                contractId: created.id,
+                businessInfoId,
+                legalName1: legalName || null,
+                dba1: dba || null,
+                typeOfEntity1: firstNonEmptyString(client?.businessEntityType, biz?.entityType) || null,
+                ein1: taxEin || null,
+                mailingAddress1: businessAddress || null,
+                legalName2: null,
+                dba2: null,
+                typeOfEntity2: null,
+                ein2: null,
+                mailingAddress2: null,
+                legalName3: null,
+                dba3: null,
+                typeOfEntity3: null,
+                ein3: null,
+                mailingAddress3: null,
+                addendumDated: derivedAgreementDate.toISOString().slice(0, 10),
+                principalOwner: customerName || null,
+                principalBusiness: legalName || null,
+                businessLocation: businessAddress || null,
+                principalState: businessState || null,
+                principalOwnerAmount1: purchaseAmount || null,
+                principalOwnerAmount2: purchasePrice || null,
+                principalOwner1Name: customerName || null,
+                principalOwner1Date: derivedAgreementDate.toISOString().slice(0, 10),
+                principalOwner2Name: null,
+                principalOwner2Date: null,
+              },
+            });
+          }
+
+          const existingOwner = await tx.contractOwner.findFirst({
+            where: { contractId: created.id },
+            select: { id: true },
+          });
+          if (!existingOwner && firstNonEmptyString(client?.ownerFirstName, client?.ownerLastName)) {
+            await tx.contractOwner.create({
+              data: {
+                contractId: created.id,
+                firstName: firstNonEmptyString(client?.ownerFirstName),
+                lastName: firstNonEmptyString(client?.ownerLastName),
+                email: firstNonEmptyString(client?.ownerEmail, client?.businessEmail) || null,
+                phone: firstNonEmptyString(client?.ownerMobileNumber, client?.businessNumber) || null,
+                address: firstNonEmptyString(client?.ownerAddress1, client?.ownerAddress2) || null,
+                state: firstNonEmptyString(client?.ownerState) || null,
+                city: firstNonEmptyString(client?.ownerCity) || null,
+                zip: firstNonEmptyString(client?.ownerZipCode) || null,
+                ownershipPercentage:
+                  client?.ownerOwnershipPercentage != null ? Number(client.ownerOwnershipPercentage) : null,
+              },
+            });
+          }
+
+          if (data.applicationId) {
+            await syncApplicationToContractGenerated(tx, data.applicationId, {
+              source: 'contractService.createContract',
+              contractId: created.id,
+              contractStatusNew: 'DRAFT',
+            });
+          }
+
+          const createdFunderName =
+            data.funderName === undefined
+              ? null
+              : data.funderName === '' || data.funderName == null
+                ? null
+                : String(data.funderName).trim();
+          if (createdFunderName && data.applicationId) {
+            await applyFunderDealIdPrefixToApplication({
+              applicationId: data.applicationId,
+              funderName: createdFunderName,
+              state: (contractData.state as string | null | undefined) ?? null,
+              tx,
+            });
+          }
+
+          return mapContractRecordForApi(created);
+        }, createContractTransactionOptions);
+      } catch (err: any) {
+        lastError = err;
+        const isUniqueViolation = err?.code === 'P2002';
+        if (!isUniqueViolation || attempt >= maxAttempts) {
+          throw err;
         }
-      } else {
-        created = await tx.contract.create({
-          data: contractData,
-          include: contractInclude,
-        });
       }
-
-      const businessInfoId = normalizeBusinessInfoIdForFk(application?.businessInfo?.id);
-
-      const existingAch = await tx.aCH.findFirst({
-        where: { contractId: created.id },
-        select: { id: true },
-      });
-      if (!existingAch) {
-        await tx.aCH.create({
-          data: {
-            clientId: created.clientId,
-            contractId: created.id,
-            businessInfoId,
-            bankName: bankName || null,
-            accountHolderName: legalName || null,
-            accountNumber: bankAccount || null,
-            routingNumber: bankRouting || null,
-            paymentAmount: purchaseAmount || null,
-            frequency:
-              sanitizePaymentFrequencyForPersist(offer?.frequency) || null,
-            dba: dba || null,
-            phone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
-            address: businessAddress || null,
-            city: businessCity || null,
-            state: businessState || null,
-            zip: businessZip || null,
-            bankBranchCity: null,
-            bankState: null,
-            bankZip: null,
-          },
-        });
-      }
-
-      const existingAddendum = await tx.addendum.findFirst({
-        where: { contractId: created.id },
-        select: { id: true },
-      });
-      if (!existingAddendum) {
-        await tx.addendum.create({
-          data: {
-            clientId: created.clientId,
-            contractId: created.id,
-            businessInfoId,
-            legalName1: legalName || null,
-            dba1: dba || null,
-            typeOfEntity1: firstNonEmptyString(client?.businessEntityType, biz?.entityType) || null,
-            ein1: taxEin || null,
-            mailingAddress1: businessAddress || null,
-            legalName2: null,
-            dba2: null,
-            typeOfEntity2: null,
-            ein2: null,
-            mailingAddress2: null,
-            legalName3: null,
-            dba3: null,
-            typeOfEntity3: null,
-            ein3: null,
-            mailingAddress3: null,
-            addendumDated: derivedAgreementDate.toISOString().slice(0, 10),
-            principalOwner: customerName || null,
-            principalBusiness: legalName || null,
-            businessLocation: businessAddress || null,
-            principalState: businessState || null,
-            principalOwnerAmount1: purchaseAmount || null,
-            principalOwnerAmount2: purchasePrice || null,
-            principalOwner1Name: customerName || null,
-            principalOwner1Date: derivedAgreementDate.toISOString().slice(0, 10),
-            principalOwner2Name: null,
-            principalOwner2Date: null,
-          },
-        });
-      }
-
-      const existingOwner = await tx.contractOwner.findFirst({
-        where: { contractId: created.id },
-        select: { id: true },
-      });
-      if (!existingOwner && firstNonEmptyString(client?.ownerFirstName, client?.ownerLastName)) {
-        await tx.contractOwner.create({
-          data: {
-            contractId: created.id,
-            firstName: firstNonEmptyString(client?.ownerFirstName),
-            lastName: firstNonEmptyString(client?.ownerLastName),
-            email: firstNonEmptyString(client?.ownerEmail, client?.businessEmail) || null,
-            phone: firstNonEmptyString(client?.ownerMobileNumber, client?.businessNumber) || null,
-            address: firstNonEmptyString(client?.ownerAddress1, client?.ownerAddress2) || null,
-            state: firstNonEmptyString(client?.ownerState) || null,
-            city: firstNonEmptyString(client?.ownerCity) || null,
-            zip: firstNonEmptyString(client?.ownerZipCode) || null,
-            ownershipPercentage:
-              client?.ownerOwnershipPercentage != null ? Number(client.ownerOwnershipPercentage) : null,
-          },
-        });
-      }
-
-      if (data.applicationId) {
-        await syncApplicationToContractGenerated(tx, data.applicationId, {
-          source: 'contractService.createContract',
-          contractId: created.id,
-          contractStatusNew: 'DRAFT',
-        });
-      }
-
-      return mapContractRecordForApi(created);
-    }, createContractTransactionOptions);
+    }
+    throw lastError;
   }
 
   async getAllContracts(filters: {
@@ -1420,6 +1540,11 @@ class ContractService {
       throw new Error('No contract fields provided for update');
     }
 
+    const existingMeta = await prisma.contract.findUnique({
+      where: { id },
+      select: { applicationId: true, state: true, funderName: true },
+    });
+
     const row = await prisma.contract.update({
       where: { id },
       data: updateData,
@@ -1431,6 +1556,30 @@ class ContractService {
         paymentBank: { select: { id: true, bankName: true } },
       },
     });
+
+    const nextFunder =
+      data.funderName !== undefined
+        ? data.funderName === '' || data.funderName == null
+          ? null
+          : String(data.funderName).trim()
+        : String(existingMeta?.funderName ?? (row as { funderName?: string | null }).funderName ?? '').trim() ||
+          null;
+    const applicationId =
+      (data.applicationId !== undefined ? data.applicationId : existingMeta?.applicationId) ??
+      (row as { applicationId?: string | null }).applicationId ??
+      null;
+    const state =
+      (data.state !== undefined ? data.state : existingMeta?.state) ??
+      (row as { state?: string | null }).state ??
+      null;
+    if (nextFunder && applicationId) {
+      await applyFunderDealIdPrefixToApplication({
+        applicationId,
+        funderName: nextFunder,
+        state,
+      });
+    }
+
     return mapContractRecordForApi(row as Record<string, unknown>);
   }
 
@@ -2245,14 +2394,109 @@ class ContractService {
     frequency?: string;
   }) {
     const where: any = {};
-    if (filters.type) where.type = String(filters.type).trim();
-    if (filters.state) where.state = String(filters.state).trim().toLowerCase();
-    if (filters.frequency) where.frequency = String(filters.frequency).trim().toLowerCase();
+    if (filters.type) {
+      const typeToken = String(filters.type).trim();
+      where.type = { equals: typeToken, mode: 'insensitive' };
+    }
 
-    return (prisma as any).boldSignTemplate.findMany({
+    const rows = await (prisma as any).boldSignTemplate.findMany({
       where,
       orderBy: { createdAt: 'desc' },
     });
+
+    const wantedState = normalizeContractStateToken(filters.state);
+    const wantedFrequency = String(filters.frequency ?? '')
+      .trim()
+      .toLowerCase();
+    const freqKey =
+      wantedFrequency.startsWith('week')
+        ? 'weekly'
+        : wantedFrequency.startsWith('day')
+          ? 'daily'
+          : wantedFrequency.startsWith('month')
+            ? 'monthly'
+            : wantedFrequency;
+
+    const stateFiltered = (rows as Array<Record<string, unknown>>).filter((row) => {
+      if (!wantedState) return true;
+      const rowState = String(row.state ?? '').trim();
+      const stateOk =
+        (rowState && contractStatesMatch(rowState, wantedState)) ||
+        (() => {
+          // Legacy rows may omit `state` but encode it in name/layoutKey
+          // (`california` or postal `ca`).
+          const blob = `${String(row.name ?? '')} ${String(row.layoutKey ?? '')} ${String(row.templateId ?? '')}`
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '_');
+          const slug = wantedState.replace(/\s+/g, '_');
+          const compact = wantedState.replace(/\s+/g, '');
+          const postalByKey: Record<string, string> = {
+            california: 'ca',
+            'new york': 'ny',
+            connecticut: 'ct',
+            florida: 'fl',
+            georgia: 'ga',
+            kansas: 'ks',
+            utah: 'ut',
+            virginia: 'va',
+            missouri: 'mo',
+            louisiana: 'la',
+            texas: 'tx',
+          };
+          const postal = postalByKey[wantedState] || postalByKey[compact];
+          const postalHit =
+            Boolean(postal) &&
+            (blob.includes(`_${postal}_`) ||
+              blob.startsWith(`${postal}_`) ||
+              blob.endsWith(`_${postal}`) ||
+              blob === postal);
+          return (
+            postalHit ||
+            blob.includes(`_${slug}_`) ||
+            blob.startsWith(`${slug}_`) ||
+            blob.endsWith(`_${slug}`) ||
+            blob.includes(slug) ||
+            blob.includes(compact)
+          );
+        })();
+      return stateOk;
+    });
+
+    if (!freqKey) return stateFiltered;
+
+    const freqFiltered = stateFiltered.filter((row) => {
+      const rowFreq = String(row.frequency ?? '')
+        .trim()
+        .toLowerCase();
+      if (!rowFreq) {
+        const blob = `${String(row.name ?? '')} ${String(row.layoutKey ?? '')} ${String(row.templateId ?? '')}`
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_');
+        const inferred = blob.includes('biweek')
+          ? 'biweekly'
+          : blob.includes('week')
+            ? 'weekly'
+            : blob.includes('month')
+              ? 'monthly'
+              : blob.includes('daily') || blob.includes('_day_') || blob.startsWith('day_') || blob.endsWith('_day')
+                ? 'daily'
+                : '';
+        if (!inferred) return false;
+        return inferred === freqKey;
+      }
+      const normalizedRowFreq = rowFreq.startsWith('week')
+        ? 'weekly'
+        : rowFreq.startsWith('day')
+          ? 'daily'
+          : rowFreq.startsWith('month')
+            ? 'monthly'
+            : rowFreq;
+      return normalizedRowFreq === freqKey;
+    });
+
+    // Frequency is a preference — never hide the shared state pack when cadence
+    // labels don't line up (both funders consume the same California / NY / etc. PDFs).
+    return freqFiltered.length ? freqFiltered : stateFiltered;
   }
 
   async getByIdBoldSignTemplate(id: string) {

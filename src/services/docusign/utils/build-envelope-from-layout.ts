@@ -237,6 +237,9 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   entity_type: ['typeOfEntity1', 'typeofentity1'],
   typeofentity1: ['entity_type', 'typeOfEntity1'],
   typeOfEntity1: ['entity_type', 'typeofentity1'],
+  owner_print_title: ['print_title', 'guarantor_print_title', 'owner_title'],
+  guarantor_print_title: ['owner_print_title', 'print_title', 'owner_title'],
+  print_title: ['owner_print_title', 'guarantor_print_title'],
   federal_tax_id_ein: ['security_tax_ein', 'authorization_client_tax_id'],
   security_tax_ein: ['federal_tax_id_ein', 'authorization_client_tax_id'],
   frequency: ['paymentterms', 'payment_terms'],
@@ -247,7 +250,7 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'disclosure_estimated_payment',
     'theestimatedpayment',
   ],
-  net_to_merchant: ['netfundprovided', 'net_fund_provided'],
+  net_to_merchant: ['netfundprovided', 'net_fund_provided', 'NetFundProvided'],
   purchase_amount: [
     'disclosure_amount_financed',
     'funding_provided',
@@ -348,12 +351,63 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   ],
   estimated_time_periodic_paymement: ['disclosure_term_days', 'estimated_number_of_payments'],
   theestimatedpayment: ['disclosure_estimated_payment', 'estimated_payment'],
-  payment_exceed_percent: ['disclosure_payment_terms', 'percent_of_business_income'],
+  payment_exceed_percent: [
+    'disclosure_payment_terms',
+    'percent_of_business_income',
+    'payement_exceeded_percent',
+    'payment_exceeded_percent',
+  ],
+  payement_exceeded_percent: [
+    'disclosure_payment_terms',
+    'percent_of_business_income',
+    'payment_exceeded_percent',
+    'payment_exceed_percent',
+  ],
+  payment_exceeded_percent: [
+    'disclosure_payment_terms',
+    'percent_of_business_income',
+    'payement_exceeded_percent',
+    'payment_exceed_percent',
+  ],
+  disclosure_payment_terms: [
+    'payement_exceeded_percent',
+    'payment_exceeded_percent',
+    'payment_exceed_percent',
+    'percent_of_business_income',
+  ],
   signature1_date: ['disclosure_date', 'agreement_date', 'signature_date'],
   signature2_date: ['disclosure_date', 'agreement_date', 'signature_date'],
   estimated_payment_amount: ['disclosure_estimated_payment', 'estimated_payment', 'remittance'],
   monthly_income: ['disclosure_avg_monthly_revenue', 'avarage_monthly_income', 'etimated_average_income'],
-  appendix_underwriting_fees: ['disclosure_broker_fee', 'underwriter_fee', 'underwriterfee', 'underwriter_fees'],
+  appendix_underwriting_fees: [
+    'disclosure_broker_fee',
+    'underwriter_fee',
+    'underwriterfee',
+    'underwriter_fees',
+    'originationFee',
+    'origination_fee',
+  ],
+  underwriter_fee: [
+    'appendix_underwriting_fees',
+    'underwriterfee',
+    'underwriter_fees',
+    'originationFee',
+    'origination_fee',
+  ],
+  originationFee: [
+    'appendix_underwriting_fees',
+    'underwriter_fee',
+    'underwriterfee',
+    'underwriter_fees',
+    'origination_fee',
+  ],
+  origination_fee: [
+    'appendix_underwriting_fees',
+    'underwriter_fee',
+    'underwriterfee',
+    'underwriter_fees',
+    'originationFee',
+  ],
   owner1_guarantor_name: ['guaranty_owner1_name', 'guaranty_guarantor1_name', 'guaranty_client_name'],
   guaranty_owner1_name: ['owner1_guarantor_name', 'guaranty_guarantor1_name', 'guaranty_client_name', 'client_name'],
   guaranty_guarantor1_name: ['owner1_guarantor_name', 'guaranty_owner1_name', 'guaranty_client_name', 'client_name'],
@@ -786,6 +840,10 @@ function expandPrefillValues(
     todayUs;
   if (!String(out.agreement_date || '').trim()) out.agreement_date = agreementDate;
   if (!String(out.signature_date || '').trim()) out.signature_date = agreementDate;
+  if (!String(out.owner_print_title || '').trim()) out.owner_print_title = 'OWNER';
+  if (!String(out.guarantor_print_title || '').trim()) {
+    out.guarantor_print_title = String(out.owner_print_title || 'OWNER').trim() || 'OWNER';
+  }
 
   for (const [canonical, aliases] of Object.entries(PREFILL_VALUE_ALIASES)) {
     const v = String(out[canonical] || '').trim();
@@ -793,6 +851,23 @@ function expandPrefillValues(
     for (const alias of aliases) {
       if (!String(out[alias] || '').trim()) out[alias] = v;
     }
+  }
+
+  // Contract PDF “$___ per ____”: DAY / WEEK (not DAILY / WEEKLY).
+  for (const key of [
+    'frequency',
+    'paymentterms',
+    'payment_terms',
+    'paymentfrequency',
+    'payment_frequency',
+  ]) {
+    const raw = String(out[key] || '').trim();
+    if (!raw) continue;
+    const text = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+    if (text === 'day' || text === 'daily') out[key] = 'DAY';
+    else if (text === 'week' || text === 'weekly') out[key] = 'WEEK';
+    else if (text === 'bi week' || text === 'biweekly') out[key] = 'BI-WEEK';
+    else if (text === 'month' || text === 'monthly') out[key] = 'MONTH';
   }
 
   /**

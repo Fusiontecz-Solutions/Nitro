@@ -17,10 +17,12 @@ import {
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { tryBuildStateDisclosureLayoutFromDbRow } from './state-document-layout';
+import { tryBuildAddendumLayoutFromDbRow } from './addendum-document-layout';
 import {
   parseFunderSupplementalLayoutKey,
   resolveFunderSupplementalStorageType,
 } from '../../../utils/funderContractLayout';
+import { fetchCloudinaryAssetBuffer } from '../../cloudinaryAssetDownload';
 
 export type ResolvedMergeTemplate = {
   sourceRef: string;
@@ -84,10 +86,17 @@ export async function resolveTemplateRefForMerge(
     };
   }
 
+  // BoldSignTemplate.id is a UUID column — never query it with layout keys
+  // like `funder_<uuid>_addendum_p` (Postgres rejects the uuid cast).
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      sourceRef,
+    );
+
   const row = await prisma.boldSignTemplate.findFirst({
     where: {
       OR: [
-        { id: sourceRef },
+        ...(isUuid ? [{ id: sourceRef }] : []),
         { templateId: sourceRef },
         { layoutKey: sourceRef },
       ],
@@ -103,7 +112,9 @@ export async function resolveTemplateRefForMerge(
         type: row.type,
       }) || undefined;
     const pdfUrl = String(row.pdfUrl || '').trim() || undefined;
-    const inlineLayout = tryBuildStateDisclosureLayoutFromDbRow(row);
+    const inlineLayout =
+      tryBuildStateDisclosureLayoutFromDbRow(row) ||
+      (await tryBuildAddendumLayoutFromDbRow(row));
     const hasRemotePdf =
       !!pdfUrl &&
       (pdfUrl.startsWith('http://') || pdfUrl.startsWith('https://')) &&
@@ -112,7 +123,7 @@ export async function resolveTemplateRefForMerge(
     if (hasRemotePdf) {
       if (!layoutKey && !inlineLayout) {
         throw new Error(
-          `Template "${row.name}" has no layoutKey and no state-document-config entry for frequency="${row.frequency}" state="${row.state}".`,
+          `Template "${row.name}" has no layoutKey and no state-document-config / addendum-document-config entry for frequency="${row.frequency}" state="${row.state}" type="${row.type}".`,
         );
       }
       return {
@@ -159,13 +170,26 @@ export async function fetchPdfAsBase64(
   url: string,
   context?: string,
 ): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) {
+  const trimmed = String(url || '').trim();
+  let buf: Buffer;
+  try {
+    if (/^https:\/\/res\.cloudinary\.com\//i.test(trimmed)) {
+      buf = await fetchCloudinaryAssetBuffer(trimmed);
+    } else {
+      const res = await fetch(trimmed);
+      if (!res.ok) {
+        throw new Error(
+          `Failed to download PDF (${res.status})${context ? ` for "${context}"` : ''}`,
+        );
+      }
+      buf = Buffer.from(await res.arrayBuffer());
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Failed to download PDF (${res.status})${context ? ` for "${context}"` : ''}`,
+      `Failed to download PDF${context ? ` for "${context}"` : ''}: ${msg}`,
     );
   }
-  const buf = Buffer.from(await res.arrayBuffer());
   assertValidPdfBuffer(buf, context);
   return buf.toString('base64');
 }

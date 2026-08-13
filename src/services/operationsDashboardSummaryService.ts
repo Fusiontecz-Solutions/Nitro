@@ -6,7 +6,9 @@ import {
 } from './applicationService';
 import {
     buildOperationsStatusFilterWhere,
+    contractGeneratedStrictMatchWhere,
     contractPendingStrictMatchWhere,
+    contractSentStrictMatchWhere,
     excludeSoftDeletedWhere,
     normalizeOperationsStatusKey,
     resolveOperationsListFilterMode,
@@ -306,8 +308,31 @@ export type OperationsPaymentPerformancePoint = {
 
 function toFiniteAmount(value: unknown): number | null {
     if (value == null || value === '') return null;
-    const num = Number(value);
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === 'object' && value !== null) {
+        const decimalLike = value as { toNumber?: () => number; toFixed?: (digits?: number) => string };
+        if (typeof decimalLike.toNumber === 'function') {
+            const n = Number(decimalLike.toNumber());
+            return Number.isFinite(n) ? n : null;
+        }
+        if (typeof decimalLike.toFixed === 'function') {
+            const n = Number(decimalLike.toFixed(20));
+            return Number.isFinite(n) ? n : null;
+        }
+    }
+    const s = String(value).replace(/[$,\s]/g, '').trim();
+    if (!s) return null;
+    const num = Number(s);
     return Number.isFinite(num) ? num : null;
+}
+
+function firstPositiveAmount(...values: Array<number | null | undefined>): number {
+    for (const value of values) {
+        if (value != null && value > 0) return value;
+    }
+    return 0;
 }
 
 function startOfLocalDay(date: Date): Date {
@@ -332,35 +357,39 @@ function formatMonthLabel(date: Date): string {
     return date.toLocaleDateString('en-US', { month: 'short' });
 }
 
-function normalizeWorkflowToken(value: string | null | undefined): string {
+function compactWorkflowToken(value: string | null | undefined): string {
     return String(value ?? '')
         .trim()
-        .toUpperCase()
-        .replace(/[\s-]+/g, '_');
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '');
 }
+
+const SIGNED_CONTRACT_TOKENS = new Set([
+    'contractsigned',
+    'signedcontracts',
+    'signedcontract',
+]);
+
+const PENDING_CONTRACT_TOKENS = new Set([
+    'contractpending',
+    'contractgenerated',
+    'contractsent',
+    'contractout',
+    'contractsout',
+]);
 
 function classifyContractMoneyStage(
     currentQueue: string | null | undefined,
     currentState: string | null | undefined,
 ): 'pending' | 'approved' | null {
-    const queueToken = normalizeWorkflowToken(currentQueue);
-    const stateToken = normalizeWorkflowToken(currentState);
+    const queueToken = compactWorkflowToken(currentQueue);
+    const stateToken = compactWorkflowToken(currentState);
 
-    if (
-        queueToken === 'CONTRACT_SIGNED' ||
-        queueToken === 'SIGNED_CONTRACTS' ||
-        queueToken === 'SIGNEDCONTRACTS' ||
-        stateToken === 'SIGNED_CONTRACTS' ||
-        stateToken === 'CONTRACT_SIGNED'
-    ) {
+    if (SIGNED_CONTRACT_TOKENS.has(queueToken) || SIGNED_CONTRACT_TOKENS.has(stateToken)) {
         return 'approved';
     }
 
-    if (
-        queueToken === 'CONTRACT_PENDING' ||
-        queueToken === 'CONTRACTPENDING' ||
-        stateToken === 'CONTRACT_PENDING'
-    ) {
+    if (PENDING_CONTRACT_TOKENS.has(queueToken) || PENDING_CONTRACT_TOKENS.has(stateToken)) {
         return 'pending';
     }
 
@@ -446,26 +475,25 @@ export async function aggregateOperationsPaymentPerformanceTrend(
         authUser,
     );
     const stageWhere: Prisma.ApplicationWhereInput = {
-        OR: [contractPendingStrictMatchWhere(), signedContractsStrictMatchWhere()],
+        OR: [
+            contractPendingStrictMatchWhere(),
+            contractGeneratedStrictMatchWhere(),
+            contractSentStrictMatchWhere(),
+            signedContractsStrictMatchWhere(),
+        ],
     };
     const where = combineWhere(
-        combineWhere(
-            combineWhere(visibilityBase, stageWhere),
-            excludeSoftDeletedWhere(),
-        ),
-        {
-            updatedAt: {
-                gte: rangeStart,
-                lte: rangeEnd,
-            },
-        },
+        combineWhere(visibilityBase, stageWhere),
+        excludeSoftDeletedWhere(),
     );
 
     const apps = await prisma.application.findMany({
         where,
         select: {
             id: true,
+            createdAt: true,
             updatedAt: true,
+            loanAmount: true,
             currentQueue: true,
             currentState: true,
         },
@@ -516,11 +544,18 @@ export async function aggregateOperationsPaymentPerformanceTrend(
         }
     }
 
-    for (const app of apps) {
-        const stamp = app.updatedAt.getTime();
-        const bucket = buckets.find(
+    const findBucket = (stamp: number) =>
+        buckets.find(
             (item) => stamp >= item.start.getTime() && stamp <= item.end.getTime(),
         );
+
+    for (const app of apps) {
+        const updatedStamp = app.updatedAt.getTime();
+        const createdStamp = app.createdAt.getTime();
+        const bucket =
+            findBucket(createdStamp) ??
+            findBucket(updatedStamp) ??
+            buckets[buckets.length - 1];
         if (!bucket) continue;
 
         const stage = classifyContractMoneyStage(app.currentQueue, app.currentState);
@@ -531,11 +566,12 @@ export async function aggregateOperationsPaymentPerformanceTrend(
             od && String(od.decision ?? '').toLowerCase() !== 'declined'
                 ? toFiniteAmount(od.offer)
                 : null;
-        const amount =
-            odOffer ??
-            latestTermsByApp.get(app.id) ??
-            contractByApp.get(app.id) ??
-            0;
+        const amount = firstPositiveAmount(
+            odOffer,
+            latestTermsByApp.get(app.id),
+            contractByApp.get(app.id),
+            toFiniteAmount(app.loanAmount),
+        );
         if (!(amount > 0)) continue;
 
         const entry = totals.get(bucket.key);

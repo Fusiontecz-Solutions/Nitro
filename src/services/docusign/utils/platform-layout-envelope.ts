@@ -31,6 +31,11 @@ import {
   resolveCoordinateLayoutKeyForTemplate,
   resolveTemplateRefForMerge,
 } from './merge-template-resolve';
+import { buildAddendumDocumentLayout } from './addendum-document-layout';
+import {
+  resolveAddendumDocumentConfigKey,
+  resolveAddendumPdfVariant,
+} from '../addendum-document-config';
 import {
   DOCUSIGN_COMBINE_PACKAGE_PDF,
   DOCUSIGN_DEFAULT_ROLE_NAME,
@@ -216,6 +221,34 @@ export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutW
   return loadMainContractLayoutPackage(DOCUMENT_LAYOUT_KEYS.contract);
 }
 
+/**
+ * Prefer funder-specific addendum coords (Clear Capital vs Harbor View guarantee pages).
+ * Falls back to the platform registry layout when the ref is not an addendum.
+ */
+function resolveSupplementalCoordinateLayout(options: {
+  layoutKeyOrType: string;
+  funderName?: string | null;
+  templateName?: string | null;
+  pdfUrl?: string | null;
+}): DocumentLayout {
+  const { layoutKeyOrType, funderName, templateName, pdfUrl } = options;
+  const addendumKey = resolveAddendumDocumentConfigKey(layoutKeyOrType);
+  if (addendumKey) {
+    const variant = resolveAddendumPdfVariant({
+      funderName,
+      name: templateName,
+      pdfUrl,
+      fileName: String(pdfUrl || '')
+        .split('/')
+        .pop()
+        ?.split('?')[0],
+    });
+    const built = buildAddendumDocumentLayout(addendumKey, variant);
+    if (built) return built;
+  }
+  return getDocumentLayout(layoutKeyOrType as DocumentLayoutKey);
+}
+
 export async function loadSupplementalLayoutPackage(
   ref: string,
   funderContext?: FunderLayoutContext,
@@ -225,7 +258,6 @@ export async function loadSupplementalLayoutPackage(
 
   const pack = await (async (): Promise<DocumentLayoutWithBase64> => {
   if (isDocumentLayoutKey(sourceRef)) {
-    const layout = getDocumentLayout(sourceRef);
     if (funder?.id) {
       const docsFunderId =
         resolveAddendumDocumentsLayoutFunderId(funder) ||
@@ -266,6 +298,17 @@ export async function loadSupplementalLayoutPackage(
             orderBy: { createdAt: 'desc' },
             select: { name: true },
           });
+          // Use docs-source funder name for PDF geometry (shared Harbor docs → Harbor coords).
+          const docsFunder =
+            docsFunderId === funder.id
+              ? funder
+              : await resolveFunderProfile({ funderProfileId: docsFunderId });
+          const layout = resolveSupplementalCoordinateLayout({
+            layoutKeyOrType: sourceRef,
+            funderName: docsFunder?.name || funder.name,
+            templateName: row?.name,
+            pdfUrl: scopedPdfUrl,
+          });
           return {
             ...layout,
             key: scopedKey,
@@ -280,11 +323,15 @@ export async function loadSupplementalLayoutPackage(
         }
       }
     }
+    const layout = resolveSupplementalCoordinateLayout({
+      layoutKeyOrType: sourceRef,
+      funderName: funder?.name,
+    });
     const documentBase64 = await loadPlatformDocumentPdfBase64(sourceRef);
     return { ...layout, documentBase64 };
   }
 
-  // Funder-scoped addendum/ACH keys reuse platform coordinates; PDF comes from the funder row.
+  // Funder-scoped addendum/ACH keys: PDF from funder row; coords from funder PDF variant.
   if (isFunderSupplementalLayoutKey(sourceRef)) {
     const parsed = parseFunderSupplementalLayoutKey(sourceRef);
     const coordinateKey = resolveCoordinateLayoutKeyForTemplate({
@@ -292,15 +339,27 @@ export async function loadSupplementalLayoutPackage(
       type: parsed?.supplementalType,
     });
     if (coordinateKey) {
-      const layout = getDocumentLayout(coordinateKey);
       const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(sourceRef);
+      const row = await prisma.boldSignTemplate.findFirst({
+        where: { OR: [{ layoutKey: sourceRef }, { templateId: sourceRef }] },
+        orderBy: { createdAt: 'desc' },
+        select: { name: true, type: true },
+      });
+      let scopedFunderName = funder?.name || null;
+      if (parsed?.funderId) {
+        const scopedProfile = await resolveFunderProfile({
+          funderProfileId: parsed.funderId,
+        });
+        if (scopedProfile?.name) scopedFunderName = scopedProfile.name;
+      }
+      const layout = resolveSupplementalCoordinateLayout({
+        layoutKeyOrType: coordinateKey,
+        funderName: scopedFunderName,
+        templateName: row?.name,
+        pdfUrl,
+      });
       if (pdfUrl) {
         const documentBase64 = await fetchPdfAsBase64(pdfUrl, sourceRef);
-        const row = await prisma.boldSignTemplate.findFirst({
-          where: { OR: [{ layoutKey: sourceRef }, { templateId: sourceRef }] },
-          orderBy: { createdAt: 'desc' },
-          select: { name: true, type: true },
-        });
         return {
           ...layout,
           key: sourceRef,

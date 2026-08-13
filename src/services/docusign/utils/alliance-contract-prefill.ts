@@ -51,6 +51,8 @@ export const ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES: Record<string, readonly stri
     'underwriter_fee',
     'underwriterfee',
     'underwriter_fees',
+    'originationFee',
+    'origination_fee',
   ],
   net_to_merchant: ['netfundprovided', 'net_fund_provided', 'NetFundProvided'],
   remittance: [

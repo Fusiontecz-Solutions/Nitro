@@ -130,6 +130,9 @@ const CRM_LABEL_TO_FIELD_ID: Record<string, string> = {
   underwriter_fee: 'appendix_underwriting_fees',
   underwriterfees: 'appendix_underwriting_fees',
   underwriter_fees: 'appendix_underwriting_fees',
+  originationfee: 'appendix_underwriting_fees',
+  origination_fee: 'appendix_underwriting_fees',
+  originationFee: 'appendix_underwriting_fees',
 };
 
 /** Normalize CRM / DocuSign field keys for fuzzy matching (snake_case, spaces, case). */
@@ -191,15 +194,42 @@ function registerPrefillMapValue(
   if (options?.overwrite || !map.has(alt)) map.set(alt, value);
 }
 
+/** Contract PDF “$___ per ____”: DAY / WEEK (not DAILY / WEEKLY). */
+function normalizeContractFrequencyDisplay(value: string): string {
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  if (!text) return String(value ?? '').trim().toUpperCase();
+  if (text === 'day' || text === 'daily') return 'DAY';
+  if (text === 'week' || text === 'weekly') return 'WEEK';
+  if (text === 'bi week' || text === 'biweekly') return 'BI-WEEK';
+  if (text === 'month' || text === 'monthly') return 'MONTH';
+  return String(value ?? '').trim().toUpperCase();
+}
+
 export function buildPrefillValueMap(
   fields: PrefillFieldInput[],
 ): Map<string, string> {
   const map = new Map<string, string>();
   for (const f of fields) {
     const id = String(f?.id ?? '').trim();
-    const value = String(f?.value ?? '').trim();
+    // Contract / addendum / disclosure stamped + tab text must be ALL CAPS.
+    let value = String(f?.value ?? '').trim().toUpperCase();
     if (!id || !value) continue;
     const key = normalizeFieldKey(id);
+    // Contract PDF “$___ per ____”: DAY / WEEK (not DAILY / WEEKLY).
+    if (
+      key === 'frequency' ||
+      key === 'paymentterms' ||
+      key === 'payment_terms' ||
+      key === 'paymentfrequency' ||
+      key.endsWith('_frequency') ||
+      key.endsWith('paymentterms')
+    ) {
+      value = normalizeContractFrequencyDisplay(value);
+    }
     const bare = stripLayoutScopedTabPrefix(key);
     // Exact CRM field ids always win (e.g. balance_transfer_purchase_price Remaining Balance).
     registerPrefillMapValue(map, key, value, { overwrite: true });
@@ -310,7 +340,7 @@ export function buildTextTabsFromPrefillIds(
     .filter((f) => f?.id && String(f.value ?? '').trim() !== '')
     .map((f) => ({
       tabLabel: String(f.id).trim(),
-      value: String(f.value).trim(),
+      value: String(f.value).trim().toUpperCase(),
     }));
 }
 

@@ -18,6 +18,7 @@ import {
 import { isDocumentLayoutKey } from './docusign/platform-document-registry';
 import {
   inferDefaultFunderDocumentsSource,
+  isWoodmereFinancialFunderName,
   normalizeFunderDocumentsSource,
   resolveAddendumDocumentsLayoutFunderId,
   resolveDisclosureDocumentsLayoutFunderId,
@@ -139,6 +140,8 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
     docusignAccountProfileId:
       row.docusignAccountProfileId != null ? String(row.docusignAccountProfileId) : null,
     docusignAccountName: docusign?.name ? String(docusign.name) : null,
+    docusignDefaultCcEmail:
+      docusign?.defaultCcEmail != null ? String(docusign.defaultCcEmail) : null,
     sortOrder: Number(row.sortOrder ?? 0),
     isActive: row.isActive !== false,
     documentsSource: normalizeFunderDocumentsSource(
@@ -155,12 +158,16 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
           ? String(row.documentsSource)
           : null,
     ),
+    // Disclosures are the common shared pack by default. Do NOT inherit
+    // documentsSource ("own" contract PDFs) — that made every state miss the
+    // common funder disclosure set for Clear Capital and similar funders.
     disclosureDocumentsSource: normalizeFunderDocumentsSource(
       row.disclosureDocumentsSource != null
         ? String(row.disclosureDocumentsSource)
-        : row.documentsSource != null
+        : row.documentsSource != null &&
+            normalizeFunderDocumentsSource(String(row.documentsSource)) === 'shared'
           ? String(row.documentsSource)
-          : null,
+          : 'platform',
     ),
     sharedAddendumFunderId:
       row.sharedAddendumFunderId != null
@@ -334,7 +341,9 @@ export async function listFunderProfiles(options?: { state?: string | null; acti
     where,
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     include: {
-      docusignAccountProfile: { select: { id: true, name: true, isActive: true } },
+      docusignAccountProfile: {
+        select: { id: true, name: true, isActive: true, defaultCcEmail: true },
+      },
     },
   });
 
@@ -397,7 +406,11 @@ export async function getFunderProfileById(id: string) {
   if (!isPersistedFunderProfileId(id)) return null;
   const row = await prisma.funderProfile.findUnique({
     where: { id },
-    include: { docusignAccountProfile: { select: { id: true, name: true, isActive: true } } },
+    include: {
+      docusignAccountProfile: {
+        select: { id: true, name: true, isActive: true, defaultCcEmail: true },
+      },
+    },
   });
   if (!row) return null;
   const [enriched] = await enrichFunderProfilesWithSharedNames([
@@ -544,7 +557,7 @@ export async function uploadFunderContractPdf(
       mainContractLayoutKey: layoutKey,
       contractPdfFileName: fileName,
     },
-    include: { docusignAccountProfile: { select: { id: true, name: true } } },
+    include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
 
   return serializeFunderProfile(row as unknown as Record<string, unknown>);
@@ -559,15 +572,18 @@ async function upsertFunderSupplementalBoldSignTemplate(
 ) {
   const layoutKey = funderSupplementalLayoutKey(funderId, supplementalType);
   const label =
-    supplementalType === 'flex_addendum'
-      ? 'Flex Addendum'
-      : supplementalType === 'pre_payment_addendum'
-        ? 'Pre-Payment Addendum'
-      : supplementalType === 'balance_transfer'
-        ? 'Balance Transfer'
-        : supplementalType === 'case_takeover_addendum'
-          ? 'Case Takeover Balance Transfer'
-        : 'ACH Authorization';
+    supplementalType === 'addendum_p'
+      ? 'Addendum P (REFI)'
+      : supplementalType === 'addendum_ca'
+        ? 'Addendum CA'
+        : supplementalType === 'addendum_ny'
+          ? 'Addendum NY'
+          : supplementalType === 'addendum_va'
+            ? 'Addendum VA'
+            : supplementalType === 'ach_authorization' ||
+                supplementalType === 'ach_authorization_texas'
+              ? 'ACH Authorization'
+              : 'Addendum';
   const templateData = {
     name: `${funderName} ${label}`,
     type: supplementalType,
@@ -632,10 +648,10 @@ export async function uploadFunderSupplementalPdf(
 
 export async function uploadFunderDisclosurePdf(
   funderId: string,
-  funderName: string,
   state: string,
   frequency: string,
   file: UploadedFile,
+  dealType?: 'refi' | 'norefi' | null,
 ) {
   const profile = await getFunderProfileById(funderId);
   if (!profile) throw new Error('Funder not found.');
@@ -655,14 +671,34 @@ export async function uploadFunderDisclosurePdf(
 
   const normalizedState = normalizeStateToken(state);
   const normalizedFrequency = String(frequency || '').trim().toLowerCase();
+  const fileName = String(result.fileName || file.name || 'disclosure.pdf').trim();
+  const nameLower = fileName.toLowerCase();
+  const inferredDealType: 'refi' | 'norefi' | null =
+    dealType === 'refi' || dealType === 'norefi'
+      ? dealType
+      : nameLower.includes('no_refi') ||
+          nameLower.includes('norefi') ||
+          nameLower.includes('no-refi') ||
+          nameLower.includes('no refi')
+        ? 'norefi'
+        : nameLower.includes('refi')
+          ? 'refi'
+          : null;
   const layoutKey = funderDisclosureLayoutKeyForState(
     layoutFunderId,
     normalizedState,
     normalizedFrequency,
+    inferredDealType,
   );
-  const fileName = String(result.fileName || file.name || 'disclosure.pdf').trim();
+  const dealSuffix =
+    inferredDealType === 'refi'
+      ? ' REFI'
+      : inferredDealType === 'norefi'
+        ? ' NO REFI'
+        : '';
+  // Omit funder name — disclosures are often shared across funders.
   const templateData = {
-    name: `${funderName} ${normalizedState} ${normalizedFrequency} disclosure`.trim(),
+    name: `${normalizedState} ${normalizedFrequency}${dealSuffix} disclosure`.trim(),
     type: 'disclosure',
     state: normalizedState,
     frequency: normalizedFrequency || null,
@@ -687,7 +723,13 @@ export async function uploadFunderDisclosurePdf(
     await prisma.boldSignTemplate.create({ data: templateData });
   }
 
-  return { layoutKey, fileName, state: normalizedState, frequency: normalizedFrequency };
+  return {
+    layoutKey,
+    fileName,
+    state: normalizedState,
+    frequency: normalizedFrequency,
+    dealType: inferredDealType,
+  };
 }
 
 export type FunderDocumentTemplateRow = {
@@ -701,12 +743,40 @@ export type FunderDocumentTemplateRow = {
   createdAt: Date;
 };
 
+/** Harbor View Capital / Woodmere — owns the shared platform disclosure PDF set. */
+async function findPlatformDisclosureOwnerFunderId(): Promise<string | null> {
+  const rows = await prisma.funderProfile.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      name: true,
+      displayName: true,
+      organization: true,
+      legalName: true,
+    },
+    orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+  });
+  const platform = rows.find(
+    (row) => isWoodmereFinancialFunderName(row.name, row.displayName),
+  );
+  return platform ? String(platform.id).trim() : null;
+}
+
 export async function listFunderDocumentTemplates(funderId: string): Promise<FunderDocumentTemplateRow[]> {
   const profile = await getFunderProfileById(funderId);
   if (!profile) throw new Error('Funder not found.');
 
+  const platformDisclosureFunderId = !isWoodmereFinancialFunderName(
+    profile.name,
+    profile.displayName,
+  )
+    ? await findPlatformDisclosureOwnerFunderId()
+    : null;
+
   const addendumFunderId = resolveAddendumDocumentsLayoutFunderId(profile);
-  const disclosureFunderId = resolveDisclosureDocumentsLayoutFunderId(profile);
+  const disclosureFunderId = resolveDisclosureDocumentsLayoutFunderId(profile, {
+    platformDisclosureFunderId,
+  });
   const ids = [...new Set([addendumFunderId, disclosureFunderId].filter(Boolean))] as string[];
   if (!ids.length) return [];
 
@@ -912,7 +982,7 @@ export async function uploadFunderLogo(funderId: string, file: UploadedFile) {
   const row = await prisma.funderProfile.update({
     where: { id: funderId },
     data: { logoUrl, logoPublicId },
-    include: { docusignAccountProfile: { select: { id: true, name: true } } },
+    include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
 
   const oldPublicId = String(profile.logoPublicId || '').trim();
@@ -955,7 +1025,7 @@ export async function uploadFunderLetterLogo(funderId: string, file: UploadedFil
   const row = await prisma.funderProfile.update({
     where: { id: funderId },
     data: { letterLogoUrl, letterLogoPublicId },
-    include: { docusignAccountProfile: { select: { id: true, name: true } } },
+    include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
 
   const oldPublicId = String(profile.letterLogoPublicId || '').trim();
@@ -976,7 +1046,10 @@ export async function createFunderProfile(input: FunderProfileInput) {
       name: String(input.name).trim(),
       displayName: input.displayName ? String(input.displayName).trim() : null,
       dealIdPrefix: input.dealIdPrefix ? String(input.dealIdPrefix).trim().toUpperCase() : null,
-      assignsDealId: input.assignsDealId === true,
+      // A configured prefix means this funder assigns prefixed deal ids.
+      assignsDealId:
+        input.assignsDealId === true ||
+        Boolean(input.dealIdPrefix && String(input.dealIdPrefix).trim()),
       mainContractLayoutKey: contractDefaults.mainContractLayoutKey,
       contractPdfFileName: contractDefaults.contractPdfFileName,
       allowedStates: toStatesJson(input.allowedStates),
@@ -1008,9 +1081,7 @@ export async function createFunderProfile(input: FunderProfileInput) {
           inferDefaultFunderDocumentsSource(input),
       ),
       disclosureDocumentsSource: normalizeFunderDocumentsSource(
-        input.disclosureDocumentsSource ??
-          input.documentsSource ??
-          inferDefaultFunderDocumentsSource(input),
+        input.disclosureDocumentsSource ?? 'platform',
       ),
       sharedAddendumFunderId: input.sharedAddendumFunderId
         ? String(input.sharedAddendumFunderId).trim()
@@ -1054,7 +1125,7 @@ export async function createFunderProfile(input: FunderProfileInput) {
         ? String(input.letterWireAccountNumber).trim()
         : null,
     },
-    include: { docusignAccountProfile: { select: { id: true, name: true } } },
+    include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
   const [enriched] = await enrichFunderProfilesWithSharedNames([
     serializeFunderProfile(row as unknown as Record<string, unknown>),
@@ -1073,6 +1144,10 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
   }
   if (input.dealIdPrefix !== undefined) {
     data.dealIdPrefix = input.dealIdPrefix ? String(input.dealIdPrefix).trim().toUpperCase() : null;
+    // Keep assignsDealId in sync with prefix unless explicitly provided.
+    if (input.assignsDealId === undefined) {
+      data.assignsDealId = Boolean(input.dealIdPrefix && String(input.dealIdPrefix).trim());
+    }
   }
   if (input.assignsDealId !== undefined) data.assignsDealId = Boolean(input.assignsDealId);
   if (input.mainContractLayoutKey !== undefined) {
@@ -1220,7 +1295,7 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
   const row = await prisma.funderProfile.update({
     where: { id },
     data,
-    include: { docusignAccountProfile: { select: { id: true, name: true } } },
+    include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
   const [enriched] = await enrichFunderProfilesWithSharedNames([
     serializeFunderProfile(row as unknown as Record<string, unknown>),

@@ -31,7 +31,7 @@ const STATE_ALIAS_GROUPS: string[][] = [
   ['new hampshire', 'nh'],
   ['new jersey', 'nj'],
   ['new mexico', 'nm'],
-  ['new york', 'ny'],
+  ['new york', 'ny', 'newyork', 'new_york'],
   ['north carolina', 'nc'],
   ['north dakota', 'nd'],
   ['ohio', 'oh'],

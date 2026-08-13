@@ -22,12 +22,12 @@ const memoryStore = new Map<string, MemoryEntry>();
 let memoryVersion = 0;
 
 function readDefaultTtlSeconds(): number {
-    const raw = Number(process.env.DASHBOARD_CACHE_TTL_SECONDS ?? 25);
+    const raw = Number(process.env.DASHBOARD_CACHE_TTL_SECONDS ?? 45);
     return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 120) : 25;
 }
 
 function readRecentTtlSeconds(): number {
-    const raw = Number(process.env.DASHBOARD_RECENT_CACHE_TTL_SECONDS ?? 10);
+    const raw = Number(process.env.DASHBOARD_RECENT_CACHE_TTL_SECONDS ?? 20);
     return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 60) : 10;
 }
 

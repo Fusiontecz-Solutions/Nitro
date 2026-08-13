@@ -91,6 +91,8 @@ model DocuSignAccountProfile {
   accountId          String?
   baseUri            String?
   defaultRoleName    String          @default("Signer")
+  /// Default contract CC address(es) when a funder is linked to this DocuSign account.
+  defaultCcEmail     String?
   webhookUser        String?
   webhookPassword    String?
   isActive           Boolean         @default(true)

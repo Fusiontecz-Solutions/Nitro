@@ -288,17 +288,15 @@ async function saveFunderWithOptionalAssets(
   const disclosureFile = getUploadedSupplementalFile(req, 'disclosure');
   if (disclosureFile) {
     const funderId = String(data.id || '').trim();
-    const funderName = String(data.name || '').trim();
     const disclosureState = String((req.body as Record<string, unknown>)?.disclosureState || 'texas').trim();
     const disclosureFrequency = String(
       (req.body as Record<string, unknown>)?.disclosureFrequency || 'daily',
     ).trim();
-    if (!funderId || !funderName) {
-      throw new Error('Funder id and name are required to upload disclosure PDFs.');
+    if (!funderId) {
+      throw new Error('Funder id is required to upload disclosure PDFs.');
     }
     await uploadFunderDisclosurePdf(
       funderId,
-      funderName,
       disclosureState,
       disclosureFrequency,
       disclosureFile,
@@ -474,16 +472,23 @@ export const uploadFunderDisclosure = async (req: Request, res: Response) => {
 
     const state = String((req.body as Record<string, unknown>)?.state || '').trim();
     const frequency = String((req.body as Record<string, unknown>)?.frequency || 'daily').trim();
+    const dealTypeRaw = String((req.body as Record<string, unknown>)?.dealType || '')
+      .trim()
+      .toLowerCase();
+    const dealType =
+      dealTypeRaw === 'refi' || dealTypeRaw === 'norefi'
+        ? (dealTypeRaw as 'refi' | 'norefi')
+        : null;
     if (!state) {
       return res.status(400).json({ success: false, message: 'State is required.' });
     }
 
     const data = await uploadFunderDisclosurePdf(
       funderId,
-      funder.name,
       state,
       frequency,
       file,
+      dealType,
     );
     return res.status(201).json({ success: true, data });
   } catch (error) {
@@ -513,7 +518,7 @@ export const uploadFunderAddendum = async (req: Request, res: Response) => {
       return res.status(400).json({
         success: false,
         message:
-          'coordinateLayoutKey is required (flex_addendum, pre_payment_addendum, balance_transfer, case_takeover_addendum, ach_authorization).',
+          'coordinateLayoutKey is required (addendum_p, addendum_ca, addendum_ny, addendum_va, ach_authorization).',
       });
     }
 

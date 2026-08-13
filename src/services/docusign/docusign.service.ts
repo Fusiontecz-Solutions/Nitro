@@ -577,6 +577,12 @@ export class DocusignService {
     } catch (error: any) {
       clearDocusignProfileJwtCache(String(dsProfile.id));
       const detail = error?.response?.data?.error_description || error?.message || String(error);
+      if (isDocusignJwtConfigured()) {
+        console.warn(
+          `[DocuSign] Funder profile "${row.name}" linked DocuSign JWT failed (${detail}); falling back to platform JWT.`,
+        );
+        return this.getJwtAuthContext();
+      }
       throw new ServiceConfigException(
         `DocuSign JWT failed for funder profile "${row.name}". ${detail}`,
       );
@@ -616,6 +622,14 @@ export class DocusignService {
     } catch (error: any) {
       clearDocusignProfileJwtCache(String(profile.id));
       const detail = error?.response?.data?.error_description || error?.message || String(error);
+      // Misconfigured funder DocuSign profiles (e.g. user_not_found) must not block
+      // contract send when the platform demo/prod JWT still works.
+      if (isDocusignJwtConfigured()) {
+        console.warn(
+          `[DocuSign] Funder "${name}" profile "${profile.name}" JWT failed (${detail}); falling back to platform JWT.`,
+        );
+        return this.getJwtAuthContext();
+      }
       throw new ServiceConfigException(
         `DocuSign JWT failed for funder "${name}" (profile "${profile.name}"). ${detail}`,
       );
@@ -1077,7 +1091,8 @@ export class DocusignService {
           }
         }
         if (!value) return null;
-        return { id, value };
+        // Contract / addendum / disclosure text on the PDF must be ALL CAPS.
+        return { id, value: value.toUpperCase() };
       })
       .filter((f): f is PrefillField => f != null);
   }
@@ -1535,8 +1550,6 @@ export class DocusignService {
       let businessName = String(
         contract?.legalName || contract?.doingBusinessAs || contract?.clientName || '',
       ).trim();
-      let offerAmount =
-        contract?.approvedAmount != null ? Number(contract.approvedAmount) : null;
 
       const app = await prisma.application.findUnique({
         where: { id: applicationId },
@@ -1546,7 +1559,7 @@ export class DocusignService {
             select: { businessName: true },
           },
           OfferDecision: {
-            select: { offer: true },
+            select: { offer: true, decision: true },
           },
           termsOffers: {
             orderBy: { createdAt: 'desc' },
@@ -1562,24 +1575,34 @@ export class DocusignService {
         ).trim();
       }
 
-      if (offerAmount == null || !Number.isFinite(offerAmount)) {
-        const fromOfferDecision =
-          app?.OfferDecision?.offer != null ? Number(app.OfferDecision.offer) : null;
-        const fromTerms =
-          app?.termsOffers?.[0]?.approvedAmount != null
-            ? Number(app.termsOffers[0].approvedAmount)
-            : null;
-        const fromPurchaseAmount =
-          contract?.purchaseAmount != null
-            ? Number(String(contract.purchaseAmount).replace(/[$,\s]/g, ''))
-            : null;
-        const fromPurchasePrice =
-          contract?.purchasePrice != null
-            ? Number(String(contract.purchasePrice).replace(/[$,\s]/g, ''))
-            : null;
-        offerAmount =
-          fromOfferDecision != null && Number.isFinite(fromOfferDecision)
-            ? fromOfferDecision
+      // Live OfferDecision is source of truth; Contract.approvedAmount can lag after edits.
+      const decisionNorm = String(app?.OfferDecision?.decision ?? '')
+        .trim()
+        .toLowerCase();
+      const fromOfferDecision =
+        decisionNorm !== 'declined' && app?.OfferDecision?.offer != null
+          ? Number(app.OfferDecision.offer)
+          : null;
+      const fromContract =
+        contract?.approvedAmount != null ? Number(contract.approvedAmount) : null;
+      const fromTerms =
+        app?.termsOffers?.[0]?.approvedAmount != null
+          ? Number(app.termsOffers[0].approvedAmount)
+          : null;
+      const fromPurchaseAmount =
+        contract?.purchaseAmount != null
+          ? Number(String(contract.purchaseAmount).replace(/[$,\s]/g, ''))
+          : null;
+      const fromPurchasePrice =
+        contract?.purchasePrice != null
+          ? Number(String(contract.purchasePrice).replace(/[$,\s]/g, ''))
+          : null;
+
+      let offerAmount: number | null =
+        fromOfferDecision != null && Number.isFinite(fromOfferDecision)
+          ? fromOfferDecision
+          : fromContract != null && Number.isFinite(fromContract)
+            ? fromContract
             : fromTerms != null && Number.isFinite(fromTerms)
               ? fromTerms
               : fromPurchaseAmount != null && Number.isFinite(fromPurchaseAmount)
@@ -1587,7 +1610,6 @@ export class DocusignService {
                 : fromPurchasePrice != null && Number.isFinite(fromPurchasePrice)
                   ? fromPurchasePrice
                   : null;
-      }
 
       return {
         businessName: businessName || null,
@@ -3998,8 +4020,20 @@ export class DocusignService {
       state: contractState,
     });
     const funderDefaultCcEmail = String(funderProfile?.defaultCcEmail ?? '').trim() || null;
-    const funderDefaultCcList = funderDefaultCcEmail
-      ? funderDefaultCcEmail.split(/[,;\n]+/).map((part) => part.trim()).filter(Boolean)
+    const docusignAccountId = String(funderProfile?.docusignAccountProfileId ?? '').trim();
+    let docusignDefaultCcEmail: string | null = null;
+    if (docusignAccountId) {
+      const ds = await prisma.docuSignAccountProfile.findUnique({
+        where: { id: docusignAccountId },
+        select: { defaultCcEmail: true },
+      });
+      docusignDefaultCcEmail = String(ds?.defaultCcEmail ?? '').trim() || null;
+    }
+    const funderDefaultCcList = (docusignDefaultCcEmail || funderDefaultCcEmail)
+      ? String(docusignDefaultCcEmail || funderDefaultCcEmail)
+          .split(/[,;\n]+/)
+          .map((part) => part.trim())
+          .filter(Boolean)
       : [];
     const { client, accountId } = await this.getAuthContext(userId, {
       funderName,

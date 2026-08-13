@@ -1,6 +1,7 @@
 import type { DocumentLayout, DocumentLayoutPlacement } from './convert-docusign-template-export';
 import {
   getStateDocumentConfig,
+  inferDisclosureDealTypeFromTemplate,
   resolveStateDocumentConfigKey,
   type StateDocumentFieldConfig,
 } from '../state-document-config';
@@ -161,15 +162,18 @@ export function tryBuildStateDisclosureLayoutFromDbRow(row: {
   frequency?: string | null;
   type?: string | null;
   pdfUrl?: string | null;
+  layoutKey?: string | null;
 }): DocumentLayout | null {
   const type = String(row.type || '').trim().toLowerCase();
   if (type && type !== 'disclosure') return null;
 
-  const config = getStateDocumentConfig(row.frequency, row.state);
+  const dealType = inferDisclosureDealTypeFromTemplate(row);
+  const config = getStateDocumentConfig(row.frequency, row.state, dealType);
   if (!config) return null;
 
   const configKey =
-    resolveStateDocumentConfigKey(row.frequency, row.state) || 'disclosure';
+    resolveStateDocumentConfigKey(row.frequency, row.state, dealType) ||
+    'disclosure';
 
   const fileName = String(row.pdfUrl || '')
     .split('/')
