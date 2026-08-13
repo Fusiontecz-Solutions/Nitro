@@ -14,6 +14,7 @@ import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation
 import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
 import {
     OFFER_DECISION_UPDATED_EVENT,
+    emitOfferDecisionUpdated,
     offerDecisionUpdateMatchesApplication,
 } from "@/lib/offerDecisionSync";
 import {
@@ -85,6 +86,7 @@ import {
     applyClientPersonNamePrefillFields,
     applyLiveOfferSyncToPrefillPartial,
     applyTexasContractUsdMoneyToPrefillFields,
+    computeNetToMerchantDollars,
     contractPrefillFieldsToPartial,
     contractPrefillToContractColumnUpdate,
     mergeSyncedPartialIntoPrefillFields,
@@ -199,7 +201,6 @@ import {
 import {
     getPlatformSignerRoleRows,
     isAchAuthorizationLayoutKey,
-    PLATFORM_LAYOUT_KEYS,
 } from "./contractdata/platformDocumentConfig";
 
 type AchDocumentTemplateMappingRow = {
@@ -1071,7 +1072,12 @@ export default function ContractTab({
         0;
 
     const amountFinanced = approvedAmount;
-    const recipientFunds = approvedAmount - commissionAmount;
+    const refinanceAmountNum = parseMaybeNumber(offerRecord?.refinanceAmount) ?? 0;
+    const recipientFunds =
+        computeNetToMerchantDollars({
+            application: applicationData as Record<string, unknown> | undefined,
+            offerDecision: offerRecord,
+        }) ?? Math.max(0, approvedAmount - commissionAmount - refinanceAmountNum);
     const feeAmount = commissionAmount;
 
     const estimatedTotalPayment = repaymentStack?.payback ?? paybackAmount;
@@ -1103,7 +1109,7 @@ export default function ContractTab({
             if (achRows.length > 0) return;
             const templateRef =
                 getBoldSignTemplateMappingRef(primaryAchTemplate) ??
-                PLATFORM_LAYOUT_KEYS.achAuthorization;
+                "ach_authorization";
             await axiosPost(`/contract/${contractId}/document-template-mappings`, {
                 documentType: "ach",
                 templateRef,
@@ -1300,6 +1306,7 @@ export default function ContractTab({
     // Local editable copies for Final Calculation fields
     const [amountFinancedInput, setAmountFinancedInput] = useState<string>("");
     const [recipientFundsInput, setRecipientFundsInput] = useState<string>("");
+    const [refinanceAmountInput, setRefinanceAmountInput] = useState<string>("");
     const [financeChargeInput, setFinanceChargeInput] = useState<string>("");
     const [estimatedTotalPaymentInput, setEstimatedTotalPaymentInput] =
         useState<string>("");
@@ -1331,6 +1338,12 @@ export default function ContractTab({
         termLengthInput,
     });
 
+    const formatRefinanceAmountDisplay = (raw: unknown): string => {
+        const n = parseMaybeNumber(raw);
+        if (n == null) return "";
+        return formatCurrencyFull(n);
+    };
+
     useEffect(() => {
         // Prefer persisted contract values from backend note; fallback to computed defaults.
         const note = String((applicationData as any)?.note || "");
@@ -1345,6 +1358,7 @@ export default function ContractTab({
                 String(persisted.recipientFundsInput || "").trim() ||
                     (recipientFunds ? formatCurrencyFull(recipientFunds) : ""),
             );
+            setRefinanceAmountInput(formatRefinanceAmountDisplay(offerRecord?.refinanceAmount));
             setFinanceChargeInput(
                 String(persisted.financeChargeInput || "").trim() ||
                     (feeAmount ? formatCurrencyFull(feeAmount) : ""),
@@ -1371,6 +1385,7 @@ export default function ContractTab({
         setSavedContractValuesSnapshot(null);
         setAmountFinancedInput(amountFinanced ? formatCurrencyFull(amountFinanced) : "");
         setRecipientFundsInput(recipientFunds ? formatCurrencyFull(recipientFunds) : "");
+        setRefinanceAmountInput(formatRefinanceAmountDisplay(offerRecord?.refinanceAmount));
         setFinanceChargeInput(feeAmount ? formatCurrencyFull(feeAmount) : "");
         setEstimatedTotalPaymentInput(
             estimatedTotalPayment ? formatCurrencyFull(estimatedTotalPayment) : "",
@@ -1397,6 +1412,7 @@ export default function ContractTab({
         decisionFrequency,
         numberOfPayments,
         termLength,
+        offerRecord?.refinanceAmount,
     ]);
 
     useEffect(() => {
@@ -2111,7 +2127,7 @@ export default function ContractTab({
             funderProfileId?: string | null;
             /** Contract state from modal (may not be persisted yet). */
             contractState?: string | null;
-            /** Main contract layout key (Woodmere vs Texas Funding Group). */
+            /** Main contract layout key (Harbor `contract` or `funder_<uuid>`). */
             mainContractLayoutKey?: string | null;
             /** Deal Review values from the contract modal (latest UI state). */
             prefillFields?: Array<{ id: string; value: string }>;
@@ -3683,6 +3699,7 @@ export default function ContractTab({
 
     const calculationSummaryFields = [
         { label: "Amount Financed", value: amountFinancedInput },
+        { label: "REFI Amount", value: refinanceAmountInput },
         { label: "Recipient Funds", value: recipientFundsInput },
         { label: "Finance Charge", value: financeChargeInput },
         { label: "Estimated Total Payment Amount", value: estimatedTotalPaymentInput },
@@ -3714,6 +3731,39 @@ export default function ContractTab({
                     data: { note },
                 }),
             ).unwrap();
+
+            const nextRefinance = parseNumberUS(refinanceAmountInput);
+            const prevRefinance = parseMaybeNumber(offerRecord?.refinanceAmount) ?? null;
+            const refinanceChanged =
+                (nextRefinance == null && prevRefinance != null && prevRefinance !== 0) ||
+                (nextRefinance != null &&
+                    (prevRefinance == null || Math.abs(nextRefinance - prevRefinance) > 0.009));
+            if (refinanceChanged) {
+                const offerPayload: Record<string, unknown> = {
+                    applicationId: applicationUuid,
+                    decision:
+                        String(offerRecord?.decision ?? "approved").toLowerCase() === "declined"
+                            ? "declined"
+                            : "approved",
+                    refinanceAmount: nextRefinance ?? 0,
+                };
+                if (offerRecord?.offer != null) offerPayload.offer = offerRecord.offer;
+                if (offerRecord?.rate != null) offerPayload.rate = offerRecord.rate;
+                if (offerRecord?.term != null) offerPayload.term = offerRecord.term;
+                if (offerRecord?.frequency != null) offerPayload.frequency = offerRecord.frequency;
+                if (offerRecord?.fees != null) offerPayload.fees = offerRecord.fees;
+                if (offerRecord?.repayPerPeriod != null) {
+                    offerPayload.repayPerPeriod = offerRecord.repayPerPeriod;
+                }
+                if (offerRecord?.monthlyPayment != null) {
+                    offerPayload.monthlyPayment = offerRecord.monthlyPayment;
+                }
+                if (offerRecord?.position != null) offerPayload.position = offerRecord.position;
+                await axiosPost("/offer-decisions", offerPayload);
+                emitOfferDecisionUpdated(applicationUuid);
+                await dispatch(getOfferDecisionByApplication(applicationUuid)).unwrap();
+            }
+
             setContractValuesSaved(true);
             setIsEditingContractValues(false);
             setSavedContractValuesSnapshot(payload);
@@ -3736,6 +3786,7 @@ export default function ContractTab({
         if (savedContractValuesSnapshot) {
             setAmountFinancedInput(savedContractValuesSnapshot.amountFinancedInput || "");
             setRecipientFundsInput(savedContractValuesSnapshot.recipientFundsInput || "");
+            setRefinanceAmountInput(formatRefinanceAmountDisplay(offerRecord?.refinanceAmount));
             setFinanceChargeInput(savedContractValuesSnapshot.financeChargeInput || "");
             setEstimatedTotalPaymentInput(
                 savedContractValuesSnapshot.estimatedTotalPaymentInput || "",
@@ -3901,6 +3952,38 @@ export default function ContractTab({
                                     const stripped = e.target.value.replace(/^\$\s*/, "");
                                     const formatted = formatNumberUSForInput(stripped);
                                     setAmountFinancedInput(formatted ? `$ ${formatted}` : "");
+                                }}
+                                className={calculationInputClass}
+                            />
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label
+                                className={`text-sm ${isDark ? "text-gray-400" : "text-[#687182]"}`}
+                            >
+                                REFI Amount
+                            </Label>
+                            <Input
+                                value={refinanceAmountInput}
+                                disabled={isContractValuesReadOnly}
+                                onChange={(e) => {
+                                    const stripped = e.target.value.replace(/^\$\s*/, "");
+                                    const formatted = formatNumberUSForInput(stripped);
+                                    const next = formatted ? `$ ${formatted}` : "";
+                                    setRefinanceAmountInput(next);
+                                    const offer = parseNumberUS(amountFinancedInput) ?? approvedAmount;
+                                    const fees = parseNumberUS(financeChargeInput) ?? feeAmount;
+                                    const refi = parseNumberUS(next) ?? 0;
+                                    if (offer != null && Number.isFinite(offer)) {
+                                        const nextRecipient = Math.max(
+                                            0,
+                                            Math.round((offer - (fees || 0) - refi) * 100) / 100,
+                                        );
+                                        setRecipientFundsInput(
+                                            nextRecipient
+                                                ? formatCurrencyFull(nextRecipient)
+                                                : "$ 0.00",
+                                        );
+                                    }
                                 }}
                                 className={calculationInputClass}
                             />

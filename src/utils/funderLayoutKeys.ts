@@ -25,17 +25,7 @@ export function funderNamedAddendumLayoutKey(funderId: string, slug: string): st
   return token ? `funder_${id}_addendum_${token}` : `funder_${id}_addendum`;
 }
 
-export const FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS = [
-  { value: "flex_addendum", label: "Flex addendum" },
-  { value: "pre_payment_addendum", label: "Pre-payment addendum" },
-  { value: "balance_transfer", label: "Balance transfer" },
-  { value: "case_takeover_addendum", label: "Case Takeover Balance Transfer" },
-  { value: "ach_authorization", label: "ACH authorization (Harbor View Capital)" },
-  {
-    value: "ach_authorization_texas",
-    label: "ACH authorization (Texas)",
-  },
-] as const;
+export const FUNDER_ADDENDUM_COORDINATE_LAYOUT_OPTIONS = [] as const;
 
 export const DISCLOSURE_FREQUENCY_OPTIONS = [
   { value: "daily", label: "Daily" },

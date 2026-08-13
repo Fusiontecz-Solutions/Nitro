@@ -1,6 +1,6 @@
 import { formatUSD } from "@/utils/formatCurrency";
 
-/** Default signer role on Woodmere DocuSign templates (must match template role name exactly). */
+/** Default signer role on Harbor DocuSign templates (must match template role name exactly). */
 export const DOCUSIGN_DEFAULT_SIGNER_ROLE = "Signer";
 
 /** Primary signer role when the template defines multiple roles but only one should receive the envelope. */

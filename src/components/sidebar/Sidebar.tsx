@@ -46,6 +46,7 @@ type SidebarNavChildItem = {
   label: string;
   /** Pipeline stage child (e.g. Contract → Pending / Sent / Signed). */
   operationsStatus?: string;
+  /** Absolute or relative path including optional query (Settings tabs). */
   url?: string;
   icon?: SidebarNavIcon;
 };
@@ -82,7 +83,7 @@ function NavIcon({ icon: Icon }: { icon: SidebarNavIcon }) {
  * Sidebar layout matching product screenshots:
  * MAIN → Dashboard / Notifications / Clients
  * DEAL PIPELINE → Applications + Contract stages
- * SETTINGS
+ * SETTINGS → Profile / Funders / DocuSign
  */
 const sidebarSections: SidebarNavSection[] = [
   {
@@ -126,6 +127,11 @@ const sidebarSections: SidebarNavSection[] = [
         label: "Settings",
         url: "/user-setting",
         icon: Settings,
+        children: [
+          { label: "Profile", url: "/user-setting" },
+          { label: "Funders", url: "/user-setting?tab=funders" },
+          { label: "DocuSign", url: "/user-setting?tab=docusign" },
+        ],
       },
     ],
   },
@@ -139,18 +145,6 @@ function buildChildHref(child: SidebarNavChildItem): string {
   return "#";
 }
 
-function isChildNavActive(
-  pathname: string,
-  searchParams: URLSearchParams,
-  child: SidebarNavChildItem,
-): boolean {
-  if (child.url) {
-    const [path] = child.url.split("?");
-    return pathname === path || pathname.startsWith(`${path}/`);
-  }
-  return isOperationsPipelineItemActive(pathname, searchParams, child.operationsStatus);
-}
-
 function isOperationsPipelineItemActive(
   pathname: string,
   searchParams: URLSearchParams,
@@ -162,6 +156,45 @@ function isOperationsPipelineItemActive(
     searchParams.get("fromDashboard") === "operations" &&
     searchParams.get("operationsStatus") === operationsStatus
   );
+}
+
+function parseNavHref(href: string): { pathname: string; searchParams: URLSearchParams } {
+  const [pathPart, queryPart = ""] = href.split("?");
+  return {
+    pathname: pathPart || "/",
+    searchParams: new URLSearchParams(queryPart),
+  };
+}
+
+function isSettingsTabHrefActive(
+  pathname: string,
+  searchParams: URLSearchParams,
+  href: string,
+): boolean {
+  const target = parseNavHref(href);
+  if (pathname !== target.pathname && !pathname.startsWith(`${target.pathname}/`)) {
+    return false;
+  }
+  if (target.pathname !== "/user-setting") {
+    return pathname === target.pathname || pathname.startsWith(`${target.pathname}/`);
+  }
+  const currentTab = (searchParams.get("tab") || "profile").toLowerCase();
+  const targetTab = (target.searchParams.get("tab") || "profile").toLowerCase();
+  return currentTab === targetTab;
+}
+
+function isChildNavActive(
+  pathname: string,
+  searchParams: URLSearchParams,
+  child: SidebarNavChildItem,
+): boolean {
+  if (child.operationsStatus) {
+    return isOperationsPipelineItemActive(pathname, searchParams, child.operationsStatus);
+  }
+  if (child.url) {
+    return isSettingsTabHrefActive(pathname, searchParams, child.url);
+  }
+  return false;
 }
 
 function buildNavHref(item: SidebarNavItem): string {
@@ -190,16 +223,12 @@ function isNavItemActive(
 
   const childItems = item.children ?? [];
   if (childItems.length > 0) {
-    const anyChildActive = childItems.some((child) =>
-      isChildNavActive(pathname, searchParams, child),
+    return (
+      childItems.some((child) => isChildNavActive(pathname, searchParams, child)) ||
+      isOperationsPipelineItemActive(pathname, searchParams, item.operationsStatus) ||
+      (item.url.startsWith("/user-setting") &&
+        isSettingsTabHrefActive(pathname, searchParams, item.url))
     );
-    if (anyChildActive) return true;
-
-    if (item.operationsStatus) {
-      return isOperationsPipelineItemActive(pathname, searchParams, item.operationsStatus);
-    }
-
-    return false;
   }
 
   const currentWorkflow = searchParams.get("workflow");
@@ -218,6 +247,10 @@ function isNavItemActive(
       (pathname === "/applications" && !currentWorkflow && !isOpsView) ||
       pathname.startsWith("/create-applications")
     );
+  }
+
+  if (item.url.includes("?")) {
+    return isSettingsTabHrefActive(pathname, searchParams, item.url);
   }
 
   return pathname === item.url || pathname.startsWith(`${item.url}/`);
@@ -388,12 +421,14 @@ const Sidebar = () => {
                                 child,
                               );
                               const isLinkChild = Boolean(child.url);
-                              const childCount = resolveApplicationsPipelineCount(
-                                child.operationsStatus,
-                                operationsSummaryCounts,
-                                operationsCaseStageCounts,
-                                rejectedApplicationCount,
-                              );
+                              const childCount = child.operationsStatus
+                                ? resolveApplicationsPipelineCount(
+                                    child.operationsStatus,
+                                    operationsSummaryCounts,
+                                    operationsCaseStageCounts,
+                                    rejectedApplicationCount,
+                                  )
+                                : null;
                               const showChildCount = childCount != null;
 
                               return (

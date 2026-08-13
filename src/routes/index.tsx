@@ -1,6 +1,6 @@
 import type { LoaderFunction, RouteObject } from 'react-router';
 import React from 'react';
-import { Navigate, useLocation } from 'react-router';
+import { Navigate, useLocation, useSearchParams } from 'react-router';
 import RootLayout from '../components/layout/RootLayout';
 import LoginPage from '../pages/auth/LoginPage';
 import ForgotPasswordPage from '../pages/auth/ForgotPasswordPage';
@@ -23,6 +23,13 @@ import { applicationsPageLoader } from './applicationsLoader';
 const ApplicationsRouteEntry: React.FC = () => {
     const { search } = useLocation();
     return <Applications key={search || '_'} />;
+};
+
+/** Alias `/settings` → `/user-setting`, keeping `?tab=` (e.g. funders). */
+const SettingsAliasRedirect: React.FC = () => {
+    const [searchParams] = useSearchParams();
+    const q = searchParams.toString();
+    return <Navigate to={q ? `/user-setting?${q}` : '/user-setting'} replace />;
 };
 
 type ChildRoute = {
@@ -144,6 +151,8 @@ const Routes: RouteObject[] = [
             { path: 'view-position/:positionId', element: <CreatePosition /> },
             { path: 'user-setting', element: <UserSetting /> },
             { path: 'notifications', element: <NotificationDashboard /> },
+            { path: 'settings', element: <SettingsAliasRedirect /> },
+            { path: 'settings/*', element: <SettingsAliasRedirect /> },
             // Catch-all: unused modules redirect into the contract workflow
             { path: '*', element: <Navigate to="/applications" replace /> },
         ],

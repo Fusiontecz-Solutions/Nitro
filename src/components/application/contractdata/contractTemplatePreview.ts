@@ -17,7 +17,7 @@ export type MainContractTemplatePreview = {
 function isFunderOwnedContractLayout(layoutKey: string, profile?: FunderProfile): boolean {
     const key = String(layoutKey || "").trim();
     if (key.startsWith("funder_")) return true;
-    if (key === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract) return true;
+    if (key === "texas_funding_group_contract") return true;
     if (profile && isTexasFundingGroupFunderProfile(profile)) return true;
     const profileKey = String(profile?.mainContractLayoutKey ?? "").trim();
     if (profileKey.startsWith("funder_")) return true;

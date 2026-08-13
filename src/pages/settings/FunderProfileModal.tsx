@@ -629,7 +629,7 @@ export default function FunderProfileModal({
                   id="f-name"
                   value={form.name}
                   onChange={(e) => set("name", e.target.value)}
-                  placeholder="e.g. Harbor View Capital, TEXAS FUNDING GROUP"
+                  placeholder="e.g. Harbor View Capital"
                 />
               </div>
 
@@ -768,7 +768,7 @@ export default function FunderProfileModal({
                     id="f-prefix"
                     value={form.dealIdPrefix ?? ""}
                     onChange={(e) => set("dealIdPrefix", e.target.value)}
-                    placeholder="WF"
+                    placeholder="HVC"
                   />
                 </div>
                 <div className="flex items-end pb-1">
