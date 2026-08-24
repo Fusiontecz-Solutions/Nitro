@@ -1,0 +1,139 @@
+import axios, { type AxiosInstance } from '../../../types/http';
+
+export const SIGNNOW_API_BASE = (
+  process.env.SIGNNOW_API_BASE_URL ||
+  process.env.SIGNNOW_BASE_URL ||
+  'https://api.signnow.com'
+).replace(/\/$/, '');
+
+export const SIGNNOW_APP_ORIGIN = (
+  process.env.SIGNNOW_APP_ORIGIN || 'https://app.signnow.com'
+).replace(/\/$/, '');
+
+export const SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID = String(
+  process.env.SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID || '',
+).trim();
+
+const TOKEN_SKEW_MS = 60_000;
+
+let cachedToken: { accessToken: string; expiresAt: number } | null = null;
+let inflightToken: Promise<string> | null = null;
+
+function signNowApiKey(): string {
+  return String(
+    process.env.SIGNNOW_API_KEY || process.env.SIGNNOW_ACCESS_TOKEN || '',
+  ).trim();
+}
+
+function signNowBasicToken(): string {
+  const clientId = String(process.env.SIGNNOW_CLIENT_ID || '').trim();
+  const clientSecret = String(process.env.SIGNNOW_CLIENT_SECRET || '').trim();
+  if (clientId && clientSecret) {
+    return Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  }
+  return String(process.env.SIGNNOW_BASIC_AUTH_TOKEN || '').trim();
+}
+
+export function isSignNowConfigured(): boolean {
+  if (!SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID) return false;
+  const username = String(process.env.SIGNNOW_USERNAME || '').trim();
+  const password = String(process.env.SIGNNOW_PASSWORD || '');
+  if (username && password && signNowBasicToken()) return true;
+  return Boolean(signNowApiKey());
+}
+
+/** SignNow document / group ids are 40-char hex; DocuSign envelopes are UUIDs. */
+export function isSignNowEnvelopeId(value: string | null | undefined): boolean {
+  return /^[a-f0-9]{40}$/i.test(String(value || '').trim());
+}
+
+export function isSignNowDailyLimitError(detail: string): boolean {
+  return /daily document limit exceeded/i.test(String(detail || ''));
+}
+
+export const SIGNNOW_DAILY_LIMIT_MESSAGE =
+  "SignNow's daily document limit is used up on this account. Each Review copies the contract and every selected addendum. Click Review again to open an existing draft, uncheck addenda you do not need, or try again tomorrow.";
+
+export function signNowDocumentGroupUrl(groupId: string): string {
+  return `${SIGNNOW_APP_ORIGIN}/webapp/documentgroup/${String(groupId).trim()}`;
+}
+
+export function clearSignNowAccessTokenCache() {
+  cachedToken = null;
+}
+
+async function fetchOAuthAccessToken(): Promise<string> {
+  const basic = signNowBasicToken();
+  const username = String(process.env.SIGNNOW_USERNAME || '').trim();
+  const password = String(process.env.SIGNNOW_PASSWORD || '');
+  if (!basic || !username || !password) {
+    throw new Error('SignNow credentials are not configured in .env');
+  }
+
+  const now = Date.now();
+  if (cachedToken && cachedToken.expiresAt - TOKEN_SKEW_MS > now) {
+    return cachedToken.accessToken;
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'password',
+    username,
+    password,
+    scope: '*',
+  });
+  const res = await axios.post(`${SIGNNOW_API_BASE}/oauth2/token`, body.toString(), {
+    headers: {
+      Authorization: `Basic ${basic}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    timeout: 20_000,
+    validateStatus: () => true,
+  });
+  const token = String(res.data?.access_token || '').trim();
+  if (res.status >= 400 || !token) {
+    const detail =
+      res.data?.error_description || res.data?.error || res.statusText || 'token failed';
+    throw new Error(`SignNow authentication failed: ${detail}`);
+  }
+  const expiresIn = Number(res.data?.expires_in) || 3600;
+  cachedToken = {
+    accessToken: token,
+    expiresAt: now + expiresIn * 1000,
+  };
+  return token;
+}
+
+/**
+ * Katan-clone auth: OAuth password grant with CLIENT_ID:CLIENT_SECRET as Basic.
+ * API key is a last-resort fallback only.
+ */
+export async function getSignNowAccessToken(): Promise<string> {
+  const username = String(process.env.SIGNNOW_USERNAME || '').trim();
+  const password = String(process.env.SIGNNOW_PASSWORD || '');
+  if (username && password && signNowBasicToken()) {
+    if (!inflightToken) {
+      inflightToken = fetchOAuthAccessToken().finally(() => {
+        inflightToken = null;
+      });
+    }
+    return inflightToken;
+  }
+  const apiKey = signNowApiKey();
+  if (apiKey) return apiKey;
+  throw new Error('SignNow credentials are not configured in .env');
+}
+
+export async function createSignNowApiClient(): Promise<AxiosInstance> {
+  const token = await getSignNowAccessToken();
+  return axios.create({
+    baseURL: SIGNNOW_API_BASE,
+    // Group-template copy often needs 25–40s. A 20s abort triggers the slow
+    // addendum-group fallback and Review stretches to 2–3 minutes.
+    timeout: 45_000,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    },
+  });
+}

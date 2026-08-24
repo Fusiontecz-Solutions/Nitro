@@ -1,0 +1,150 @@
+model ApplicationActivityLog {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId     String?      @db.Uuid
+  userId            String?      @db.Uuid
+  userRole          String?
+  actionType        String
+  actionDescription String
+  previousStatus    String?
+  currentStatus     String?
+  metadata          Json?
+  createdAt         DateTime?    @default(now()) @db.Timestamptz(6)
+  Application       Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_application_activity_application")
+  User              User?        @relation(fields: [userId], references: [id], onUpdate: NoAction, map: "fk_application_activity_user")
+}
+
+model BankAnalysis {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId   String            @db.Uuid
+  bankName        String?
+  accountNumber   String
+  createdById     String            @db.Uuid
+  createdAt       DateTime?         @default(now()) @db.Timestamp(6)
+  updatedAt       DateTime?         @default(now()) @db.Timestamp(6)
+  Application     Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_bank_analysis_application")
+  User            User              @relation(fields: [createdById], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_bank_analysis_user")
+  BankAnalysisRow BankAnalysisRow[]
+
+  @@index([applicationId])
+  @@index([createdById])
+}
+
+model BankAnalysisRow {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bankAnalysisId String       @db.Uuid
+  monthLabel     String
+  monthDate      DateTime     @db.Timestamp(6)
+  totalCredit    Float?       @default(0)
+  loanTransfer   Float?       @default(0)
+  deposit        Float?       @default(0)
+  other          Float?       @default(0)
+  nsfNegDays     Float?       @default(0)
+  lowBlcDays     Float?       @default(0)
+  avgDailyBlc    Float?       @default(0)
+  createdAt      DateTime?    @default(now()) @db.Timestamp(6)
+  updatedAt      DateTime?    @default(now()) @db.Timestamp(6)
+  BankAnalysis   BankAnalysis @relation(fields: [bankAnalysisId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_bank_analysis_row_analysis")
+
+  @@index([bankAnalysisId])
+}
+
+model FinalAnswer {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId String      @db.Uuid
+  questionKey   String
+  questionLabel String
+  answer        String?
+  createdAt     DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime    @default(now()) @db.Timestamptz(6)
+  Application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([applicationId, questionKey])
+  @@index([applicationId])
+}
+
+
+model OfferDecision {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId   String      @unique @db.Uuid
+  decision        String
+  position        String?
+  offer           Decimal?    @db.Decimal(18, 2)
+  rate            Decimal?    @db.Decimal(18, 6)
+  term            String?
+  frequency       String?
+  repayPerPeriod  Decimal?    @db.Decimal(18, 2)
+  monthlyPayment  Decimal?    @db.Decimal(18, 2)
+  fees            Decimal?    @db.Decimal(18, 6)
+  ourRemit        Decimal?    @db.Decimal(18, 6)
+  totalRemit      Decimal?    @db.Decimal(18, 6)
+  notes           String?
+  declineReason   String?
+  createdAt       DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime    @default(now()) @db.Timestamptz(6)
+  userId          String?     @db.Uuid
+  refinanceAmount Decimal?    @map("RefinanceAmount") @db.Decimal(18, 2)
+  previousDealDate DateTime?  @map("PreviousDealDate") @db.Timestamptz(6)
+  contract        Contract?
+  Application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user            User?       @relation(fields: [userId], references: [id])
+
+  @@index([applicationId])
+}
+
+model ClientBankInfo {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId      String       @db.Uuid
+  applicationId String?      @db.Uuid
+  bankName      String?
+  accountNumber String
+  routingNumber String
+  createdAt     DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime     @default(now()) @db.Timestamptz(6)
+  Application   Application? @relation(fields: [applicationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  Client        Client       @relation(fields: [clientId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([applicationId])
+  @@index([clientId])
+}
+
+model PublicApprovalToken {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tokenHash     String      @unique
+  applicationId String      @db.Uuid
+  expiresAt     DateTime?
+  createdAt     DateTime    @default(now())
+  Application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+}
+
+
+
+
+model outbound_communications {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  applicationId String?      @db.Uuid
+  channel       String
+  recipientType String?
+  recipient     String
+  subject       String?
+  body          String?
+  templateName  String?
+  documentName  String?
+  contractId    String?
+  status        String       @default("sent")
+  metadata      Json?
+  createdById   String?      @db.Uuid
+  createdAt     DateTime     @default(now()) @db.Timestamptz(6)
+  Application   Application? @relation(fields: [applicationId], references: [id])
+  User          User?        @relation(fields: [createdById], references: [id])
+
+  @@index([applicationId])
+  @@index([channel])
+  @@index([createdAt])
+  @@index([recipientType])
+}
+
+
+
+
