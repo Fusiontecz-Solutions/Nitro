@@ -1,4 +1,5 @@
 import {
+  applySignNowFieldStyle,
   canLockSignNowPrefill,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
@@ -119,5 +120,13 @@ describe('signnow-prefill-put', () => {
       }),
     ]);
     expect(toSignNowCompletedText({ type: 'signature', prefilled_text: 'x' })).toBeNull();
+  });
+
+  it('uses 13pt for contract prefill fonts', () => {
+    expect(applySignNowFieldStyle({ height: 16 }).size).toBe(13);
+    expect(applySignNowFieldStyle({ height: 12 }).size).toBe(13);
+    expect(applySignNowFieldStyle({ size: 12, height: 20 }).size).toBe(13);
+    expect(applySignNowFieldStyle({ size: 14, height: 20 }).size).toBe(13);
+    expect(applySignNowFieldStyle({ size: 12, height: 20 }, {}, { maxSize: 9 }).size).toBe(9);
   });
 });

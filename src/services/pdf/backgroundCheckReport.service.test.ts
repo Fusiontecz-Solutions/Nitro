@@ -3,56 +3,44 @@ jest.mock('./letterHtmlToPdf.service', () => ({
   renderLetterHtmlToPdfBuffer: jest.fn(),
 }));
 
-import { buildClearReportSectionsHtml } from './backgroundCheckReport.service';
+import {
+  buildBackgroundCheckReportFilename,
+  structuredNotesToPlainText,
+} from './backgroundCheckReport.service';
 
-describe('buildClearReportSectionsHtml', () => {
-  it('renders CLEAR judgements, liens, and corporations', () => {
-    const html = buildClearReportSectionsHtml({
-      clearLienJudgments: [
-        {
-          kind: 'judgment',
-          description: 'Civil judgment',
-          caseNumber: 'CV-123',
-          court: 'Supreme Court',
-          amount: '$12,500',
-          pdfUrl: 'https://example.com/clear-person.pdf',
-        },
-        {
-          kind: 'lien',
-          description: 'Federal tax lien',
-          filingDate: '2026-07-01',
-          parties: 'IRS v. Example LLC',
-        },
-      ],
-      clearCorporateAssociations: [
-        {
-          name: 'Example Holdings LLC',
-          section: 'CorporateSection',
-          reportKind: 'person',
-        },
-      ],
-    });
-
-    expect(html).toContain('Judgements');
-    expect(html).toContain('Civil judgment');
-    expect(html).toContain('CV-123');
-    expect(html).toContain('Liens');
-    expect(html).toContain('Federal tax lien');
-    expect(html).toContain('Corporations');
-    expect(html).toContain('Example Holdings LLC');
-    expect(html).toContain('https://example.com/clear-person.pdf');
+describe('backgroundCheckReport', () => {
+  it('names the PDF after the merchant', () => {
+    expect(buildBackgroundCheckReportFilename('Acme Holdings LLC')).toBe(
+      'Acme-Holdings-LLC-Background-Check.pdf',
+    );
   });
 
-  it('renders empty subsections when CLEAR metadata exists without records', () => {
-    const html = buildClearReportSectionsHtml({});
-
-    expect(html).toContain('Judgements');
-    expect(html).toContain('Liens');
-    expect(html).toContain('Corporations');
-    expect(html.match(/>None</g)).toHaveLength(3);
+  it('falls back to Merchant when the name is empty', () => {
+    expect(buildBackgroundCheckReportFilename('')).toBe('Merchant-Background-Check.pdf');
   });
 
-  it('does not add CLEAR subsections before CLEAR has run', () => {
-    expect(buildClearReportSectionsHtml(undefined)).toBe('');
+  it('converts structured OpenCorporates HTML notes into clean text', () => {
+    const html = `<div data-crm-bg-notes="opencorporates" class="crm-bg-notes">
+      <div class="crm-bg-notes__toolbar">
+        <span class="crm-bg-notes__source">OpenCorporates</span>
+        <span class="crm-bg-notes__summary">1 company · FUSIONTECZ</span>
+      </div>
+      <article class="crm-bg-notes__entity">
+        <h3 class="crm-bg-notes__title">&quot;GOOGLE&quot; IMPORT. EXPORT.</h3>
+        <div class="crm-bg-notes__chips"><span>Actualizada</span><span>bo · 00198057</span></div>
+        <div class="crm-bg-notes__row"><dt>Registered address</dt><dd>AV. TAJIBOSN</dd></div>
+        <a class="crm-bg-notes__link" href="https://opencorporates.com/companies/bo/00198057">View on OpenCorporates</a>
+      </article>
+    </div>`;
+
+    const plain = structuredNotesToPlainText(html);
+    expect(plain).toContain('OpenCorporates');
+    expect(plain).toContain('"GOOGLE" IMPORT. EXPORT.');
+    expect(plain).toContain('Registered address: AV. TAJIBOSN');
+    expect(plain).toContain(
+      'View on OpenCorporates: https://opencorporates.com/companies/bo/00198057',
+    );
+    expect(plain).not.toContain('<div');
+    expect(plain).not.toContain('data-crm-bg-notes');
   });
 });

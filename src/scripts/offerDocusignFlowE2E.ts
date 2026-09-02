@@ -48,10 +48,7 @@ async function main() {
   const restBase = normalizeDocusignRestBaseUri(session.baseUri);
   const client = axios.create({
     baseURL: restBase,
-    headers: {
-      Authorization: `Bearer ${session.accessToken}`,
-      'Content-Type': 'application/json',
-    },
+  
   });
   const accountId = session.accountId;
 

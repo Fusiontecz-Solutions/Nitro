@@ -1,5 +1,6 @@
 import express, { Router } from 'express';
 import { authenticateToken } from '../../middleware/authMiddleware';
+import { requireAdmin } from '../../middleware/requireAdmin';
 import {
   connectDocusign,
   getDocusignAuthStatus,
@@ -23,6 +24,7 @@ import {
   createDraftEnvelope,
   getSenderView,
   sendEnvelope,
+  getSignNowInviteDiagnostics,
   syncEnvelopeCc,
   getSignedPdf,
 } from './docusign.controller';
@@ -67,6 +69,7 @@ router.post('/sync-envelope-status', authenticateToken, syncDocusignEnvelopeStat
 router.post('/create-draft-envelope', authenticateToken, createDraftEnvelope);
 router.post('/sender-view', authenticateToken, getSenderView);
 router.post('/send-envelope', authenticateToken, sendEnvelope);
+router.get('/signnow-invite-status', authenticateToken, requireAdmin, getSignNowInviteDiagnostics);
 router.post('/sync-envelope-cc', authenticateToken, syncEnvelopeCc);
 
 export default router;

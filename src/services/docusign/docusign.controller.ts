@@ -318,9 +318,20 @@ export const downloadPrefilledPdfByApplication = async (req: Request, res: Respo
     if (!applicationId?.trim()) {
       return res.status(400).json({ message: 'applicationId is required' });
     }
+    const applicationUuid = String(applicationId).trim();
+    const envelopeId = await docusignService.getEnvelopeIdForApplication(applicationUuid);
+    if (isSignNowEnvelopeId(String(envelopeId || '')) && isSignNowConfigured()) {
+      const pdfBuffer = await signNowService.downloadGroupPdf(String(envelopeId));
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="prefilled-contract-${applicationUuid}.pdf"`,
+      );
+      return res.send(pdfBuffer);
+    }
     const pdfBuffer = await docusignService.downloadDocumentPdfForApplication(
       userId,
-      String(applicationId).trim(),
+      applicationUuid,
     );
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
@@ -742,12 +753,16 @@ export const sendEnvelope = async (req: Request, res: Response) => {
     }
     if (isSignNowEnvelopeId(String(envelopeId))) {
       const roles = Array.isArray(req.body?.roles) ? req.body.roles : [];
+      const requestId = String(
+        req.header('idempotency-key') || req.header('x-request-id') || req.body?.requestId || '',
+      ).trim();
       const result = await signNowService.sendEnvelope(String(envelopeId), {
         roles,
         applicationId: applicationId ? String(applicationId) : undefined,
         ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
         title: title ? String(title) : undefined,
         prefillFields: Array.isArray(req.body?.prefillFields) ? req.body.prefillFields : undefined,
+        requestId: requestId || undefined,
       });
       return res.json(result);
     }
@@ -764,6 +779,17 @@ export const sendEnvelope = async (req: Request, res: Response) => {
     return res.json(result);
   } catch (error: any) {
     return res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+export const getSignNowInviteDiagnostics = async (req: Request, res: Response) => {
+  try {
+    const envelopeId = String(req.query.envelopeId || req.params.envelopeId || '').trim();
+    const applicationId = String(req.query.applicationId || '').trim();
+    const result = await signNowService.getInviteSendDiagnostics({ envelopeId, applicationId });
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 400).json({ message: error.message });
   }
 };
 

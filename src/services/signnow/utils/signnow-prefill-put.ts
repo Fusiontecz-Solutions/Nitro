@@ -43,7 +43,8 @@ export function canLockSignNowPrefill(field: Record<string, unknown>): boolean {
   return Boolean(String(field.prefilled_text || '').trim());
 }
 
-const DEFAULT_MAX_FONT_SIZE = 9;
+/** Fixed size for baked / prefilled contract text in SignNow PDFs. */
+const DEFAULT_FONT_SIZE = 13;
 
 export function applySignNowFieldStyle(
   target: Record<string, unknown>,
@@ -56,20 +57,11 @@ export function applySignNowFieldStyle(
     }
   }
   if (!target.font) target.font = 'Arial';
-  const size = Number(target.size || target.font_size || 0);
   const maxSize = Number(options?.maxSize);
-  const cap =
-    Number.isFinite(maxSize) && maxSize > 0 ? maxSize : DEFAULT_MAX_FONT_SIZE;
-  if (!Number.isFinite(size) || size <= 0) {
-    const height = Number(target.height || 0);
-    const guessed = Math.max(8, Math.min(cap, Math.round(height > 2 ? height - 2 : 10)));
-    target.size = guessed;
-    target.font_size = guessed;
-  } else {
-    const next = Math.min(size, cap);
-    target.size = next;
-    target.font_size = next;
-  }
+  const next =
+    Number.isFinite(maxSize) && maxSize > 0 ? maxSize : DEFAULT_FONT_SIZE;
+  target.size = next;
+  target.font_size = next;
   if (!target.color) target.color = '000000';
   return target;
 }

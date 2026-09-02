@@ -184,6 +184,10 @@ describe('signnow-field-map', () => {
     expect(shouldSkipSignNowPrefill('Text Field 1')).toBe(false);
     expect(shouldSkipSignNowPrefill('Text Field 13')).toBe(false);
     expect(shouldSkipSignNowPrefill('Text Field 22')).toBe(false);
+    expect(shouldSkipSignNowPrefill('Text Field 29')).toBe(false);
+    expect(shouldSkipSignNowPrefill('Text Field 34')).toBe(false);
+    expect(shouldSkipSignNowPrefill('Text Field 35')).toBe(false);
+    expect(shouldSkipSignNowPrefill('Text Field 36')).toBe(false);
     expect(shouldSkipSignNowPrefill('Text Field 14')).toBe(true);
     expect(resolveSignNowPrefillValue('Text Field 1', prefill)).toBe('10000.00');
     expect(resolveSignNowPrefillValue('Text Field 2', prefill)).toBe('8950.00');
@@ -242,6 +246,35 @@ describe('signnow-field-map', () => {
     expect(byName['Text Field 1']).toBe('FUSIONTECZ');
     expect(byName['Text Field 2']).toBe('08827688283');
     expect(byName['Text Field 7']).toBe('CHASE');
+  });
+
+  it('always fills purchase_price / purchased_amount / total_fees / ach_program_fee', () => {
+    const prefill = {
+      purchase_price: '14900.00',
+      purchase_amount: '10000.00',
+      net_to_merchant: '8950.00',
+      monthly_fee: '49.00',
+      doing_business_as: 'FUSION DBA',
+    };
+    expect(resolveSignNowPrefillValue('purchase_price_p1', prefill)).toBe('14900.00');
+    expect(resolveSignNowPrefillValue('purchased_amount_p1', prefill)).toBe('10000.00');
+    expect(resolveSignNowPrefillValue('Purchased Amount', prefill)).toBe('10000.00');
+    // No explicit total_fees → derive offer − net
+    expect(resolveSignNowPrefillValue('total_fees_p1', prefill)).toBe('1050');
+    expect(resolveSignNowPrefillValue('ach_program_fee_p13', prefill)).toBe('49.00');
+    // Agreement widgets use default SignNow names on this template.
+    expect(resolveSignNowPrefillValue('Text Field 36', prefill)).toBe('14900.00');
+    expect(resolveSignNowPrefillValue('Text Field 35', prefill)).toBe('10000.00');
+    expect(resolveSignNowPrefillValue('Text Field 34', prefill)).toBe('1050');
+    expect(resolveSignNowPrefillValue('Text Field 29', {})).toBe('OWNER');
+    expect(resolveSignNowPrefillValue('Text Field 29', { owner_print_title: 'CEO' })).toBe(
+      'CEO',
+    );
+    expect(resolveSignNowPrefillValue('owner_print_title', {})).toBe('OWNER');
+    expect(resolveSignNowPrefillValue('owner_print_title_p12_s1', {})).toBe('OWNER');
+    expect(resolveSignNowPrefillValue('ach_account_holder_dba_p1', prefill)).toBe(
+      'FUSION DBA',
+    );
   });
 
   it('maps document unique names onto CRM values for Review prefill-texts', () => {

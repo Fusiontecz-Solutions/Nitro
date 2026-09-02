@@ -27,6 +27,9 @@ import isoRoutes from './isoRoutes';
 import mailRoutes from './mailRoutes';
 import integrationSettingsRoutes from './integrationSettingsRoutes';
 import sendgridWebhookRoutes from './sendgridWebhookRoutes';
+import backgroundCheckRoutes from './backgroundCheckRoutes';
+import opencorporatesRoutes from './opencorporatesRoutes';
+import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
 
 /**
  * Contract-workflow API surface.
@@ -59,5 +62,8 @@ router.use('/iso', isoRoutes);
 router.use('/sendgrid', sendgridWebhookRoutes);
 router.use('/mail', mailRoutes);
 router.use('/integration-settings', integrationSettingsRoutes);
+router.use('/background-checks', backgroundCheckRoutes);
+router.use('/opencorporates', opencorporatesRoutes);
+router.use('/background-check-report', backgroundCheckReportRoutes);
 
 export default router;

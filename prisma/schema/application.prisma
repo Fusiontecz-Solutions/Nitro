@@ -246,6 +246,7 @@ model Application {
   questionResponses               ApplicationQuestionResponse[]
   BankAnalysis                    BankAnalysis[]
   bankDetails                     BankDetail[]
+  backgroundCheck                 BackgroundCheck?
   businessInfo                    BusinessInfo?
   ClientBankInfo                  ClientBankInfo[]
   comments                        Comment[]
@@ -578,6 +579,27 @@ model Document {
   updatedAt         DateTime    @updatedAt
   userId            Int
   application       Application @relation(fields: [applicationId], references: [id])
+}
+
+/// One SignNow email group-invite per document-group (envelopeId). Used for send idempotency.
+model SignNowInviteSend {
+  id            String    @id @default(uuid()) @db.Uuid
+  envelopeId    String    @unique
+  applicationId String?   @db.Uuid
+  contractId    Int?
+  /// NOT_SENT | SENDING | SENT | FAILED
+  sendStatus    String    @default("NOT_SENT")
+  inviteId      String?
+  attemptCount  Int       @default(0)
+  lastErrorCode String?
+  requestId     String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([applicationId])
+  @@index([sendStatus])
 }
 
 model Addendum {

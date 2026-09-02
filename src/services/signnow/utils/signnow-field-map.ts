@@ -74,6 +74,8 @@ const ALIASES: Record<string, string[]> = {
   ach_account_holder_dba: [
     'ach_authorization_account_holder_dba',
     'doing_business_as',
+    'dba',
+    'security_doing_business_as',
   ],
   ach_account_holder_address: [
     'ach_authorization_account_holder_address',
@@ -182,9 +184,66 @@ const ALIASES: Record<string, string[]> = {
   assignment_merchant_line12: ['exhibit_a_value_10'],
   assignment_merchant_line13: ['exhibit_a_value_10'],
   case_id: ['application_id', 'case_id'],
-  appendix_underwriting_fees: ['appendix_underwriting_fees', 'origination_fee', 'total_fees'],
-  ach_program_fee: ['ach_program_fee'],
-  total_fees: ['total_fees', 'appendix_underwriting_fees'],
+  appendix_underwriting_fees: [
+    'total_fees',
+    'origination_fee',
+    'underwriting_fee',
+    'disclosure_broker_fee',
+  ],
+  // Page-1 contract + later ACH program fee — must always resolve from CRM money keys.
+  ach_program_fee: [
+    'monthly_fee',
+    'program_fee',
+    'ach_monthly_fee',
+    'monthly_program_fee',
+    'ach_program_fee_amount',
+    'program_fee_amount',
+  ],
+  monthly_fee: ['ach_program_fee', 'program_fee', 'ach_monthly_fee', 'monthly_program_fee'],
+  program_fee: ['ach_program_fee', 'monthly_fee', 'ach_monthly_fee'],
+  total_fees: [
+    'appendix_underwriting_fees',
+    'origination_fee',
+    'underwriting_fee',
+    'underwriter_fee',
+    'underwriterfee',
+    'disclosure_broker_fee',
+    'total_dollar_cost',
+    'finance_charge',
+  ],
+  // purchase_price = payback; purchased_amount = offer/advance on the SignNow PDF.
+  purchase_price: [
+    'payment_total',
+    'disclosure_total_payment',
+    'total_repayment_amount',
+    'total_of_payments',
+    'payback_amount',
+    'estimated_total_payment',
+  ],
+  purchased_amount: [
+    'purchase_amount',
+    'funding_provided',
+    'approved_amount',
+    'offer_amount',
+    'total_amount_business_fund',
+    'disclosure_amount_financed',
+    'disclosure_purchase_price',
+  ],
+  purchase_amount: [
+    'purchased_amount',
+    'funding_provided',
+    'approved_amount',
+    'offer_amount',
+    'total_amount_business_fund',
+    'disclosure_amount_financed',
+  ],
+  funding_provided: [
+    'purchase_amount',
+    'purchased_amount',
+    'approved_amount',
+    'total_amount_business_fund',
+  ],
+  funding_provided_direct: ['net_to_merchant', 'disbursement_amount', 'funding_provided'],
   frequency: ['frequency'],
   // ACH Weekly addendum — same CRM ids as PCM_CONTRACT, unique names use `_p1_ach`.
   billing_name: ['client_name', 'ach_account_holder_name', 'merchant_contact_name'],
@@ -371,6 +430,43 @@ const ALIASES: Record<string, string[]> = {
     'ref_biz1_contact',
     'ach_authorization_reference_name3',
   ],
+  // Nitro Advance agreement — page 22 Title widget (default SignNow name).
+  'text field 29': [
+    'owner_print_title',
+    'print_title',
+    'guarantor_print_title',
+    'owner_title',
+  ],
+  // Nitro Advance agreement page-1 money table (default SignNow widget names).
+  'text field 34': [
+    'total_fees',
+    'appendix_underwriting_fees',
+    'origination_fee',
+    'underwriting_fee',
+    'disclosure_broker_fee',
+  ],
+  'text field 35': [
+    'purchased_amount',
+    'purchase_amount',
+    'funding_provided',
+    'approved_amount',
+    'offer_amount',
+    'total_amount_business_fund',
+    'disclosure_amount_financed',
+  ],
+  'text field 36': [
+    'purchase_price',
+    'payment_total',
+    'disclosure_total_payment',
+    'total_repayment_amount',
+    'total_of_payments',
+    'payback_amount',
+    'estimated_total_payment',
+    // Last resort so the cell is never blank when only offer amount exists.
+    'purchase_amount',
+    'purchased_amount',
+    'funding_provided',
+  ],
 };
 
 /** SignNow Monthly Fee often keeps default "Text Field N" names. Order matches the PDF. */
@@ -424,17 +520,162 @@ export function shouldSkipSignNowPrefill(
 }
 
 export function canonicalizeSignNowFieldName(fieldName: string): string {
-  return String(fieldName || '')
+  const lower = String(fieldName || '')
     .trim()
-    .toLowerCase()
-    .replace(/((?:[a-z0-9]+_)+[a-z0-9]+)\1$/i, '$1')
-    .replace(/\s+t$/i, '')
-    .replace(/_p\d+_s2$/i, '_s2')
-    .replace(/_p\d+_g2$/i, '_g2')
-    .replace(STRIP_PAGE_OWNER1, '')
-    .replace(/_s1$/i, '')
-    .replace(/_g1$/i, '')
-    .trim();
+    .toLowerCase();
+  // Disclosure templates use spaced "Text Field N" aliases — keep spaces there.
+  if (/^text field\s*\d+/i.test(lower)) {
+    return lower.replace(/\s+/g, ' ').trim();
+  }
+  return (
+    lower
+      // SignNow sometimes suffixes print-name widgets with a trailing " T".
+      .replace(/\s+t$/i, '')
+      .replace(/[\s-]+/g, '_')
+      .replace(/((?:[a-z0-9]+_)+[a-z0-9]+)\1$/i, '$1')
+      .replace(/_p\d+_s2$/i, '_s2')
+      .replace(/_p\d+_g2$/i, '_g2')
+      .replace(STRIP_PAGE_OWNER1, '')
+      .replace(/_s1$/i, '')
+      .replace(/_g1$/i, '')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '')
+      .trim()
+  );
+}
+
+function parsePrefillMoney(value: string): number | null {
+  const n = Number(String(value || '').replace(/[$,%\s]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatPrefillMoney(value: number): string {
+  if (!Number.isFinite(value)) return '';
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
+/**
+ * Guarantee page-1 purchase columns + ach_program_fee resolve from CRM deal money.
+ * Derives total_fees from offer − net when the fee field itself is blank.
+ */
+function resolveForcedContractMoneyField(
+  canon: string,
+  map: Map<string, string>,
+): string {
+  const first = (...keys: string[]) => {
+    for (const key of keys) {
+      const hit = mapGet(map, key);
+      if (hit && !/^enter text$/i.test(hit)) return hit;
+    }
+    return '';
+  };
+
+  if (canon === 'purchase_price') {
+    return first(
+      'purchase_price',
+      'payment_total',
+      'disclosure_total_payment',
+      'total_repayment_amount',
+      'total_of_payments',
+      'payback_amount',
+      'estimated_total_payment',
+    );
+  }
+
+  if (canon === 'purchased_amount' || canon === 'purchase_amount') {
+    return first(
+      'purchased_amount',
+      'purchase_amount',
+      'funding_provided',
+      'approved_amount',
+      'offer_amount',
+      'total_amount_business_fund',
+      'disclosure_amount_financed',
+      'disclosure_purchase_price',
+    );
+  }
+
+  if (canon === 'total_fees') {
+    const explicit = first(
+      'total_fees',
+      'appendix_underwriting_fees',
+      'origination_fee',
+      'underwriting_fee',
+      'underwriter_fee',
+      'disclosure_broker_fee',
+    );
+    if (explicit) return explicit;
+    const offer = parsePrefillMoney(
+      first(
+        'purchase_amount',
+        'purchased_amount',
+        'funding_provided',
+        'approved_amount',
+      ),
+    );
+    const net = parsePrefillMoney(
+      first('net_to_merchant', 'funding_provided_direct', 'disbursement_amount'),
+    );
+    if (offer != null && net != null && offer >= net) {
+      return formatPrefillMoney(offer - net);
+    }
+    return '';
+  }
+
+  if (canon === 'ach_program_fee') {
+    return first(
+      'ach_program_fee',
+      'monthly_fee',
+      'program_fee',
+      'ach_monthly_fee',
+      'monthly_program_fee',
+      'ach_program_fee_amount',
+      'program_fee_amount',
+    );
+  }
+
+  // Agreement widgets that still use default SignNow "Text Field N" names.
+  if (canon === 'text field 34' || canon === 'text_field_34') {
+    return resolveForcedContractMoneyField('total_fees', map);
+  }
+  if (canon === 'text field 35' || canon === 'text_field_35') {
+    return resolveForcedContractMoneyField('purchased_amount', map);
+  }
+  if (canon === 'text field 36' || canon === 'text_field_36') {
+    return (
+      resolveForcedContractMoneyField('purchase_price', map) ||
+      resolveForcedContractMoneyField('purchased_amount', map)
+    );
+  }
+  if (canon === 'text field 29' || canon === 'text_field_29') {
+    return (
+      first(
+        'owner_print_title',
+        'print_title',
+        'guarantor_print_title',
+        'owner_title',
+      ) || 'OWNER'
+    );
+  }
+
+  if (
+    canon === 'owner_print_title' ||
+    canon === 'print_title' ||
+    canon === 'guarantor_print_title' ||
+    canon === 'owner_title'
+  ) {
+    return (
+      first(
+        'owner_print_title',
+        'print_title',
+        'guarantor_print_title',
+        'owner_title',
+      ) || 'OWNER'
+    );
+  }
+
+  return '';
 }
 
 /** Seller #2 / Owner 2 / Guarantor #2 slots on the SignNow template. */
@@ -583,6 +824,8 @@ export function resolveSignNowPrefillValue(
     const hit = mapGet(map, key);
     if (hit) return hit;
   }
+  const forcedMoney = resolveForcedContractMoneyField(canon, map);
+  if (forcedMoney) return forcedMoney;
   if (/^disclosure_page3_3[abc]$/.test(canon)) return 'N/A';
   return '';
 }

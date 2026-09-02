@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 import prisma from '../../config/prismaClient';
 import { resolveDocumentOwnerNumericUserId } from '../../middleware/authMiddleware';
@@ -24,6 +25,15 @@ import {
   SIGNNOW_DAILY_LIMIT_MESSAGE,
   SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID,
 } from './utils/signnow-client';
+import {
+  claimSignNowInviteSend,
+  getSignNowInviteSend,
+  listSignNowInviteSendsForApplication,
+  logSignNowSend,
+  markSignNowInviteFailed,
+  markSignNowInviteSent,
+} from './utils/signnow-invite-send';
+import { postGroupInviteSafely } from './utils/signnow-groupinvite-post';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
 import {
   buildSignNowDocumentPrefillTexts,
@@ -460,6 +470,17 @@ function uniqueRoleNames(values: string[]): string[] {
   return out;
 }
 
+/** SignNow sometimes returns "Recipient2" while templates use "Recipient 2". */
+function normalizeRoleKey(role: string): string {
+  return String(role || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function sameSignNowRole(a: string, b: string): boolean {
+  return normalizeRoleKey(a) === normalizeRoleKey(b);
+}
+
 function resolvePreparerIdentity(): { name: string; email: string } | null {
   const email = String(process.env.SIGNNOW_USERNAME || '').trim();
   if (!email.includes('@')) return null;
@@ -594,7 +615,7 @@ function parseMissingInviteRole(detail: string): { role: string; documentId: str
   return { role: match[1].trim(), documentId: match[2].trim() };
 }
 
-/** SignNow: "Role name Owner is not found on document <id>" (sometimes "foundon"). */
+/** SignNow: "Role name Owner is not found on document <id>" (sometimes "foundon" / "Recipient2"). */
 function parseUnknownInviteRole(detail: string): { role: string; documentId: string } | null {
   const match = String(detail || '').match(
     /Role(?: name)?\s+(.+?)\s+is not found\s*on document\s+([a-f0-9]+)/i,
@@ -920,6 +941,7 @@ export class SignNowService {
 
     let groupId = '';
     let documents: SignNowDocumentRef[] = [];
+    let reusedExisting = false;
     const appId = String(options.applicationId || '').trim();
     if (options.autoSend !== true && appId) {
       const wantsMonthlyFee = toAttach.some((row) => row.layoutKey === 'monthly_fee');
@@ -929,6 +951,7 @@ export class SignNowService {
       if (reused) {
         groupId = reused.groupId;
         documents = reused.documents;
+        reusedExisting = true;
         console.info('[SignNow] reusing existing draft group (avoids daily copy limit)', {
           groupId,
           documents: documents.length,
@@ -1053,30 +1076,44 @@ export class SignNowService {
           ])
         : Promise.resolve();
 
-    const [prefillStats] = await Promise.all([
-      this.prefillDocumentsForReview(client, documents, values, signers),
-      persistPromise,
-    ]);
-    const applied = prefillStats.applied;
-    const attempted = prefillStats.attempted;
-    mark('prefill');
-    console.info('[SignNow] prefill summary', {
-      groupId,
-      crmPrefillKeys: Object.keys(values).length,
-      applied,
-      attempted,
-    });
-
     const autoSend = options.autoSend === true;
     let envelopeStatus: 'created' | 'sent' = 'created';
     let sendUrl: string | null = null;
+    let applied = 0;
+    let attempted = 0;
     if (autoSend) {
-      await this.sendGroupInvite(client, groupId, documents, signers, groupName, options.ccEmails);
+      const [prefillStats] = await Promise.all([
+        this.prefillDocumentsForReview(client, documents, values, signers),
+        persistPromise,
+      ]);
+      applied = prefillStats.applied;
+      attempted = prefillStats.attempted;
+      console.info('[SignNow] prefill summary', {
+        groupId,
+        crmPrefillKeys: Object.keys(values).length,
+        applied,
+        attempted,
+      });
+      await this.sendEmailGroupInviteOnce(client, groupId, documents, signers, groupName, {
+        applicationId: appId || undefined,
+        ccEmails: options.ccEmails,
+      });
       envelopeStatus = 'sent';
       if (appId && !skipMainLink) {
         await this.markGroupSent(appId, groupId);
       }
+      mark('prefill');
     } else {
+      // Prefill agreement + addenda + disclosures BEFORE minting the review link.
+      // Once an embedded invite exists, SignNow rejects edits with
+      // "Document has been already sent to a signer" — which left addenda empty.
+      const [prefillStats] = await Promise.all([
+        this.prefillDocumentsForReview(client, documents, values, signers),
+        persistPromise,
+      ]);
+      applied = prefillStats.applied;
+      attempted = prefillStats.attempted;
+      mark('prefill');
       const embedded = await this.getSenderViewUrl(groupId, {
         returnUrl: options.returnUrl,
         documentId: this.pickEditorDocumentId(documents),
@@ -1086,6 +1123,14 @@ export class SignNowService {
       });
       sendUrl = embedded.url;
       mark('embedded-link');
+      console.info('[SignNow] prefill summary', {
+        groupId,
+        reusedDraft: reusedExisting,
+        crmPrefillKeys: Object.keys(values).length,
+        applied,
+        attempted,
+        documentsPrefillBeforeMint: documents.length,
+      });
     }
 
     if (appId && skipMainLink) {
@@ -1256,6 +1301,19 @@ export class SignNowService {
     return String(agreement?.id || documents[0]?.id || '').trim();
   }
 
+  private splitReviewPrefillDocuments(documents: SignNowDocumentRef[]): {
+    main: SignNowDocumentRef[];
+    extras: SignNowDocumentRef[];
+  } {
+    const editorId = this.pickEditorDocumentId(documents);
+    const main = documents.filter((d) => d.id === editorId);
+    const extras = documents.filter((d) => d.id !== editorId);
+    return {
+      main: main.length ? main : documents.slice(0, 1),
+      extras: main.length ? extras : documents.slice(1),
+    };
+  }
+
   private splitPersonName(fullName: string, email: string): { first_name: string; last_name: string } {
     const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
     const fallback = email.split('@')[0] || 'Signer';
@@ -1297,7 +1355,7 @@ export class SignNowService {
     if (groupUrl) return groupUrl;
 
     throw new BadRequestException(
-      'Could not mint a SignNow review link. SignNow still reports a missing role on one of the attached documents.',
+      'Could not mint a SignNow review link. SignNow still reports a missing role on one of the attached documents. Click Review in SignNow again after the package finishes loading.',
     );
   }
 
@@ -1441,7 +1499,17 @@ export class SignNowService {
       });
       documents = this.normalizeGroupDocuments(groupRes.data?.documents);
     }
-    documents = await this.hydrateDocumentRoles(client, documents);
+    // Group listings often carry incomplete/wrong role unions. Only skip a GET when
+    // we already hydrated from /document/{id} (listedRoles / remainingRoles set).
+    documents = await this.hydrateDocumentRoles(client, documents, {
+      skipIfHydrated: true,
+    });
+    const missingRoles = documents.filter((d) => !(d.roles || []).length);
+    if (missingRoles.length) {
+      const hydrated = await this.hydrateDocumentRoles(client, missingRoles);
+      const byId = new Map(hydrated.map((d) => [d.id, d]));
+      documents = documents.map((d) => byId.get(d.id) || d);
+    }
     const documentId = options.documentId || this.pickEditorDocumentId(documents);
     if (!documentId) return '';
 
@@ -1627,7 +1695,10 @@ export class SignNowService {
 
     let created = await postEmbedded(embedSigners);
     let inviteId = this.extractEmbeddedInviteId(created.res.data);
+    // One SignNow error = one missing/unknown role on one document. A full
+    // agreement + addenda package needs enough retries to cover every role.
     const maxRoleRetries = Math.max(24, documents.length * 4);
+    let emptyFieldsRetries = 0;
     for (
       let attempt = 0;
       attempt < maxRoleRetries && (created.res.status >= 400 || !inviteId);
@@ -1636,6 +1707,7 @@ export class SignNowService {
       const detail = this.signNowErrorDetail(created.res);
       const unknown = parseUnknownInviteRole(detail);
       const omitted = parseMissingInviteRole(detail);
+      const emptyFields = /must contain fields/i.test(detail);
       if (unknown) {
         skippedAssignments.add(assignmentKey(unknown.documentId, unknown.role));
         console.warn('[SignNow] dropping unknown embedded role', unknown);
@@ -1662,6 +1734,24 @@ export class SignNowService {
           if (fallback) embedSigners.push({ ...fallback, roleName: omitted.role });
         }
         console.warn('[SignNow] adding omitted embedded role', omitted);
+      } else if (emptyFields && emptyFieldsRetries < 1) {
+        // Single short retry only — long multi-hydrate sleeps were adding ~5–15s
+        // when the real fix is avoiding PUT /document races before mint.
+        emptyFieldsRetries += 1;
+        await new Promise((r) => setTimeout(r, 300));
+        const needsRefresh = documents.filter(
+          (d) => !(d.listedRoles?.length || d.roles?.length),
+        );
+        if (needsRefresh.length) {
+          const refreshed = await this.hydrateDocumentRoles(client, needsRefresh);
+          const byId = new Map(refreshed.map((d) => [d.id, d]));
+          documents = documents.map((d) => byId.get(d.id) || d);
+        }
+        console.warn('[SignNow] retrying embedded invite after empty-fields error', {
+          attempt: emptyFieldsRetries,
+          docsWithRoles: documents.filter((d) => (d.roles || []).length).length,
+          totalDocs: documents.length,
+        });
       } else {
         break;
       }
@@ -1669,11 +1759,13 @@ export class SignNowService {
       inviteId = this.extractEmbeddedInviteId(created.res.data);
     }
     if (created.res.status >= 400 || !inviteId) {
-      console.warn(
-        '[SignNow] group embedded-invite create failed',
-        this.signNowErrorDetail(created.res),
+      const detail = this.signNowErrorDetail(created.res);
+      console.warn('[SignNow] group embedded-invite create failed', detail);
+      throw new BadRequestException(
+        detail
+          ? `Could not mint a SignNow review link. ${detail}`
+          : 'Could not mint a SignNow review link. SignNow still reports a missing role on one of the attached documents.',
       );
-      return '';
     }
 
     const preparer = resolvePreparerIdentity();
@@ -1825,10 +1917,85 @@ export class SignNowService {
       ccEmails?: string[];
       applicationId?: string;
       prefillFields?: PrefillField[];
+      requestId?: string;
     },
   ) {
     const id = String(groupId || '').trim();
     if (!id) throw new BadRequestException('Missing SignNow document group id');
+    const requestId = String(options.requestId || randomUUID()).trim();
+    const appIdEarly = String(options.applicationId || '').trim();
+    const existingDoc = await prisma.document.findUnique({
+      where: { envelopeId: id },
+      select: { status: true, sentAt: true },
+    });
+    const alreadyEmailed =
+      String(existingDoc?.status || '').toLowerCase() === 'sent' && Boolean(existingDoc?.sentAt);
+    logSignNowSend('Contract send started', {
+      contractId: id,
+      requestId,
+      signnowDocumentId: id,
+      sendStatus: alreadyEmailed ? 'SENT' : 'SENDING',
+      timestamp: new Date().toISOString(),
+    });
+    if (alreadyEmailed) {
+      await markSignNowInviteSent({ envelopeId: id, requestId }).catch(() => undefined);
+      logSignNowSend('Contract already SENT - skipping duplicate invite', {
+        contractId: id,
+        requestId,
+        signnowDocumentId: id,
+        sendStatus: 'SENT',
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        success: true,
+        envelopeId: id,
+        status: 'sent',
+        url: null,
+        duplicate: true,
+      };
+    }
+    const claim = await claimSignNowInviteSend({
+      envelopeId: id,
+      applicationId: appIdEarly || null,
+      requestId,
+    });
+    if (claim.kind === 'already_sent') {
+      logSignNowSend('Contract already SENT - skipping duplicate invite', {
+        contractId: id,
+        requestId,
+        signnowDocumentId: id,
+        signnowInviteId: claim.row.inviteId,
+        sendStatus: 'SENT',
+        attemptNumber: claim.row.attemptCount,
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        success: true,
+        envelopeId: id,
+        status: 'sent',
+        url: null,
+        duplicate: true,
+      };
+    }
+    if (claim.kind === 'in_progress') {
+      logSignNowSend('Duplicate send prevented', {
+        contractId: id,
+        requestId,
+        signnowDocumentId: id,
+        sendStatus: 'SENDING',
+        attemptNumber: claim.row.attemptCount,
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        success: true,
+        envelopeId: id,
+        status: 'sending',
+        url: null,
+        duplicate: true,
+      };
+    }
+
+    try {
     const client = await createSignNowApiClient();
     const groupRes = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
     if (groupRes.status >= 400) {
@@ -1855,20 +2022,13 @@ export class SignNowService {
     console.info('[SignNow] send snapshot', {
       groupId: id,
       fulfilledRoles,
-      signerEmails: signers.map((s) => s.email),
-      ccEmails: uniqueEmails(options.ccEmails),
+      signerCount: signers.length,
+      ccCount: uniqueEmails(options.ccEmails).length,
     });
-    await Promise.all([
-      client.delete(`/v2/document-groups/${id}/embedded-invites`, {
-        validateStatus: () => true,
-      }),
-      ...documents.map((doc) =>
-        client.delete(`/v2/documents/${doc.id}/embedded-invites`, {
-          validateStatus: () => true,
-        }),
-      ),
-    ]);
-    await this.cancelExistingGroupInvite(client, id, groupRes.data, documents);
+    // Owner review embedded invites lock field edits. Clear them (and any
+    // per-document invites) before baking merchant-visible values.
+    await this.deleteEmbeddedInvites(client, id, documents);
+    await this.cancelPendingFieldInvites(client, hydrated);
     const values = prefillRecord(options.prefillFields);
     if (options.applicationId && !values.application_id) {
       values.application_id = options.applicationId;
@@ -1896,7 +2056,7 @@ export class SignNowService {
         ),
       );
     }
-    await this.sendGroupInvite(
+    const inviteId = await this.sendGroupInvite(
       client,
       id,
       hydrated,
@@ -1904,7 +2064,9 @@ export class SignNowService {
       subject,
       options.ccEmails,
       fulfilledRoles,
+      { requestId, attemptNumber: claim.attemptNumber },
     );
+    await markSignNowInviteSent({ envelopeId: id, inviteId, requestId });
     const appId = String(options.applicationId || '').trim();
     const isPackageEnvelope = await isStandalonePackageEnvelope(id, {
       applicationId: appId || undefined,
@@ -1922,6 +2084,44 @@ export class SignNowService {
       status: 'sent',
       url: null,
     };
+    } catch (error) {
+      const existing = await this.peekGroupInviteId(id).catch(() => '');
+      if (existing) {
+        await markSignNowInviteSent({ envelopeId: id, inviteId: existing, requestId });
+        const appId = String(options.applicationId || '').trim();
+        if (appId) {
+          const isPackageEnvelope = await isStandalonePackageEnvelope(id, {
+            applicationId: appId,
+          });
+          if (isPackageEnvelope) {
+            await updateStandalonePackageDocuSignStatus(id, 'sent', { applicationId: appId });
+          } else {
+            await this.markGroupSent(appId, id);
+          }
+        }
+        logSignNowSend('Invite request successful', {
+          contractId: id,
+          requestId,
+          signnowDocumentId: id,
+          signnowInviteId: existing,
+          sendStatus: 'SENT',
+          attemptNumber: claim.attemptNumber,
+          timestamp: new Date().toISOString(),
+        });
+        return {
+          success: true,
+          envelopeId: id,
+          status: 'sent',
+          url: null,
+        };
+      }
+      await markSignNowInviteFailed({
+        envelopeId: id,
+        requestId,
+        errorCode: error instanceof BadRequestException ? '400' : 'send_failed',
+      });
+      throw error;
+    }
   }
 
   async voidGroup(
@@ -2032,20 +2232,80 @@ export class SignNowService {
     };
   }
 
+  /**
+   * Once CRM already has signed / completed / voided, never call SignNow again
+   * for status. Status polling is what burns the daily API budget after a few sends.
+   */
+  private async readTerminalGroupStatusFromCrm(
+    groupId: string,
+    applicationId?: string,
+  ): Promise<string | null> {
+    const id = String(groupId || '').trim();
+    if (!id) return null;
+
+    const terminalDoc = new Set([
+      'completed',
+      'signed',
+      'revoked',
+      'voided',
+      'declined',
+      'expired',
+    ]);
+    const mapTerminal = (raw: string): string => {
+      const s = String(raw || '').trim().toLowerCase();
+      if (s === 'completed' || s === 'signed') return 'completed';
+      if (terminalDoc.has(s)) return 'voided';
+      return '';
+    };
+
+    const doc = await prisma.document.findFirst({
+      where: { envelopeId: id },
+      select: { status: true, applicationId: true },
+    });
+    const fromDoc = mapTerminal(String(doc?.status || ''));
+    if (fromDoc) return fromDoc;
+
+    const appId = String(applicationId || doc?.applicationId || '').trim();
+    if (!appId) return null;
+
+    const contract = await prisma.contract.findFirst({
+      where: { applicationId: appId },
+      select: { status: true, application: { select: { document: { select: { envelopeId: true } } } } },
+    });
+    const linkedEnvelope = String(
+      contract?.application?.document?.envelopeId || '',
+    ).trim();
+    if (linkedEnvelope === id) {
+      const fromContract = mapTerminal(String(contract?.status || ''));
+      if (fromContract) return fromContract;
+    }
+
+    return null;
+  }
+
   async getGroupStatus(
     groupId: string,
     applicationId?: string,
-  ): Promise<{ envelopeId: string; status: string }> {
+  ): Promise<{ envelopeId: string; status: string; skippedRemote?: boolean; source?: string }> {
     const id = String(groupId || '').trim();
+    const cached = await this.readTerminalGroupStatusFromCrm(id, applicationId);
+    if (cached) {
+      return {
+        envelopeId: id,
+        status: cached,
+        skippedRemote: true,
+        source: 'crm',
+      };
+    }
+
     const client = await createSignNowApiClient();
     const res = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
     const status = mapGroupState(res.data?.state);
     const documentStatus = status === 'voided' ? 'revoked' : status;
     const mappedInternal = status === 'voided' ? 'revoked' : status;
 
-    // Completed / voided still sync from polling. "sent" does not — Owner review
-    // puts the group in pending/in_progress, which used to advance currentQueue /
-    // currentState to Contract Sent before "Send via SignNow".
+    // Persist completed / voided into CRM the first time SignNow reports it.
+    // Later polls must not reach here — readTerminalGroupStatusFromCrm returns first.
     if (status === 'completed' || status === 'voided') {
       const isPackageEnvelope = await isStandalonePackageEnvelope(id, {
         applicationId: applicationId || undefined,
@@ -2105,7 +2365,7 @@ export class SignNowService {
     signers: Array<{ name: string; email: string; roleName: string }>,
   ): Promise<{ applied: number; attempted: number }> {
     const keepParty2 = Boolean(distinctSecondMerchant(signers));
-    const BATCH = 3;
+    const BATCH = 6;
     let applied = 0;
     let attempted = 0;
     for (let i = 0; i < documents.length; i += BATCH) {
@@ -2276,11 +2536,9 @@ export class SignNowService {
     ).trim();
     const monthlyFee = isMonthlyFeeDocumentName(documentName);
     const prefillOpts = monthlyFee ? { documentKind: 'monthly_fee' as const } : undefined;
-    const fieldStyle = { maxSize: 9 };
     const pageCount = signNowDocumentPageCount(remote);
     const shortDoc = pageCount > 0 && pageCount <= 2;
     let sourceFields = collectSignNowPutFields(remote, {
-      maxSize: 9,
       ...(monthlyFee || shortDoc ? { defaultRole: 'Recipient 1' } : {}),
     });
     sourceFields = fieldsOnExistingPages(sourceFields, pageCount);
@@ -2343,7 +2601,7 @@ export class SignNowService {
         applied += 1;
       }
       if (!SIGN_FIELD_TYPES.has(type)) {
-        applySignNowFieldStyle(next, next, fieldStyle);
+        applySignNowFieldStyle(next, next);
       }
       const ownerData =
         !SIGN_FIELD_TYPES.has(type) &&
@@ -2413,7 +2671,7 @@ export class SignNowService {
       }
     }
 
-    const bakedRaw = splitPrefillPutPayload(putFields, exposeToMerchant, fieldStyle);
+    const bakedRaw = splitPrefillPutPayload(putFields, exposeToMerchant);
     const baked = {
       fields: fieldsOnExistingPages(bakedRaw.fields, pageCount),
       texts: fieldsOnExistingPages(bakedRaw.texts, pageCount),
@@ -2865,13 +3123,16 @@ export class SignNowService {
     addendum: SignNowAddendumTemplate,
     _groupName: string,
   ): Promise<string[]> {
-    addendumOriginIdCache.delete(addendum.templateId);
-    let originId = await this.resolveGroupTemplateOriginDocumentId(client, addendum.templateId);
-    const sourceId = originId || addendum.templateId;
+    const cachedOrigin = addendumOriginIdCache.get(addendum.templateId);
+    const sourceId =
+      cachedOrigin ||
+      (await this.resolveGroupTemplateOriginDocumentId(client, addendum.templateId)) ||
+      addendum.templateId;
     const copiedId = await this.copySignNowDocument(client, sourceId, addendum.name);
     if (!copiedId) {
       throw new Error(`could not copy addendum ${addendum.name}`);
     }
+    if (sourceId) addendumOriginIdCache.set(addendum.templateId, sourceId);
     return [copiedId];
   }
 
@@ -3094,6 +3355,168 @@ export class SignNowService {
     }
   }
 
+  async getInviteSendDiagnostics(options: { envelopeId?: string; applicationId?: string }) {
+    const envelopeId = String(options.envelopeId || '').trim();
+    const applicationId = String(options.applicationId || '').trim();
+    if (envelopeId) {
+      const row = await getSignNowInviteSend(envelopeId);
+      const document = await prisma.document.findUnique({
+        where: { envelopeId },
+        select: { status: true, sentAt: true, createdAt: true, envelopeId: true, applicationId: true },
+      });
+      return {
+        contractId: document?.applicationId || applicationId || null,
+        signnowDocumentId: envelopeId,
+        sendStatus: row?.sendStatus || document?.status || null,
+        createdAt: row?.createdAt || document?.createdAt || null,
+        lastSendAttempt: row?.startedAt || document?.sentAt || null,
+        applicationAttempts: row?.attemptCount ?? 0,
+        inviteId: row?.inviteId || null,
+      };
+    }
+    if (!applicationId) {
+      throw new BadRequestException('Provide envelopeId or applicationId');
+    }
+    const rows = await listSignNowInviteSendsForApplication(applicationId);
+    return {
+      applicationId,
+      sends: rows.map((row) => ({
+        contractId: applicationId,
+        signnowDocumentId: row.envelopeId,
+        sendStatus: row.sendStatus,
+        createdAt: row.createdAt,
+        lastSendAttempt: row.startedAt,
+        applicationAttempts: row.attemptCount,
+        inviteId: row.inviteId,
+      })),
+    };
+  }
+
+  private async peekGroupInviteId(groupId: string): Promise<string> {
+    const client = await createSignNowApiClient();
+    const res = await client.get(`/documentgroup/${groupId}`, { validateStatus: () => true });
+    if (res.status >= 400) return '';
+    return this.extractGroupInviteId(res.data);
+  }
+
+  private async deleteEmbeddedInvites(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    groupId: string,
+    documents: SignNowDocumentRef[] = [],
+  ) {
+    await client.delete(`/v2/document-groups/${groupId}/embedded-invites`, {
+      validateStatus: () => true,
+    });
+    await Promise.all(
+      documents.map((doc) =>
+        doc.id
+          ? client.delete(`/v2/documents/${doc.id}/embedded-invites`, {
+              validateStatus: () => true,
+            })
+          : Promise.resolve(),
+      ),
+    );
+  }
+
+  /** Cancel per-document field invites left over from Owner embedded review. */
+  private async cancelPendingFieldInvites(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    documents: SignNowDocumentRef[],
+  ) {
+    await Promise.all(
+      documents.map(async (doc) => {
+        const id = String(doc.id || '').trim();
+        if (!id) return;
+        const docRes = await client.get(`/document/${id}`, { validateStatus: () => true });
+        if (docRes.status >= 400) return;
+        const invites = Array.isArray(docRes.data?.field_invites)
+          ? docRes.data.field_invites
+          : [];
+        for (const invite of invites) {
+          const inviteId = String(invite?.id || invite?.unique_id || '').trim();
+          const status = String(invite?.status || '').toLowerCase();
+          if (!inviteId || ['fulfilled', 'completed', 'signed', 'finished'].includes(status)) {
+            continue;
+          }
+          await client.put(
+            `/fieldinvite/${inviteId}/cancel`,
+            { reason: 'Nitro CRM rebake before send' },
+            { validateStatus: () => true },
+          );
+        }
+      }),
+    );
+  }
+
+  private async sendEmailGroupInviteOnce(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    groupId: string,
+    documents: SignNowDocumentRef[],
+    signers: Array<{ name: string; email: string; roleName: string }>,
+    subject: string,
+    options: {
+      applicationId?: string;
+      ccEmails?: string[];
+      fulfilledRoles?: string[];
+      requestId?: string;
+    },
+  ) {
+    const requestId = String(options.requestId || randomUUID()).trim();
+    logSignNowSend('Contract send started', {
+      contractId: groupId,
+      requestId,
+      signnowDocumentId: groupId,
+      sendStatus: 'SENDING',
+      timestamp: new Date().toISOString(),
+    });
+    const claim = await claimSignNowInviteSend({
+      envelopeId: groupId,
+      applicationId: options.applicationId || null,
+      requestId,
+    });
+    if (claim.kind === 'already_sent' || claim.kind === 'in_progress') {
+      logSignNowSend(
+        claim.kind === 'already_sent'
+          ? 'Contract already SENT - skipping duplicate invite'
+          : 'Duplicate send prevented',
+        {
+          contractId: groupId,
+          requestId,
+          signnowDocumentId: groupId,
+          sendStatus: claim.row.sendStatus,
+          attemptNumber: claim.row.attemptCount,
+          timestamp: new Date().toISOString(),
+        },
+      );
+      return;
+    }
+    try {
+      const inviteId = await this.sendGroupInvite(
+        client,
+        groupId,
+        documents,
+        signers,
+        subject,
+        options.ccEmails,
+        options.fulfilledRoles || [],
+        { requestId, attemptNumber: claim.attemptNumber },
+      );
+      await markSignNowInviteSent({ envelopeId: groupId, inviteId, requestId });
+    } catch (error) {
+      const existing = await this.peekGroupInviteId(groupId).catch(() => '');
+      if (existing) {
+        await markSignNowInviteSent({ envelopeId: groupId, inviteId: existing, requestId });
+        return;
+      }
+      await markSignNowInviteFailed({
+        envelopeId: groupId,
+        requestId,
+        errorCode: 'send_failed',
+      });
+      throw error;
+    }
+  }
+
   private extractGroupInviteId(payload: unknown): string {
     const root = (payload || {}) as Record<string, unknown>;
     const nested = (root.data || root) as Record<string, unknown>;
@@ -3115,15 +3538,7 @@ export class SignNowService {
     groupPayload?: unknown,
     documents: SignNowDocumentRef[] = [],
   ) {
-    await client.delete(`/v2/document-groups/${groupId}/embedded-invites`, {
-      validateStatus: () => true,
-    });
-    for (const doc of documents) {
-      if (!doc.id) continue;
-      await client.delete(`/v2/documents/${doc.id}/embedded-invites`, {
-        validateStatus: () => true,
-      });
-    }
+    await this.deleteEmbeddedInvites(client, groupId, documents);
     let inviteId = this.extractGroupInviteId(groupPayload);
     if (!inviteId) {
       const res = await client.get(`/documentgroup/${groupId}`, { validateStatus: () => true });
@@ -3175,9 +3590,11 @@ export class SignNowService {
   ): Promise<SignNowDocumentRef[]> {
     const fetched = await Promise.all(
       documents.map(async (doc) => {
+        // `roles` from document-group listings are not trustworthy — only a prior
+        // /document/{id} hydrate sets listedRoles / remainingRoles.
         if (
           options?.skipIfHydrated &&
-          (doc.listedRoles?.length || doc.remainingRoles?.length || doc.roles?.length)
+          (doc.listedRoles?.length || doc.remainingRoles?.length)
         ) {
           return doc;
         }
@@ -3192,14 +3609,18 @@ export class SignNowService {
           ...collectListedDocumentRoles(res.data),
           ...collectSignWidgetRoles(res.data),
         ]);
+        // Prefer roles that actually have fields. Document `roles` lists can
+        // include Recipient 2 even when that PDF has no Recipient 2 widgets.
+        // Keep text/prefill Owner roles here for embedded review; sendEnvelope
+        // skips Owner/Approver on email groupinvite separately.
         const fieldRoles = collectDocumentRoles(res.data);
         return {
           ...doc,
           listedRoles,
-          roles: listedRoles.length
-            ? listedRoles
-            : fieldRoles.length
-              ? fieldRoles
+          roles: fieldRoles.length
+            ? fieldRoles
+            : listedRoles.length
+              ? listedRoles
               : uniqueRoleNames(doc.roles || []),
           remainingRoles: collectRemainingInviteRoles(res.data),
           fulfilledRoles: uniqueRoleNames([
@@ -3220,7 +3641,8 @@ export class SignNowService {
     _subject: string,
     ccEmails?: string[],
     fulfilledRoles: string[] = [],
-  ) {
+    meta: { requestId?: string; attemptNumber?: number } = {},
+  ): Promise<string> {
     const alreadyHydrated = documents.every(
       (d) => Boolean(d.listedRoles?.length || d.roles?.length) && String(d.id || '').trim(),
     );
@@ -3245,7 +3667,9 @@ export class SignNowService {
     const preparer = resolvePreparerIdentity();
     const primary = mappedSigners.find((s) => !s.preparer) || mappedSigners[0];
     const resolveSignerForRole = (role: string) => {
-      const mapped = byRole.get(role.trim().toLowerCase());
+      const mapped =
+        byRole.get(role.trim().toLowerCase()) ||
+        [...byRole.entries()].find(([key]) => sameSignNowRole(key, role))?.[1];
       if (mapped?.email) return mapped;
       const nitroStyle = usesNitroApproverRoles(templateRoles);
       if ((isPreparerRole(role, nitroStyle) || isInternalSignNowRole(role)) && preparer) {
@@ -3253,8 +3677,9 @@ export class SignNowService {
       }
       if (isOwner2Role(role, nitroStyle)) {
         const second = distinctSecondMerchant(signers);
+        // Only invite Recipient 2 when CRM has a distinct second merchant.
+        // Do not fall back to merchant 1 — that forces R2 onto docs that lack it.
         if (second) return { ...second, roleName: role };
-        if (primary?.email) return { ...primary, roleName: role };
         return null;
       }
       if (isOwner1Role(role, nitroStyle) && primary?.email) {
@@ -3325,11 +3750,12 @@ export class SignNowService {
     );
     const hasSecondMerchant = Boolean(distinctSecondMerchant(signers));
     const exactRoleOnDoc = (role: string, catalog: string[]) => {
-      const hit = catalog.find((name) => name.toLowerCase() === role.toLowerCase());
+      const hit = catalog.find((name) => sameSignNowRole(name, role));
       return hit || role;
     };
+    // Field-backed roles only — listedRoles can invent Recipient 2 with no widgets.
     const catalogFor = (doc: SignNowDocumentRef) =>
-      uniqueRoleNames(doc.listedRoles?.length ? doc.listedRoles : doc.roles || []);
+      uniqueRoleNames(doc.roles?.length ? doc.roles : doc.listedRoles || []);
     console.info('[SignNow] groupinvite document roles', {
       groupId,
       skipCompleted: [...skipCompleted],
@@ -3345,13 +3771,15 @@ export class SignNowService {
     const merchantInviteRoles = (source: string[]) =>
       uniqueRoleNames(source).filter((role) => {
         if (isPreparerRole(role, nitroStyle) || isInternalSignNowRole(role)) return false;
+        // One CRM signer → never invite Recipient 2 / owner 2.
+        if (isOwner2Role(role, nitroStyle) && !hasSecondMerchant) return false;
         if (skipCompleted.has(role.toLowerCase()) && !isOwner2Role(role, nitroStyle)) return false;
         return true;
       });
-    const crmInviteRoles = (source: string[]) =>
-      uniqueRoleNames(source).filter(
-        (role) => isPreparerRole(role, nitroStyle) || isInternalSignNowRole(role),
-      );
+    // After Owner review, do NOT email Owner/Approver. Templates often keep Owner
+    // on text/prefill fields, which made groupinvite send "Role name Owner is not
+    // found on document …". Merchants only — SignNow will ask via "was not
+    // specified" if a document still requires a CRM role.
     for (const doc of usableDocs) {
       let catalog = catalogFor(doc);
       if (!catalog.length) {
@@ -3361,8 +3789,7 @@ export class SignNowService {
         .map((role) => exactRoleOnDoc(role, catalog))
         .filter(
           (role) =>
-            !catalog.length ||
-            catalog.some((name) => name.toLowerCase() === role.toLowerCase()),
+            !catalog.length || catalog.some((name) => sameSignNowRole(name, role)),
         );
       const fallback = merchantInviteRoles(catalog);
       let merchantRoles = uniqueRoleNames(live.length ? live : fallback);
@@ -3376,10 +3803,8 @@ export class SignNowService {
             'Recipient 1',
         ]);
       }
-      const roles = uniqueRoleNames([
-        ...merchantRoles,
-        ...crmInviteRoles(catalog).map((role) => exactRoleOnDoc(role, catalog)),
-      ]);
+      // Merchants only — never attach Owner/Approver to email groupinvite.
+      const roles = merchantRoles;
       if (!roles.length) {
         if (!primary?.email) {
           missing.push(`${doc.document_name || doc.id}: (no merchant roles left to invite)`);
@@ -3463,18 +3888,16 @@ export class SignNowService {
     const postInvite = async (body: Record<string, unknown>) => {
       console.info('[SignNow] groupinvite roles', {
         groupId,
-        steps: inviteSteps.map((step) => ({
-          order: step.order,
-          email: step.invite_emails[0]?.email,
-          actions: step.invite_actions.map((a) => ({
+        stepCount: inviteSteps.length,
+        actionCount: inviteSteps.reduce((n, step) => n + step.invite_actions.length, 0),
+        roles: inviteSteps.flatMap((step) =>
+          step.invite_actions.map((a) => ({
             action: a.action,
             role: a.role_name,
             document_id: a.document_id,
-            email: a.email,
           })),
-        })),
+        ),
       });
-      console.info('[SignNow] groupinvite body', JSON.stringify(body).slice(0, 2500));
       const res = await client.post(`/documentgroup/${groupId}/groupinvite`, body, {
         validateStatus: () => true,
       });
@@ -3491,169 +3914,121 @@ export class SignNowService {
       return res;
     };
 
-    let body = buildBody();
-    let res = await postInvite(body);
-    const failedDetail = () =>
-      String(
-        res.data?.errors?.[0]?.message || res.data?.error || JSON.stringify(res.data || {}),
-      );
-    if (res.status >= 400 && /already exists|group invite already/i.test(failedDetail())) {
-      await this.cancelExistingGroupInvite(client, groupId, undefined, usableDocs);
-      res = await postInvite(body);
-    }
-    if (res.status >= 400 && /already exists|group invite already/i.test(failedDetail())) {
-      console.info('[SignNow] groupinvite already exists; treating send as complete', { groupId });
-      return;
-    }
-    if (
-      res.status >= 400 &&
-      /65536|embedded invite/i.test(failedDetail())
-    ) {
-      await client.delete(`/v2/document-groups/${groupId}/embedded-invites`, {
-        validateStatus: () => true,
-      });
-      for (const doc of usableDocs) {
-        await client.delete(`/v2/documents/${doc.id}/embedded-invites`, {
-          validateStatus: () => true,
-        });
+    const findExistingInviteId = async () => {
+      const res = await client.get(`/documentgroup/${groupId}`, { validateStatus: () => true });
+      return this.extractGroupInviteId(res.data);
+    };
+
+    const rolesOnDoc = (documentId: string) => {
+      const doc = usableDocs.find((d) => d.id.toLowerCase() === documentId.toLowerCase());
+      return catalogFor(doc || { id: documentId });
+    };
+
+    const repairForFailedDetail = async (detail: string) => {
+      if (/65536|embedded invite/i.test(detail)) {
+        await this.deleteEmbeddedInvites(client, groupId, usableDocs);
+        return true;
       }
-      console.warn('[SignNow] retrying groupinvite after clearing embedded invites');
-      res = await postInvite(body);
-    }
-    if (res.status >= 400) {
-      const rolesOnDoc = (documentId: string) => {
-        const doc = usableDocs.find((d) => d.id.toLowerCase() === documentId.toLowerCase());
-        return catalogFor(doc || { id: documentId });
-      };
-      for (let attempt = 0; attempt < 12 && res.status >= 400; attempt += 1) {
-        const unknown = parseUnknownInviteRole(failedDetail());
-        if (unknown) {
-          const unknownRole = unknown.role.toLowerCase();
-          const unknownDoc = unknown.documentId.toLowerCase();
-          const catalog = rolesOnDoc(unknown.documentId);
-          const exact = catalog.find((name) => name.toLowerCase() === unknownRole);
-          let changed = false;
-          if (exact) {
-            for (const step of steps) {
-              for (const action of step.actions) {
-                if (
-                  action.document_id.toLowerCase() === unknownDoc &&
-                  action.role_name.toLowerCase() === unknownRole &&
-                  action.role_name !== exact
-                ) {
-                  action.role_name = exact;
-                  changed = true;
-                }
+      const unknown = parseUnknownInviteRole(detail);
+      if (unknown) {
+        const unknownDoc = unknown.documentId.toLowerCase();
+        const catalog = rolesOnDoc(unknown.documentId);
+        const exact = catalog.find((name) => sameSignNowRole(name, unknown.role));
+        let changed = false;
+        // Spelling-only fix (Recipient2 → Recipient 2). Never swap to a different
+        // role — that caused "Owner is not found" on addenda that only have R1.
+        if (exact) {
+          for (const step of steps) {
+            for (const action of step.actions) {
+              if (
+                action.document_id.toLowerCase() === unknownDoc &&
+                sameSignNowRole(action.role_name, unknown.role) &&
+                action.role_name !== exact
+              ) {
+                action.role_name = exact;
+                changed = true;
               }
             }
           }
-          if (!changed) {
-            const used = new Set(
-              steps.flatMap((step) =>
-                step.actions
-                  .filter((action) => action.document_id.toLowerCase() === unknownDoc)
-                  .map((action) => action.role_name.toLowerCase()),
-              ),
-            );
-            const replacement =
-              catalog.find(
-                (name) => name.toLowerCase() !== unknownRole && !used.has(name.toLowerCase()),
-              ) || '';
-            for (const step of steps) {
-              for (const action of step.actions) {
-                if (
-                  action.document_id.toLowerCase() === unknownDoc &&
-                  action.role_name.toLowerCase() === unknownRole
-                ) {
-                  if (replacement) {
-                    action.role_name = replacement;
-                    const signer = resolveSignerForRole(replacement);
-                    if (signer?.email) action.email = signer.email;
-                  }
-                  changed = true;
-                }
-              }
-              if (!replacement) {
-                const before = step.actions.length;
-                step.actions = step.actions.filter(
-                  (action) =>
-                    !(
-                      action.document_id.toLowerCase() === unknownDoc &&
-                      action.role_name.toLowerCase() === unknownRole
-                    ),
-                );
-                if (step.actions.length !== before) changed = true;
-              }
-            }
+        }
+        if (!changed) {
+          // Owner/Approver text fields often appear on every PDF. If SignNow says
+          // the role is not inviteable on one doc, drop that CRM role everywhere
+          // so one repair clears the whole package (maxRoleRepairs is small).
+          const dropEverywhere = isPreparerRole(unknown.role, nitroStyle);
+          for (const step of steps) {
+            const before = step.actions.length;
+            step.actions = step.actions.filter((action) => {
+              if (!sameSignNowRole(action.role_name, unknown.role)) return true;
+              if (dropEverywhere) return false;
+              return action.document_id.toLowerCase() !== unknownDoc;
+            });
+            if (step.actions.length !== before) changed = true;
           }
-          if (!changed) break;
-          inviteSteps = toInviteSteps();
-          if (!inviteSteps.length) break;
-          body = buildBody();
-          console.warn('[SignNow] retrying groupinvite without unknown role', {
-            ...unknown,
-            catalog,
-          });
-          res = await postInvite(body);
-          continue;
+          if (changed) {
+            console.warn('[SignNow] dropping unknown groupinvite role', {
+              ...unknown,
+              dropEverywhere,
+            });
+          }
         }
-        const omitted = parseMissingInviteRole(failedDetail());
-        if (!omitted) break;
-        let signer = resolveSignerForRole(omitted.role);
-        if (!signer?.email && isOwner2Role(omitted.role, nitroStyle) && primary?.email) {
-          signer = { ...primary, roleName: omitted.role };
-        }
-        if (
-          !signer?.email &&
-          (isPreparerRole(omitted.role, nitroStyle) || isInternalSignNowRole(omitted.role)) &&
-          preparer
-        ) {
-          signer = { ...preparer, roleName: omitted.role, preparer: true as const };
-        }
-        if (!signer?.email) break;
-        addAction(signer, {
-          email: signer.email,
-          role_name: omitted.role,
-          action: 'sign',
-          document_id: omitted.documentId,
-          allow_reassign: '0',
-          decline_by_signature: '0',
-        });
+        if (!changed) return false;
         inviteSteps = toInviteSteps();
-        body = buildBody();
-        console.warn('[SignNow] retrying groupinvite with omitted role', {
-          ...omitted,
-          email: signer.email,
-        });
-        res = await postInvite(body);
+        return inviteSteps.length > 0;
       }
-    }
-    if (res.status < 400) return;
+      const omitted = parseMissingInviteRole(detail);
+      if (!omitted) return false;
+      // Do not invent Recipient 2 for single-merchant sends.
+      if (isOwner2Role(omitted.role, nitroStyle) && !hasSecondMerchant) {
+        console.warn('[SignNow] ignoring omitted Recipient 2 — no second merchant', omitted);
+        return false;
+      }
+      let signer = resolveSignerForRole(omitted.role);
+      if (!signer?.email && isOwner2Role(omitted.role, nitroStyle) && primary?.email) {
+        signer = { ...primary, roleName: omitted.role };
+      }
+      if (
+        !signer?.email &&
+        (isPreparerRole(omitted.role, nitroStyle) || isInternalSignNowRole(omitted.role)) &&
+        preparer
+      ) {
+        signer = { ...preparer, roleName: omitted.role, preparer: true as const };
+      }
+      if (!signer?.email) return false;
+      addAction(signer, {
+        email: signer.email,
+        role_name: omitted.role,
+        action: 'sign',
+        document_id: omitted.documentId,
+        allow_reassign: '0',
+        decline_by_signature: '0',
+      });
+      inviteSteps = toInviteSteps();
+      return inviteSteps.length > 0;
+    };
 
-    const merchantSigners = mappedSigners.filter(
-      (signer) =>
-        !isPreparerRole(signer.roleName, nitroStyle) && !isInternalSignNowRole(signer.roleName),
-    );
-    const v2 = await client.post(
-      `/v2/document-groups/${groupId}/field-invites`,
-      {
-        from: String(process.env.SIGNNOW_USERNAME || '').trim() || undefined,
-        to: (merchantSigners.length ? merchantSigners : mappedSigners).map((signer, idx) => ({
-          email: signer.email,
-          role: signer.roleName,
-          order: idx + 1,
-        })),
+    const result = await postGroupInviteSafely({
+      groupId,
+      requestId: meta.requestId || randomUUID(),
+      attemptNumber: meta.attemptNumber || 1,
+      postInvite: async () => {
+        inviteSteps = toInviteSteps();
+        const posted = await postInvite(buildBody());
+        return {
+          status: posted.status,
+          data: posted.data,
+          headers: posted.headers as Record<string, unknown> | undefined,
+        };
       },
-      { validateStatus: () => true },
-    );
-    if (v2.status < 400) return;
+      findExistingInviteId,
+      repairForFailedDetail,
+      log: logSignNowSend,
+    });
+    if (result.ok) return result.inviteId;
 
-    const detail =
-      v2.data?.errors?.[0]?.message ||
-      res.data?.errors?.[0]?.message ||
-      res.data?.error ||
-      JSON.stringify(res.data || v2.data || {}).slice(0, 400);
-    throw new BadRequestException(`SignNow send failed: ${detail}`);
+    throw new BadRequestException(
+      `SignNow send failed: ${result.detail || 'groupinvite rejected'}`,
+    );
   }
 
   private rememberDraftGroup(
@@ -3716,13 +4091,15 @@ export class SignNowService {
     applicationId: string,
     groupName?: string,
   ): Promise<{ groupId: string; documents: SignNowDocumentRef[] } | null> {
+    const cached = draftGroupCache.get(applicationId);
+    if (cached && Date.now() - cached.at <= DRAFT_GROUP_CACHE_TTL_MS && cached.documents.length) {
+      return { groupId: cached.groupId, documents: cached.documents };
+    }
     const existing = await prisma.document.findUnique({
       where: { applicationId },
       select: { envelopeId: true, status: true },
     });
     const status = String(existing?.status || '').toLowerCase();
-    // Reuse even when CRM marked the row "sent" — premature CONTRACT_SENT
-    // syncs were forcing a full SignNow recreate (2–3 minutes) on every Review.
     if (
       status === 'completed' ||
       status === 'voided' ||
@@ -3731,17 +4108,13 @@ export class SignNowService {
     ) {
       return null;
     }
-    const fromCrm = await this.loadLiveDocumentGroup(
+    const live = await this.loadLiveDocumentGroup(
       client,
       String(existing?.envelopeId || ''),
     );
-    if (fromCrm) return fromCrm;
-    const cached = draftGroupCache.get(applicationId);
-    if (cached && Date.now() - cached.at <= DRAFT_GROUP_CACHE_TTL_MS) {
-      const fromCache = await this.loadLiveDocumentGroup(client, cached.groupId);
-      if (fromCache) return fromCache;
-    } else if (cached) {
-      draftGroupCache.delete(applicationId);
+    if (live) {
+      this.rememberDraftGroup(applicationId, live.groupId, live.documents);
+      return live;
     }
     return null;
   }
@@ -3798,12 +4171,3 @@ export class SignNowService {
 }
 
 export const signNowService = new SignNowService();
-
-if (isSignNowConfigured()) {
-  void signNowService.downloadAgreementPdf().catch((err) => {
-    console.warn(
-      '[SignNow] agreement PDF warmup skipped',
-      err instanceof Error ? err.message : err,
-    );
-  });
-}

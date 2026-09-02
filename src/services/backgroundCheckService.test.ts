@@ -1,11 +1,7 @@
 /// <reference types="jest" />
 /**
- * Background Check service — covers the brief's three critical rules:
- *  (1) readiness gate (a decision requires READY_FOR_DECISION),
- *  (2) Fail-blocks-approval (override is Admin-only, with a reason),
- *  (3) the contract gate (isContractEligible true only when APPROVED),
- *  plus the "cannot complete without a result" item rule.
- * Prisma is mocked so this is a fast unit test (no DB).
+ * Background Check service — covers readiness/decision rules and item updates.
+ * Contract create/send is not gated on background-check approval.
  */
 jest.mock('../config/prismaClient', () => {
     const m = {
@@ -118,7 +114,7 @@ describe('updateItem — cannot complete without a result', () => {
 
         await backgroundCheckService.updateItem(
             'it1',
-            { metadata: { provider: 'Thomson Reuters CLEAR' } },
+            { metadata: { provider: 'OpenCorporates' } },
             UW,
         );
 
@@ -127,23 +123,23 @@ describe('updateItem — cannot complete without a result', () => {
             data: {
                 metadata: {
                     existing: true,
-                    provider: 'Thomson Reuters CLEAR',
+                    provider: 'OpenCorporates',
                 },
             },
         });
     });
 });
 
-describe('isContractEligible — the contract gate', () => {
-    it('is true only when the check is APPROVED', async () => {
+describe('isContractEligible — not a contract gate', () => {
+    it('is always true so contracts can be created and sent without approval', async () => {
         db.backgroundCheck.findUnique.mockResolvedValueOnce({ status: 'APPROVED' });
         await expect(backgroundCheckService.isContractEligible('app1')).resolves.toBe(true);
 
         db.backgroundCheck.findUnique.mockResolvedValueOnce({ status: 'READY_FOR_DECISION' });
-        await expect(backgroundCheckService.isContractEligible('app1')).resolves.toBe(false);
+        await expect(backgroundCheckService.isContractEligible('app1')).resolves.toBe(true);
 
         db.backgroundCheck.findUnique.mockResolvedValueOnce(null);
-        await expect(backgroundCheckService.isContractEligible('app1')).resolves.toBe(false);
+        await expect(backgroundCheckService.isContractEligible('app1')).resolves.toBe(true);
     });
 });
 
