@@ -278,7 +278,7 @@ export function parseOpenCorporatesImportJson(raw: string): OpenCorporatesCompan
   const trimmed = raw.trim();
   if (!trimmed) {
     throw new Error(
-      "Nothing to import. On OpenCorporates click Send to CRM, then use Paste JSON in Hardrock.",
+      "Nothing to import. On OpenCorporates click Send to CRM, then use Paste JSON in Nitro.",
     );
   }
 
@@ -289,7 +289,7 @@ export function parseOpenCorporatesImportJson(raw: string): OpenCorporatesCompan
     const detail = error instanceof Error ? error.message : "Invalid JSON";
     throw new Error(
       detail.includes("end of JSON")
-        ? "Incomplete JSON. On OpenCorporates click Send to CRM again, then use Paste JSON in Hardrock."
+        ? "Incomplete JSON. On OpenCorporates click Send to CRM again, then use Paste JSON in Nitro."
         : `Could not parse JSON: ${detail}`,
     );
   }

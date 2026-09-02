@@ -8,11 +8,12 @@ export const FINALS_AND_FUNDING_CALL_TAB: PipelineTab = {
   label: "FINALS & FUNDING CALL",
 };
 
-/** Contract workflow — Overview, Documents, Create Offer (offers / analysis), Contract (generate + ACH). */
+/** Contract workflow — Overview, Documents, Create Offer, Background Check, Contract. */
 export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
   { id: "decision-making", label: "CREATE OFFER" },
+  { id: "background-check", label: "BACKGROUND CHECK" },
   { id: "contract", label: "CONTRACT" },
 ];
 

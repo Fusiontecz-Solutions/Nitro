@@ -13,15 +13,9 @@ export type BackgroundCheckResource = {
 };
 
 /**
- * Background Check cards — DataMerch first, external links in the middle, CLEAR last.
+ * Background Check cards — search / bridge panels plus overall Notes.
  */
 export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
-  {
-    id: "datamerch",
-    title: "DataMerch",
-    description: "Industry default database",
-    isApi: true,
-  },
   {
     id: "opencorporates",
     title: "OpenCorporates",
@@ -57,9 +51,9 @@ export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
     },
   },
   {
-    id: "tlo",
-    title: "Thomson Reuters CLEAR",
-    description: "Identity and background screening",
+    id: "notes",
+    title: "Notes",
+    description: "Overall due-diligence notes and screenshots",
   },
 ];
 

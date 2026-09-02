@@ -578,26 +578,7 @@ export default function ContractTab({
                     .toUpperCase();
                 const looksSent = docStatus === "sent" || contractStatus === "SENT";
                 if (looksSent && isSignNowEnvelopeId(envelopeId)) {
-                    try {
-                        await axiosPost("/docusign/sync-envelope-status", {
-                            applicationId: applicationUuid,
-                            envelopeId,
-                        });
-                        const refreshed = await dispatch(
-                            getByApplicationIdContract(String(applicationUuid)),
-                        ).unwrap();
-                        contract = (refreshed as any)?.data ?? refreshed ?? contract;
-                        setFetchedContract(contract);
-                        const refreshedId = Number((contract as any)?.id);
-                        setSelectedContractId(
-                            Number.isFinite(refreshedId) && refreshedId > 0
-                                ? refreshedId
-                                : null,
-                        );
-                        void dispatch(getApplicationById(String(applicationUuid)));
-                    } catch {
-                        /* Owner-review sync is best-effort; table still shows CRM data. */
-                    }
+                    void dispatch(getApplicationById(String(applicationUuid)));
                 }
             } catch {
                 setFetchedContract(null);
@@ -1806,6 +1787,10 @@ export default function ContractTab({
                 if (!silent) setContractSyncError(null);
                 return;
             }
+            if (isSignNowContractUiEnabled() && !isSignNowEnvelopeId(mainEnvelopeId)) {
+                if (!silent) setContractSyncError(null);
+                return;
+            }
 
             if (!silent) setRefreshingSigningStatus(true);
             const appId = applicationUuid ? String(applicationUuid) : undefined;
@@ -1815,6 +1800,7 @@ export default function ContractTab({
                     contractId: selectedContractId,
                     force: options?.force,
                     silent,
+                    signingFinished: contractFullySigned,
                 });
                 if (result.rateLimited) {
                     if (!silent) {
@@ -1875,13 +1861,17 @@ export default function ContractTab({
                 if (!silent) setAchSyncError(null);
                 return;
             }
+            if (isSignNowContractUiEnabled() && !isSignNowEnvelopeId(achEnvelopeId)) {
+                if (!silent) setAchSyncError(null);
+                return;
+            }
             const resolvedCapsuleStatus = mapInternalEnvelopeStatusToAchCapsule(
                 historyAch.find((h) => String(h.envelopeId ?? "").trim() === achEnvelopeId)
                     ?.status ??
                     envelopeBlob[ACH_PREFILL_MAPPING_ALIAS_KEY]?.status ??
                     achCapsuleStatus,
             );
-            if (isAchSigningFinished(resolvedCapsuleStatus) && options?.force !== true) {
+            if (isAchSigningFinished(resolvedCapsuleStatus)) {
                 if (!silent) setAchSyncError(null);
                 return;
             }
@@ -1894,6 +1884,7 @@ export default function ContractTab({
                     contractId: selectedContractId,
                     force: options?.force,
                     silent,
+                    signingFinished: isAchSigningFinished(resolvedCapsuleStatus),
                 });
                 if (result.rateLimited) {
                     if (!silent) {
@@ -1937,6 +1928,10 @@ export default function ContractTab({
                 if (!silent) setPackageSyncError(null);
                 return;
             }
+            if (isSignNowContractUiEnabled() && !isSignNowEnvelopeId(packageEnvelopeId)) {
+                if (!silent) setPackageSyncError(null);
+                return;
+            }
             if (isStandalonePackageSigningFinished(packageCapsuleStatus)) {
                 if (!silent) setPackageSyncError(null);
                 return;
@@ -1950,6 +1945,7 @@ export default function ContractTab({
                     contractId: selectedContractId,
                     force: options?.force,
                     silent,
+                    signingFinished: isStandalonePackageSigningFinished(packageCapsuleStatus),
                 });
                 if (result.rateLimited) {
                     if (!silent) {
@@ -2459,22 +2455,26 @@ export default function ContractTab({
             }
 
             let latestContract: any = fetchedContract;
-            try {
-                const refreshed = await dispatch(
-                    getByApplicationIdContract(String(applicationUuid)),
-                ).unwrap();
-                const c = (refreshed as any)?.data ?? refreshed;
-                if (c) {
-                    latestContract = c;
-                    setFetchedContract(c);
+            const openSignNowFast =
+                isSignNowContractUiEnabled() && !standaloneAchOnly;
+            if (!openSignNowFast) {
+                try {
+                    const refreshed = await dispatch(
+                        getByApplicationIdContract(String(applicationUuid)),
+                    ).unwrap();
+                    const c = (refreshed as any)?.data ?? refreshed;
+                    if (c) {
+                        latestContract = c;
+                        setFetchedContract(c);
+                    }
+                } catch {
+                    /* use fetchedContract */
                 }
-            } catch {
-                /* use fetchedContract */
             }
 
             const contractNumericIdForPersist = Number((latestContract as { id?: unknown })?.id);
             if (Number.isFinite(contractNumericIdForPersist) && contractNumericIdForPersist > 0) {
-                await persistContractFunderMeta(
+                const persistFunder = persistContractFunderMeta(
                     contractNumericIdForPersist,
                     {
                         funderName: sendPayload.funderName,
@@ -2482,18 +2482,23 @@ export default function ContractTab({
                     },
                     latestContract as Record<string, unknown>,
                 );
-                try {
-                    const refreshedAfterMeta = await dispatch(
-                        getByApplicationIdContract(String(applicationUuid)),
-                    ).unwrap();
-                    const refreshedContract =
-                        (refreshedAfterMeta as { data?: unknown })?.data ?? refreshedAfterMeta;
-                    if (refreshedContract) {
-                        latestContract = refreshedContract;
-                        setFetchedContract(refreshedContract);
+                if (openSignNowFast) {
+                    void persistFunder.catch(() => undefined);
+                } else {
+                    await persistFunder;
+                    try {
+                        const refreshedAfterMeta = await dispatch(
+                            getByApplicationIdContract(String(applicationUuid)),
+                        ).unwrap();
+                        const refreshedContract =
+                            (refreshedAfterMeta as { data?: unknown })?.data ?? refreshedAfterMeta;
+                        if (refreshedContract) {
+                            latestContract = refreshedContract;
+                            setFetchedContract(refreshedContract);
+                        }
+                    } catch {
+                        /* use latestContract */
                     }
-                } catch {
-                    /* use latestContract */
                 }
             }
 
@@ -2868,7 +2873,7 @@ export default function ContractTab({
 
                 const contractNumericIdPersist = Number((latestContract as { id?: unknown })?.id);
                 if (Number.isFinite(contractNumericIdPersist) && contractNumericIdPersist > 0) {
-                    try {
+                    const persistPrefill = async () => {
                         const rawOverrides = (latestContract as { contractPrefillOverrides?: unknown })
                             ?.contractPrefillOverrides;
                         const mainOverrides = stripDocumentTemplateBlobFromPrefillOverrides(
@@ -2914,29 +2919,31 @@ export default function ContractTab({
                                           ?.totalAmount,
                             contractPrefillOverrides: nextOverrides,
                         });
+                        await syncContractPrefillToSourceRecords({
+                            dispatch,
+                            applicationData,
+                            applicationUuid: String(applicationUuid || ""),
+                            prefill: syncedPartial,
+                            offerDecision:
+                                (offerDecision as Record<string, unknown> | null) ?? null,
+                            contractGuarantors: contractPrefillRecords.guarantors ?? null,
+                            contractOwners: contractPrefillRecords.owners ?? null,
+                            contractAch:
+                                (contractPrefillRecords.ach as Record<string, unknown> | null) ??
+                                null,
+                            bankDetail: contractPrefillRecords.bankDetail ?? null,
+                        });
+                    };
+                    if (openSignNowFast) {
+                        void persistPrefill().catch((persistErr) => {
+                            console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
+                        });
+                    } else {
                         try {
-                            await syncContractPrefillToSourceRecords({
-                                dispatch,
-                                applicationData,
-                                applicationUuid: String(applicationUuid || ""),
-                                prefill: syncedPartial,
-                                offerDecision:
-                                    (offerDecision as Record<string, unknown> | null) ?? null,
-                                contractGuarantors: contractPrefillRecords.guarantors ?? null,
-                                contractOwners: contractPrefillRecords.owners ?? null,
-                                contractAch:
-                                    (contractPrefillRecords.ach as Record<string, unknown> | null) ??
-                                    null,
-                                bankDetail: contractPrefillRecords.bankDetail ?? null,
-                            });
-                        } catch (syncErr) {
-                            console.warn(
-                                "[ContractTab] prefill → application source sync failed:",
-                                syncErr,
-                            );
+                            await persistPrefill();
+                        } catch (persistErr) {
+                            console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
                         }
-                    } catch (persistErr) {
-                        console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
                     }
                 }
             }

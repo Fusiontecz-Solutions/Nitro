@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Printer } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,71 @@ interface PDFViewerDocsModalProps {
     contentClassName?: string;
 }
 
+/** Print a same-origin / blob PDF without opening a popup window. */
+function printPdfViaHiddenIframe(fileUrl: string): () => void {
+    const existing = document.getElementById("nitro-pdf-print-frame");
+    existing?.remove();
+
+    const iframe = document.createElement("iframe");
+    iframe.id = "nitro-pdf-print-frame";
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.setAttribute("title", "Print document");
+    // Keep a full viewport (hidden) — zero-size frames often print blank in Chromium.
+    iframe.style.cssText =
+        "position:fixed;inset:0;width:100%;height:100%;border:0;opacity:0;pointer-events:none;z-index:-1;";
+    iframe.src = fileUrl;
+
+    let cleaned = false;
+    let printed = false;
+    let loadFallbackTimer = 0;
+    let removeFallbackTimer = 0;
+
+    const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        window.clearTimeout(loadFallbackTimer);
+        window.clearTimeout(removeFallbackTimer);
+        iframe.removeEventListener("load", onLoad);
+        iframe.contentWindow?.removeEventListener("afterprint", cleanup);
+        iframe.remove();
+    };
+
+    const triggerPrint = () => {
+        if (cleaned || printed) return;
+        printed = true;
+        window.clearTimeout(loadFallbackTimer);
+        try {
+            const win = iframe.contentWindow;
+            if (!win) {
+                toast.error("Could not open print dialog.");
+                cleanup();
+                return;
+            }
+            win.focus();
+            win.addEventListener("afterprint", cleanup);
+            win.print();
+            // Fallback if afterprint never fires (some Chromium PDF viewers).
+            removeFallbackTimer = window.setTimeout(cleanup, 60_000);
+        } catch {
+            toast.error("Could not open print dialog.");
+            cleanup();
+        }
+    };
+
+    const onLoad = () => {
+        // Give the browser PDF plugin a beat to attach before printing.
+        window.setTimeout(triggerPrint, 250);
+    };
+
+    iframe.addEventListener("load", onLoad);
+    document.body.appendChild(iframe);
+
+    // If load never fires (rare), still attempt print once.
+    loadFallbackTimer = window.setTimeout(triggerPrint, 1500);
+
+    return cleanup;
+}
+
 const PDFViewerDocsModal = ({
     isOpen,
     onClose,
@@ -43,6 +109,8 @@ const PDFViewerDocsModal = ({
     void prefillFieldsPreview;
     void onSendToDocusign;
 
+    const printCleanupRef = useRef<(() => void) | null>(null);
+
     const safeUrl = typeof fileUrl === "string" ? fileUrl.trim() : "";
     const isValidUrl = safeUrl !== "";
     const safeFileName =
@@ -52,24 +120,27 @@ const PDFViewerDocsModal = ({
     const mimeType = resolveClientPreviewMime(safeFileName, safeUrl, "", undefined, mimeTypeHint ?? "");
     const canPrint = showPrintButton && isPdfMimeOrName(mimeType, safeFileName);
 
+    useEffect(() => {
+        if (isOpen) return;
+        printCleanupRef.current?.();
+        printCleanupRef.current = null;
+    }, [isOpen]);
+
+    useEffect(
+        () => () => {
+            printCleanupRef.current?.();
+            printCleanupRef.current = null;
+        },
+        [],
+    );
+
     const handlePrint = () => {
-        const printWindow = window.open(safeUrl, "_blank", "noopener,noreferrer");
-        if (!printWindow) {
-            toast.error("Popup blocked. Please allow popups to print the document.");
+        if (!safeUrl) {
+            toast.error("Document is not ready to print.");
             return;
         }
-
-        const triggerPrint = () => {
-            try {
-                printWindow.focus();
-                printWindow.print();
-            } catch {
-                toast.error("Could not open print dialog.");
-            }
-        };
-
-        printWindow.onload = triggerPrint;
-        window.setTimeout(triggerPrint, 800);
+        printCleanupRef.current?.();
+        printCleanupRef.current = printPdfViaHiddenIframe(safeUrl);
     };
 
     if (!isOpen || !isValidUrl) return null;

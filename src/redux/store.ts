@@ -130,6 +130,7 @@ import {
 import isoReducer from './slices/isoSlice';
 import { operationsDashboardSlice } from './slices/operationsDashboardSlice';
 import { operationsDashboardPersistMiddleware } from './middleware/operationsDashboardPersistMiddleware';
+import { backgroundCheckSlice } from './slices/backgroundCheckSlice';
 
 export const store = configureStore({
     reducer: {
@@ -257,6 +258,7 @@ export const store = configureStore({
         deleteUploadedContractDocument: deleteUploadedContractDocumentSlice.reducer,
         iso: isoReducer,
         operationsDashboard: operationsDashboardSlice.reducer,
+        backgroundCheck: backgroundCheckSlice.reducer,
     },
     middleware: (getDefaultMiddleware) =>
         getDefaultMiddleware({

@@ -255,6 +255,7 @@ import {
     canVoidMainContract,
     getContractSendTableRowStatusLabel,
     isContractSendTableRowFullySigned,
+    isContractSigningFinished,
     pickPreservedDocuSignEnvelopeMetaFromPrefill,
     resolveContractSendRowFunderAuth,
     type ContractSendTableRow,
@@ -1393,16 +1394,6 @@ function getDocuSignPdfCacheSuffix(
     return "draft";
 }
 
-function isContractSigningFinished(
-    contract: Record<string, unknown> | null | undefined,
-): boolean {
-    const status = String(contract?.status ?? "").trim().toUpperCase();
-    return (
-        status === "COMPLETED" ||
-        ["DECLINED", "REVOKED", "EXPIRED"].includes(status)
-    );
-}
-
 function envelopeDocStatusIsTerminal(doc: Record<string, unknown> | null): boolean {
     const docStatus = String(doc?.status ?? "").trim().toLowerCase();
     return ["revoked", "voided", "declined", "expired", "completed"].includes(docStatus);
@@ -1678,6 +1669,7 @@ const PDFViewerModal = ({
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
     const [isSending, setIsSending] = useState(false);
+    const sendingLockRef = useRef(false);
     const [isCancellingContract, setIsCancellingContract] = useState(false);
     /** Set when the browser blocks `window.open` after the draft URL is ready — user opens via button click. */
     const [docuSignOpenUrl, setDocuSignOpenUrl] = useState<string | null>(null);
@@ -3009,11 +3001,11 @@ const PDFViewerModal = ({
         };
     }, [isOpen, applicationIdForLookup, dispatch]);
 
-    /** Sent step: refresh from CRM (webhook). DocuSign API only if Connect looks stale. */
+    /** Sent step: refresh from CRM (webhook). Skip DocuSign API when SignNow is the provider. */
     useEffect(() => {
         if (!isOpen || activeStep !== "sent") return;
         void refreshContractSigningStateRef.current(true, {
-            syncDocuSign: true,
+            syncDocuSign: !isSignNowContractUiEnabled(),
             forceDocuSignSync: false,
         });
     }, [isOpen, activeStep]);
@@ -3399,6 +3391,19 @@ const PDFViewerModal = ({
             }
             setPrefilledBoldSignPdfHint(
                 "No contract envelope yet. Review in SignNow to send it first.",
+            );
+            return;
+        }
+
+        const signNowUi = isSignNowContractUiEnabled();
+        if (signNowUi && (!envelopeId || !isSignNowEnvelopeId(envelopeId))) {
+            if (manageLoading && prefilledActiveLoadIdRef.current === loadId) {
+                setPrefilledBoldSignPdfLoading(false);
+            }
+            setPrefilledBoldSignPdfHint(
+                envelopeId
+                    ? "This envelope is not a SignNow contract. Send via SignNow to preview the PDF."
+                    : "Send the contract via SignNow to preview the filled envelope.",
             );
             return;
         }
@@ -3867,7 +3872,19 @@ const PDFViewerModal = ({
         const appId = applicationIdForLookupRef.current;
 
         if (!envelopeId && !appId) {
-            toast.error("Send the contract to DocuSign first to download the filled PDF.");
+            toast.error(
+                isSignNowContractUiEnabled()
+                    ? "Send the contract via SignNow first to download the filled PDF."
+                    : "Send the contract to DocuSign first to download the filled PDF.",
+            );
+            return;
+        }
+
+        if (
+            isSignNowContractUiEnabled() &&
+            (!envelopeId || !isSignNowEnvelopeId(envelopeId))
+        ) {
+            toast.error("Send the contract via SignNow first to download the filled PDF.");
             return;
         }
 
@@ -4465,7 +4482,12 @@ const PDFViewerModal = ({
     };
 
     const handleSend = async () => {
-        if (!fileUrl) return;
+        if (sendingLockRef.current || isSending) return;
+        sendingLockRef.current = true;
+        if (!fileUrl) {
+            sendingLockRef.current = false;
+            return;
+        }
         const packageIncludesMainContract =
             !canSendWithoutContract || includeMainContractInSendRef.current;
         const hasSignNowStandaloneSupplemental =
@@ -4489,6 +4511,7 @@ const PDFViewerModal = ({
             Boolean(signNowEmbedUrl || signNowReviewComplete) &&
             Boolean(String(sessionEnvelopeId || linkedEnvelopeIdRef.current || "").trim());
         if (!canReviewAndSendCurrentPackage && !sendingOpenSignNowDraft) {
+            sendingLockRef.current = false;
             toast.info(
                 packageIncludesMainContract
                     ? "This contract cannot be sent right now."
@@ -4613,13 +4636,21 @@ const PDFViewerModal = ({
                         );
                         return;
                     }
-                    await axiosPost("/docusign/send-envelope", {
-                        envelopeId,
-                        applicationId: applicationIdForLookupRef.current,
-                        roles: signerRolesForSend,
-                        ccEmails: toSend,
-                        prefillFields: buildDocuSignPrefillFieldsPayload(),
-                    });
+                    await axiosPost(
+                        "/docusign/send-envelope",
+                        {
+                            envelopeId,
+                            applicationId: applicationIdForLookupRef.current,
+                            roles: signerRolesForSend,
+                            ccEmails: toSend,
+                            prefillFields: buildDocuSignPrefillFieldsPayload(),
+                        },
+                        {
+                            headers: {
+                                "Idempotency-Key": envelopeId,
+                            },
+                        },
+                    );
                     awaitingDocuSignSendRef.current = false;
                     contractWasSentRef.current = true;
                     setSentStepUnlocked(true);
@@ -4880,6 +4911,7 @@ const PDFViewerModal = ({
             }
             toast.error(msg);
         } finally {
+            sendingLockRef.current = false;
             setIsSending(false);
         }
     };
@@ -4946,16 +4978,8 @@ const PDFViewerModal = ({
             markSignNowReviewComplete();
         };
         window.addEventListener("message", onMessage);
-        const poll = window.setInterval(() => {
-            if (signNowReviewCompleteRef.current) return;
-            void refreshContractSigningStateRef.current(true, {
-                syncDocuSign: true,
-                forceDocuSignSync: true,
-            });
-        }, 8000);
         return () => {
             window.removeEventListener("message", onMessage);
-            window.clearInterval(poll);
         };
     }, [signNowEmbedUrl, markSignNowReviewComplete, onContractDocumentsChanged]);
 
@@ -5602,21 +5626,33 @@ const PDFViewerModal = ({
                 const signingFinished =
                     contractStatus === "COMPLETED" ||
                     ["DECLINED", "REVOKED", "EXPIRED"].includes(contractStatus);
-                const webhookLooksStale = shouldFallbackPollDocuSign({
-                    force: options?.forceDocuSignSync === true,
-                    signingFinished,
-                    lastCrmStatusAtMs: lastCrmStatusChangeAtRef.current,
-                    staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
-                });
+                const reviewingInSignNow = Boolean(
+                    signNowEmbedUrlRef.current || signNowReviewCompleteRef.current,
+                );
+                const signNowProvider =
+                    isSignNowContractUiEnabled() || isSignNowEnvelopeId(envelopeForSync);
+                const webhookLooksStale =
+                    reviewingInSignNow || signNowProvider
+                        ? false
+                        : shouldFallbackPollDocuSign({
+                              force: options?.forceDocuSignSync === true,
+                              signingFinished,
+                              lastCrmStatusAtMs: lastCrmStatusChangeAtRef.current,
+                              staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
+                          });
                 const maySyncDocuSign =
+                    !reviewingInSignNow &&
                     wantsSync &&
-                    webhookLooksStale &&
                     Boolean(envelopeForSync || appId) &&
                     !signingFinished &&
-                    (options?.forceDocuSignSync === true ||
-                        awaitingDocuSignSendRef.current ||
-                        (alreadySent && onSentStep) ||
-                        (!alreadySent && Boolean(envelopeForSync)));
+                    (signNowProvider
+                        ? options?.forceDocuSignSync === true &&
+                          isSignNowEnvelopeId(envelopeForSync)
+                        : webhookLooksStale &&
+                          (options?.forceDocuSignSync === true ||
+                              awaitingDocuSignSendRef.current ||
+                              (alreadySent && onSentStep) ||
+                              (!alreadySent && Boolean(envelopeForSync))));
 
                 if (maySyncDocuSign) {
                     const now = Date.now();
@@ -5746,8 +5782,12 @@ const PDFViewerModal = ({
                     if (!ccEmailDeliveredRef.current && cc.length > 0) {
                         // One recovery sync after CRM sees sent — webhook primary for status.
                         void refreshContractSigningState(true, {
-                            syncDocuSign: true,
-                            forceDocuSignSync: true,
+                            syncDocuSign: !(
+                                isSignNowContractUiEnabled() || signNowEnvelope
+                            ),
+                            forceDocuSignSync: !(
+                                isSignNowContractUiEnabled() || signNowEnvelope
+                            ),
                         });
                     }
                 }
@@ -5845,7 +5885,7 @@ const PDFViewerModal = ({
             .trim()
             .toUpperCase();
         void refreshContractSigningState(true, {
-            syncDocuSign: true,
+            syncDocuSign: !isSignNowContractUiEnabled(),
             forceDocuSignSync: false,
         });
     }, [isOpen, refreshContractSigningState, resolvedContract, hydrateSentAtFromContract]);
@@ -5862,11 +5902,14 @@ const PDFViewerModal = ({
     );
 
     /**
-     * Prefer DocuSign Connect + CRM refetch. Interval only refreshes CRM;
-     * DocuSign API sync runs when Connect looks stale (3+ min without status change).
+     * Prefer webhooks + CRM refetch. Interval only refreshes CRM;
+     * DocuSign API sync is skipped when SignNow is the contract provider.
      */
     useEffect(() => {
         if (!isOpen || signingFinishedForPoll || !envelopeIdForSigningPoll) return;
+        if (isSignNowContractUiEnabled() || isSignNowEnvelopeId(envelopeIdForSigningPoll)) {
+            return;
+        }
 
         const pollId = window.setInterval(() => {
             const stale = shouldFallbackPollDocuSign({
@@ -5888,18 +5931,25 @@ const PDFViewerModal = ({
         refreshContractSigningState,
     ]);
 
-    /** When user returns from DocuSign, refresh CRM immediately; DocuSign poll only if still stale. */
+    /** When user returns from DocuSign, refresh CRM immediately; skip DocuSign API for SignNow. */
     useEffect(() => {
         if (!isOpen || !envelopeIdForSigningPoll) return;
         const onFocus = () => {
-            const stale = shouldFallbackPollDocuSign({
-                force: false,
-                signingFinished: signingFinishedForPoll,
-                lastCrmStatusAtMs: lastCrmStatusChangeAtRef.current,
-                staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
-            });
+            const signNowProvider =
+                isSignNowContractUiEnabled() ||
+                isSignNowEnvelopeId(envelopeIdForSigningPoll);
+            const stale = signNowProvider
+                ? false
+                : shouldFallbackPollDocuSign({
+                      force: false,
+                      signingFinished: signingFinishedForPoll,
+                      lastCrmStatusAtMs: lastCrmStatusChangeAtRef.current,
+                      staleMs: DOCUSIGN_WEBHOOK_STALE_MS,
+                  });
             void refreshContractSigningState(true, {
-                syncDocuSign: stale || awaitingDocuSignSendRef.current,
+                syncDocuSign: signNowProvider
+                    ? false
+                    : stale || awaitingDocuSignSendRef.current,
                 forceDocuSignSync: false,
             });
         };
@@ -7627,6 +7677,7 @@ const PDFViewerModal = ({
 
     useEffect(() => {
         if (!isOpen) return;
+        if (isSignNowContractUiEnabled()) return;
         let cancelled = false;
         void (async () => {
             const latest = await fetchLatestContractTemplate();
@@ -11801,12 +11852,20 @@ const PDFViewerModal = ({
                                                 <button
                                                     type="button"
                                                     aria-label={signingStatusRefreshing ? "Refreshing status" : "Refresh status"}
-                                                    title={signingStatusRefreshing ? "Refreshing…" : "Refresh status"}
+                                                    title={
+                                                        signingFinishedForPoll
+                                                            ? "Signing is complete — status no longer polls SignNow"
+                                                            : signingStatusRefreshing
+                                                              ? "Refreshing…"
+                                                              : "Refresh status"
+                                                    }
                                                     disabled={
                                                         signingStatusRefreshing ||
+                                                        signingFinishedForPoll ||
                                                         (!applicationIdForLookup && !Number.isFinite(Number(contractId)))
                                                     }
                                                     onClick={() => {
+                                                        if (signingFinishedForPoll) return;
                                                         void (async () => {
                                                             await refreshContractSigningState(false, {
                                                                 syncDocuSign: true,

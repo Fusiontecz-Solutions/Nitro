@@ -2180,7 +2180,7 @@ export function ContractPrefillEditForm({
                         </div>
                         <div className="min-w-0 space-y-1">
                             <DialogTitle className="text-left text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-                                Verify contract prefill (DocuSign)
+                                Verify contract prefill (Signnow)
                             </DialogTitle>
                             <p className="text-muted-foreground text-sm font-normal leading-snug">
                                 Walk through each agreement section and confirm values match the deal. Saved overrides

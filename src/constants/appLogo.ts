@@ -1,5 +1,5 @@
 import { APP_BRAND_LOGO_URL } from "@/constants/appBranding";
-import appLogoLocalSrc from "@/assets/logoo.png";
+import appLogoLocalSrc from "@/assets/harbor_logo.png";
 
 /** Long logo on light backgrounds. Prefer public file; Vite asset as fallback. */
 export const APP_LOGO_SRC = APP_BRAND_LOGO_URL || appLogoLocalSrc;

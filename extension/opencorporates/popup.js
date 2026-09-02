@@ -33,17 +33,19 @@ async function initPopup() {
 
     setStatus(
       "idle",
-      "Start from Hardrock: Background Check → OpenCorporates → Search OpenCorporates. That opens this site in a new tab.",
+      "Start from Nitro: Background Check → OpenCorporates → Search OpenCorporates. That opens this site in a new tab.",
     );
-    openTabBtn.hidden = false;
-    openTabBtn.addEventListener("click", () => {
-      void chrome.tabs.create({ url: "https://opencorporates.com/companies" });
-      window.close();
-    });
+    if (openTabBtn) {
+      openTabBtn.hidden = false;
+      openTabBtn.addEventListener("click", () => {
+        void chrome.tabs.create({ url: "https://opencorporates.com/companies" });
+        window.close();
+      });
+    }
   } catch {
     setStatus(
       "idle",
-      "Open Hardrock, go to Background Check, and click Search OpenCorporates.",
+      "Open Nitro, go to Background Check, and click Search OpenCorporates.",
     );
   }
 }

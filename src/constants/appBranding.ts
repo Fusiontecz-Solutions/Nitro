@@ -5,7 +5,7 @@ export const APP_COMPANY_NAME = "Nitro Advance";
 export const APP_COMPANY_CRM_NAME = "Nitro Advance";
 
 /** In-app / email-preview logo (served from `public/`). */
-export const APP_BRAND_LOGO_URL = "/logoo.png";
+export const APP_BRAND_LOGO_URL = "/harbor_logo.png";
 
 /** Metallic navy from the NITRO ADVANCE wordmark. */
 export const APP_BRAND_NAVY = "#0D2478";

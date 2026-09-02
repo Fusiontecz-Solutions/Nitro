@@ -9,6 +9,7 @@ import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
 import ContractTab from "@/components/application/ContractTab";
 import BankAnalysis from "@/components/application/BankAnalysis";
+import BackgroundCheckTab from "@/components/application/BackgroundCheckTab";
 
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -648,6 +649,9 @@ const ApplicationDetails = () => {
                                         showBankStatementUpload={false}
                                     />
                                 </LazyTabContent>
+                                <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <BackgroundCheckTab />
+                                </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
                                     <ContractTab readOnly={isAgent || isViewOnlyBrowse} />
                                 </LazyTabContent>
@@ -805,6 +809,10 @@ const ApplicationDetails = () => {
                                         enableCreate={!pipelineStageReadOnly}
                                         showBankStatementUpload={false}
                                     />
+                            </LazyTabContent>
+
+                            <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <BackgroundCheckTab />
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">

@@ -275,6 +275,7 @@ export async function fetchMainContractTemplatePreview(options: {
                 source: "signnow",
             };
         }
+        // SignNow is the live contract source — do not fall through to DocuSign REST.
     }
 
     const usePlatformContractTemplateLatest = usePlatformContract;
@@ -317,32 +318,34 @@ export async function fetchMainContractTemplatePreview(options: {
     const crmPreview = await fetchCrmTemplatePdfByLayoutKey(layoutKey, options.previewName);
     if (crmPreview?.url) return crmPreview;
 
-    try {
-        const response = await axiosGet(
-            `/docusign/template/${encodeURIComponent(layoutKey)}/download`,
-            {
-                responseType: "blob",
-                params: {
-                    ...(funderName ? { funderName } : {}),
-                    ...(persistedProfileId ? { funderProfileId: persistedProfileId } : {}),
-                    ...(state ? { state } : {}),
+    if (!isSignNowContractUiEnabled()) {
+        try {
+            const response = await axiosGet(
+                `/docusign/template/${encodeURIComponent(layoutKey)}/download`,
+                {
+                    responseType: "blob",
+                    params: {
+                        ...(funderName ? { funderName } : {}),
+                        ...(persistedProfileId ? { funderProfileId: persistedProfileId } : {}),
+                        ...(state ? { state } : {}),
+                    },
                 },
-            },
-        );
-        const blob =
-            response?.data instanceof Blob
-                ? response.data
-                : new Blob([response?.data], { type: "application/pdf" });
-        if (blob.size > 0 && blob.type !== "application/json" && (await blobHasPdfMagic(blob))) {
-            return {
-                url: URL.createObjectURL(new Blob([blob], { type: "application/pdf" })),
-                name: sanitizeContractPreviewName(options.previewName),
-                layoutKey,
-                source: "docusign-download",
-            };
+            );
+            const blob =
+                response?.data instanceof Blob
+                    ? response.data
+                    : new Blob([response?.data], { type: "application/pdf" });
+            if (blob.size > 0 && blob.type !== "application/json" && (await blobHasPdfMagic(blob))) {
+                return {
+                    url: URL.createObjectURL(new Blob([blob], { type: "application/pdf" })),
+                    name: sanitizeContractPreviewName(options.previewName),
+                    layoutKey,
+                    source: "docusign-download",
+                };
+            }
+        } catch {
+            /* fall through */
         }
-    } catch {
-        /* fall through */
     }
 
     const fallbackUrl = String(options.fallbackUrl ?? "").trim();

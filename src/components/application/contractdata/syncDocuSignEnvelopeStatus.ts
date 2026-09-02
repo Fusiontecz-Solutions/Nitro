@@ -35,6 +35,8 @@ export type SyncDocuSignEnvelopeStatusOptions = {
     contractId?: number | null;
     force?: boolean;
     silent?: boolean;
+    /** When true, skip the remote status API (contract already signed / completed / voided). */
+    signingFinished?: boolean;
 };
 
 export type SyncDocuSignEnvelopeStatusResult = {
@@ -49,6 +51,7 @@ export async function syncDocuSignEnvelopeStatus(
 ): Promise<SyncDocuSignEnvelopeStatusResult> {
     const eid = String(envelopeId ?? "").trim();
     if (!eid) return { skipped: true };
+    if (options?.signingFinished) return { skipped: true };
 
     const now = Date.now();
     const last = lastSyncedAtByEnvelope.get(eid) ?? 0;

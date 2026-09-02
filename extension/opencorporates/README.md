@@ -1,13 +1,13 @@
 # CRM Background Check Bridge (Chrome Extension)
 
-Loads on **OpenCorporates** and **NY Court (NYSCEF)** and adds a **Send to CRM** button when opened from the Hardrock/Katan background check tab.
+Loads on **OpenCorporates** and **NY Court (NYSCEF)** and adds a **Send to CRM** button when opened from the Nitro Advance background check tab.
 
 ## Install (unpacked)
 
 1. Open Chrome → `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked**
-4. Select this folder: `katan-fe/extension/opencorporates` (or `hardrock-fe/extension/opencorporates`)
+4. Select this folder: `nitro-contract-fe/extension/opencorporates`
 5. Pin **CRM Background Check Bridge** in the toolbar
 
 ## OpenCorporates workflow
