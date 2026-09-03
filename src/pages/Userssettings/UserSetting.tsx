@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useForm, type SubmitHandler } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as yup from 'yup';
 import { useDispatch, useSelector } from 'react-redux';
+import { useSearchParams } from 'react-router';
 import { toast } from 'react-toastify';
 
 import type { RootState, AppDispatch } from '@/redux/store';
@@ -11,6 +12,8 @@ import type { user as UserType } from '@/redux/slices/authSlice';
 import { TextField, EmailField, PhoneField } from '@/components/inputFields/InputFields';
 import { Separator } from '@/components/ui/separator';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import FundersSettings from '@/pages/settings/FundersSettings';
 
 interface FormValues {
   firstName: string;
@@ -26,10 +29,34 @@ const schema = yup.object().shape({
   phone: yup.string().trim().optional(),
 });
 
+const SETTINGS_TABS = ['profile', 'funders'] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
+
+function normalizeSettingsTab(value: string | null): SettingsTab {
+  const tab = (value || 'profile').toLowerCase();
+  return SETTINGS_TABS.includes(tab as SettingsTab) ? (tab as SettingsTab) : 'profile';
+}
+
 export default function UserSetting() {
   const dispatch = useDispatch<AppDispatch>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const loginData = useSelector((state: RootState) => state.login?.data);
   const isFieldsDisabled = true;
+  const activeTab = normalizeSettingsTab(searchParams.get('tab'));
+
+  const handleTabChange = useCallback(
+    (next: string) => {
+      const tab = normalizeSettingsTab(next);
+      const nextParams = new URLSearchParams(searchParams);
+      if (tab === 'profile') {
+        nextParams.delete('tab');
+      } else {
+        nextParams.set('tab', tab);
+      }
+      setSearchParams(nextParams, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
 
   const user: UserType | undefined = useMemo(() => {
     if (loginData?.user) return loginData.user;
@@ -109,78 +136,91 @@ export default function UserSetting() {
           <div>
             <h1 className="text-3xl font-semibold tracking-tight text-foreground">Settings</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Manage your profile information and keep your contact details up to date.
+              Manage your profile information and configure funders for contracts.
             </p>
           </div>
 
           <Separator />
 
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-[280px_minmax(0,1fr)]">
-            <aside className="md:self-start">
-              <Card className="border-border">
-                <CardContent className="pt-6 flex flex-col items-center md:items-center gap-4">
-                  <div className="relative flex items-center justify-center">
-                    <div className="h-24 w-24 rounded-full flex items-center justify-center border border-border/70 shadow-sm text-3xl font-semibold text-white bg-[image:var(--brand-gradient)]">
-                      {initials}
-                    </div>
-                  </div>
+          <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full gap-6">
+            <TabsList>
+              <TabsTrigger value="profile">Profile</TabsTrigger>
+              <TabsTrigger value="funders">Funders</TabsTrigger>
+            </TabsList>
 
-                  <div className="text-center md:text-center space-y-1 mt-4">
-                    <h3 className="text-base font-semibold leading-tight">
-                      {user?.firstName} {user?.lastName}
-                    </h3>
-                    <p className="text-xs text-muted-foreground break-all">{user?.email}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            </aside>
+            <TabsContent value="profile" className="mt-0">
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-[280px_minmax(0,1fr)]">
+                <aside className="md:self-start">
+                  <Card className="border-border">
+                    <CardContent className="pt-6 flex flex-col items-center md:items-center gap-4">
+                      <div className="relative flex items-center justify-center">
+                        <div className="h-24 w-24 rounded-full flex items-center justify-center border border-border/70 shadow-sm text-3xl font-semibold text-white bg-[image:var(--brand-gradient)]">
+                          {initials}
+                        </div>
+                      </div>
 
-            <Card className="border-border md:col-span-1">
-              <CardHeader className="border-b bg-muted/40 backdrop-blur-sm">
-                <CardTitle className="text-lg">Personal information</CardTitle>
-                <CardDescription>
-                  These details are used across your In‑House CRM workspace.
-                </CardDescription>
-              </CardHeader>
+                      <div className="text-center md:text-center space-y-1 mt-4">
+                        <h3 className="text-base font-semibold leading-tight">
+                          {user?.firstName} {user?.lastName}
+                        </h3>
+                        <p className="text-xs text-muted-foreground break-all">{user?.email}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </aside>
 
-              <form onSubmit={handleSubmit(onSubmit)}>
-                <CardContent className="space-y-6 pt-6">
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <TextField
-                      name="firstName"
-                      label="First Name"
-                      required
-                      disabled={isFieldsDisabled}
-                      control={control}
-                    />
-                    <TextField
-                      name="lastName"
-                      label="Last Name"
-                      required
-                      disabled={isFieldsDisabled}
-                      control={control}
-                    />
-                  </div>
+                <Card className="border-border md:col-span-1">
+                  <CardHeader className="border-b bg-muted/40 backdrop-blur-sm">
+                    <CardTitle className="text-lg">Personal information</CardTitle>
+                    <CardDescription>
+                      These details are used across your In‑House CRM workspace.
+                    </CardDescription>
+                  </CardHeader>
 
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <EmailField
-                      name="email"
-                      label="Email Address"
-                      required
-                      disabled={isFieldsDisabled}
-                      control={control}
-                    />
-                    <PhoneField
-                      name="phone"
-                      label="Phone Number"
-                      disabled={isFieldsDisabled}
-                      control={control}
-                    />
-                  </div>
-                </CardContent>
-              </form>
-            </Card>
-          </div>
+                  <form onSubmit={handleSubmit(onSubmit)}>
+                    <CardContent className="space-y-6 pt-6">
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <TextField
+                          name="firstName"
+                          label="First Name"
+                          required
+                          disabled={isFieldsDisabled}
+                          control={control}
+                        />
+                        <TextField
+                          name="lastName"
+                          label="Last Name"
+                          required
+                          disabled={isFieldsDisabled}
+                          control={control}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <EmailField
+                          name="email"
+                          label="Email Address"
+                          required
+                          disabled={isFieldsDisabled}
+                          control={control}
+                        />
+                        <PhoneField
+                          name="phone"
+                          label="Phone Number"
+                          disabled={isFieldsDisabled}
+                          control={control}
+                        />
+                      </div>
+                    </CardContent>
+                  </form>
+                </Card>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="funders" className="mt-0">
+              <FundersSettings />
+            </TabsContent>
+          </Tabs>
         </div>
       </div>
     </div>

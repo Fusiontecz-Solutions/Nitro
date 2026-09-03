@@ -56,6 +56,8 @@ export function isSignNowAddendumLayoutKey(value: unknown): boolean {
     if (key === SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID) return true;
     if (key === SIGNNOW_EPA_TEMPLATE_ID) return true;
     if (key === SIGNNOW_MONTHLY_FEE_TEMPLATE_ID) return true;
+    // Settings → Funders may store a raw SignNow template id as the option key.
+    if (/^[a-f0-9]{40}$/i.test(key)) return true;
     return (
         key.endsWith("_ach_daily") ||
         key.endsWith("_ach_weekly") ||
@@ -77,6 +79,7 @@ export function isSignNowDisclosureLayoutKey(value: unknown): boolean {
     return (
         key === SIGNNOW_DISCLOSURE_LAYOUT_KEY ||
         key === SIGNNOW_DISCLOSURE_TEMPLATE_ID ||
-        key.endsWith("_signnow_disclosure")
+        key.endsWith("_signnow_disclosure") ||
+        /^[a-f0-9]{40}$/i.test(key)
     );
 }

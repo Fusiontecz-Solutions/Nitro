@@ -239,9 +239,18 @@ import {
 import {
     isSignNowAddendumLayoutKey,
     isSignNowDisclosureLayoutKey,
-    SIGNNOW_ADDENDUM_TEMPLATE_OPTIONS,
     SIGNNOW_DISCLOSURE_LAYOUT_KEY,
 } from "./contractdata/signnowAddendumTemplates";
+import {
+    extractSignNowTemplateId,
+    funderOwnsSignNowAddendumRef,
+    funderSignNowAddendumOptions,
+    funderSignNowDisclosureOptions,
+    isSignNowTemplateIdToken,
+    knownAddendumLayoutKeyFromName,
+    matchFunderSignNowAddendumOption,
+    resolveFunderAddendumDisplayName,
+} from "@/utils/signnowTemplateLink";
 import {
     contractSendPackageFingerprint,
     canSendWithoutMainContract,
@@ -757,26 +766,30 @@ function isAddendumRefValidForDocsFunder(
     return false;
 }
 
-function signNowAddendumSyntheticRow(opt: { layoutKey: string; label: string }) {
-    return {
-        id: opt.layoutKey,
-        layoutKey: opt.layoutKey,
-        templateId: opt.layoutKey,
-        name: opt.label,
-        type: "addendum",
-        pdfUrl: `platform://${opt.layoutKey}`,
-    };
-}
-
-/** SignNow addenda (ACH Weekly, Exhibit C) are always available — not funder-upload gated. */
-function withSignNowAddendumOptions(options: any[]): any[] {
+/** Settings → Funders SignNow addendum links only (no hardcoded Nitro fallback). */
+function withSignNowAddendumOptions(
+    options: any[],
+    funderProfile?: {
+        signnowAddendumTemplates?: Array<{ name: string; link: string }> | null;
+    } | null,
+): any[] {
     if (!isSignNowContractUiEnabled()) return options;
     const existingKeys = new Set(
         options.map((t: any) => templateLayoutKeyToken(t)).filter(Boolean),
     );
-    const extras = SIGNNOW_ADDENDUM_TEMPLATE_OPTIONS.filter(
-        (opt) => !existingKeys.has(opt.layoutKey),
-    ).map(signNowAddendumSyntheticRow);
+    const fromFunder = funderSignNowAddendumOptions(funderProfile as any);
+    const extras = fromFunder
+        .filter((opt) => !existingKeys.has(opt.layoutKey) && !existingKeys.has(opt.templateId))
+        .map((opt) => ({
+            id: opt.id,
+            // Unique per funder (SignNow template id) — avoids Nitro catalog collisions.
+            layoutKey: opt.layoutKey,
+            templateId: opt.templateId,
+            name: opt.name,
+            type: "addendum",
+            pdfUrl: opt.pdfUrl,
+            knownLayoutKey: opt.knownLayoutKey || undefined,
+        }));
     return extras.length ? [...options, ...extras] : options;
 }
 
@@ -1810,6 +1823,11 @@ const PDFViewerModal = ({
             findFunder(selectedFunder),
         [findFunderById, findFunder, selectedFunderProfileId, selectedFunder],
     );
+    const funderDisclosureOptions = useMemo(
+        () => funderSignNowDisclosureOptions(selectedFunderProfile),
+        [selectedFunderProfile],
+    );
+    const primaryFunderDisclosure = funderDisclosureOptions[0] ?? null;
     const selectedFunderDefaultCcEmail = useMemo(() => {
         return (
             String(selectedFunderProfile?.docusignDefaultCcEmail ?? "").trim() ||
@@ -1951,6 +1969,15 @@ const PDFViewerModal = ({
         [templateMappings],
     );
 
+    /** Settings → Funders SignNow addenda for the selected funder (names + known layout keys). */
+    const selectedFunderAddendumOptions = useMemo(
+        () =>
+            isSignNowContractUiEnabled()
+                ? funderSignNowAddendumOptions(selectedFunderProfile)
+                : [],
+        [selectedFunderProfile],
+    );
+
     /** Canonical linked addenda (highest `order` first) — one row per template. */
     const linkedAddendumMappings = useMemo(() => {
         if (!addendumTemplateMappings.length) return [];
@@ -1966,9 +1993,21 @@ const PDFViewerModal = ({
                 String(row?.id ?? "").trim();
             if (!templateKey || seen.has(templateKey)) return false;
             seen.add(templateKey);
+            // SignNow: never show another funder's linked addendum under this funder.
+            if (
+                isSignNowContractUiEnabled() &&
+                selectedFunderAddendumOptions.length > 0 &&
+                !funderOwnsSignNowAddendumRef(
+                    getAddendumDropdownRef(row?.template),
+                    selectedFunderAddendumOptions,
+                    row?.template,
+                )
+            ) {
+                return false;
+            }
             return true;
         });
-    }, [addendumTemplateMappings]);
+    }, [addendumTemplateMappings, selectedFunderAddendumOptions]);
 
     /** Primary linked addendum (for single-row UI helpers). */
     const linkedAddendumMapping = useMemo(
@@ -2091,7 +2130,12 @@ const PDFViewerModal = ({
     const configuredDisclosureRef = useMemo((): string | null => {
         if (isSignNowContractUiEnabled()) {
             if (!includeDisclosureInSend) return null;
-            return SIGNNOW_DISCLOSURE_LAYOUT_KEY;
+            // Only the selected funder's Settings disclosure — never Nitro hardcoded fallback.
+            return (
+                primaryFunderDisclosure?.templateId ||
+                primaryFunderDisclosure?.layoutKey ||
+                null
+            );
         }
         if (!linkedDisclosureMapping || !linkedDisclosureMatchesSelectedState) return null;
         const rowId = String(linkedDisclosureMapping?.template?.id ?? "").trim();
@@ -2100,6 +2144,7 @@ const PDFViewerModal = ({
         includeDisclosureInSend,
         linkedDisclosureMapping,
         linkedDisclosureMatchesSelectedState,
+        primaryFunderDisclosure,
     ]);
 
     const canSendWithoutContract = useMemo(
@@ -2498,12 +2543,14 @@ const PDFViewerModal = ({
     const formatDropdownLabel = (raw: unknown): string => {
         const input = String(raw ?? "").trim();
         if (!input) return "";
+        // Never pretty-print a raw SignNow template id into the UI.
+        if (isSignNowTemplateIdToken(input)) return "";
         const noExt = input.replace(/\.pdf$/i, "");
         const normalized = noExt
             .replace(/[_-]+/g, " ")
             .replace(/\s+/g, " ")
             .trim();
-        if (!normalized) return "";
+        if (!normalized || isSignNowTemplateIdToken(normalized)) return "";
         return normalized
             .split(" ")
             .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
@@ -2541,15 +2588,19 @@ const PDFViewerModal = ({
     boldSignTemplatesRef.current = boldSignTemplates;
 
     const addendumTemplateOptions = useMemo(() => {
+        // SignNow Create Contract is funder-driven: only Settings → Funders links.
+        // Never fall back to Nitro hardcoded addendums for another funder.
+        if (isSignNowContractUiEnabled()) {
+            if (!selectedFunderProfile) return [];
+            return withSignNowAddendumOptions([], selectedFunderProfile);
+        }
+
         const fromDb = boldSignTemplates.filter((template: any) => {
             if (!isContractAddendumTemplateRow(template)) return false;
             return templateMatchesFunderDocuments(template, docsLayoutFunderId);
         });
 
-        // Platform funders: expose code-backed addenda that already have platform PDFs.
-        // Case Takeover is funder-upload only (Settings → Funder profile) — never synthetic.
-        // SignNow ACH Weekly / Exhibit C / Flex / PayOff Addendum are always listed (not gated on funder PDF uploads).
-        if (docsLayoutFunderId) return withSignNowAddendumOptions(fromDb);
+        if (docsLayoutFunderId) return fromDb;
 
         const existingKeys = new Set(
             fromDb.map((t: any) => templateLayoutKeyToken(t)).filter(Boolean),
@@ -2565,8 +2616,109 @@ const PDFViewerModal = ({
             pdfUrl: `platform://${opt.layoutKey}`,
         }));
 
-        return withSignNowAddendumOptions([...fromDb, ...platformSynthetic]);
-    }, [boldSignTemplates, docsLayoutFunderId]);
+        return [...fromDb, ...platformSynthetic];
+    }, [boldSignTemplates, docsLayoutFunderId, selectedFunderProfile]);
+
+    /** Prefer Settings layout key over a raw SignNow hex so dropdown labels stay human. */
+    const resolveAddendumSelectionRef = useCallback(
+        (template: {
+            id?: string | null;
+            name?: string | null;
+            layoutKey?: string | null;
+            templateId?: string | null;
+        } | null | undefined): string => {
+            const funderMatch = matchFunderSignNowAddendumOption(
+                template,
+                selectedFunderAddendumOptions,
+            );
+            if (funderMatch?.layoutKey) return funderMatch.layoutKey;
+            if (funderMatch?.templateId) return funderMatch.templateId;
+            const fromOptions = addendumTemplateOptions.find((t: any) => {
+                const ref = getAddendumDropdownRef(t);
+                const layoutKey = String(t?.layoutKey || "").trim().toLowerCase();
+                const templateId = extractSignNowTemplateId(
+                    t?.templateId || t?.id || "",
+                );
+                const rowRef = getAddendumDropdownRef(template);
+                const rowTid = extractSignNowTemplateId(
+                    template?.templateId || template?.id || "",
+                );
+                const rowLk = String(template?.layoutKey || "")
+                    .trim()
+                    .toLowerCase();
+                return Boolean(
+                    (rowRef && ref === rowRef) ||
+                        (rowTid && (rowTid === templateId || rowTid === layoutKey)) ||
+                        (rowLk && (rowLk === layoutKey || rowLk === templateId)),
+                );
+            });
+            if (fromOptions) {
+                return (
+                    getAddendumDropdownRef(fromOptions) ||
+                    String(fromOptions.layoutKey || fromOptions.templateId || "").trim()
+                );
+            }
+            return getAddendumDropdownRef(template);
+        },
+        [selectedFunderAddendumOptions, addendumTemplateOptions],
+    );
+
+    const selectedAddendumDisplayLabels = useMemo(() => {
+        return selectedAddendumOptions.map((opt) => {
+            const tid = opt.startsWith("bs:")
+                ? opt.slice(3).trim()
+                : String(opt || "").trim();
+            const match = addendumTemplateOptions.find((t: any) => {
+                if (getAddendumDropdownRef(t) === tid) return true;
+                const templateId = extractSignNowTemplateId(
+                    t?.templateId || t?.id || "",
+                );
+                const layoutKey = String(t?.layoutKey || "")
+                    .trim()
+                    .toLowerCase();
+                const lower = tid.toLowerCase();
+                return Boolean(
+                    (templateId && templateId === lower) ||
+                        (layoutKey && layoutKey === lower),
+                );
+            });
+            const linkedRow = linkedAddendumMappings.find((row) => {
+                const ref = resolveAddendumSelectionRef(row?.template);
+                if (ref === tid || getAddendumDropdownRef(row?.template) === tid) {
+                    return true;
+                }
+                const rowTid = extractSignNowTemplateId(
+                    row?.template?.templateId || row?.template?.id || "",
+                );
+                return Boolean(rowTid && rowTid === tid.toLowerCase());
+            });
+            const funderName =
+                matchFunderSignNowAddendumOption(
+                    linkedRow?.template ||
+                        match || { layoutKey: tid, templateId: tid },
+                    selectedFunderAddendumOptions,
+                )?.name || null;
+            const rawName = resolveFunderAddendumDisplayName(
+                tid,
+                selectedFunderAddendumOptions,
+                funderName ||
+                    match?.name ||
+                    match?.templateName ||
+                    match?.title ||
+                    linkedRow?.template?.name ||
+                    null,
+            );
+            if (!rawName || isSignNowTemplateIdToken(rawName)) return "Addendum";
+            return formatDropdownLabel(rawName) || "Addendum";
+        });
+    }, [
+        selectedAddendumOptions,
+        addendumTemplateOptions,
+        linkedAddendumMappings,
+        selectedFunderAddendumOptions,
+        resolveAddendumSelectionRef,
+    ]);
+
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
             file?.documentType || file?.fileName || "",
@@ -3588,14 +3740,18 @@ const PDFViewerModal = ({
 
     const resolveDisclosureTemplateRefForDocuSignMerge = useCallback((): string | null => {
         if (isSignNowContractUiEnabled()) {
-            return SIGNNOW_DISCLOSURE_LAYOUT_KEY;
+            return (
+                primaryFunderDisclosure?.templateId ||
+                primaryFunderDisclosure?.layoutKey ||
+                null
+            );
         }
         const row = linkedDisclosureMappingRef.current;
         const layoutKey = String(row?.template?.layoutKey ?? "").trim();
         if (layoutKey) return layoutKey;
         const rowId = String(row?.template?.id ?? "").trim();
         return rowId || null;
-    }, []);
+    }, [primaryFunderDisclosure]);
 
     const resolveAddendumLayoutKeysForDocuSignMerge = useCallback((): string[] => {
         return resolveAddendumTemplateIdsForDocuSignMerge().filter((ref) => {
@@ -4726,10 +4882,20 @@ const PDFViewerModal = ({
                     const disclosureDocumentRef = packageSelection.includeDisclosure
                         ? resolveDisclosureTemplateRefForDocuSignMerge()
                         : null;
+                    // Extra funder Settings disclosures (beyond the primary) ride along as supplemental refs.
+                    const extraFunderDisclosureRefs = packageSelection.includeDisclosure
+                        ? funderDisclosureOptions
+                              .slice(1)
+                              .map((d) => d.templateId || d.layoutKey)
+                              .filter(Boolean)
+                        : [];
                     const prepared = await onPrepareDocuSignDraft({
                         ccEmails: toSend,
                         addendumDocumentRef: addendumTemplateId,
-                        addendumDocumentRefs: addendumTemplateIds,
+                        addendumDocumentRefs: [
+                            ...addendumTemplateIds,
+                            ...extraFunderDisclosureRefs,
+                        ],
                         disclosureDocumentRef,
                         includeMainContract: packageSelection.includeMainContract,
                         sendPackage: packageSelection,
@@ -7042,27 +7208,42 @@ const PDFViewerModal = ({
             );
 
             const currentMappings = linkedAddendumMappingsRef.current;
+            // Prefer the live checkbox selection — filtered linked rows can lag or hide
+            // another funder's in-flight picks and look "empty" for 3–5s.
+            const fromSelected = selectedAddendumOptionsRef.current
+                .map((opt) => {
+                    const trimmed = String(opt || "").trim();
+                    if (!trimmed.startsWith("bs:")) return "";
+                    return trimmed.slice(3).trim();
+                })
+                .filter(Boolean);
+            const fromMappings = currentMappings
+                .map(
+                    (row) =>
+                        resolveAddendumSelectionRef(row?.template) ||
+                        getAddendumDropdownRef(row?.template) ||
+                        getBoldSignTemplateMappingRef(row?.template) ||
+                        "",
+                )
+                .filter(Boolean);
             const currentRefs = [
-                ...new Set(
-                    currentMappings
-                        .map(
-                            (row) =>
-                                getAddendumDropdownRef(row?.template) ||
-                                getBoldSignTemplateMappingRef(row?.template) ||
-                                "",
-                        )
-                        .filter(Boolean),
-                ),
+                ...new Set(fromSelected.length ? fromSelected : fromMappings),
             ];
 
             // Keep non-auto selections and user-added auto addenda beyond the defaults.
             const keptExtraRefs = currentRefs.filter((ref) => {
                 const row = currentMappings.find(
                     (m) =>
+                        resolveAddendumSelectionRef(m?.template) === ref ||
                         getAddendumDropdownRef(m?.template) === ref ||
                         getBoldSignTemplateMappingRef(m?.template) === ref,
                 );
-                const kind = resolveTemplateAutoAddendumKind(row?.template);
+                const option = addendumTemplateOptions.find(
+                    (t: any) => getAddendumDropdownRef(t) === ref,
+                );
+                const kind = resolveTemplateAutoAddendumKind(
+                    row?.template || option || null,
+                );
                 if (!kind) return true;
                 if (addendumUserRemovedKindsRef.current.has(kind)) return false;
                 if (wantedKinds.includes(kind)) return false;
@@ -7135,6 +7316,7 @@ const PDFViewerModal = ({
             contractDisclosureFrequency,
             effectiveContractId,
             offerDecisionData,
+            resolveAddendumSelectionRef,
             setAddendumTemplateMappings,
         ],
     );
@@ -7552,7 +7734,7 @@ const PDFViewerModal = ({
             const pendingRefs = [
                 ...new Set(
                     linkedAddendumMappings
-                        .map((row) => getAddendumDropdownRef(row?.template))
+                        .map((row) => resolveAddendumSelectionRef(row?.template))
                         .filter(Boolean),
                 ),
             ] as string[];
@@ -7569,10 +7751,41 @@ const PDFViewerModal = ({
 
         const validRefs: string[] = [];
         const invalidRows: ContractDocumentTemplateMappingRow[] = [];
-        for (const row of linkedAddendumMappings) {
-            const tid = getAddendumDropdownRef(row?.template);
+        // Compare against raw mappings so we can delete another funder's leftovers
+        // even when the visible linked list already filters them out.
+        const rowsToReconcile = addendumTemplateMappings;
+        const optimisticSelectedRefs = new Set(
+            selectedAddendumOptionsRef.current
+                .map((o) => String(o || "").trim())
+                .filter((o) => o.startsWith("bs:"))
+                .map((o) => o.slice(3).trim().toLowerCase())
+                .filter(Boolean),
+        );
+        for (const row of rowsToReconcile) {
+            // Prefer this funder's unique SignNow template id as the selection ref.
+            const tid = resolveAddendumSelectionRef(row?.template);
             if (!tid) continue;
-            if (
+            if (isSignNowContractUiEnabled()) {
+                const owned =
+                    selectedFunderAddendumOptions.length === 0 ||
+                    funderOwnsSignNowAddendumRef(
+                        tid,
+                        selectedFunderAddendumOptions,
+                        row?.template,
+                    ) ||
+                    // Keep in-flight user picks while the mapping row still points at a
+                    // legacy Nitro catalog id (race that used to clear after 3–5s).
+                    optimisticSelectedRefs.has(tid.toLowerCase()) ||
+                    optimisticSelectedRefs.has(
+                        extractSignNowTemplateId(
+                            row?.template?.templateId || row?.template?.id || "",
+                        ),
+                    );
+                if (!owned) {
+                    invalidRows.push(row);
+                    continue;
+                }
+            } else if (
                 !isAddendumRefValidForDocsFunder(
                     tid,
                     docsLayoutFunderId,
@@ -7583,6 +7796,19 @@ const PDFViewerModal = ({
                 continue;
             }
             if (!validRefs.includes(tid)) validRefs.push(tid);
+        }
+
+        // Also keep any optimistic SignNow selections that belong to this funder even
+        // before their mapping rows finish saving.
+        if (isSignNowContractUiEnabled() && selectedFunderAddendumOptions.length) {
+            for (const ref of optimisticSelectedRefs) {
+                if (
+                    funderOwnsSignNowAddendumRef(ref, selectedFunderAddendumOptions) &&
+                    !validRefs.some((v) => v.toLowerCase() === ref)
+                ) {
+                    validRefs.push(ref);
+                }
+            }
         }
 
         if (invalidRows.length) {
@@ -7600,7 +7826,8 @@ const PDFViewerModal = ({
                     /* ignore cleanup errors */
                 }
             })();
-            return;
+            // Do not return early — still sync checkbox state from valid + optimistic refs
+            // so a cleanup pass cannot blank the user's current selection.
         }
 
         const next = validRefs.map((ref) => `bs:${ref}`);
@@ -7619,10 +7846,13 @@ const PDFViewerModal = ({
         boldSignTemplatesHydrated,
         boldSignTemplatesLoading,
         linkedAddendumMappings,
+        addendumTemplateMappings,
         fetchTemplateMappings,
         docsLayoutFunderId,
         boldSignTemplates,
         selectedAddendumOptions,
+        resolveAddendumSelectionRef,
+        selectedFunderAddendumOptions,
     ]);
 
     const prevActiveStepRef = useRef<ContractWizardStep>(activeStep);
@@ -9249,29 +9479,9 @@ const PDFViewerModal = ({
                                                     <span className="min-w-0 truncate">
                                                         {selectedAddendumOptions.length === 0
                                                             ? "Select addendum(s)"
-                                                            : selectedAddendumOptions
-                                                                  .map((opt) => {
-                                                                      const tid = opt.startsWith("bs:")
-                                                                          ? opt.slice(3)
-                                                                          : "";
-                                                                      const match =
-                                                                          addendumTemplateOptions.find(
-                                                                              (t: any) =>
-                                                                                  getAddendumDropdownRef(
-                                                                                      t,
-                                                                                  ) === tid,
-                                                                          );
-                                                                      return (
-                                                                          formatDropdownLabel(
-                                                                              match?.name ||
-                                                                                  match?.templateName ||
-                                                                                  match?.title ||
-                                                                                  tid ||
-                                                                                  "Addendum",
-                                                                          ) || "Addendum"
-                                                                      );
-                                                                  })
-                                                                  .join(", ")}
+                                                            : selectedAddendumDisplayLabels.join(
+                                                                  ", ",
+                                                              )}
                                                     </span>
                                                     <ChevronDown
                                                         className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${
@@ -9472,33 +9682,28 @@ const PDFViewerModal = ({
                                                                 setSelectedFunderProfileId(nextFunderProfileId);
                                                                 setSelectedFunder(nextFunder);
                                                             }
-                                                            const nextDocsLayoutFunderId = (() => {
-                                                                const profile =
-                                                                    (nextFunderProfileId
-                                                                        ? findFunderById(nextFunderProfileId)
-                                                                        : null) ??
-                                                                    (nextFunder
-                                                                        ? findFunder(nextFunder)
-                                                                        : null);
-                                                                return profile
-                                                                    ? resolveAddendumDocumentsLayoutFunderId(profile)
+                                                            const nextFunderProfile =
+                                                                (nextFunderProfileId
+                                                                    ? findFunderById(nextFunderProfileId)
+                                                                    : null) ??
+                                                                (nextFunder
+                                                                    ? findFunder(nextFunder)
+                                                                    : null);
+                                                            const nextDocsLayoutFunderId = nextFunderProfile
+                                                                ? resolveAddendumDocumentsLayoutFunderId(
+                                                                      nextFunderProfile,
+                                                                  )
+                                                                : null;
+                                                            const nextDisclosureDocsLayoutFunderId =
+                                                                nextFunderProfile
+                                                                    ? resolveDisclosureDocumentsLayoutFunderId(
+                                                                          nextFunderProfile,
+                                                                          {
+                                                                              platformDisclosureFunderId:
+                                                                                  platformDisclosureFunderIdRef.current,
+                                                                          },
+                                                                      )
                                                                     : null;
-                                                            })();
-                                                            const nextDisclosureDocsLayoutFunderId = (() => {
-                                                                const profile =
-                                                                    (nextFunderProfileId
-                                                                        ? findFunderById(nextFunderProfileId)
-                                                                        : null) ??
-                                                                    (nextFunder
-                                                                        ? findFunder(nextFunder)
-                                                                        : null);
-                                                                return profile
-                                                                    ? resolveDisclosureDocumentsLayoutFunderId(profile, {
-                                                                          platformDisclosureFunderId:
-                                                                              platformDisclosureFunderIdRef.current,
-                                                                      })
-                                                                    : null;
-                                                            })();
                                                             docsLayoutFunderIdRef.current =
                                                                 nextDocsLayoutFunderId;
                                                             disclosureDocsLayoutFunderIdRef.current =
@@ -9507,11 +9712,43 @@ const PDFViewerModal = ({
                                                                 nextFunder !== selectedFunder ||
                                                                 nextFunderProfileId !== selectedFunderProfileId
                                                             ) {
+                                                                const nextFunderAddenda =
+                                                                    funderSignNowAddendumOptions(
+                                                                        nextFunderProfile,
+                                                                    );
                                                                 const kept = selectedAddendumOptions
                                                                     .map((opt) => {
                                                                         const trimmed = String(opt || "").trim();
                                                                         if (!trimmed.startsWith("bs:")) return "";
                                                                         const ref = trimmed.slice(3).trim();
+                                                                        if (isSignNowContractUiEnabled()) {
+                                                                            if (
+                                                                                !funderOwnsSignNowAddendumRef(
+                                                                                    ref,
+                                                                                    nextFunderAddenda,
+                                                                                )
+                                                                            ) {
+                                                                                return "";
+                                                                            }
+                                                                            const owned =
+                                                                                nextFunderAddenda.find(
+                                                                                    (o) =>
+                                                                                        o.layoutKey ===
+                                                                                            ref ||
+                                                                                        extractSignNowTemplateId(
+                                                                                            o.templateId ||
+                                                                                                o.link,
+                                                                                        ) ===
+                                                                                            extractSignNowTemplateId(
+                                                                                                ref,
+                                                                                            ),
+                                                                                );
+                                                                            return (
+                                                                                owned?.layoutKey ||
+                                                                                owned?.templateId ||
+                                                                                ref
+                                                                            );
+                                                                        }
                                                                         return isAddendumRefValidForDocsFunder(
                                                                             ref,
                                                                             nextDocsLayoutFunderId,
@@ -9521,14 +9758,7 @@ const PDFViewerModal = ({
                                                                             : "";
                                                                     })
                                                                     .filter(Boolean);
-                                                                if (
-                                                                    kept.length !==
-                                                                    selectedAddendumOptions.filter((o) =>
-                                                                        o.startsWith("bs:"),
-                                                                    ).length
-                                                                ) {
-                                                                    void setAddendumTemplateMappings(kept);
-                                                                }
+                                                                void setAddendumTemplateMappings(kept);
                                                             }
                                                             // Clear so a failed/stale sync can be retried by the effect.
                                                             disclosureAutoLinkKeyRef.current = "";
@@ -9602,11 +9832,44 @@ const PDFViewerModal = ({
                                                                         },
                                                                     );
                                                                 }
+                                                                const nextFunderAddenda =
+                                                                    funderSignNowAddendumOptions(profile);
                                                                 const kept = selectedAddendumOptions
                                                                     .map((opt) => {
                                                                         const trimmed = String(opt || "").trim();
                                                                         if (!trimmed.startsWith("bs:")) return "";
                                                                         const ref = trimmed.slice(3).trim();
+                                                                        if (isSignNowContractUiEnabled()) {
+                                                                            // Only keep this funder's Settings
+                                                                            // links — never Nitro/other funder
+                                                                            // addenda that share layout keys.
+                                                                            if (
+                                                                                !funderOwnsSignNowAddendumRef(
+                                                                                    ref,
+                                                                                    nextFunderAddenda,
+                                                                                )
+                                                                            ) {
+                                                                                return "";
+                                                                            }
+                                                                            const owned =
+                                                                                nextFunderAddenda.find(
+                                                                                    (o) =>
+                                                                                        o.layoutKey ===
+                                                                                            ref ||
+                                                                                        extractSignNowTemplateId(
+                                                                                            o.templateId ||
+                                                                                                o.link,
+                                                                                        ) ===
+                                                                                            extractSignNowTemplateId(
+                                                                                                ref,
+                                                                                            ),
+                                                                                );
+                                                                            return (
+                                                                                owned?.layoutKey ||
+                                                                                owned?.templateId ||
+                                                                                ref
+                                                                            );
+                                                                        }
                                                                         return isAddendumRefValidForDocsFunder(
                                                                             ref,
                                                                             nextDocsLayoutFunderId,
@@ -9616,17 +9879,19 @@ const PDFViewerModal = ({
                                                                             : "";
                                                                     })
                                                                     .filter(Boolean);
-                                                                if (
-                                                                    kept.length !==
-                                                                    selectedAddendumOptions.filter((o) =>
-                                                                        o.startsWith("bs:"),
-                                                                    ).length
-                                                                ) {
-                                                                    void setAddendumTemplateMappings(kept);
-                                                                }
+                                                                // Always rewrite mappings on funder change so
+                                                                // another funder's linked addenda are cleared.
+                                                                void setAddendumTemplateMappings(kept);
+                                                                addendumAutoLinkKeyRef.current = "";
                                                                 if (effectiveContractId != null) {
                                                                     void persistContractStateAndFunder({
                                                                         funderName,
+                                                                    });
+                                                                    void syncAddendumTemplateForApplication({
+                                                                        silent: true,
+                                                                        docsLayoutFunderId:
+                                                                            nextDocsLayoutFunderId,
+                                                                        state: picked || selectedState,
                                                                     });
                                                                 }
                                                             }}
@@ -9690,13 +9955,19 @@ const PDFViewerModal = ({
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
                                                             {isSignNowContractUiEnabled()
-                                                                ? "Always available. Check to merge it at the bottom of the contract when sending."
+                                                                ? primaryFunderDisclosure
+                                                                    ? "From Settings → Funders for the selected funder. Check to merge when sending."
+                                                                    : "Always available. Check to merge it at the bottom of the contract when sending."
                                                                 : "Linked from the selected state and merged at the bottom of the contract."}
                                                         </p>
                                                     </div>
                                                 </div>
                                                 {isSignNowContractUiEnabled() ? (
-                                                    includeDisclosureInSend ? (
+                                                    !primaryFunderDisclosure ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200/80 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
+                                                        Not configured
+                                                    </span>
+                                                    ) : includeDisclosureInSend ? (
                                                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-emerald-200/80 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-800/50">
                                                         <CheckCircle2 className="h-3 w-3" aria-hidden />
                                                         Included
@@ -9722,6 +9993,7 @@ const PDFViewerModal = ({
 
                                             <div className="space-y-2">
                                                 {isSignNowContractUiEnabled() ? (
+                                                    primaryFunderDisclosure ? (
                                                     <>
                                                         <div className="flex items-center justify-between gap-2 rounded-lg border border-teal-200/90 bg-gradient-to-r from-teal-50/80 to-white px-2.5 py-2.5 shadow-sm dark:border-slate-600 dark:from-teal-950/25 dark:to-slate-900/80">
                                                             <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
@@ -9738,8 +10010,14 @@ const PDFViewerModal = ({
                                                                         </span>
                                                                     </div>
                                                                     <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                                                                        State Disclosure
+                                                                        {primaryFunderDisclosure.name}
                                                                     </p>
+                                                                    {funderDisclosureOptions.length > 1 ? (
+                                                                        <p className="mt-0.5 text-[10px] text-slate-500">
+                                                                            +{funderDisclosureOptions.length - 1}{" "}
+                                                                            more from funder Settings
+                                                                        </p>
+                                                                    ) : null}
                                                                 </div>
                                                             </div>
                                                             <div className="flex shrink-0 items-center gap-0.5">
@@ -9752,43 +10030,31 @@ const PDFViewerModal = ({
                                                                     disabled={
                                                                         linkingDisclosureTemplate ||
                                                                         previewingTemplateId ===
-                                                                            String(
-                                                                                linkedDisclosureMapping?.id ||
-                                                                                    "signnow_disclosure",
-                                                                            )
+                                                                            String(primaryFunderDisclosure.id)
                                                                     }
                                                                     onClick={() => {
-                                                                        const row =
-                                                                            linkedDisclosureMapping &&
-                                                                            disclosureMappingIsSignNowPermanent(
-                                                                                linkedDisclosureMapping,
-                                                                            )
-                                                                                ? linkedDisclosureMapping
-                                                                                : ({
-                                                                                      id: "signnow_disclosure",
+                                                                        const disclosureRef =
+                                                                            primaryFunderDisclosure.templateId ||
+                                                                            primaryFunderDisclosure.layoutKey;
+                                                                        const row = {
+                                                                                      id: primaryFunderDisclosure.id,
                                                                                       contractId:
                                                                                           effectiveContractId ?? 0,
-                                                                                      templateId:
-                                                                                          SIGNNOW_DISCLOSURE_LAYOUT_KEY,
+                                                                                      templateId: disclosureRef,
                                                                                       documentType: "disclosure",
                                                                                       template: {
-                                                                                          name: "State Disclosure",
+                                                                                          name: primaryFunderDisclosure.name,
                                                                                           type: "disclosure",
-                                                                                          layoutKey:
-                                                                                              SIGNNOW_DISCLOSURE_LAYOUT_KEY,
-                                                                                          templateId:
-                                                                                              SIGNNOW_DISCLOSURE_LAYOUT_KEY,
+                                                                                          layoutKey: disclosureRef,
+                                                                                          templateId: disclosureRef,
                                                                                       },
-                                                                                  } as ContractDocumentTemplateMappingRow);
+                                                                                  } as ContractDocumentTemplateMappingRow;
                                                                         void handlePreviewBoldSignTemplate(row);
                                                                     }}
                                                                 >
                                                                     {linkingDisclosureTemplate ||
                                                                     previewingTemplateId ===
-                                                                        String(
-                                                                            linkedDisclosureMapping?.id ||
-                                                                                "signnow_disclosure",
-                                                                        ) ? (
+                                                                        String(primaryFunderDisclosure.id) ? (
                                                                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                                                     ) : (
                                                                         <Eye className="h-3.5 w-3.5" />
@@ -9823,6 +10089,13 @@ const PDFViewerModal = ({
                                                             Calculate disclosure
                                                         </Button>
                                                     </>
+                                                    ) : (
+                                                        <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+                                                            {selectedFunder
+                                                                ? `No disclosure configured for ${selectedFunder}. Add one in Settings → Funders.`
+                                                                : "Select a funder to load its disclosure templates."}
+                                                        </p>
+                                                    )
                                                 ) : linkingDisclosureTemplate ? (
                                                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--brand)]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
                                                         <Loader2
@@ -9945,7 +10218,9 @@ const PDFViewerModal = ({
                                                             Addendum
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                            DocuSign addendum templates merged when you send the contract.
+                                                            {isSignNowContractUiEnabled()
+                                                                ? "SignNow addendums from Settings → Funders for the selected funder."
+                                                                : "DocuSign addendum templates merged when you send the contract."}
                                                         </p>
                                                     </div>
                                                 </div>
@@ -9959,19 +10234,59 @@ const PDFViewerModal = ({
 
                                             <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                                                 <FileSignature className="h-3 w-3 text-[var(--brand)]" aria-hidden />
-                                                DocuSign templates
+                                                {isSignNowContractUiEnabled()
+                                                    ? "SignNow templates"
+                                                    : "DocuSign templates"}
                                             </p>
                                             <div className="space-y-2">
                                                 {linkedAddendumMappings.length > 0 ? (
                                                     linkedAddendumMappings.map((row) => {
                                                         const mappingRef = getAddendumDropdownRef(row?.template);
+                                                        // Non-Nitro funders often persist BoldSignTemplate
+                                                        // rows as generic "Addendum" — recover Settings name
+                                                        // + known layout key so labels and Edit match Nitro.
+                                                        const funderMatch =
+                                                            matchFunderSignNowAddendumOption(
+                                                                row?.template,
+                                                                selectedFunderAddendumOptions,
+                                                            );
+                                                        const displayName =
+                                                            funderMatch?.name ||
+                                                            row?.template?.name ||
+                                                            row?.template?.templateId ||
+                                                            row?.templateId ||
+                                                            "Template";
+                                                        const prefillTemplateId =
+                                                            funderMatch?.templateId ||
+                                                            row?.template?.templateId ||
+                                                            row?.templateId ||
+                                                            null;
+                                                        const prefillLayoutKey =
+                                                            funderMatch?.knownLayoutKey ||
+                                                            knownAddendumLayoutKeyFromName(
+                                                                funderMatch?.name ||
+                                                                    row?.template?.name,
+                                                            ) ||
+                                                            (isSignNowTemplateIdToken(
+                                                                funderMatch?.layoutKey,
+                                                            )
+                                                                ? null
+                                                                : funderMatch?.layoutKey) ||
+                                                            (isSignNowTemplateIdToken(
+                                                                row?.template?.layoutKey,
+                                                            )
+                                                                ? null
+                                                                : row?.template?.layoutKey) ||
+                                                            null;
+                                                        const prefillName =
+                                                            funderMatch?.name ||
+                                                            row?.template?.name ||
+                                                            null;
                                                         const supportsPrefill =
                                                             hasAddendumPrefillFieldMap(
-                                                                row?.template?.templateId ??
-                                                                    row?.templateId ??
-                                                                    null,
-                                                                row?.template?.name ?? null,
-                                                                row?.template?.layoutKey ?? null,
+                                                                prefillTemplateId,
+                                                                prefillName,
+                                                                prefillLayoutKey,
                                                             );
                                                         return (
                                                             <div
@@ -9993,11 +10308,8 @@ const PDFViewerModal = ({
                                                                         </div>
                                                                         <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
                                                                             {formatDropdownLabel(
-                                                                                row?.template?.name ||
-                                                                                    row?.template?.templateId ||
-                                                                                    row?.templateId ||
-                                                                                    "Template",
-                                                                            )}
+                                                                                displayName,
+                                                                            ) || "Addendum"}
                                                                         </p>
                                                                     </div>
                                                                 </div>
@@ -10034,7 +10346,21 @@ const PDFViewerModal = ({
                                                                             title="Edit addendum prefill"
                                                                             onClick={() =>
                                                                                 setTemplateMappingPrefillEditRow(
-                                                                                    row,
+                                                                                    funderMatch
+                                                                                        ? {
+                                                                                              ...row,
+                                                                                              template: {
+                                                                                                  ...(row.template ??
+                                                                                                      {}),
+                                                                                                  name: prefillName,
+                                                                                                  layoutKey:
+                                                                                                      prefillLayoutKey,
+                                                                                                  templateId:
+                                                                                                      prefillTemplateId ??
+                                                                                                      undefined,
+                                                                                              },
+                                                                                          }
+                                                                                        : row,
                                                                                 )
                                                                             }
                                                                         >
