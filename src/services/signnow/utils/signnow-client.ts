@@ -47,6 +47,15 @@ export function isSignNowEnvelopeId(value: string | null | undefined): boolean {
   return /^[a-f0-9]{40}$/i.test(String(value || '').trim());
 }
 
+/** Extract a 40-char SignNow template/document id from a pasted URL or raw id. */
+export function extractSignNowTemplateId(linkOrId?: string | null): string {
+  const raw = String(linkOrId ?? '').trim();
+  if (!raw) return '';
+  if (/^[a-f0-9]{40}$/i.test(raw)) return raw.toLowerCase();
+  const match = raw.match(/[a-f0-9]{40}/i);
+  return match ? match[0].toLowerCase() : '';
+}
+
 export function isSignNowDailyLimitError(detail: string): boolean {
   return /daily document limit exceeded/i.test(String(detail || ''));
 }

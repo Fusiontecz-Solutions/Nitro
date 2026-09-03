@@ -225,6 +225,50 @@ function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInp
   optionalTrimmed('letterWireRoutingNumber');
   optionalTrimmed('letterWireAccountNumber');
 
+  if (body.signnowContractTemplateLink !== undefined) {
+    payload.signnowContractTemplateLink =
+      body.signnowContractTemplateLink === null || body.signnowContractTemplateLink === ''
+        ? null
+        : String(body.signnowContractTemplateLink).trim() || null;
+  }
+
+  const parseTemplateLinkList = (raw: unknown) => {
+    if (raw == null || raw === '') return [];
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  if (body.signnowAddendumTemplates !== undefined) {
+    payload.signnowAddendumTemplates = parseTemplateLinkList(
+      body.signnowAddendumTemplates,
+    ).map((item) => {
+      const row = (item || {}) as Record<string, unknown>;
+      return {
+        name: String(row.name ?? '').trim(),
+        link: String(row.link ?? row.url ?? '').trim(),
+      };
+    });
+  }
+  if (body.signnowDisclosureTemplates !== undefined) {
+    payload.signnowDisclosureTemplates = parseTemplateLinkList(
+      body.signnowDisclosureTemplates,
+    ).map((item) => {
+      const row = (item || {}) as Record<string, unknown>;
+      return {
+        name: String(row.name ?? '').trim(),
+        link: String(row.link ?? row.url ?? '').trim(),
+      };
+    });
+  }
+
   if (allowedStates !== undefined) {
     payload.allowedStates = allowedStates;
   }

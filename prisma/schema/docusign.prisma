@@ -160,6 +160,12 @@ model FunderProfile {
   letterWireCityStateZip    String?
   letterWireRoutingNumber   String?
   letterWireAccountNumber   String?
+  /// SignNow main contract template URL or template id.
+  signnowContractTemplateLink String?
+  /// SignNow addendum templates: [{ name, link }].
+  signnowAddendumTemplates    Json?
+  /// SignNow disclosure templates: [{ name, link }].
+  signnowDisclosureTemplates  Json?
   createdAt                DateTime                @default(now())
   updatedAt                DateTime                @updatedAt
   docusignAccountProfile   DocuSignAccountProfile? @relation(fields: [docusignAccountProfileId], references: [id], onDelete: SetNull)
