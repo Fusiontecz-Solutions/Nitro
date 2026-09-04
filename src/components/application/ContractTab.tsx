@@ -865,6 +865,8 @@ export default function ContractTab({
             ach: selectedAch,
             bankDetail: latestBank
                 ? {
+                      _id: latestBank._id,
+                      id: latestBank._id ?? (latestBank as { id?: string }).id,
                       bankName: latestBank.bankName,
                       accountNumber: latestBank.accountNumber,
                       routingNumber: latestBank.routingNumber,

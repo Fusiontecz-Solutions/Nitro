@@ -2660,6 +2660,8 @@ const PDFViewerModal = ({
             ach: firstRow(achListState.data),
             bankDetail: latestBank
                 ? {
+                      _id: latestBank._id,
+                      id: latestBank._id ?? (latestBank as { id?: string }).id,
                       bankName: latestBank.bankName,
                       accountNumber: latestBank.accountNumber,
                       routingNumber: latestBank.routingNumber,
@@ -4689,6 +4691,9 @@ const PDFViewerModal = ({
                     canResendMainContract(resolvedContract, sentAt);
                 const canReuseSessionDraft =
                     Boolean(sessionEnv) &&
+                    // SignNow must re-run prepare so CRM prefill is written again;
+                    // reopening the prior embed URL alone left agreement fields blank.
+                    !sendViaSignNowApi &&
                     !isResendAfterSigned &&
                     draftPreparedPackageFingerprintRef.current === sendPackageFingerprint &&
                     draftPreparedSignerRolesRef.current === signerFingerprintForSend &&

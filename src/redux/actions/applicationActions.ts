@@ -1011,7 +1011,12 @@ export const parseApplicationPdfForClientPrefill = createAsyncThunk(
             }
 
             // Use the auto-create endpoint for combined client + application creation
-            const response = await axiosPostFormData('/applications/auto-create-from-pdf', formData);
+            const response = await axiosPostFormData(
+                '/applications/auto-create-from-pdf',
+                formData,
+                { timeout: 180000 },
+            );
+            await invalidateApplicationsListCache();
             return response.data; // { success, message, data: { client, application, existingClient } }
         } catch (error: any) {
             console.error('Parse application PDF error:', error);

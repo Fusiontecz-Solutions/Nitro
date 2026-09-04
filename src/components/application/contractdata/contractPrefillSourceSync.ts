@@ -13,7 +13,11 @@ import {
     updateContractGuarantor,
     updateContractOwner,
 } from "@/redux/actions/contractActions";
-import { getBankDetails, updateBankDetail } from "@/redux/actions/bankDetailActions";
+import {
+    createBankDetail,
+    getBankDetails,
+    updateBankDetail,
+} from "@/redux/actions/bankDetailActions";
 import { axiosPost } from "@/redux/axios";
 import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
 
@@ -353,7 +357,7 @@ export function buildOfferDecisionUpsertFromPrefill(
     return payload;
 }
 
-function resolveBankDetailId(bankDetail: Record<string, unknown> | null | undefined): string | null {
+export function resolveBankDetailId(bankDetail: Record<string, unknown> | null | undefined): string | null {
     if (!bankDetail) return null;
     const id = bankDetail._id ?? bankDetail.id;
     return id != null && str(id) ? String(id) : null;
@@ -557,6 +561,78 @@ async function syncContractAchFromPrefill(
     ).unwrap();
 }
 
+export type UpsertApplicationBankDetailFromPrefillArgs = {
+    dispatch: AppDispatch;
+    applicationUuid?: string | null;
+    applicationData?: unknown;
+    prefill: Partial<BuildContractPrefillFieldsArgs>;
+    bankDetail?: Record<string, unknown> | null;
+};
+
+/**
+ * Create or update the application BankDetail row from contract / template prefill
+ * so Monthly Fee, ACH, Exhibit C, and Overview all reuse the same stored bank.
+ */
+export async function upsertApplicationBankDetailFromPrefill({
+    dispatch,
+    applicationUuid = null,
+    applicationData = null,
+    prefill,
+    bankDetail = null,
+}: UpsertApplicationBankDetailFromPrefillArgs): Promise<void> {
+    const payload = buildBankDetailUpdateFromPrefill(prefill);
+    if (!payload) return;
+
+    const appKey =
+        str(applicationUuid) ||
+        resolveApplicationUuidForUpdate(applicationData) ||
+        resolveApplicationIdForOfferDecision(applicationData);
+    let bankId = resolveBankDetailId(bankDetail);
+
+    if (!bankId && appKey) {
+        try {
+            const listed = await dispatch(getBankDetails({ application: appKey })).unwrap();
+            const rows = Array.isArray((listed as { data?: unknown })?.data)
+                ? ((listed as { data: Record<string, unknown>[] }).data)
+                : Array.isArray(listed)
+                  ? (listed as Record<string, unknown>[])
+                  : [];
+            const latest = [...rows].sort((a, b) => {
+                const ta = new Date(String(b.updatedAt ?? b.createdAt ?? 0)).getTime();
+                const tb = new Date(String(a.updatedAt ?? a.createdAt ?? 0)).getTime();
+                return ta - tb;
+            })[0];
+            bankId = resolveBankDetailId(latest ?? null);
+        } catch {
+            /* create below if still missing */
+        }
+    }
+
+    if (bankId) {
+        await dispatch(
+            updateBankDetail({
+                id: bankId,
+                data: payload,
+            }),
+        ).unwrap();
+    } else if (appKey && str(payload.accountNumber)) {
+        await dispatch(
+            createBankDetail({
+                bankName: str(payload.bankName),
+                accountNumber: str(payload.accountNumber),
+                routingNumber: str(payload.routingNumber) || undefined,
+                application: appKey,
+            }),
+        ).unwrap();
+    } else {
+        return;
+    }
+
+    if (appKey) {
+        await dispatch(getBankDetails({ application: appKey })).unwrap();
+    }
+}
+
 /**
  * Persist offer-decision, client, bank, ACH, and owner/guarantor fields edited via
  * Verify contract prefill so application screens reload the same values.
@@ -583,7 +659,6 @@ export async function syncContractPrefillToSourceRecords({
         const fromApp = app?.clientId;
         if (fromApp != null && str(fromApp)) clientId = String(fromApp);
     }
-    const bankDetailId = resolveBankDetailId(bankDetail);
 
     // Application detail sometimes omits nested client — fetch so business/owner updates still run.
     let appForClient = applicationData;
@@ -642,23 +717,15 @@ export async function syncContractPrefillToSourceRecords({
         tasks.push(syncContractAchFromPrefill(dispatch, contractAch, prefill));
     }
 
-    const bankPayload = buildBankDetailUpdateFromPrefill(prefill);
-    if (bankPayload && bankDetailId) {
-        tasks.push(
-            dispatch(
-                updateBankDetail({
-                    id: bankDetailId,
-                    data: bankPayload,
-                }),
-            )
-                .unwrap()
-                .then(() => {
-                    if (appUuid) {
-                        return dispatch(getBankDetails({ application: appUuid })).unwrap();
-                    }
-                }),
-        );
-    }
+    tasks.push(
+        upsertApplicationBankDetailFromPrefill({
+            dispatch,
+            applicationUuid: appUuid,
+            applicationData,
+            prefill,
+            bankDetail,
+        }),
+    );
 
     // Always refresh application last so Deal Review / app screens see all synced sources.
     if (appUuid) {

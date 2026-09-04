@@ -10,6 +10,7 @@ import {
     resolveBalanceTransferMerchantContext,
     resolveContractBusinessLegalNameForPrefill,
 } from "./Contract";
+import { overlayCanonicalBankOnPrefillRows } from "./sharedBankDetails";
 import {
     buildBalanceTransferSheetContractPrefillFields,
     formatFunderNameWithDealIdPrefix,
@@ -1053,21 +1054,33 @@ function buildAddendumAchWeeklyComputed(
             "authorized_business_phone",
         ),
         billingEmail: get("client_email", "merchant_contact_email"),
-        bankName: get(
-            "ach_authorization_account_holder_bank_name",
-            "authorization_client_bank_name",
-            "ach_bank_name",
-        ),
-        routingNumber: get(
-            "ach_authorization_account_holder_bank_routing_number",
-            "authorization_client_bank_routing",
-            "ach_bank_routing",
-        ),
-        accountNumber: get(
-            "ach_authorization_account_holder_bank_account_number",
-            "authorization_client_bank_account",
-            "ach_bank_account",
-        ),
+        bankName:
+            get(
+                "ach_authorization_account_holder_bank_name",
+                "authorization_client_bank_name",
+                "ach_bank_name",
+            ) ||
+            str(c.authorizationClientBankName) ||
+            str(c.achAuthorizationAccountHolderBankName) ||
+            str(c.bankName),
+        routingNumber:
+            get(
+                "ach_authorization_account_holder_bank_routing_number",
+                "authorization_client_bank_routing",
+                "ach_bank_routing",
+            ) ||
+            str(c.authorizationClientBankRouting) ||
+            str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
+            str(c.routingNumber),
+        accountNumber:
+            get(
+                "ach_authorization_account_holder_bank_account_number",
+                "authorization_client_bank_account",
+                "ach_bank_account",
+            ) ||
+            str(c.authorizationClientBankAccount) ||
+            str(c.achAuthorizationAccountHolderBankAccountNumber) ||
+            str(c.accountNumber),
         printName,
         printTitle: get("owner_print_title") || "OWNER",
     });
@@ -1121,21 +1134,33 @@ function buildAddendumExhibitCComputed(
                 "business_address",
                 "business_address_contract",
             ) || sctx.recipientAddress,
-        bankName: get(
-            "ach_authorization_account_holder_bank_name",
-            "ach_bank_name",
-            "authorization_client_bank_name",
-        ),
-        bankAccount: get(
-            "ach_authorization_account_holder_bank_account_number",
-            "ach_bank_account",
-            "authorization_client_bank_account",
-        ),
-        bankRouting: get(
-            "ach_authorization_account_holder_bank_routing_number",
-            "ach_bank_routing",
-            "authorization_client_bank_routing",
-        ),
+        bankName:
+            get(
+                "ach_authorization_account_holder_bank_name",
+                "ach_bank_name",
+                "authorization_client_bank_name",
+            ) ||
+            str(c.authorizationClientBankName) ||
+            str(c.achAuthorizationAccountHolderBankName) ||
+            str(c.bankName),
+        bankAccount:
+            get(
+                "ach_authorization_account_holder_bank_account_number",
+                "ach_bank_account",
+                "authorization_client_bank_account",
+            ) ||
+            str(c.authorizationClientBankAccount) ||
+            str(c.achAuthorizationAccountHolderBankAccountNumber) ||
+            str(c.accountNumber),
+        bankRouting:
+            get(
+                "ach_authorization_account_holder_bank_routing_number",
+                "ach_bank_routing",
+                "authorization_client_bank_routing",
+            ) ||
+            str(c.authorizationClientBankRouting) ||
+            str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
+            str(c.routingNumber),
         bankPortal: get(
             "ach_authorization_bank_portal_website",
             "ach_bank_portal",
@@ -1309,21 +1334,33 @@ function buildAddendumMonthlyFeeComputed(
         ),
         holderAddress:
             get("ach_account_holder_address", "business_address") || sctx.recipientAddress,
-        bankName: get(
-            "authorization_client_bank_name",
-            "ach_bank_name",
-            "ach_authorization_account_holder_bank_name",
-        ),
-        bankRouting: get(
-            "authorization_client_bank_routing",
-            "ach_bank_routing",
-            "ach_authorization_account_holder_bank_routing_number",
-        ),
-        bankAccount: get(
-            "authorization_client_bank_account",
-            "ach_bank_account",
-            "ach_authorization_account_holder_bank_account_number",
-        ),
+        bankName:
+            get(
+                "authorization_client_bank_name",
+                "ach_bank_name",
+                "ach_authorization_account_holder_bank_name",
+            ) ||
+            str(c.authorizationClientBankName) ||
+            str(c.achAuthorizationAccountHolderBankName) ||
+            str(c.bankName),
+        bankRouting:
+            get(
+                "authorization_client_bank_routing",
+                "ach_bank_routing",
+                "ach_authorization_account_holder_bank_routing_number",
+            ) ||
+            str(c.authorizationClientBankRouting) ||
+            str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
+            str(c.routingNumber),
+        bankAccount:
+            get(
+                "authorization_client_bank_account",
+                "ach_bank_account",
+                "ach_authorization_account_holder_bank_account_number",
+            ) ||
+            str(c.authorizationClientBankAccount) ||
+            str(c.achAuthorizationAccountHolderBankAccountNumber) ||
+            str(c.accountNumber),
         programFee: get("ach_program_fee", "monthly_fee", "program_fee"),
         paymentDate: startDate,
         firstPaymentDate: startDate,
@@ -2074,6 +2111,14 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     bankAnalyses?: unknown;
     documentType?: string | null;
 }): ContractPrefillField[] {
+    const withCanonicalBank = (rows: ContractPrefillField[]) =>
+        overlayCanonicalBankOnPrefillRows(rows, {
+            bankDetail: options.bankDetail ?? options.contractRecords?.bankDetail ?? null,
+            ach: options.ach ?? options.contractRecords?.ach ?? null,
+            contract: options.contract ?? null,
+            mainPrefillOverrides: options.mainPrefillOverrides ?? null,
+        });
+
     const effectiveContract = buildEffectiveContractForTemplatePrefill({
         contract: options.contract ?? null,
         application: options.application ?? null,
@@ -2159,7 +2204,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
             options.mainPrefillOverrides,
             options.contractRecords ?? null,
         );
-        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+        return withCanonicalBank(mergeFieldRows(all, computed, options.savedOverridesForMapping));
     }
 
     // Addendums must also win over disclosure matching for the same reason.
@@ -2177,7 +2222,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
             sctx,
             options.application ?? null,
         );
-        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+        return withCanonicalBank(mergeFieldRows(all, computed, options.savedOverridesForMapping));
     }
 
     const fromEditor = getStateDisclosureEditorFieldDefinitions(name, state, frequency);

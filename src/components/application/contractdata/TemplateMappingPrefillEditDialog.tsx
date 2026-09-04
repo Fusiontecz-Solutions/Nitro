@@ -29,6 +29,17 @@ import {
     achTabValuesToCamelPartial,
     resolveAchSavedMappingOverrides,
 } from "./achFormEditConfig";
+import { upsertApplicationBankDetailFromPrefill } from "./contractPrefillSourceSync";
+import {
+    applySharedBankDetailsToMappingBlob,
+    applySharedBankDetailsToTabValues,
+    extractSharedBankDetailsFromRecord,
+    extractSharedBankDetailsFromTabValues,
+    hasSharedBankDetails,
+    mergeSharedBankDetails,
+    sharedBankToCamelPartial,
+    syncSiblingBankFields,
+} from "./sharedBankDetails";
 import {
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
@@ -130,6 +141,7 @@ export function TemplateMappingPrefillEditDialog({
             mainPrefillOverrides: mainPrefillOverrides ?? undefined,
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
+            ach: (contractRecords?.ach as Record<string, unknown> | null) ?? null,
         });
     }, [
         row,
@@ -195,13 +207,31 @@ export function TemplateMappingPrefillEditDialog({
                     tabValues.balance_transfer_purchase_price = remainingBalance;
                 }
             }
+
+            const sharedBank = mergeSharedBankDetails(
+                extractSharedBankDetailsFromRecord(contractRecords?.bankDetail ?? null),
+                extractSharedBankDetailsFromRecord(
+                    (contractRecords?.ach as Record<string, unknown> | null) ?? null,
+                ),
+                extractSharedBankDetailsFromTabValues(tabValues),
+            );
+            if (hasSharedBankDetails(sharedBank)) {
+                Object.assign(tabValues, applySharedBankDetailsToTabValues(tabValues, sharedBank));
+            }
+
             let nextBlob: Record<string, Record<string, string>> = {
                 ...existingBlob,
                 ...documentTemplatePrefillByMappingId,
                 [row.id]: tabValues,
             };
+            if (hasSharedBankDetails(sharedBank)) {
+                nextBlob = applySharedBankDetailsToMappingBlob(nextBlob, sharedBank);
+            }
 
             const achCamel = coordinateLayout ? achTabValuesToCamelPartial(tabValues) : null;
+            const bankCamel = hasSharedBankDetails(sharedBank)
+                ? sharedBankToCamelPartial(sharedBank)
+                : null;
             if (coordinateLayout && achCamel) {
                 // Survive synthetic → real mapping id swaps.
                 nextBlob = {
@@ -217,6 +247,7 @@ export function TemplateMappingPrefillEditDialog({
             const contractPrefillOverrides: Record<string, unknown> = {
                 ...main,
                 ...(achCamel ?? {}),
+                ...(bankCamel ?? {}),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
                 ...(Object.keys(envelopeBlob).length
                     ? { [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: envelopeBlob }
@@ -224,11 +255,10 @@ export function TemplateMappingPrefillEditDialog({
             };
 
             const columnSync: Record<string, string> = {};
-            if (achCamel) {
-                for (const key of CONTRACT_PREFILL_COLUMN_SYNC_KEYS) {
-                    if (!(key in achCamel)) continue;
-                    columnSync[key] = String(achCamel[key] ?? "");
-                }
+            const columnSource = { ...(achCamel ?? {}), ...(bankCamel ?? {}) };
+            for (const key of CONTRACT_PREFILL_COLUMN_SYNC_KEYS) {
+                if (!(key in columnSource)) continue;
+                columnSync[key] = String(columnSource[key] ?? "");
             }
 
             await dispatch(
@@ -241,12 +271,13 @@ export function TemplateMappingPrefillEditDialog({
                 }),
             ).unwrap();
 
-            if (coordinateLayout && achCamel) {
+            const achPatchSource = achCamel ?? bankCamel;
+            if (achPatchSource) {
                 const achId = Number(
                     (contractRecords?.ach as { id?: unknown } | null | undefined)?.id,
                 );
                 if (Number.isFinite(achId) && achId > 0) {
-                    const achPatch = achCamelPartialToAchRecordPatch(achCamel);
+                    const achPatch = achCamelPartialToAchRecordPatch(achPatchSource);
                     const hasAchData = Object.values(achPatch).some(Boolean);
                     if (hasAchData) {
                         try {
@@ -258,6 +289,20 @@ export function TemplateMappingPrefillEditDialog({
                             console.warn("[ACH] Failed to sync Info Required ACH row:", achErr);
                         }
                     }
+                }
+            }
+
+            if (bankCamel) {
+                try {
+                    await upsertApplicationBankDetailFromPrefill({
+                        dispatch,
+                        applicationUuid,
+                        applicationData,
+                        prefill: bankCamel,
+                        bankDetail: (contractRecords?.bankDetail as Record<string, unknown> | null) ?? null,
+                    });
+                } catch (bankErr) {
+                    console.warn("[Bank] Failed to persist shared bank details:", bankErr);
                 }
             }
 
@@ -273,7 +318,9 @@ export function TemplateMappingPrefillEditDialog({
             toast.success(
                 coordinateLayout
                     ? "ACH form field values saved."
-                    : "Template mapping and DocuSign field overrides saved.",
+                    : bankCamel
+                      ? "Template mapping saved. Bank details stored for every document."
+                      : "Template mapping and DocuSign field overrides saved.",
             );
             onSaved(coordinateLayout ? tabValues : undefined);
             onOpenChange(false);
@@ -297,6 +344,7 @@ export function TemplateMappingPrefillEditDialog({
         contractRecords,
         dispatch,
         applicationUuid,
+        applicationData,
         onSaved,
         onOpenChange,
     ]);
@@ -324,8 +372,8 @@ export function TemplateMappingPrefillEditDialog({
                     <DialogTitle className="text-base">{dialogTitle}</DialogTitle>
                     {!coordinateLayout ? (
                         <p className="text-muted-foreground text-sm font-normal leading-snug">
-                            Adjust field values used when prefilling this document. Values are saved on the
-                            contract.
+                            Adjust field values used when prefilling this document. Bank name, routing, and
+                            account are stored on the application and auto-filled on every contract document.
                         </p>
                     ) : null}
                 </DialogHeader>
@@ -355,9 +403,12 @@ export function TemplateMappingPrefillEditDialog({
                                         <Input
                                             id={`tmpl-field-${r.id}`}
                                             value={fieldValues[r.id] ?? ""}
-                                            onChange={(e) =>
-                                                setFieldValues((prev) => ({ ...prev, [r.id]: e.target.value }))
-                                            }
+                                            onChange={(e) => {
+                                                const next = e.target.value;
+                                                setFieldValues((prev) =>
+                                                    syncSiblingBankFields(prev, r.id, next),
+                                                );
+                                            }}
                                         />
                                     </div>
                                 ))}

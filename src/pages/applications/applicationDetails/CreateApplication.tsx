@@ -12,15 +12,15 @@ import {
     getApplicationById,
     uploadApplicationDocuments,
     getApplicationsByClient,
+    parseApplicationPdfForClientPrefill,
 } from '@/redux/actions/applicationActions'
-import { getClients, createClient } from '@/redux/actions/clientActions'
+import { getClients } from '@/redux/actions/clientActions'
 import {
     resetCreateApplication,
     resetUpdateApplication,
     clearApplicationDetail,
     resetUploadDocuments,
 } from '@/redux/slices/applicationSlice'
-import { resetCreateClient } from '@/redux/slices/clientSlice'
 import { toast } from 'react-toastify'
 import {
     ArrowLeft,
@@ -89,14 +89,6 @@ interface ApplicationFormValues {
 const DEFAULT_APPLICATION_PRIORITY = 'High'
 const DEFAULT_APPLICATION_TYPE = 'New'
 const REFINANCE_APPLICATION_TYPE = 'Refinance'
-const emptyClientAddress = {
-    address1: '',
-    address2: '',
-    city: '',
-    state: '',
-    zipCode: '',
-}
-
 // Validation Schema
 const applicationSchema = yup.object({
     createNewClient: yup.boolean().default(false),
@@ -225,7 +217,9 @@ const CreateApplication = () => {
     const dispatch = useDispatch<AppDispatch>()
     const { applicationId } = useParams<{ applicationId: string }>()
     const fileInputRef = useRef<HTMLInputElement>(null)
+    const autoClientPdfInputRef = useRef<HTMLInputElement>(null)
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
+    const [isAutoCreatingClient, setIsAutoCreatingClient] = useState(false)
     const [isDragOver, setIsDragOver] = useState(false)
     const [clientOptions, setClientOptions] = useState<SelectOption[]>([])
     const [isFormReset, setIsFormReset] = useState(false)
@@ -238,8 +232,6 @@ const CreateApplication = () => {
         useState<ClientDealForRefinance | null>(null)
     const [clientDeals, setClientDeals] = useState<ClientDealForRefinance[]>([])
     const [clientDealsLoading, setClientDealsLoading] = useState(false)
-    const [creatingClient, setCreatingClient] = useState(false)
-
     // Determine if we're in edit mode
     const isEditMode = !!applicationId
 
@@ -473,6 +465,75 @@ const CreateApplication = () => {
         setUploadedFiles((prev) => [...prev, ...newFiles])
     }, [])
 
+    const handleAutoCreateClientFromPDF = useCallback(
+        async (file: File | null) => {
+            if (!file) {
+                toast.error('Please select a PDF file first')
+                return
+            }
+            if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+                toast.error('Please select a PDF file')
+                return
+            }
+
+            setIsAutoCreatingClient(true)
+            try {
+                const result = (await dispatch(
+                    parseApplicationPdfForClientPrefill(file) as any,
+                )) as {
+                    payload?: any
+                    meta: { requestStatus: 'fulfilled' | 'rejected' }
+                }
+
+                if (result.meta.requestStatus !== 'fulfilled') {
+                    toast.error(
+                        (result as any)?.payload ||
+                            'Failed to parse application PDF',
+                    )
+                    return
+                }
+
+                const rawData = result.payload?.data
+                if (!rawData || !rawData.application || !rawData.client) {
+                    toast.error('Failed to auto-create client/application from PDF')
+                    return
+                }
+
+                const application = rawData.application as {
+                    _id?: string
+                    id?: string
+                }
+                const mongoId = application?._id || application?.id
+                if (!mongoId) {
+                    toast.error('Application was created but could not determine its id.')
+                    return
+                }
+
+                if (rawData.existingClient) {
+                    toast.success(
+                        'Client already exists. Application has been created for the existing client.',
+                    )
+                } else {
+                    toast.success('Client created successfully and application generated.')
+                }
+
+                if (autoClientPdfInputRef.current) {
+                    autoClientPdfInputRef.current.value = ''
+                }
+
+                navigate('/applications', {
+                    state: { refreshApplicationsList: true },
+                })
+            } catch (error) {
+                console.error('[AutoCreate] unexpected error:', error)
+                toast.error('Failed to parse application PDF')
+            } finally {
+                setIsAutoCreatingClient(false)
+            }
+        },
+        [dispatch, navigate],
+    )
+
     // Handle drag events
     const handleDragOver = useCallback((e: React.DragEvent) => {
         e.preventDefault()
@@ -578,7 +639,7 @@ const CreateApplication = () => {
             return
         }
 
-        let clientId = String(data.client ?? '').trim()
+        const clientId = String(data.client ?? '').trim()
         if (createNewClient) {
             const businessName = String(data.newBusinessName ?? '').trim()
             const ownerFirstName = String(data.newOwnerFirstName ?? '').trim()
@@ -586,71 +647,23 @@ const CreateApplication = () => {
                 toast.error('Business name and owner first name are required to create a client.')
                 return
             }
-            setCreatingClient(true)
-            try {
-                const created = await dispatch(
-                    createClient({
-                        business: {
-                            name: businessName,
-                            email: '',
-                            number: String(data.newBusinessPhone ?? '').trim(),
-                            website: '',
-                            incorporationDate: '',
-                            incorporationState: '',
-                            businessEntityType: '',
-                            einNumber: String(data.newEin ?? '').trim(),
-                            monthlyRevenue: '',
-                            address: { ...emptyClientAddress },
-                        },
-                        owners: [
-                            {
-                                firstName: ownerFirstName,
-                                middleName: '',
-                                lastName: String(data.newOwnerLastName ?? '').trim(),
-                                email: '',
-                                mobileNumber: '',
-                                dateOfBirth: '',
-                                ssn: '',
-                                ficoScore: '',
-                                ownershipStartDate: '',
-                                ownershipPercentage: '',
-                                address: { ...emptyClientAddress },
-                            },
-                        ],
-                    }),
-                ).unwrap()
-                const createdClient = (created as { data?: { _id?: string; id?: string } })?.data ?? created
-                clientId = String(
-                    (createdClient as { _id?: string; id?: string })?._id ??
-                        (createdClient as { id?: string })?.id ??
-                        '',
-                ).trim()
-                if (!clientId) {
-                    toast.error('Client was created but its id could not be determined.')
-                    return
-                }
-                dispatch(resetCreateClient())
-                void dispatch(getClients({ limit: 100 }))
-            } catch (err: unknown) {
-                const message =
-                    typeof err === 'string'
-                        ? err
-                        : (err as { message?: string })?.message || 'Failed to create client'
-                toast.error(String(message))
-                return
-            } finally {
-                setCreatingClient(false)
-            }
-        }
-
-        if (!clientId) {
+        } else if (!clientId) {
             toast.error('Client is required.')
             return
         }
 
         const existingType = String(applicationData?.type ?? '').trim()
         const payload = {
-            client: clientId,
+            ...(createNewClient
+                ? {
+                      createNewClient: true,
+                      newBusinessName: String(data.newBusinessName ?? '').trim(),
+                      newOwnerFirstName: String(data.newOwnerFirstName ?? '').trim(),
+                      newOwnerLastName: String(data.newOwnerLastName ?? '').trim(),
+                      newEin: String(data.newEin ?? '').trim(),
+                      newBusinessPhone: String(data.newBusinessPhone ?? '').trim(),
+                  }
+                : { client: clientId }),
             loanAmount: (() => {
                 if (!data.loanAmount || !String(data.loanAmount).trim()) return null
                 const n = parseNumberUS(data.loanAmount)
@@ -737,6 +750,44 @@ const CreateApplication = () => {
                     ? 'border-[#374151] bg-[#1a1b1e] hover:border-[#5AACEA]/50'
                     : 'border-[#E5E7EB] bg-white hover:border-[var(--brand)]/50 hover:bg-slate-50',
         )
+
+    const autoCreateFromPdfControl = !isEditMode ? (
+        <div className="flex min-w-0 flex-col gap-1.5 lg:shrink-0">
+            <Label
+                aria-hidden
+                tabIndex={-1}
+                className={cn(
+                    'pointer-events-none hidden select-none lg:flex lg:opacity-0',
+                    fieldLabelClass,
+                )}
+            >
+                Auto-Create
+            </Label>
+            <div className="flex shrink-0">
+                <input
+                    ref={autoClientPdfInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={(e) =>
+                        handleAutoCreateClientFromPDF(e.target.files?.[0] || null)
+                    }
+                />
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="h-10 whitespace-nowrap px-4 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
+                    onClick={() => autoClientPdfInputRef.current?.click()}
+                    disabled={isAutoCreatingClient}
+                >
+                    {isAutoCreatingClient && (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                    Auto-Create from PDF
+                </Button>
+            </div>
+        </div>
+    ) : null
 
     return (
         <div className="min-h-[calc(100vh-64px)] w-full bg-background p-4 md:p-6 lg:p-8">
@@ -1003,10 +1054,11 @@ const CreateApplication = () => {
                                                     </p>
                                                 )}
                                             </div>
+                                            {autoCreateFromPdfControl}
                                         </div>
                                     </div>
                                 ) : (
-                                <div className="grid grid-cols-1 gap-4 px-6 sm:grid-cols-2">
+                                <div className="grid grid-cols-1 gap-4 px-6 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
                                     <div className="flex min-w-0 flex-col gap-1.5">
                                         <Label className={fieldLabelClass}>
                                             Client <span className="text-red-500">*</span>
@@ -1070,6 +1122,7 @@ const CreateApplication = () => {
                                             </p>
                                         )}
                                     </div>
+                                    {autoCreateFromPdfControl}
                                 </div>
                                 )}
 
@@ -1341,7 +1394,7 @@ const CreateApplication = () => {
                             <Button
                                 type="submit"
                                 className="px-4 shadow-[0px_0px_0px_1px_var(--brand)] py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
-                                loading={isLoading || creatingClient}
+                                loading={isLoading}
                                 disabled={
                                     !isValid ||
                                     (isRefinanceType && !selectedRefinanceDeal)
