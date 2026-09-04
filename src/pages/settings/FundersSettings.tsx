@@ -6,33 +6,24 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   createFunderProfile,
   deleteFunderProfile,
-  fetchContractCcDefaults,
-  fetchDocuSignAccountOptions,
   fetchFunderProfiles,
   updateFunderProfile,
-  type FunderProfileFiles,
 } from "@/redux/actions/integrationSettingsActions";
 import type { FunderProfile, FunderProfileInput } from "@/types/integrationSettingsTypes";
 import FunderProfileModal from "./FunderProfileModal";
-import {
-  getTenantDefaultContractCcEmail,
-  setTenantDefaultContractCcEmail,
-} from "@/components/application/docusignCcList";
 
-function DetailRow({ label, value }: { label: string; value?: string | null | boolean }) {
+function DetailRow({ label, value }: { label: string; value?: string | null | number }) {
   if (value === undefined || value === null || value === "") return null;
-  const display = typeof value === "boolean" ? (value ? "Yes" : "No") : String(value);
   return (
     <div className="text-sm">
       <span className="text-muted-foreground">{label}: </span>
-      <span className="font-medium break-all">{display}</span>
+      <span className="font-medium break-all">{String(value)}</span>
     </div>
   );
 }
 
 export default function FundersSettings() {
   const [rows, setRows] = useState<FunderProfile[]>([]);
-  const [docusignOptions, setDocusignOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<FunderProfile | null>(null);
@@ -41,19 +32,7 @@ export default function FundersSettings() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [funders, accounts, ccDefaults] = await Promise.all([
-        fetchFunderProfiles(null, { activeOnly: false }),
-        fetchDocuSignAccountOptions(),
-        fetchContractCcDefaults().catch(() => null),
-      ]);
-      if (ccDefaults) {
-        setTenantDefaultContractCcEmail(
-          ccDefaults.resolvedCcEmail ?? ccDefaults.defaultCcEmail,
-          ccDefaults.ccEmails,
-        );
-      }
-      setRows(funders);
-      setDocusignOptions(accounts);
+      setRows(await fetchFunderProfiles(null, { activeOnly: false }));
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to load funders");
     } finally {
@@ -65,14 +44,14 @@ export default function FundersSettings() {
     void load();
   }, [load]);
 
-  const handleSave = async (payload: FunderProfileInput, files?: FunderProfileFiles | null) => {
+  const handleSave = async (payload: FunderProfileInput) => {
     setSaving(true);
     try {
       if (editing) {
-        await updateFunderProfile(editing.id, payload, files);
+        await updateFunderProfile(editing.id, payload);
         toast.success("Funder updated");
       } else {
-        await createFunderProfile(payload, files);
+        await createFunderProfile(payload);
         toast.success("Funder added");
       }
       setModalOpen(false);
@@ -100,9 +79,8 @@ export default function FundersSettings() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground max-w-2xl">
-          Configure funders shown on Create Contract. Link each funder to its DocuSign account,
-          upload a contract PDF (or use the default), set allowed states when a funder should
-          only appear for certain states, or excluded states to hide a funder in specific states only.
+          Configure funders shown on Create Contract. Paste SignNow template links for the main
+          contract, addendums, and disclosures.
         </p>
         <Button
           className="gap-2 bg-[image:var(--brand-gradient)] hover:opacity-90 shrink-0"
@@ -121,22 +99,17 @@ export default function FundersSettings() {
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading funders…
         </div>
+      ) : rows.length === 0 ? (
+        <p className="rounded-md border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
+          No funders yet. Add one and paste its SignNow template links.
+        </p>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {rows.map((row) => (
             <Card key={row.id} className={!row.isActive ? "opacity-70" : undefined}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-3">
-                    {row.logoUrl ? (
-                      <img
-                        src={row.logoUrl}
-                        alt={`${row.name} logo`}
-                        className="h-10 w-16 shrink-0 rounded border bg-white object-contain p-1"
-                      />
-                    ) : null}
-                    <CardTitle className="truncate text-base">{row.name}</CardTitle>
-                  </div>
+                  <CardTitle className="truncate text-base">{row.name}</CardTitle>
                   <div className="flex gap-1">
                     <Button
                       variant="ghost"
@@ -164,30 +137,19 @@ export default function FundersSettings() {
                 </p>
               </CardHeader>
               <CardContent className="space-y-1.5">
-                <DetailRow label="DocuSign account" value={row.docusignAccountName || "—"} />
                 <DetailRow
-                  label="Default CC"
-                  value={
-                    row.docusignDefaultCcEmail?.trim() ||
-                    row.defaultCcEmail?.trim() ||
-                    getTenantDefaultContractCcEmail() ||
-                    "—"
-                  }
-                />
-                <DetailRow label="Deal ID prefix" value={row.dealIdPrefix} />
-                <DetailRow label="Contract PDF" value={row.contractPdfFileName} />
-                <DetailRow
-                  label="Allowed states"
-                  value={
-                    row.allowedStates?.length ? row.allowedStates.join(", ") : "All states"
-                  }
+                  label="Contract link"
+                  value={row.signnowContractTemplateLink || "—"}
                 />
                 <DetailRow
-                  label="Excluded states"
-                  value={
-                    row.excludedStates?.length ? row.excludedStates.join(", ") : "None"
-                  }
+                  label="Addendums"
+                  value={row.signnowAddendumTemplates?.length ?? 0}
                 />
+                <DetailRow
+                  label="Disclosures"
+                  value={row.signnowDisclosureTemplates?.length ?? 0}
+                />
+                <DetailRow label="Default CC" value={row.defaultCcEmail?.trim() || "—"} />
               </CardContent>
             </Card>
           ))}
@@ -198,8 +160,6 @@ export default function FundersSettings() {
         open={modalOpen}
         saving={saving}
         initial={editing}
-        allFunders={rows}
-        docusignOptions={docusignOptions}
         onClose={() => {
           setModalOpen(false);
           setEditing(null);

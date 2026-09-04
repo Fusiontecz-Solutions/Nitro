@@ -76,8 +76,11 @@ function blobLooksLikePdf(blob: Blob): boolean {
 }
 
 const SIGNNOW_AGREEMENT_CACHE_TTL_MS = 30 * 60 * 1000;
-let cachedSignNowAgreementBlob: { blob: Blob; at: number } | null = null;
-let inflightSignNowAgreement: Promise<{ url: string; name: string } | null> | null = null;
+const cachedSignNowAgreementByKey = new Map<string, { blob: Blob; at: number }>();
+const inflightSignNowAgreementByKey = new Map<
+    string,
+    Promise<{ url: string; name: string } | null>
+>();
 let lastSignNowAgreementError = "";
 
 export function getLastSignNowAgreementError(): string {
@@ -115,31 +118,52 @@ async function readAxiosErrorMessage(error: unknown): Promise<string> {
     return String((error as { message?: unknown })?.message || "").trim();
 }
 
-function signNowAgreementPreviewFromBlob(blob: Blob): { url: string; name: string } {
+function signNowAgreementPreviewFromBlob(
+    blob: Blob,
+    previewName?: string | null,
+): { url: string; name: string } {
     return {
         url: URL.createObjectURL(new Blob([blob], { type: "application/pdf" })),
-        name: NITRO_ADVANCE_CONTRACT_PREVIEW_NAME,
+        name:
+            String(previewName || "").trim() ||
+            NITRO_ADVANCE_CONTRACT_PREVIEW_NAME,
     };
 }
 
-/** Blank Nitro Advance Agreement from SignNow (does not require a CRM-uploaded PDF). */
-export async function fetchSignNowAgreementPdf(): Promise<{
+/** Blank Agreement PDF from SignNow for a specific funder/template. */
+export async function fetchSignNowAgreementPdf(options?: {
+    funderProfileId?: string | null;
+    signnowTemplateId?: string | null;
+    previewName?: string | null;
+}): Promise<{
     url: string;
     name: string;
 } | null> {
-    const now = Date.now();
-    if (
-        cachedSignNowAgreementBlob &&
-        now - cachedSignNowAgreementBlob.at < SIGNNOW_AGREEMENT_CACHE_TTL_MS
-    ) {
-        return signNowAgreementPreviewFromBlob(cachedSignNowAgreementBlob.blob);
+    const funderProfileId = String(options?.funderProfileId ?? "").trim();
+    const signnowTemplateId = String(options?.signnowTemplateId ?? "").trim();
+    const previewName = String(options?.previewName ?? "").trim();
+    if (!funderProfileId && !signnowTemplateId) {
+        lastSignNowAgreementError =
+            "Select a funder with a SignNow contract template in Settings → Funders.";
+        return null;
     }
-    if (inflightSignNowAgreement) return inflightSignNowAgreement;
+    const cacheKey = `${funderProfileId || "_"}:${signnowTemplateId || "_"}`;
+    const now = Date.now();
+    const cached = cachedSignNowAgreementByKey.get(cacheKey);
+    if (cached && now - cached.at < SIGNNOW_AGREEMENT_CACHE_TTL_MS) {
+        return signNowAgreementPreviewFromBlob(cached.blob, previewName);
+    }
+    const inflight = inflightSignNowAgreementByKey.get(cacheKey);
+    if (inflight) return inflight;
 
-    inflightSignNowAgreement = (async () => {
+    const pending = (async () => {
         try {
             const response = await axiosGet("/docusign/template/signnow-contract/download", {
                 responseType: "blob",
+                params: {
+                    ...(funderProfileId ? { funderProfileId } : {}),
+                    ...(signnowTemplateId ? { signnowTemplateId } : {}),
+                },
             });
             const blob =
                 response?.data instanceof Blob
@@ -148,25 +172,32 @@ export async function fetchSignNowAgreementPdf(): Promise<{
             if (!blobLooksLikePdf(blob) || !(await blobHasPdfMagic(blob))) {
                 lastSignNowAgreementError =
                     (await readBlobErrorMessage(blob)) ||
-                    "SignNow did not return the Nitro Advance agreement PDF.";
+                    "SignNow did not return the agreement PDF for this funder.";
                 return null;
             }
             lastSignNowAgreementError = "";
             const pdfBlob = new Blob([blob], { type: "application/pdf" });
-            cachedSignNowAgreementBlob = { blob: pdfBlob, at: Date.now() };
-            return signNowAgreementPreviewFromBlob(pdfBlob);
+            cachedSignNowAgreementByKey.set(cacheKey, { blob: pdfBlob, at: Date.now() });
+            return signNowAgreementPreviewFromBlob(
+                pdfBlob,
+                previewName ||
+                    (funderProfileId
+                        ? `Agreement.pdf`
+                        : NITRO_ADVANCE_CONTRACT_PREVIEW_NAME),
+            );
         } catch (error) {
             lastSignNowAgreementError =
                 (await readAxiosErrorMessage(error)) ||
-                "Could not load the Nitro Advance agreement from SignNow.";
+                "Could not load the agreement from SignNow for this funder.";
             console.error("Failed to fetch SignNow Agreement PDF:", lastSignNowAgreementError);
             return null;
         } finally {
-            inflightSignNowAgreement = null;
+            inflightSignNowAgreementByKey.delete(cacheKey);
         }
     })();
 
-    return inflightSignNowAgreement;
+    inflightSignNowAgreementByKey.set(cacheKey, pending);
+    return pending;
 }
 
 export type MainContractTemplatePreview = {
@@ -263,19 +294,40 @@ export async function fetchMainContractTemplatePreview(options: {
         isSignNowContractUiEnabled() &&
         !isTexasFundingGroupFunderProfile(profile ?? { name: funderName });
 
-    // Live SignNow agreement is the Nitro Advance template that Review/Send uses.
-    // Keep the CRM label as Nitro Advance even if SignNow still names the DGT PCM_CONTRACT.
+    // Live SignNow agreement comes from the selected funder's Settings → Funders link.
     if (useSignNowAgreement) {
-        const signNow = await fetchSignNowAgreementPdf();
+        const funderContractTemplateId = String(
+            profile?.signnowContractTemplateLink ?? "",
+        ).trim();
+        if (!persistedProfileId && !funderContractTemplateId) {
+            lastSignNowAgreementError =
+                "Select a funder with a SignNow contract template in Settings → Funders.";
+            return null;
+        }
+        if (persistedProfileId && !funderContractTemplateId) {
+            lastSignNowAgreementError = funderName
+                ? `No SignNow contract template is configured for ${funderName}.`
+                : "No SignNow contract template is configured for this funder.";
+            return null;
+        }
+        const previewName = funderName
+            ? `Agreement - ${funderName}.pdf`
+            : options.previewName || NITRO_ADVANCE_CONTRACT_PREVIEW_NAME;
+        const signNow = await fetchSignNowAgreementPdf({
+            funderProfileId: persistedProfileId,
+            signnowTemplateId: funderContractTemplateId,
+            previewName,
+        });
         if (signNow?.url) {
             return {
                 url: signNow.url,
-                name: NITRO_ADVANCE_CONTRACT_PREVIEW_NAME,
+                name: sanitizeContractPreviewName(signNow.name || previewName),
                 layoutKey,
                 source: "signnow",
             };
         }
         // SignNow is the live contract source — do not fall through to DocuSign REST.
+        return null;
     }
 
     const usePlatformContractTemplateLatest = usePlatformContract;

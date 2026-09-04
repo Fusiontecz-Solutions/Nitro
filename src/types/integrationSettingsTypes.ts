@@ -16,6 +16,11 @@ export type DocuSignAccountProfile = {
   funderCount?: number;
 };
 
+export type SignNowTemplateLinkItem = {
+  name: string;
+  link: string;
+};
+
 export type FunderProfile = {
   id: string;
   name: string;
@@ -61,6 +66,9 @@ export type FunderProfile = {
   letterWireCityStateZip?: string | null;
   letterWireRoutingNumber?: string | null;
   letterWireAccountNumber?: string | null;
+  signnowContractTemplateLink?: string | null;
+  signnowAddendumTemplates?: SignNowTemplateLinkItem[];
+  signnowDisclosureTemplates?: SignNowTemplateLinkItem[];
 };
 
 export type DocuSignAccountProfileInput = {
@@ -113,4 +121,7 @@ export type FunderProfileInput = {
   letterWireCityStateZip?: string | null;
   letterWireRoutingNumber?: string | null;
   letterWireAccountNumber?: string | null;
+  signnowContractTemplateLink?: string | null;
+  signnowAddendumTemplates?: SignNowTemplateLinkItem[];
+  signnowDisclosureTemplates?: SignNowTemplateLinkItem[];
 };

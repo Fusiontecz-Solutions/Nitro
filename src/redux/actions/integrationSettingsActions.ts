@@ -91,6 +91,24 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   if (payload.letterWireAccountNumber !== undefined) {
     formData.append("letterWireAccountNumber", payload.letterWireAccountNumber || "");
   }
+  if (payload.signnowContractTemplateLink !== undefined) {
+    formData.append(
+      "signnowContractTemplateLink",
+      payload.signnowContractTemplateLink || "",
+    );
+  }
+  if (payload.signnowAddendumTemplates !== undefined) {
+    formData.append(
+      "signnowAddendumTemplates",
+      JSON.stringify(payload.signnowAddendumTemplates ?? []),
+    );
+  }
+  if (payload.signnowDisclosureTemplates !== undefined) {
+    formData.append(
+      "signnowDisclosureTemplates",
+      JSON.stringify(payload.signnowDisclosureTemplates ?? []),
+    );
+  }
 }
 
 export async function fetchFunderProfiles(
