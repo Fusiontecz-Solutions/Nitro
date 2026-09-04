@@ -813,6 +813,7 @@ export const sendEnvelope = async (req: Request, res: Response) => {
         ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
         title: title ? String(title) : undefined,
         prefillFields: Array.isArray(req.body?.prefillFields) ? req.body.prefillFields : undefined,
+        funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
         requestId: requestId || undefined,
       });
       return res.json(result);

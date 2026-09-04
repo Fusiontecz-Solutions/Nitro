@@ -6,6 +6,12 @@ export const CONTRACT_ENVELOPE_LENDER_NAME = String(
   process.env.DOCUSIGN_EMAIL_LENDER_NAME || EMAIL_BRAND_DISPLAY_NAME,
 ).trim();
 
+export type ContractEnvelopeEmailContext = {
+  businessName: string | null;
+  offerAmount: number | string | null;
+  funderName: string | null;
+};
+
 function parseContractOfferAmount(value: unknown): number | null {
   if (value == null || value === '') return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -28,7 +34,10 @@ export function formatContractOfferAmountForSubject(
   }).format(amount);
 }
 
-/** Contract envelope subject / PDF name: {FunderName}: BusinessName $12,345.67 */
+/**
+ * Contract / SignNow invite subject:
+ * Selected Funder Business name $Amount
+ */
 export function buildContractEnvelopeEmailSubject(
   businessName: string,
   offerAmount?: number | string | null,
@@ -36,9 +45,9 @@ export function buildContractEnvelopeEmailSubject(
 ): string {
   const business = String(businessName || '').trim() || 'Business';
   const amount = formatContractOfferAmountForSubject(offerAmount);
-  const lender =
+  const selectedFunder =
     String(funderName || '').trim() || CONTRACT_ENVELOPE_LENDER_NAME;
-  return `${lender}: ${business} ${amount}`;
+  return `${selectedFunder} ${business} ${amount}`;
 }
 
 /** ACH / standalone subject / PDF name: {FunderName}: BusinessName - ACH */
@@ -51,6 +60,51 @@ export function buildAchFormEnvelopeEmailSubject(
   const lender =
     String(funderName || '').trim() || CONTRACT_ENVELOPE_LENDER_NAME;
   return `${lender}: ${business} - ACH`;
+}
+
+export function extractContractEmailContextFromPrefill(
+  fields?:
+    | Array<{ id?: string; value?: unknown }>
+    | Record<string, unknown>
+    | null,
+): ContractEnvelopeEmailContext {
+  const map = new Map<string, string>();
+  if (Array.isArray(fields)) {
+    for (const field of fields) {
+      const id = String(field?.id || '').trim().toLowerCase();
+      const value = String(field?.value ?? '').trim();
+      if (id && value) map.set(id, value);
+    }
+  } else if (fields && typeof fields === 'object') {
+    for (const [key, raw] of Object.entries(fields)) {
+      const id = String(key || '').trim().toLowerCase();
+      const value = String(raw ?? '').trim();
+      if (id && value) map.set(id, value);
+    }
+  }
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = map.get(key.toLowerCase());
+      if (value) return value;
+    }
+    return '';
+  };
+  return {
+    businessName:
+      pick(
+        'client_legal_name',
+        'client_name',
+        'legal_name',
+        'business_legal_name',
+        'merchant_legal_name',
+        'doing_business_as',
+        'dba',
+      ) || null,
+    offerAmount:
+      pick('approved_amount', 'approvedamount', 'approvedAmount') || null,
+    funderName:
+      pick('funder_name', 'disclosure_funder_name', 'lender_name') || null,
+  };
 }
 
 export function buildContractEnvelopePdfFilename(subject: string): string {

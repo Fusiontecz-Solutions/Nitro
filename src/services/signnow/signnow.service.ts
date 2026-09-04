@@ -16,7 +16,10 @@ import {
   linkStandalonePackageEnvelopeToContract,
   updateStandalonePackageDocuSignStatus,
 } from '../docusign/utils/standalone-package-docusign';
-import { buildContractEnvelopeEmailSubject } from '../../utils/contractEnvelopeEmailSubject';
+import {
+  buildContractEnvelopeEmailSubject,
+  extractContractEmailContextFromPrefill,
+} from '../../utils/contractEnvelopeEmailSubject';
 import {
   createSignNowApiClient,
   extractSignNowTemplateId,
@@ -44,6 +47,7 @@ import {
   isMonthlyFeeDocumentName,
   resolveSignNowPrefillValue,
   shouldSkipSignNowPrefill,
+  signNowPrefillOptionsForDocument,
 } from './utils/signnow-field-map';
 import {
   applySignNowFieldStyle,
@@ -960,9 +964,6 @@ export class SignNowService {
     const mark = (label: string, extra?: Record<string, unknown>) => {
       console.info('[SignNow] timing', { label, ms: Date.now() - startedAt, ...extra });
     };
-    const groupName =
-      String(options.title || '').trim() ||
-      buildContractEnvelopeEmailSubject(signers[0].name, null, options.funderName);
     const includeMainContract = options.sendPackage?.includeMainContract !== false;
     const funderProfileId = String(options.funderProfileId || '').trim();
     const funderRow = funderProfileId
@@ -977,6 +978,14 @@ export class SignNowService {
           },
         })
       : null;
+    const fromPrefill = extractContractEmailContextFromPrefill(options.prefillFields);
+    const groupName =
+      String(options.title || '').trim() ||
+      buildContractEnvelopeEmailSubject(
+        fromPrefill.businessName || signers[0].name,
+        fromPrefill.offerAmount,
+        funderRow?.name || options.funderName || fromPrefill.funderName,
+      );
     const funderContractTemplateId = extractSignNowTemplateId(
       funderRow?.signnowContractTemplateLink,
     );
@@ -1992,6 +2001,105 @@ export class SignNowService {
     return Buffer.from(await merged.save());
   }
 
+  private async resolveInviteEmailSubject(options: {
+    title?: string;
+    applicationId?: string;
+    prefillFields?: PrefillField[];
+    funderName?: string | null;
+    fallbackGroupName?: string;
+  }): Promise<string> {
+    const fromPrefill = extractContractEmailContextFromPrefill(options.prefillFields);
+    let businessName = fromPrefill.businessName;
+    let offerAmount: number | string | null = null;
+    let selectedFunder =
+      String(options.funderName || '').trim() || fromPrefill.funderName || '';
+
+    const appId = String(options.applicationId || '').trim();
+    if (appId) {
+      try {
+        const [contract, app] = await Promise.all([
+          prisma.contract.findFirst({
+            where: { applicationId: appId },
+            orderBy: { createdAt: 'desc' },
+            select: {
+              legalName: true,
+              clientName: true,
+              doingBusinessAs: true,
+              approvedAmount: true,
+              funderName: true,
+            },
+          }),
+          prisma.application.findUnique({
+            where: { id: appId },
+            select: {
+              dealDisplayName: true,
+              client: { select: { businessName: true } },
+              OfferDecision: { select: { offer: true, decision: true } },
+              termsOffers: {
+                orderBy: { createdAt: 'desc' },
+                take: 1,
+                select: { approvedAmount: true },
+              },
+            },
+          }),
+        ]);
+        if (!businessName) {
+          businessName =
+            String(
+              contract?.legalName ||
+                contract?.doingBusinessAs ||
+                contract?.clientName ||
+                '',
+            ).trim() ||
+            String(app?.client?.businessName || app?.dealDisplayName || '').trim() ||
+            null;
+        }
+        if (!selectedFunder) {
+          selectedFunder = String(contract?.funderName || '').trim();
+        }
+        const decisionNorm = String(app?.OfferDecision?.decision ?? '')
+          .trim()
+          .toLowerCase();
+        const fromOfferDecision =
+          decisionNorm !== 'declined' && app?.OfferDecision?.offer != null
+            ? Number(app.OfferDecision.offer)
+            : null;
+        const fromTerms =
+          app?.termsOffers?.[0]?.approvedAmount != null
+            ? Number(app.termsOffers[0].approvedAmount)
+            : null;
+        const fromContractApproved =
+          contract?.approvedAmount != null ? Number(contract.approvedAmount) : null;
+        offerAmount =
+          fromOfferDecision != null && Number.isFinite(fromOfferDecision)
+            ? fromOfferDecision
+            : fromTerms != null && Number.isFinite(fromTerms)
+              ? fromTerms
+              : fromContractApproved != null && Number.isFinite(fromContractApproved)
+                ? fromContractApproved
+                : null;
+      } catch {
+        /* fall through to title / group name */
+      }
+    }
+    if (offerAmount == null) {
+      offerAmount = fromPrefill.offerAmount;
+    }
+
+    if (businessName || selectedFunder || offerAmount != null) {
+      return buildContractEnvelopeEmailSubject(
+        businessName || 'Business',
+        offerAmount,
+        selectedFunder,
+      );
+    }
+    return (
+      String(options.title || '').trim() ||
+      String(options.fallbackGroupName || '').trim() ||
+      'Nitro Advance Contract'
+    );
+  }
+
   async sendEnvelope(
     groupId: string,
     options: {
@@ -2000,6 +2108,7 @@ export class SignNowService {
       ccEmails?: string[];
       applicationId?: string;
       prefillFields?: PrefillField[];
+      funderName?: string | null;
       requestId?: string;
     },
   ) {
@@ -2091,9 +2200,14 @@ export class SignNowService {
     if (!signers.length) {
       throw new BadRequestException('At least one signer with an email is required to send');
     }
-    const subject =
-      String(options.title || '').trim() ||
-      String(groupRes.data?.group_name || 'Nitro Advance Contract');
+    const subject = await this.resolveInviteEmailSubject({
+      title: options.title,
+      applicationId: options.applicationId,
+      prefillFields: options.prefillFields,
+      funderName: options.funderName,
+      fallbackGroupName: groupRes.data?.group_name,
+    });
+    console.info('[SignNow] invite email subject', { groupId: id, subject });
     const hydrated = await this.hydrateDocumentRoles(client, documents);
     const embeddedRes = await client.get(`/v2/document-groups/${id}/embedded-invites`, {
       validateStatus: () => true,
@@ -2509,13 +2623,12 @@ export class SignNowService {
           docRes.status < 400
             ? this.collectPrefillableFieldNames(docRes.data)
             : [];
-        const monthlyFee = isMonthlyFeeDocumentName(
+        const documentName =
           doc.document_name ||
-            doc.name ||
-            docRes.data?.document_name ||
-            docRes.data?.name,
-        );
-        const prefillOpts = monthlyFee ? { documentKind: 'monthly_fee' as const } : undefined;
+          doc.name ||
+          docRes.data?.document_name ||
+          docRes.data?.name;
+        const prefillOpts = signNowPrefillOptionsForDocument(documentName, fieldNames);
         const fields = fieldNames.length
           ? buildSignNowDocumentPrefillTexts(fieldNames, values, prefillOpts)
           : fallbackFields;
@@ -2566,10 +2679,10 @@ export class SignNowService {
       ? { status: 200, data: cachedRemote }
       : await client.get(`/document/${documentId}`, { validateStatus: () => true });
     const fieldNames = this.collectPrefillableFieldNames(docRes.data);
-    const monthlyFee = isMonthlyFeeDocumentName(
+    const prefillOpts = signNowPrefillOptionsForDocument(
       docRes.data?.document_name || docRes.data?.name,
+      fieldNames,
     );
-    const prefillOpts = monthlyFee ? { documentKind: 'monthly_fee' as const } : undefined;
     const mergedValues = {
       ...collectExistingSignNowFieldValues(docRes.data),
       ...values,
@@ -2638,7 +2751,7 @@ export class SignNowService {
       remote?.document_name || remote?.name || remote?.original_filename || '',
     ).trim();
     const monthlyFee = isMonthlyFeeDocumentName(documentName);
-    const prefillOpts = monthlyFee ? { documentKind: 'monthly_fee' as const } : undefined;
+    const prefillOpts = signNowPrefillOptionsForDocument(documentName);
     const pageCount = signNowDocumentPageCount(remote);
     const shortDoc = pageCount > 0 && pageCount <= 2;
     let sourceFields = collectSignNowPutFields(remote, {
@@ -3814,7 +3927,7 @@ export class SignNowService {
     groupId: string,
     documents: SignNowDocumentRef[],
     signers: Array<{ name: string; email: string; roleName: string }>,
-    _subject: string,
+    subject: string,
     ccEmails?: string[],
     fulfilledRoles: string[] = [],
     meta: { requestId?: string; attemptNumber?: number } = {},
@@ -4028,9 +4141,18 @@ export class SignNowService {
       const crmSteps = active.filter((step) => isCrmInviteStep(step));
       // Merchant first so SignNow emails them immediately. Owner is omitted
       // unless SignNow requires that role, in which case it is added last.
+      const inviteSubject =
+        String(subject || '').trim() || 'Nitro Advance Contract';
       return [...merchants, ...crmSteps].map((step, idx) => ({
         order: idx + 1,
-        invite_emails: [{ email: step.email, expiration_days: 30, reminder: 0 }],
+        invite_emails: [
+          {
+            email: step.email,
+            expiration_days: 30,
+            reminder: 0,
+            subject: inviteSubject,
+          },
+        ],
         invite_actions: step.actions.map((action) => ({
           ...action,
           email: step.email,

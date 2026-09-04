@@ -20,6 +20,8 @@ const ALIASES: Record<string, string[]> = {
   merchant_contact_email: ['client_email', 'billing_email', 'guarantor_email'],
   merchant_contact_phone: ['client_phone', 'guarantor_phone', 'billing_phone'],
   remittance_start_date: ['agreement_date'],
+  purchase_percent: ['specified_percentage', 'purchase_percent'],
+  specified_percentage: ['purchase_percent'],
   doing_business_as: ['security_doing_business_as', 'ach_authorization_account_holder_dba', 'dba'],
   client_legal_name: ['legal_name', 'business_legal_name'],
   entity_type: ['type_of_entity', 'form_of_business_entity'],
@@ -123,16 +125,21 @@ const ALIASES: Record<string, string[]> = {
   ref_personal2_relationship: ['ach_authorization_reference_relationship2'],
   ref_biz2_company: [
     'ach_authorization_reference_relationship4',
-    'ach_authorization_reference_name4',
+    'ref_biz2_company',
   ],
-  ref_biz2_contact: ['ach_authorization_reference_name4', 'ach_authorization_reference_name3'],
+  ref_biz2_contact: ['ach_authorization_reference_name4', 'ref_biz2_contact'],
   ref_biz2_phone: [
     'ach_authorization_reference_number4',
-    'ach_authorization_reference_number3',
+    'ref_biz2_phone',
   ],
-  landlord_phone: ['ach_authorization_reference_number3', 'client_phone'],
-  emergency_phone: ['client_phone', 'guarantor_phone'],
-  emergency_email: ['client_email', 'merchant_contact_email'],
+  landlord_company: ['landlord_company'],
+  landlord_contact: ['landlord_contact'],
+  landlord_phone: ['landlord_phone'],
+  emergency_name: ['emergency_name'],
+  emergency_relationship: ['emergency_relationship'],
+  emergency_phone: ['emergency_phone'],
+  emergency_email: ['emergency_email'],
+  signature_date_s2: ['signature_date', 'agreement_date', 'disclosure_date'],
   email_address: ['client_email', 'merchant_contact_email', 'guarantor_email'],
   primary_phone: ['client_phone', 'guarantor_phone', 'merchant_contact_phone'],
   primary_phone_number: ['client_phone', 'guarantor_phone'],
@@ -453,6 +460,12 @@ const ALIASES: Record<string, string[]> = {
     'guarantor_print_title',
     'owner_title',
   ],
+  'text field 32': ['owner2_print_title', 'owner2_title'],
+  'date and time 1': ['agreement_date', 'signature_date', 'disclosure_date'],
+  bussiness_reference1_contact_nummber: [
+    'ref_biz1_contact',
+    'ach_authorization_reference_name3',
+  ],
   // Nitro Advance agreement page-1 money table (default SignNow widget names).
   'text field 34': [
     'total_fees',
@@ -506,9 +519,72 @@ export function isMonthlyFeeDocumentName(value: unknown): boolean {
   return n.includes('monthly') && n.includes('fee');
 }
 
+export function isObsidianDocumentName(value: unknown): boolean {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .includes('obsidian');
+}
+
+export type SignNowPrefillDocumentKind = 'monthly_fee' | 'obsidian_agreement';
+
+export type SignNowPrefillOptions = { documentKind?: SignNowPrefillDocumentKind };
+
+/**
+ * Obsidian Agreement 1 still uses default "Text Field N" names on the page-1
+ * money row and a few later leftovers. Coordinates match Nitro's named columns:
+ * purchase_price / purchased_amount / purchase_percent / remittance / total_fees / net.
+ * Tiny widgets are the printed `$` / `%` prefixes sitting beside those amounts.
+ * Only apply when the document is the Obsidian agreement — Nitro TF 22 is a
+ * business-reference contact, not a dollar sign.
+ */
+export const OBSIDIAN_AGREEMENT_TEXT_FIELDS: Record<
+  number,
+  { crmId?: string; literal?: string }
+> = {
+  15: { literal: '$' },
+  16: { literal: '$' },
+  17: { literal: '%' },
+  18: { literal: '$' },
+  21: { literal: '$' },
+  22: { literal: '$' },
+  23: { crmId: 'purchase_price' },
+  24: { crmId: 'purchased_amount' },
+  25: { crmId: 'purchase_percent' },
+  27: { crmId: 'total_fees' },
+  32: { crmId: 'owner2_print_title' },
+  88: { crmId: 'ref_personal1_name' },
+  91: { crmId: 'ref_personal2_phone' },
+};
+
+export function signNowPrefillDocumentKind(
+  documentName?: unknown,
+  fieldNames?: string[],
+): SignNowPrefillDocumentKind | undefined {
+  if (isMonthlyFeeDocumentName(documentName)) return 'monthly_fee';
+  if (isObsidianDocumentName(documentName)) return 'obsidian_agreement';
+  const names = (fieldNames || []).map((n) => String(n || '').trim().toLowerCase());
+  if (
+    names.includes('text field 23') &&
+    names.includes('text field 27') &&
+    names.some((n) => n.startsWith('authorization_client_name'))
+  ) {
+    return 'obsidian_agreement';
+  }
+  return undefined;
+}
+
+export function signNowPrefillOptionsForDocument(
+  documentName?: unknown,
+  fieldNames?: string[],
+): SignNowPrefillOptions | undefined {
+  const documentKind = signNowPrefillDocumentKind(documentName, fieldNames);
+  return documentKind ? { documentKind } : undefined;
+}
+
 export function shouldSkipSignNowPrefill(
   fieldName: string,
-  options?: { documentKind?: 'monthly_fee' },
+  options?: SignNowPrefillOptions,
 ): boolean {
   const n = String(fieldName || '').trim();
   if (!n) return true;
@@ -518,12 +594,18 @@ export function shouldSkipSignNowPrefill(
     if (options?.documentKind === 'monthly_fee') {
       return !Number.isFinite(num) || num < 1 || num > MONTHLY_FEE_TEXT_FIELD_CRM_IDS.length;
     }
+    if (options?.documentKind === 'obsidian_agreement' && OBSIDIAN_AGREEMENT_TEXT_FIELDS[num]) {
+      return false;
+    }
     const aliasKey = `text field ${num}`;
     if (ALIASES[aliasKey]) return false;
     // 1–9 are the CA disclosure page-1 money/APR slots on the SignNow template.
     if (!Number.isFinite(num) || num < 1 || num > 9) return true;
   }
-  if (/^date and time\s*\d+$/i.test(n)) return true;
+  if (/^date and time\s*\d+$/i.test(n)) {
+    const aliasKey = n.toLowerCase().replace(/\s+/g, ' ').trim();
+    return !ALIASES[aliasKey];
+  }
   const lower = n.toLowerCase();
   // Signature/initial widgets — keep `signature_date` (disclosure text tab).
   if (lower.startsWith('signature_') && !lower.includes('date')) return true;
@@ -535,8 +617,8 @@ export function canonicalizeSignNowFieldName(fieldName: string): string {
   const lower = String(fieldName || '')
     .trim()
     .toLowerCase();
-  // Disclosure templates use spaced "Text Field N" aliases — keep spaces there.
-  if (/^text field\s*\d+/i.test(lower)) {
+  // Disclosure / leftover widgets keep spaced default names for alias lookup.
+  if (/^text field\s*\d+/i.test(lower) || /^date and time\s*\d+/i.test(lower)) {
     return lower.replace(/\s+/g, ' ').trim();
   }
   return (
@@ -754,6 +836,9 @@ function resolveForcedContractMoneyField(
       ) || 'OWNER'
     );
   }
+  if (canon === 'text field 32' || canon === 'text_field_32') {
+    return first('owner2_print_title', 'owner2_title') || 'OWNER';
+  }
 
   if (
     canon === 'owner_print_title' ||
@@ -866,13 +951,13 @@ function isSignNowOwner1FallbackParty2Field(fieldName: string): boolean {
   const n = String(fieldName || '').toLowerCase();
   // Last contract page contact slots exist only on `_s2` in the SignNow template.
   if (!/_p26_s2/.test(n)) return false;
-  return /client_email|client_phone|client_name/.test(n);
+  return /client_email|client_phone|client_name|signature_date/.test(n);
 }
 
 export function resolveSignNowPrefillValue(
   fieldName: string,
   prefill: Record<string, string>,
-  options?: { documentKind?: 'monthly_fee' },
+  options?: SignNowPrefillOptions,
 ): string {
   if (shouldSkipSignNowPrefill(fieldName, options)) return '';
   if (
@@ -895,6 +980,26 @@ export function resolveSignNowPrefillValue(
         const fromMonthly = resolveSignNowPrefillValue(crmId, prefill);
         if (fromMonthly) return fromMonthly;
       }
+    }
+  }
+
+  if (options?.documentKind === 'obsidian_agreement') {
+    const numbered = raw.match(/^text field\s*(\d+)$/i);
+    if (numbered) {
+      const spec = OBSIDIAN_AGREEMENT_TEXT_FIELDS[Number(numbered[1])];
+      if (spec?.literal) return spec.literal;
+      if (spec?.crmId) {
+        const fromObsidian = resolveSignNowPrefillValue(spec.crmId, prefill);
+        if (fromObsidian) return fromObsidian;
+      }
+    }
+    // Template mislabeled personal-1 phone as personal-2; TF 91 is the real #2.
+    if (canon === 'ref_personal2_phone') {
+      const personal1 =
+        mapGet(map, 'ref_personal1_phone') ||
+        mapGet(map, 'ach_authorization_reference_number1') ||
+        mapGet(map, 'ach_authorization_reference_number_1');
+      if (personal1) return personal1;
     }
   }
 
@@ -929,7 +1034,9 @@ export function resolveSignNowPrefillValue(
     raw,
     lower,
     canon,
-    ...(options?.documentKind === 'monthly_fee' && /^text field\s*\d+$/i.test(raw)
+    ...((options?.documentKind === 'monthly_fee' ||
+      options?.documentKind === 'obsidian_agreement') &&
+    /^text field\s*\d+$/i.test(raw)
       ? []
       : ALIASES[canon] || []),
   ];
@@ -949,8 +1056,11 @@ export function resolveSignNowPrefillValue(
 export function buildSignNowDocumentPrefillTexts(
   fieldNames: string[],
   prefill: Record<string, string>,
-  options?: { documentKind?: 'monthly_fee' },
+  options?: SignNowPrefillOptions,
 ): Array<{ field_name: string; prefilled_text: string }> {
+  options = options?.documentKind
+    ? options
+    : signNowPrefillOptionsForDocument(undefined, fieldNames) || options;
   const out: Array<{ field_name: string; prefilled_text: string }> = [];
   const seen = new Set<string>();
   for (const name of fieldNames) {

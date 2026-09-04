@@ -4,6 +4,7 @@ import {
   formatSignNowPrefillValue,
   resolveSignNowPrefillValue,
   shouldSkipSignNowPrefill,
+  signNowPrefillDocumentKind,
 } from './signnow-field-map';
 
 describe('signnow-field-map', () => {
@@ -86,6 +87,16 @@ describe('signnow-field-map', () => {
       ach_authorization_reference_name3: 'Biz Contact',
       ach_authorization_reference_number3: '5556667777',
       ach_authorization_reference_relationship3: 'Acme Supplies',
+      ach_authorization_reference_name4: 'Biz Two Contact',
+      ach_authorization_reference_number4: '5558889999',
+      ach_authorization_reference_relationship4: 'Beta Corp',
+      landlord_company: 'Main Street LLC',
+      landlord_contact: 'Alex Landlord',
+      landlord_phone: '5550001111',
+      emergency_name: 'Sam Emergency',
+      emergency_relationship: 'Spouse',
+      emergency_phone: '5552223333',
+      emergency_email: 'sam@example.com',
     };
     expect(resolveSignNowPrefillValue('guarantor_name_p22', prefill)).toBe('Test User');
     expect(resolveSignNowPrefillValue('ref_personal1_name_p22', prefill)).toBe('Ref One');
@@ -100,6 +111,28 @@ describe('signnow-field-map', () => {
       'Biz Contact',
     );
     expect(resolveSignNowPrefillValue('ref_biz1_phone_p22', prefill)).toBe('5556667777');
+    expect(resolveSignNowPrefillValue('ref_biz2_company_p22', prefill)).toBe('Beta Corp');
+    expect(resolveSignNowPrefillValue('ref_biz2_contact_p22', prefill)).toBe(
+      'Biz Two Contact',
+    );
+    expect(resolveSignNowPrefillValue('ref_biz2_phone_p22', prefill)).toBe('5558889999');
+    expect(resolveSignNowPrefillValue('landlord_company_p22', prefill)).toBe(
+      'Main Street LLC',
+    );
+    expect(resolveSignNowPrefillValue('landlord_contact_p22', prefill)).toBe(
+      'Alex Landlord',
+    );
+    expect(resolveSignNowPrefillValue('landlord_phone_p22', prefill)).toBe('5550001111');
+    expect(resolveSignNowPrefillValue('emergency_name_p22', prefill)).toBe(
+      'Sam Emergency',
+    );
+    expect(resolveSignNowPrefillValue('emergency_relationship_p22', prefill)).toBe(
+      'Spouse',
+    );
+    expect(resolveSignNowPrefillValue('emergency_phone_p22', prefill)).toBe('5552223333');
+    expect(resolveSignNowPrefillValue('emergency_email_p22', prefill)).toBe(
+      'sam@example.com',
+    );
   });
 
   it('maps ACH portal username, password, and combined security Q/A', () => {
@@ -395,6 +428,7 @@ describe('signnow-field-map', () => {
       client_name: 'Test User',
       client_email: 'puneet04@fusiontecz.com',
       client_phone: '08827688283',
+      agreement_date: '09/04/2026',
     };
     expect(resolveSignNowPrefillValue('client_name_p26_s2', oneSigner)).toBe(
       'Test User',
@@ -407,6 +441,9 @@ describe('signnow-field-map', () => {
     );
     expect(resolveSignNowPrefillValue('client_phone2_p26_s2', oneSigner)).toBe(
       '08827688283',
+    );
+    expect(resolveSignNowPrefillValue('signature_date_p26_s2', oneSigner)).toBe(
+      '09/04/2026',
     );
     expect(resolveSignNowPrefillValue('client_email_p13_s2', oneSigner)).toBe('');
   });
@@ -445,5 +482,62 @@ describe('signnow-field-map', () => {
     expect(resolveSignNowPrefillValue('ach_bank_name_p1', prefill)).toBe(
       'Chase',
     );
+  });
+
+  it('maps Obsidian Agreement leftover Text Field N slots from page-1 coordinates', () => {
+    const opts = { documentKind: 'obsidian_agreement' as const };
+    const prefill = {
+      purchase_price: '10000.00',
+      purchased_amount: '14900.00',
+      specified_percentage: '12.00',
+      net_to_merchant: '8975.00',
+      agreement_date: '09/04/2026',
+      ach_authorization_reference_name1: 'Pat Ref',
+      ach_authorization_reference_number1: '5551112222',
+      ach_authorization_reference_number2: '5553334444',
+      ach_authorization_reference_name3: 'Biz Contact',
+    };
+    expect(shouldSkipSignNowPrefill('Text Field 23', opts)).toBe(false);
+    expect(shouldSkipSignNowPrefill('Text Field 23')).toBe(true);
+    expect(resolveSignNowPrefillValue('Text Field 15', prefill, opts)).toBe('$');
+    expect(resolveSignNowPrefillValue('Text Field 17', prefill, opts)).toBe('%');
+    expect(resolveSignNowPrefillValue('Text Field 23', prefill, opts)).toBe(
+      '10000.00',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 24', prefill, opts)).toBe(
+      '14900.00',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 25', prefill, opts)).toBe(
+      '12.00',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 27', prefill, opts)).toBe(
+      '1,025.00',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 22', prefill, opts)).toBe('$');
+    expect(resolveSignNowPrefillValue('Text Field 22', prefill)).toBe(
+      'Biz Contact',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 88', prefill, opts)).toBe(
+      'Pat Ref',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 91', prefill, opts)).toBe(
+      '5553334444',
+    );
+    expect(
+      resolveSignNowPrefillValue('ref_personal2_phone_p22', prefill, opts),
+    ).toBe('5551112222');
+    expect(
+      resolveSignNowPrefillValue(
+        'Bussiness_Reference1_contact_nummber',
+        prefill,
+      ),
+    ).toBe('Biz Contact');
+    expect(resolveSignNowPrefillValue('Date and Time 1', prefill)).toBe(
+      '09/04/2026',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 32', {})).toBe('OWNER');
+    expect(
+      signNowPrefillDocumentKind('Obsidian Capital Group - Agreement 1'),
+    ).toBe('obsidian_agreement');
   });
 });
