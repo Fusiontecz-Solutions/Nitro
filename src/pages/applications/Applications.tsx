@@ -15,6 +15,7 @@ import {
   TrendingUp,
   CheckCircle2,
   FileInput,
+  Send,
 } from "lucide-react";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import { motion } from "framer-motion";
@@ -119,6 +120,7 @@ import { formatFinalApprovalSourceLabel } from "@/lib/finalApprovalSource";
 import FinalApprovalSourceBadge from "@/components/application/FinalApprovalSourceBadge";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
 import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
+import SendLetterModal from "@/pages/letterGenerator/SendLetterModal";
 
 type ApplicationsSummaryCard = {
   label: string;
@@ -139,7 +141,13 @@ function getApplicationDealIdDisplay(app: Application): string {
 
 const APPLICATIONS_VIEW_MODE_STORAGE_KEY = "applicationsListViewMode";
 
-const Applications = () => {
+export type ApplicationsProps = {
+  /** Letter generator: same table as Applications; row opens send-letter flow. */
+  mode?: "default" | "letterGenerator";
+};
+
+const Applications = ({ mode = "default" }: ApplicationsProps) => {
+  const isLetterGeneratorMode = mode === "letterGenerator";
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -216,6 +224,8 @@ const Applications = () => {
   const [claimBusyAppId, setClaimBusyAppId] = useState<string | null>(null);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [permanentDeleteLoading, setPermanentDeleteLoading] = useState(false);
+  const [sendLetterApplication, setSendLetterApplication] =
+    useState<Application | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [isExtractingPDF, setIsExtractingPDF] = useState(false);
   const [showAlreadyExistsDialog, setShowAlreadyExistsDialog] = useState(false);
@@ -1071,6 +1081,39 @@ const Applications = () => {
           },
         ] satisfies ColumnDef<Application>[])
         : []),
+      ...(isLetterGeneratorMode
+        ? ([
+            {
+              id: "sendLetter",
+              size: 140,
+              header: () => (
+                <span className="font-medium text-foreground uppercase tracking-wide">
+                  Action
+                </span>
+              ),
+              cell: ({ row }) => (
+                <div
+                  className="flex justify-start"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="success"
+                    className="h-8 gap-1.5 cursor-pointer"
+                    onClick={() => setSendLetterApplication(row.original)}
+                  >
+                    <Send className="size-3.5" />
+                    Send Letter
+                  </Button>
+                </div>
+              ),
+              enableSorting: false,
+              enableHiding: false,
+            },
+          ] satisfies ColumnDef<Application>[])
+        : []),
       {
         id: "view",
         size: 72,
@@ -1125,6 +1168,7 @@ const Applications = () => {
     restoreLoading,
     permanentDeleteLoading,
     dispatch,
+    isLetterGeneratorMode,
   ]);
 
   const totalItems = apiPagination?.total ?? applications?.length ?? 0;
@@ -1640,20 +1684,26 @@ const Applications = () => {
         >
           <div>
             <h1 className="text-[1.3rem] font-semibold text-foreground uppercase">
-              {contractWorkflowTitle
+              {isLetterGeneratorMode
+                ? "Letter Generator"
+                : contractWorkflowTitle
                 ? contractWorkflowTitle
                 : showUwDealPoolUi
                 ? "Create Offer applications"
                 : "Add Application"}
             </h1>
-            {contractWorkflowHint ? (
+            {isLetterGeneratorMode ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Choose a deal and send a Zero Balance or Payoff letter.
+              </p>
+            ) : contractWorkflowHint ? (
               <p className="mt-1 text-sm text-muted-foreground">
                 {contractWorkflowHint}
               </p>
             ) : null}
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-2 ${isLetterGeneratorMode ? "hidden" : ""}`}>
               <input
                 ref={pdfInputRef}
                 type="file"
@@ -1672,7 +1722,7 @@ const Applications = () => {
                 </Button>
               )}
             </div>
-            {canCreateNewApplication && (
+            {!isLetterGeneratorMode && canCreateNewApplication && (
               <Button
                 className="px-4 py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                 onClick={() => navigate("/create-applications")}
@@ -1686,7 +1736,7 @@ const Applications = () => {
       )}
 
       {/* Stats — same contract-stage cards as OperationsDashboard */}
-      {!isOperationsDashboardView && (
+      {!isOperationsDashboardView && !isLetterGeneratorMode && (
         <section className="mt-6 mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {summaryCards.map((card) => {
             const countNum = card.value;
@@ -1758,7 +1808,7 @@ const Applications = () => {
               <ArrowLeft className="size-4" />
             </Button>
           )}
-          {!isOperationsDashboardView && showUwDealPoolUi ? (
+          {!isLetterGeneratorMode && !isOperationsDashboardView && showUwDealPoolUi ? (
             <div
               className="flex rounded-md border border-border overflow-hidden bg-muted/40 dark:bg-muted/25 shrink-0 p-0.5 gap-0.5"
               role="tablist"
@@ -1905,7 +1955,7 @@ const Applications = () => {
             }`}
         >
           <span className="font-semibold text-[1rem] text-foreground font-roboto inline-flex items-center gap-2 uppercase tracking-wide">
-            Applications
+            {isLetterGeneratorMode ? "Deals" : "Applications"}
             {isRefreshing ? (
               <Loader2
                 className="size-4 animate-spin text-muted-foreground shrink-0"
@@ -2000,7 +2050,11 @@ const Applications = () => {
                     ? "Try a different search term"
                     : "Try adjusting your search or filter criteria"
                 }
-                onRowClick={(row) => handleNavigateToApplication(row.original)}
+                onRowClick={(row) =>
+                  isLetterGeneratorMode
+                    ? setSendLetterApplication(row.original)
+                    : handleNavigateToApplication(row.original)
+                }
                 onRowMouseEnter={(row) =>
                   handlePrefetchApplicationDetail(row.original)
                 }
@@ -2072,11 +2126,19 @@ const Applications = () => {
                       role="group"
                       tabIndex={0}
                       onMouseEnter={() => handlePrefetchApplicationDetail(app)}
-                      onClick={() => handleNavigateToApplication(app)}
+                      onClick={() =>
+                        isLetterGeneratorMode
+                          ? setSendLetterApplication(app)
+                          : handleNavigateToApplication(app)
+                      }
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          handleNavigateToApplication(app);
+                          if (isLetterGeneratorMode) {
+                            setSendLetterApplication(app);
+                          } else {
+                            handleNavigateToApplication(app);
+                          }
                         }
                       }}
                       aria-label={`Open application ${getApplicationDealIdDisplay(app)} (${app._id})`}
@@ -2120,6 +2182,18 @@ const Applications = () => {
                           onClick={(e) => e.stopPropagation()}
                           onKeyDown={(e) => e.stopPropagation()}
                         >
+                          {isLetterGeneratorMode ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="success"
+                              className="h-8 gap-1.5 cursor-pointer"
+                              onClick={() => setSendLetterApplication(app)}
+                            >
+                              <Send className="size-3.5" />
+                              Send
+                            </Button>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => {
@@ -2349,6 +2423,14 @@ const Applications = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SendLetterModal
+        open={Boolean(sendLetterApplication)}
+        application={sendLetterApplication}
+        onOpenChange={(open) => {
+          if (!open) setSendLetterApplication(null);
+        }}
+      />
     </div>
   );
 };

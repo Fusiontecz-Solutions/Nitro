@@ -44,7 +44,11 @@ import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
+    applySharedDbaToFieldValues,
+    applySharedDbaToMappingBlob,
+    extractOnlineBankingFromTabValues,
     getDocumentTemplatePrefillFieldRowsForEditor,
+    resolveSharedDbaValue,
     usesCoordinateLayoutTemplate,
 } from "./documentTemplateMappingPrefill";
 
@@ -165,6 +169,7 @@ export function TemplateMappingPrefillEditDialog({
             contractRecords,
             agreementDate,
             mainPrefillOverrides: mainPrefillOverrides ?? undefined,
+            siblingPrefillByMappingId: documentTemplatePrefillByMappingId,
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
             ach: (contractRecords?.ach as Record<string, unknown> | null) ?? null,
@@ -191,7 +196,18 @@ export function TemplateMappingPrefillEditDialog({
         if (hydratedSessionKeyRef.current === sessionKey) return;
         if (editorRows.length === 0) return;
         hydratedSessionKeyRef.current = sessionKey;
-        setFieldValues(Object.fromEntries(editorRows.map((r) => [r.id, r.value ?? ""])));
+        const fromRows = Object.fromEntries(editorRows.map((r) => [r.id, r.value ?? ""]));
+        const sharedDba = resolveSharedDbaValue({
+            mainPrefill: mainPrefillOverrides ?? null,
+            contract: resolvedContract,
+            mappingBlobs: documentTemplatePrefillByMappingId,
+        });
+        setFieldValues(
+            applySharedDbaToFieldValues(fromRows, sharedDba, {
+                emptyOnly: true,
+                knownIds: editorRows.map((r) => String(r.id)),
+            }),
+        );
     }, [open, row?.id, editorRows]);
 
     const handleSave = useCallback(async () => {
@@ -247,11 +263,20 @@ export function TemplateMappingPrefillEditDialog({
                 Object.assign(tabValues, applySharedBankDetailsToTabValues(tabValues, sharedBank));
             }
 
+            const sharedDba = resolveSharedDbaValue({
+                mainPrefill: { ...(mainPrefillOverrides ?? {}), ...tabValues },
+                contract: resolvedContract,
+                mappingBlobs: { ...existingBlob, ...documentTemplatePrefillByMappingId, [row.id]: tabValues },
+            });
             let nextBlob: Record<string, Record<string, string>> = {
                 ...existingBlob,
                 ...documentTemplatePrefillByMappingId,
                 [row.id]: tabValues,
             };
+            if (sharedDba) {
+                nextBlob = applySharedDbaToMappingBlob(nextBlob, sharedDba);
+                nextBlob[row.id] = applySharedDbaToFieldValues(tabValues, sharedDba);
+            }
             if (hasSharedBankDetails(sharedBank)) {
                 nextBlob = applySharedBankDetailsToMappingBlob(nextBlob, sharedBank);
             }
@@ -276,6 +301,13 @@ export function TemplateMappingPrefillEditDialog({
                 ...main,
                 ...(achCamel ?? {}),
                 ...(bankCamel ?? {}),
+                ...(sharedDba
+                    ? {
+                          doingBusinessAs: sharedDba,
+                          achAuthorizationAccountHolderDba: sharedDba,
+                      }
+                    : {}),
+                ...extractOnlineBankingFromTabValues(tabValues),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
                 ...(Object.keys(envelopeBlob).length
                     ? { [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: envelopeBlob }
@@ -385,6 +417,7 @@ export function TemplateMappingPrefillEditDialog({
         coordinateLayout,
         fieldValues,
         documentTemplatePrefillByMappingId,
+        mainPrefillOverrides,
         resolvedContract,
         contractRecords,
         dispatch,

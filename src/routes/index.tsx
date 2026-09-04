@@ -167,6 +167,7 @@ const Routes: RouteObject[] = [
             { path: 'create-position', element: <CreatePosition /> },
             { path: 'edit-position/:positionId', element: <CreatePosition /> },
             { path: 'view-position/:positionId', element: <CreatePosition /> },
+            { path: 'letter-generator', element: <Applications mode="letterGenerator" /> },
             { path: 'user-setting', element: <UserSetting /> },
             { path: 'notifications', element: <NotificationDashboard /> },
             { path: 'settings', element: <SettingsAliasRedirect /> },

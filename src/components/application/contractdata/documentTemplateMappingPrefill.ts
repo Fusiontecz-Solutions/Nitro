@@ -470,6 +470,175 @@ function str(v: unknown): string {
     return String(v ?? "").trim();
 }
 
+/** DBA / D/B/A / Account Holder DBA — same merchant value on every addendum. */
+export const SHARED_DBA_FIELD_ID_RE = /(?:^|_)dba(?:_|$)|doing_business|account_holder_dba|holder_dba|merchant_dba/i;
+
+export function isSharedDbaFieldId(id: string): boolean {
+    return SHARED_DBA_FIELD_ID_RE.test(String(id ?? ""));
+}
+
+export function resolveSharedDbaValue(sources: {
+    mainPrefill?: Record<string, unknown> | null;
+    contract?: Record<string, unknown> | null;
+    mappingBlobs?: Record<string, Record<string, string>> | null;
+}): string {
+    const main = sources.mainPrefill ?? {};
+    const contract = sources.contract ?? {};
+    const fromRecord = (row: Record<string, unknown>) =>
+        str(row.doingBusinessAs) ||
+        str(row.achAuthorizationAccountHolderDba) ||
+        str(row.securityDoingBusinessAs) ||
+        str(row.doing_business_as) ||
+        str(row.doing_business_as_p1) ||
+        str(row.ach_authorization_account_holder_dba) ||
+        str(row.ach_account_holder_dba) ||
+        str(row.ach_account_holder_dba_p1) ||
+        str(row.dba);
+    const fromMain = fromRecord(main);
+    if (fromMain) return fromMain;
+    const fromContract = fromRecord(contract);
+    if (fromContract) return fromContract;
+    const nested = contract.contractPrefillOverrides;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+        const fromOverrides = fromRecord(nested as Record<string, unknown>);
+        if (fromOverrides) return fromOverrides;
+    }
+    for (const row of Object.values(sources.mappingBlobs ?? {})) {
+        if (!row || typeof row !== "object") continue;
+        for (const [id, raw] of Object.entries(row)) {
+            if (!isSharedDbaFieldId(id)) continue;
+            const value = str(raw);
+            if (value) return value;
+        }
+    }
+    return "";
+}
+
+export function applySharedDbaToFieldValues(
+    fields: Record<string, string>,
+    dba: string,
+    options?: { emptyOnly?: boolean; knownIds?: string[] },
+): Record<string, string> {
+    if (!dba) return fields;
+    const next = { ...fields };
+    for (const id of options?.knownIds ?? []) {
+        if (!(id in next)) next[id] = "";
+    }
+    const emptyOnly = options?.emptyOnly === true;
+    for (const id of Object.keys(next)) {
+        if (!isSharedDbaFieldId(id)) continue;
+        if (emptyOnly && str(next[id])) continue;
+        next[id] = dba;
+    }
+    return next;
+}
+
+export function applySharedDbaToMappingBlob(
+    blob: Record<string, Record<string, string>>,
+    dba: string,
+): Record<string, Record<string, string>> {
+    if (!dba) return blob;
+    const out: Record<string, Record<string, string>> = {};
+    for (const [mapId, row] of Object.entries(blob)) {
+        out[mapId] = applySharedDbaToFieldValues({ ...(row ?? {}) }, dba, { emptyOnly: true });
+    }
+    return out;
+}
+
+const ONLINE_BANKING_TAB_TO_MAIN: Array<{
+    mainKey: keyof BuildContractPrefillFieldsArgs;
+    match: (id: string) => boolean;
+    splitInto?: keyof BuildContractPrefillFieldsArgs;
+}> = [
+    {
+        mainKey: "achAuthorizationBankPortalWebsite",
+        match: (id) => /bank_portal|bankportal|portal_website|portal_url/i.test(id),
+    },
+    {
+        mainKey: "achAuthorizationUsername",
+        match: (id) => /(?:^|_)(?:ach_)?username(?:_|$)/i.test(id) || /^bankUsername$/i.test(id),
+    },
+    {
+        mainKey: "achAuthorizationPassword",
+        match: (id) => /(?:^|_)(?:ach_)?password(?:_|$)/i.test(id) || /^bankPassword$/i.test(id),
+    },
+    {
+        mainKey: "achAuthorizationSecurityQuestion1",
+        match: (id) => /security_q(?:uestion)?_?1|securityQa1/i.test(id),
+        splitInto: "achAuthorizationSecurityAnswer1",
+    },
+    {
+        mainKey: "achAuthorizationSecurityQuestion2",
+        match: (id) => /security_q(?:uestion)?_?2|securityQa2/i.test(id),
+        splitInto: "achAuthorizationSecurityAnswer2",
+    },
+];
+
+function splitCombinedQa(value: string): { question: string; answer: string } {
+    const trimmed = str(value);
+    const parts = trimmed.split(/\s*\/\s*/).map((p) => p.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+        return { question: parts[0] ?? "", answer: parts.slice(1).join(" / ") };
+    }
+    return { question: trimmed, answer: "" };
+}
+
+/** Pull Exhibit C / addendum Online banking tabs onto main ACH portal keys. */
+export function extractOnlineBankingFromTabValues(
+    tabs: Record<string, string> | null | undefined,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const out: Partial<BuildContractPrefillFieldsArgs> = {};
+    if (!tabs) return out;
+    for (const [id, raw] of Object.entries(tabs)) {
+        const value = str(raw);
+        if (!value) continue;
+        for (const rule of ONLINE_BANKING_TAB_TO_MAIN) {
+            if (!rule.match(id)) continue;
+            if (rule.splitInto) {
+                const { question, answer } = splitCombinedQa(value);
+                if (question && !str(out[rule.mainKey])) out[rule.mainKey] = question;
+                if (answer && !str(out[rule.splitInto])) out[rule.splitInto] = answer;
+            } else if (!str(out[rule.mainKey])) {
+                out[rule.mainKey] = value;
+            }
+        }
+    }
+    return out;
+}
+
+export function applyOnlineBankingFromTabsToMainPrefill(
+    main: Record<string, unknown>,
+    tabs: Record<string, string> | null | undefined,
+): void {
+    const extracted = extractOnlineBankingFromTabValues(tabs);
+    for (const [key, value] of Object.entries(extracted)) {
+        if (!str(value)) continue;
+        if (str(main[key])) continue;
+        main[key] = value;
+    }
+}
+
+function dbaFromContractAndGet(
+    contract: Record<string, unknown>,
+    get: (...ids: string[]) => string,
+): string {
+    return (
+        get(
+            "doing_business_as",
+            "doing_business_as_p1",
+            "ach_authorization_account_holder_dba",
+            "ach_account_holder_dba",
+            "ach_account_holder_dba_p1",
+            "dba",
+            "merchant_dba",
+        ) ||
+        str(contract.doingBusinessAs) ||
+        str(contract.achAuthorizationAccountHolderDba) ||
+        str(contract.securityDoingBusinessAs) ||
+        str(contract.dba)
+    );
+}
+
 /** SignNow uses one disclosure template for every state — never require a DocuSign per-state map. */
 function isSignNowDisclosureTemplateRef(
     layoutKey?: string | null,
@@ -1168,12 +1337,7 @@ function buildAddendumExhibitCComputed(
         clientLegalName: legalName,
         clientName: guarantor,
         accountHolderName: holderName,
-        accountHolderDba: get(
-            "ach_authorization_account_holder_dba",
-            "ach_account_holder_dba",
-            "doing_business_as",
-            "dba",
-        ),
+        accountHolderDba: dbaFromContractAndGet(c, get),
         accountHolderAddress:
             get(
                 "ach_authorization_account_holder_address",
@@ -1389,8 +1553,7 @@ function buildAddendumMonthlyFeeComputed(
         businessAddress:
             get("business_address", "business_address_contract") || sctx.recipientAddress,
         holderName,
-        holderDba:
-            get("ach_account_holder_dba", "doing_business_as", "dba") || businessName,
+        holderDba: dbaFromContractAndGet(c, get) || businessName,
         holderAddress:
             get("ach_account_holder_address", "business_address") || sctx.recipientAddress,
         bankName:
@@ -1501,7 +1664,7 @@ function buildAddendumExhibitAComputed(
         clientLegalName:
             get("client_legal_name", "legal_name", "business_legal_name") ||
             sctx.recipientName,
-        doingBusinessAs: get("doing_business_as", "dba"),
+        doingBusinessAs: dbaFromContractAndGet(c, get),
         companyNames,
         companyEins,
         companyEntities,
@@ -2192,23 +2355,38 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     agreementDate?: string;
     /** Main contract prefill overrides (excludes per-mapping blob); same source as Deal Review. */
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    /** Other addendum/disclosure mapping blobs — used to copy DBA filled on a sibling document. */
+    siblingPrefillByMappingId?: Record<string, Record<string, string>> | null;
     savedOverridesForMapping?: Record<string, string> | null;
     bankDetail?: Record<string, unknown> | null;
     ach?: Record<string, unknown> | null;
     bankAnalyses?: unknown;
     documentType?: string | null;
 }): ContractPrefillField[] {
+    const sharedDba = resolveSharedDbaValue({
+        mainPrefill: options.mainPrefillOverrides ?? null,
+        contract: options.contract ?? null,
+        mappingBlobs: options.siblingPrefillByMappingId ?? null,
+    });
+    const withSharedDba = (rows: ContractPrefillField[]) =>
+        !sharedDba
+            ? rows
+            : rows.map((row) =>
+                  isSharedDbaFieldId(row.id) && !str(row.value) ? { ...row, value: sharedDba } : row,
+              );
     const withCanonicalBank = (rows: ContractPrefillField[]) =>
-        overlayCanonicalBankOnPrefillRows(rows, {
-            bankDetail:
-                options.bankDetail ??
-                options.contractRecords?.bankDetail ??
-                options.contractRecords?.bankDetails?.[0] ??
-                null,
-            ach: options.ach ?? options.contractRecords?.ach ?? null,
-            contract: options.contract ?? null,
-            mainPrefillOverrides: options.mainPrefillOverrides ?? null,
-        }).filter((row) => !isOptionalExtraBankField(row));
+        withSharedDba(
+            overlayCanonicalBankOnPrefillRows(rows, {
+                bankDetail:
+                    options.bankDetail ??
+                    options.contractRecords?.bankDetail ??
+                    options.contractRecords?.bankDetails?.[0] ??
+                    null,
+                ach: options.ach ?? options.contractRecords?.ach ?? null,
+                contract: options.contract ?? null,
+                mainPrefillOverrides: options.mainPrefillOverrides ?? null,
+            }).filter((row) => !isOptionalExtraBankField(row)),
+        );
 
     const effectiveContract = buildEffectiveContractForTemplatePrefill({
         contract: options.contract ?? null,

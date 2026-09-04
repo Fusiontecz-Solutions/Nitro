@@ -9,6 +9,10 @@ export function prefetchCrmPage(href: string): void {
     void import("@/pages/applications/Applications");
     return;
   }
+  if (path.startsWith("/letter-generator")) {
+    void import("@/pages/applications/Applications");
+    return;
+  }
   if (path.startsWith("/clients")) {
     void import("@/pages/clients/Clients");
     return;

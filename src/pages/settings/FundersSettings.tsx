@@ -8,6 +8,7 @@ import {
   deleteFunderProfile,
   fetchFunderProfiles,
   updateFunderProfile,
+  type FunderProfileFiles,
 } from "@/redux/actions/integrationSettingsActions";
 import type { FunderProfile, FunderProfileInput } from "@/types/integrationSettingsTypes";
 import FunderProfileModal from "./FunderProfileModal";
@@ -44,14 +45,17 @@ export default function FundersSettings() {
     void load();
   }, [load]);
 
-  const handleSave = async (payload: FunderProfileInput) => {
+  const handleSave = async (
+    payload: FunderProfileInput,
+    files?: FunderProfileFiles | null,
+  ) => {
     setSaving(true);
     try {
       if (editing) {
-        await updateFunderProfile(editing.id, payload);
+        await updateFunderProfile(editing.id, payload, files);
         toast.success("Funder updated");
       } else {
-        await createFunderProfile(payload);
+        await createFunderProfile(payload, files);
         toast.success("Funder added");
       }
       setModalOpen(false);
@@ -79,8 +83,8 @@ export default function FundersSettings() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground max-w-2xl">
-          Configure funders shown on Create Contract. Paste SignNow template links for the main
-          contract, addendums, and disclosures.
+          Configure funders shown on Create Contract, plus Letter Info (logo, colors, and
+          wire details) used on Payoff and Zero Balance letters.
         </p>
         <Button
           className="gap-2 bg-[image:var(--brand-gradient)] hover:opacity-90 shrink-0"
@@ -150,6 +154,10 @@ export default function FundersSettings() {
                   value={row.signnowDisclosureTemplates?.length ?? 0}
                 />
                 <DetailRow label="Default CC" value={row.defaultCcEmail?.trim() || "—"} />
+                <DetailRow
+                  label="Letter company"
+                  value={row.letterCompanyName?.trim() || "—"}
+                />
               </CardContent>
             </Card>
           ))}

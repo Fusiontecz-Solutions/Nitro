@@ -699,7 +699,7 @@ const ApplicationDetails = () => {
                         className="w-full"
                     >
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                            <HorizontalScrollFade className="w-full" scrollKey={activeTab}>
+                            <HorizontalScrollFade className="min-w-0 w-full flex-1" scrollKey={activeTab}>
                             <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex w-max flex-nowrap items-center shrink-0">
                                 {tabsForOperationsUi.map((tab, index) => {
                                     const isActive = activeTab === tab.id;
@@ -852,7 +852,6 @@ const ApplicationDetails = () => {
                     </Tabs>
                 )}
             </div>
-
         </div>
     );
 };

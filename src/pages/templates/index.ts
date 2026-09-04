@@ -36,6 +36,25 @@ export {
 } from "./documentRequestEmailShared";
 export * from "./documentRequestEmailHtml";
 export * from "./letterEmailBranding";
+export * from "./payOffLetterEmailHtml";
+export * from "./zeroBalanceLetterEmailHtml";
+export * from "./payOffWireInformationEmailHtml";
+export { default as PayOffLetter, PAY_OFF_LETTER_VARIABLES } from "./PayOffLetter";
+export { default as ZeroBalanceLetter, ZERO_BALANCE_LETTER_VARIABLES } from "./ZeroBalanceLetter";
+export {
+  default as PayOffWireInformation,
+  PAY_OFF_WIRE_INFORMATION_VARIABLES,
+} from "./PayOffWireInformation";
+export { LetterHtmlPreviewFrame } from "./LetterHtmlPreviewFrame";
+export {
+  BUILTIN_FE_TEMPLATE_ID_PREFIX,
+  BUILTIN_FE_TEMPLATES,
+  getBuiltinReactTemplateDefinition,
+  isBuiltinFeTemplate,
+  mergeBuiltinFeTemplates,
+  renderBuiltinReactTemplateHtml,
+  isRetiredPaymentLetter,
+} from "./registry";
 export { default as ApplicationRejectionEmail, APPLICATION_REJECTION_EMAIL_VARIABLES } from "./ApplicationRejectionEmail";
 export { default as ApplicationApprovalEmail } from "./ApplicationApprovalEmail";
 export {

@@ -1061,14 +1061,7 @@ type AutoSelectAddendumKind =
     | "addendum_p"
     | "addendum_ca"
     | "addendum_ny"
-    | "addendum_va"
-    | "ach_daily"
-    | "ach_weekly";
-
-const ACH_FREQUENCY_ADDENDUM_KINDS: AutoSelectAddendumKind[] = [
-    "ach_daily",
-    "ach_weekly",
-];
+    | "addendum_va";
 
 /**
  * Auto-select rules (multiple allowed) — Guide:
@@ -1076,27 +1069,19 @@ const ACH_FREQUENCY_ADDENDUM_KINDS: AutoSelectAddendumKind[] = [
  * - CA → Addendum CA
  * - NY → Addendum NY
  * - VA → Addendum VA
- * - Daily → ACH Daily (SignNow)
- * - Weekly → ACH Weekly (SignNow)
+ * ACH Daily / Weekly are not auto-attached by frequency; pick them manually.
  */
 function resolveWantedAutoAddendumKinds(
     state: string,
     isRefinance: boolean,
-    frequency?: string | null,
 ): AutoSelectAddendumKind[] {
     const picked = normalizeStateForTemplateLookup(
         pickUsStateForSelect(state) || state,
     );
-    const kinds = resolveWantedAddendumKinds(
+    return resolveWantedAddendumKinds(
         picked,
         isRefinance,
     ) as AutoSelectAddendumKind[];
-    if (isSignNowContractUiEnabled()) {
-        const freq = normalizeFrequencyForTemplateLookup(String(frequency ?? ""));
-        if (freq === "daily") kinds.push("ach_daily");
-        else if (freq === "weekly") kinds.push("ach_weekly");
-    }
-    return kinds;
 }
 
 function resolveTemplateAutoAddendumKind(template: {
@@ -1109,23 +1094,6 @@ function resolveTemplateAutoAddendumKind(template: {
     const type = String(template.type || "").trim().toLowerCase();
     const key = templateLayoutKeyToken(template).toLowerCase();
     const name = String(template.name || "").toLowerCase();
-
-    if (
-        type === "ach_daily" ||
-        key === "ach_daily" ||
-        key.endsWith("_ach_daily") ||
-        (name.includes("ach") && name.includes("daily"))
-    ) {
-        return "ach_daily";
-    }
-    if (
-        type === "ach_weekly" ||
-        key === "ach_weekly" ||
-        key.endsWith("_ach_weekly") ||
-        (name.includes("ach") && name.includes("weekly"))
-    ) {
-        return "ach_weekly";
-    }
 
     if (
         type === "addendum_ca" ||
@@ -1195,8 +1163,7 @@ function pickAddendumTemplateRefsForKinds(
     });
     const refs: string[] = [];
     for (const kind of kinds) {
-        const pool = ACH_FREQUENCY_ADDENDUM_KINDS.includes(kind) ? rows : scoped;
-        const match = pool.find(
+        const match = scoped.find(
             (row) => resolveTemplateAutoAddendumKind(row) === kind,
         );
         const ref = match ? getAddendumDropdownRef(match) : "";
@@ -1703,6 +1670,7 @@ const PDFViewerModal = ({
     /** Set when the browser blocks `window.open` after the draft URL is ready — user opens via button click. */
     const [docuSignOpenUrl, setDocuSignOpenUrl] = useState<string | null>(null);
     const [signNowEmbedUrl, setSignNowEmbedUrl] = useState<string | null>(null);
+    const [signNowReviewVisible, setSignNowReviewVisible] = useState(false);
     const [signNowEmbedBlocked, setSignNowEmbedBlocked] = useState(false);
     const [signNowReviewComplete, setSignNowReviewComplete] = useState(false);
     const signNowEmbedUrlRef = useRef<string | null>(null);
@@ -1714,6 +1682,8 @@ const PDFViewerModal = ({
     const signNowIframeBaselineLoadRef = useRef(0);
     const signNowIframeDetectReadyRef = useRef(false);
     const signNowCompleteToastShownRef = useRef(false);
+    /** Last minted review URL — reopen without calling SignNow prepare again. */
+    const signNowCachedEmbedUrlRef = useRef<string | null>(null);
     /** Skip "send existing draft" so Review can remint after Owner finish. */
     const signNowForceFreshReviewRef = useRef(false);
     type ContractWizardStep = "documents" | "info" | "summary" | "sent";
@@ -1731,8 +1701,9 @@ const PDFViewerModal = ({
     /** After user explicitly opens Documents during this modal session, stop auto-switching Documents → Sent. */
     const didSuggestSentTabThisOpenRef = useRef(false);
     const awaitingDocuSignSendRef = useRef(false);
-    const resetSignNowReviewUi = useCallback(() => {
+    const resetSignNowReviewUi = useCallback((options?: { keepCachedEmbed?: boolean }) => {
         setSignNowEmbedUrl(null);
+        setSignNowReviewVisible(false);
         setSignNowReviewComplete(false);
         setSignNowEmbedBlocked(false);
         signNowIframeLoadCountRef.current = 0;
@@ -1740,6 +1711,9 @@ const PDFViewerModal = ({
         signNowIframeDetectReadyRef.current = false;
         signNowCompleteToastShownRef.current = false;
         awaitingDocuSignSendRef.current = false;
+        if (!options?.keepCachedEmbed) {
+            signNowCachedEmbedUrlRef.current = null;
+        }
         toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
     }, []);
     const refreshContractSigningStateRef = useRef<
@@ -1759,7 +1733,7 @@ const PDFViewerModal = ({
         if (prev === "documents") didSuggestSentTabThisOpenRef.current = true;
         if (prev === "documents" || prev === "info") {
             signNowForceFreshReviewRef.current = false;
-            resetSignNowReviewUi();
+            resetSignNowReviewUi({ keepCachedEmbed: true });
         }
         setActiveStep(prev);
     };
@@ -2948,13 +2922,15 @@ const PDFViewerModal = ({
         [applicationIdForLookup],
     );
 
+    const signNowReviewOpen = Boolean(signNowEmbedUrl && signNowReviewVisible);
+
     /** Step 4 (Sent) only — no DocuSign PDF tab on Documents / Info / Summary. */
     const showDocuSignContractTab = useMemo(
         () =>
-            Boolean(signNowEmbedUrl) ||
+            Boolean(signNowReviewOpen) ||
             (activeStep === "sent" &&
                 (sentStepUnlocked || isContractAlreadySent(resolvedContract, sentAt))),
-        [signNowEmbedUrl, activeStep, resolvedContract, sentAt, sentStepUnlocked],
+        [signNowReviewOpen, activeStep, resolvedContract, sentAt, sentStepUnlocked],
     );
 
     const signingFinishedForPoll = useMemo(
@@ -2991,7 +2967,7 @@ const PDFViewerModal = ({
             return "Send new contract";
         }
         if (isSignNowContractUiEnabled()) {
-            if (signNowEmbedUrl || signNowReviewComplete) return "Send via SignNow";
+            if (signNowReviewOpen || signNowReviewComplete) return "Send via SignNow";
             return includeMainContractInSend || !canSendWithoutContract
                 ? "Review in SignNow"
                 : "Review documents in SignNow";
@@ -3004,7 +2980,7 @@ const PDFViewerModal = ({
         showResendContractOnSentStep,
         includeMainContractInSend,
         canSendWithoutContract,
-        signNowEmbedUrl,
+        signNowReviewOpen,
         signNowReviewComplete,
     ]);
 
@@ -3254,7 +3230,9 @@ const PDFViewerModal = ({
             setUploadedPreviewUrl(null);
             setPreviewingMainContract(false);
             signNowForceFreshReviewRef.current = false;
+            signNowCachedEmbedUrlRef.current = null;
             setSignNowEmbedUrl(null);
+            setSignNowReviewVisible(false);
             setSignNowReviewComplete(false);
             setSignNowEmbedBlocked(false);
             signNowIframeLoadCountRef.current = 0;
@@ -4719,6 +4697,17 @@ const PDFViewerModal = ({
 
     const handleSend = async () => {
         if (sendingLockRef.current || isSending) return;
+        if (
+            isSignNowContractUiEnabled() &&
+            signNowEmbedUrl &&
+            !signNowReviewVisible &&
+            !signNowReviewComplete &&
+            !signNowForceFreshReviewRef.current
+        ) {
+            setSignNowReviewVisible(true);
+            setPdfRightPaneTab("docusign");
+            return;
+        }
         sendingLockRef.current = true;
         await flushAddendumMappingsRef.current();
         if (!fileUrl) {
@@ -4749,7 +4738,7 @@ const PDFViewerModal = ({
         }
         const sendingOpenSignNowDraft =
             sendViaSignNowApi &&
-            Boolean(signNowEmbedUrl || signNowReviewComplete) &&
+            Boolean(signNowReviewOpen || signNowReviewComplete) &&
             !forceFreshSignNowReview &&
             Boolean(String(sessionEnvelopeId || linkedEnvelopeIdRef.current || "").trim());
         if (!canReviewAndSendCurrentPackage && !sendingOpenSignNowDraft) {
@@ -4871,7 +4860,7 @@ const PDFViewerModal = ({
                     : String(sessionEnvelopeId || "").trim() || null;
                 if (
                     sendViaSignNowApi &&
-                    (signNowReviewComplete || signNowEmbedUrl) &&
+                    (signNowReviewComplete || signNowReviewOpen) &&
                     !forceFreshSignNowReview
                 ) {
                     const envelopeId =
@@ -4895,6 +4884,10 @@ const PDFViewerModal = ({
                             roles: signerRolesForSend,
                             ccEmails: toSend,
                             prefillFields: buildDocuSignPrefillFieldsPayload(),
+                            funderName:
+                                String(
+                                    selectedFunderRef.current || selectedFunder || "",
+                                ).trim() || undefined,
                         },
                         {
                             headers: {
@@ -4936,10 +4929,43 @@ const PDFViewerModal = ({
                 const isResendAfterSigned =
                     outForSignatureBeforeSend ||
                     canResendMainContract(resolvedContract, sentAt);
+                const signNowFingerprintsMatch =
+                    draftPreparedPackageFingerprintRef.current === sendPackageFingerprint &&
+                    draftPreparedSignerRolesRef.current === signerFingerprintForSend &&
+                    draftPreparedOwnerCountRef.current === currentOwnerCount &&
+                    draftPreparedAddendumIdRef.current === addendumIdsFingerprint &&
+                    draftPreparedPrefillFingerprintRef.current === prefillDraftFingerprint;
+                if (
+                    sendViaSignNowApi &&
+                    sessionEnv &&
+                    !isResendAfterSigned &&
+                    signNowFingerprintsMatch
+                ) {
+                    const cached = String(signNowCachedEmbedUrlRef.current || "").trim();
+                    const reuseUrl =
+                        cached && !isSignNowLoginWebappUrl(cached) ? cached : "";
+                    const reminted = reuseUrl
+                        ? { url: reuseUrl, error: null }
+                        : await fetchDocuSignSenderViewUrl(
+                              sessionEnv,
+                              toSend,
+                              signerRolesForSend,
+                          );
+                    const embedUrl = String(reminted.url || "").trim();
+                    if (embedUrl && !isSignNowLoginWebappUrl(embedUrl)) {
+                        signNowCachedEmbedUrlRef.current = embedUrl;
+                        pendingCcForSentRef.current = toSend;
+                        ccEmailDeliveredRef.current = false;
+                        awaitingDocuSignSendRef.current = true;
+                        setPdfRightPaneTab("docusign");
+                        setSignNowEmbedUrl(embedUrl);
+                        setSignNowReviewVisible(true);
+                        setSignNowReviewComplete(false);
+                        return;
+                    }
+                }
                 const canReuseSessionDraft =
                     Boolean(sessionEnv) &&
-                    // SignNow must re-run prepare so CRM prefill is written again;
-                    // reopening the prior embed URL alone left agreement fields blank.
                     !sendViaSignNowApi &&
                     !isResendAfterSigned &&
                     draftPreparedPackageFingerprintRef.current === sendPackageFingerprint &&
@@ -5077,7 +5103,9 @@ const PDFViewerModal = ({
                     ccEmailDeliveredRef.current = false;
                     awaitingDocuSignSendRef.current = true;
                     setPdfRightPaneTab("docusign");
+                    signNowCachedEmbedUrlRef.current = embedUrl;
                     setSignNowEmbedUrl(embedUrl);
+                    setSignNowReviewVisible(true);
                     setSignNowReviewComplete(false);
                     toast.info(
                         "Review the contract in SignNow, then click Finish. You will stay in the CRM.",
@@ -5188,20 +5216,22 @@ const PDFViewerModal = ({
 
     const handleBackToSignNow = () => {
         if (sendingLockRef.current || isSending) return;
-        signNowForceFreshReviewRef.current = true;
-        resetSignNowReviewUi();
+        signNowForceFreshReviewRef.current = false;
+        signNowCachedEmbedUrlRef.current = null;
+        resetSignNowReviewUi({ keepCachedEmbed: true });
         void handleSend();
     };
 
     const handleChangeDetailsBeforeSend = () => {
         signNowForceFreshReviewRef.current = false;
-        resetSignNowReviewUi();
+        resetSignNowReviewUi({ keepCachedEmbed: true });
         setActiveStep("info");
         toast.info("Update the contract details, then click Review in SignNow before sending.");
     };
 
     const markSignNowReviewComplete = useCallback(() => {
         setSignNowReviewComplete(true);
+        signNowCachedEmbedUrlRef.current = null;
         awaitingDocuSignSendRef.current = false;
         toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
         if (signNowCompleteToastShownRef.current) return;
@@ -6545,6 +6575,14 @@ const PDFViewerModal = ({
             draftPreparedPrefillFingerprintRef.current = null;
             return;
         }
+        if (isSignNowContractUiEnabled()) {
+            // SignNow cannot patch an already-reviewed draft in place. Drop the
+            // cached embed so the next Review re-prefills instead of reopening stale fields.
+            signNowCachedEmbedUrlRef.current = null;
+            setSignNowEmbedUrl(null);
+            setSignNowReviewVisible(false);
+            return;
+        }
         // Claim before the async call so effect re-runs from unstable callback deps
         // cannot stack the same sync + toast while a request is in flight / failed.
         draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
@@ -7330,7 +7368,6 @@ const PDFViewerModal = ({
             const wantedKinds = resolveWantedAutoAddendumKinds(
                 state,
                 isRefinance,
-                contractDisclosureFrequency,
             ).filter((kind) => !addendumUserRemovedKindsRef.current.has(kind));
             const wantedRefs = pickAddendumTemplateRefsForKinds(
                 addendumTemplateOptions,
@@ -7378,7 +7415,6 @@ const PDFViewerModal = ({
                 if (!kind) return true;
                 if (addendumUserRemovedKindsRef.current.has(kind)) return false;
                 if (wantedKinds.includes(kind)) return false;
-                if (ACH_FREQUENCY_ADDENDUM_KINDS.includes(kind)) return false;
                 return true;
             });
 
@@ -7444,7 +7480,6 @@ const PDFViewerModal = ({
         [
             addendumTemplateOptions,
             applicationData,
-            contractDisclosureFrequency,
             effectiveContractId,
             offerDecisionData,
             resolveAddendumSelectionRef,
@@ -7470,7 +7505,6 @@ const PDFViewerModal = ({
         const wanted = resolveWantedAutoAddendumKinds(
             selectedState,
             isRefinance,
-            contractDisclosureFrequency,
         );
         const docsKey = docsLayoutFunderId ?? "platform";
         const availableKinds = addendumTemplateOptions
@@ -7483,14 +7517,14 @@ const PDFViewerModal = ({
         )
             .trim()
             .toLowerCase();
-        const contextKey = `${effectiveContractId}:${selectedState}:${isRefinance ? "refi" : "norefi"}:${appType}:${contractDisclosureFrequency}:${docsKey}`;
+        const contextKey = `${effectiveContractId}:${selectedState}:${isRefinance ? "refi" : "norefi"}:${appType}:${docsKey}`;
         const key = `${contextKey}:${wanted.join("+") || "none"}:${availableKinds}`;
         if (addendumAutoLinkKeyRef.current === key) return;
         const prev = addendumAutoLinkKeyRef.current;
         if (
             !prev ||
             !prev.startsWith(
-                `${effectiveContractId}:${selectedState}:${isRefinance ? "refi" : "norefi"}:${appType}:${contractDisclosureFrequency}:`,
+                `${effectiveContractId}:${selectedState}:${isRefinance ? "refi" : "norefi"}:${appType}:`,
             )
         ) {
             addendumUserRemovedKindsRef.current.clear();
@@ -7511,7 +7545,6 @@ const PDFViewerModal = ({
         selectedState,
         docsLayoutFunderId,
         applicationData,
-        contractDisclosureFrequency,
         offerDecisionData,
         addendumTemplateOptions,
         syncAddendumTemplateForApplication,
@@ -9047,7 +9080,7 @@ const PDFViewerModal = ({
                                             onClick={() => {
                                                 didSuggestSentTabThisOpenRef.current = true;
                                                 signNowForceFreshReviewRef.current = false;
-                                                resetSignNowReviewUi();
+                                                resetSignNowReviewUi({ keepCachedEmbed: true });
                                                 setActiveStep("documents");
                                             }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${docGreenActive
@@ -9075,7 +9108,7 @@ const PDFViewerModal = ({
                                             type="button"
                                             onClick={() => {
                                                 signNowForceFreshReviewRef.current = false;
-                                                resetSignNowReviewUi();
+                                                resetSignNowReviewUi({ keepCachedEmbed: true });
                                                 setActiveStep("info");
                                             }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${infoGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
@@ -9601,7 +9634,7 @@ const PDFViewerModal = ({
                                                             Addendum Templates
                                                         </label>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                            Select one or more. Refinance auto-selects Addendum P; CA/NY/VA auto-select by state; Daily/Weekly auto-selects the matching ACH addendum. You can change the selection anytime.
+                                                            Select one or more. Refinance auto-selects Addendum P; CA/NY/VA auto-select by state. ACH Daily / Weekly are selected manually. You can change the selection anytime.
                                                         </p>
                                                     </div>
                                                 </div>
@@ -12537,7 +12570,13 @@ const PDFViewerModal = ({
                             )}
                             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
                                 {signNowEmbedUrl ? (
-                                    <div className="absolute inset-0 z-10 flex min-h-0 flex-col bg-white">
+                                    <div
+                                        className={
+                                            signNowReviewVisible
+                                                ? "absolute inset-0 z-10 flex min-h-0 flex-col bg-white"
+                                                : "hidden"
+                                        }
+                                    >
                                         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
                                             <p className="text-[11px] font-medium text-slate-700">
                                                 {signNowReviewComplete
@@ -12561,7 +12600,9 @@ const PDFViewerModal = ({
                                                     className="h-7 px-2 text-[11px]"
                                                     onClick={() => {
                                                         signNowForceFreshReviewRef.current = false;
-                                                        resetSignNowReviewUi();
+                                                        setSignNowReviewVisible(false);
+                                                        setSignNowReviewComplete(false);
+                                                        toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
                                                     }}
                                                 >
                                                     Close review
@@ -12679,7 +12720,9 @@ const PDFViewerModal = ({
                                             ) : null}
                                         </div>
                                     </div>
-                                ) : pdfRightPaneTab === "template" ? (
+                                ) : null}
+                                {!(signNowEmbedUrl && signNowReviewVisible) ? (
+                                pdfRightPaneTab === "template" ? (
                                     currentPreviewUrl ? (
                                     <DirectPdfViewer
                                         key={`${selectedFunderProfileId || selectedFunder}:${currentPreviewUrl}`}
@@ -12728,20 +12771,21 @@ const PDFViewerModal = ({
                                                 ? "Loading the sent SignNow contract package…"
                                                 : "DocuSign PDF appears on step 4 (Sent) after the contract envelope is sent."}
                                     </div>
-                                )}
+                                )
+                                ) : null}
                             </div>
                         </div>
 
                     </div>
 
                     {/* 3. Global Footer — signers + CC + send (shrink-0 + compact so PDF pane keeps maximum height) */}
-                    <div className={`flex shrink-0 flex-col gap-2 border-t border-[var(--brand)]/10 bg-gradient-to-r from-slate-50/90 via-white to-[var(--brand)]/5 px-4 py-2 dark:border-slate-700 dark:from-slate-900 dark:via-slate-900 dark:to-[var(--brand)]/10 lg:flex-row lg:items-center lg:justify-between lg:gap-4 ${signNowEmbedUrl ? "py-2" : "px-6 py-3"}`}>
+                    <div className={`flex shrink-0 flex-col gap-2 border-t border-[var(--brand)]/10 bg-gradient-to-r from-slate-50/90 via-white to-[var(--brand)]/5 px-4 py-2 dark:border-slate-700 dark:from-slate-900 dark:via-slate-900 dark:to-[var(--brand)]/10 lg:flex-row lg:items-center lg:justify-between lg:gap-4 ${signNowReviewOpen ? "py-2" : "px-6 py-3"}`}>
                         <div className="min-w-0 flex-1 space-y-2">
-                            {signNowEmbedUrl && signNowReviewComplete ? (
+                            {signNowReviewOpen && signNowReviewComplete ? (
                                 <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">
                                     Owner review is complete. Send via SignNow, or use Back to SignNow / Change details first if you still need to edit.
                                 </p>
-                            ) : signNowEmbedUrl ? (
+                            ) : signNowReviewOpen ? (
                                 <p className="text-xs text-slate-600 dark:text-slate-300">
                                     If SignNow shows &quot;Document signed&quot;, click{" "}
                                     <span className="font-semibold">I&apos;ve clicked Finish</span>{" "}
@@ -12916,8 +12960,8 @@ const PDFViewerModal = ({
                                 Close
                             </Button>
                             {isSignNowContractUiEnabled() &&
-                            (signNowEmbedUrl || signNowReviewComplete) &&
-                            !(signNowEmbedUrl && signNowReviewComplete) ? (
+                            (signNowReviewOpen || signNowReviewComplete) &&
+                            !(signNowReviewOpen && signNowReviewComplete) ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -12928,7 +12972,7 @@ const PDFViewerModal = ({
                                     {isSending ? "Sending via SignNow…" : "Send via SignNow"}
                                 </Button>
                             ) : isSignNowContractUiEnabled() &&
-                              signNowEmbedUrl &&
+                              signNowReviewOpen &&
                               signNowReviewComplete ? null : canCancelSentContract ? (
                                 <Button
                                     type="button"
@@ -12941,7 +12985,7 @@ const PDFViewerModal = ({
                                 </Button>
                             ) : null}
                             {isSignNowContractUiEnabled() &&
-                            (signNowEmbedUrl || signNowReviewComplete) ? null : showResendContractOnSentStep ? (
+                            (signNowReviewOpen || signNowReviewComplete) ? null : showResendContractOnSentStep ? (
                                 <Button
                                     type="button"
                                     variant="default"

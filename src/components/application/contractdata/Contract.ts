@@ -174,6 +174,16 @@ export interface BuildContractPrefillFieldsArgs {
     achAuthorizationReferenceName3?: string;
     achAuthorizationReferenceNumber3?: string;
     achAuthorizationReferenceRelationship3?: string;
+    achAuthorizationReferenceName4?: string;
+    achAuthorizationReferenceNumber4?: string;
+    achAuthorizationReferenceRelationship4?: string;
+    landlordCompany?: string;
+    landlordContact?: string;
+    landlordPhone?: string;
+    emergencyName?: string;
+    emergencyRelationship?: string;
+    emergencyPhone?: string;
+    emergencyEmail?: string;
     addendumDated?: string;
     addendumDatedPrincipalOwner?: string;
     addendumDatedPrincipalBusiness?: string;
@@ -348,6 +358,16 @@ const FIELD_IDS = {
     achAuthorizationReferenceName3: ["ach_authorization_reference_name3"],
     achAuthorizationReferenceNumber3: ["ach_authorization_reference_number3"],
     achAuthorizationReferenceRelationship3: ["ach_authorization_reference_relationship3"],
+    achAuthorizationReferenceName4: ["ach_authorization_reference_name4"],
+    achAuthorizationReferenceNumber4: ["ach_authorization_reference_number4"],
+    achAuthorizationReferenceRelationship4: ["ach_authorization_reference_relationship4"],
+    landlordCompany: ["landlord_company"],
+    landlordContact: ["landlord_contact"],
+    landlordPhone: ["landlord_phone"],
+    emergencyName: ["emergency_name"],
+    emergencyRelationship: ["emergency_relationship"],
+    emergencyPhone: ["emergency_phone"],
+    emergencyEmail: ["emergency_email"],
     addendumDated: ["addendum_dated"],
     addendumDatedPrincipalOwner: ["addendum_dated_principal_owner"],
     addendumDatedPrincipalBusiness: ["addendum_dated_principal_business"],
@@ -711,6 +731,16 @@ export const buildContractPrefillFields = ({
     achAuthorizationReferenceName3 = "",
     achAuthorizationReferenceNumber3 = "",
     achAuthorizationReferenceRelationship3 = "",
+    achAuthorizationReferenceName4 = "",
+    achAuthorizationReferenceNumber4 = "",
+    achAuthorizationReferenceRelationship4 = "",
+    landlordCompany = "",
+    landlordContact = "",
+    landlordPhone = "",
+    emergencyName = "",
+    emergencyRelationship = "",
+    emergencyPhone = "",
+    emergencyEmail = "",
     addendumDated = "",
     addendumDatedPrincipalOwner = "",
     addendumDatedPrincipalBusiness = "",
@@ -940,6 +970,16 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.achAuthorizationReferenceName3, "ACH Reference Name 3", achAuthorizationReferenceName3),
         ...mapIds(FIELD_IDS.achAuthorizationReferenceNumber3, "ACH Reference Number 3", achAuthorizationReferenceNumber3),
         ...mapIds(FIELD_IDS.achAuthorizationReferenceRelationship3, "ACH Reference Relationship 3", achAuthorizationReferenceRelationship3),
+        ...mapIds(FIELD_IDS.achAuthorizationReferenceName4, "Business reference 2 contact", achAuthorizationReferenceName4),
+        ...mapIds(FIELD_IDS.achAuthorizationReferenceNumber4, "Business reference 2 phone", achAuthorizationReferenceNumber4),
+        ...mapIds(FIELD_IDS.achAuthorizationReferenceRelationship4, "Business reference 2 company", achAuthorizationReferenceRelationship4),
+        ...mapIds(FIELD_IDS.landlordCompany, "Landlord company", landlordCompany),
+        ...mapIds(FIELD_IDS.landlordContact, "Landlord contact", landlordContact),
+        ...mapIds(FIELD_IDS.landlordPhone, "Landlord phone", landlordPhone),
+        ...mapIds(FIELD_IDS.emergencyName, "Emergency contact name", emergencyName),
+        ...mapIds(FIELD_IDS.emergencyRelationship, "Emergency relationship", emergencyRelationship),
+        ...mapIds(FIELD_IDS.emergencyPhone, "Emergency phone", emergencyPhone),
+        ...mapIds(FIELD_IDS.emergencyEmail, "Emergency email", emergencyEmail),
         ...mapIds(FIELD_IDS.addendumDated, "Addendum Dated", addendumDated),
         ...mapIds(FIELD_IDS.addendumDatedPrincipalOwner, "Addendum Principal Owner", addendumDatedPrincipalOwner),
         ...mapIds(FIELD_IDS.addendumDatedPrincipalBusiness, "Addendum Principal Business", addendumDatedPrincipalBusiness),
@@ -2259,7 +2299,7 @@ export function categorizeDealReviewPrefillFieldId(id: string): string {
     const s = normalizeDealReviewFieldId(id);
     if (DEAL_REVIEW_APPENDIX_FEE_IDS.has(s)) return "Appendix";
     if (s === "exhibit_owner_name" || /^exhibit_a_value_\d+$/.test(s)) return "Appendix";
-    if (s.startsWith("ach_")) return "ACH";
+    if (s.startsWith("ach_") || s.startsWith("landlord_") || s.startsWith("emergency_")) return "ACH";
     if (s.startsWith("addendum_")) return "Addendum";
     if (s.startsWith("authorization_") || s.startsWith("authorized_")) return "Authorization";
     if (s.startsWith("appendix_")) return "Appendix";
@@ -2333,7 +2373,9 @@ export function dealReviewPrefillSubsection(fieldId: string, category: string): 
         ) {
             return "Bank";
         }
-        if (id.includes("reference_")) return "References";
+        if (id.includes("reference_") || id.startsWith("landlord_") || id.startsWith("emergency_")) {
+            return "References";
+        }
         if (
             id.includes("bank_portal") ||
             id.includes("username") ||
@@ -2529,6 +2571,16 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     guarantor_address_zip: "ZIP",
     guarantor_email: "Email",
     guarantor_phone: "Phone",
+    ach_authorization_reference_name4: "Business reference 2 contact",
+    ach_authorization_reference_number4: "Business reference 2 phone",
+    ach_authorization_reference_relationship4: "Business reference 2 company",
+    landlord_company: "Landlord company",
+    landlord_contact: "Landlord contact",
+    landlord_phone: "Landlord phone",
+    emergency_name: "Emergency contact name",
+    emergency_relationship: "Emergency relationship",
+    emergency_phone: "Emergency phone",
+    emergency_email: "Emergency email",
 };
 
 function resolveDealReviewDisplayLabel(id: string, label: string, category: string): string {
@@ -3136,6 +3188,16 @@ function achRowToPrefillPartial(
         achAuthorizationReferenceName3: str(row.ach_authorization_reference_name3) || str(row.achAuthorizationReferenceName3),
         achAuthorizationReferenceNumber3: str(row.ach_authorization_reference_number3) || str(row.achAuthorizationReferenceNumber3),
         achAuthorizationReferenceRelationship3: str(row.ach_authorization_reference_relationship3) || str(row.achAuthorizationReferenceRelationship3),
+        achAuthorizationReferenceName4: str(row.ach_authorization_reference_name4) || str(row.achAuthorizationReferenceName4),
+        achAuthorizationReferenceNumber4: str(row.ach_authorization_reference_number4) || str(row.achAuthorizationReferenceNumber4),
+        achAuthorizationReferenceRelationship4: str(row.ach_authorization_reference_relationship4) || str(row.achAuthorizationReferenceRelationship4),
+        landlordCompany: str(row.landlord_company) || str(row.landlordCompany),
+        landlordContact: str(row.landlord_contact) || str(row.landlordContact),
+        landlordPhone: str(row.landlord_phone) || str(row.landlordPhone),
+        emergencyName: str(row.emergency_name) || str(row.emergencyName),
+        emergencyRelationship: str(row.emergency_relationship) || str(row.emergencyRelationship),
+        emergencyPhone: str(row.emergency_phone) || str(row.emergencyPhone),
+        emergencyEmail: str(row.emergency_email) || str(row.emergencyEmail),
     };
     return out;
 }
@@ -3268,7 +3330,21 @@ export function applyOwnerRowsToPrefillMerge(
         const ssn1 = str(o1.ssnNumber ?? o1.ssn);
         const dl1 = str(o1.driverLicenseNumber ?? o1.driverLicense);
         applyOwner1AddressToPrefillPartial(partial, o1);
-        if (n1 || ssn1 || dl1 || partyEmail(o1)) {
+        const email1 = partyEmail(o1);
+        const phone1 = str(o1.mobileNumber ?? o1.phone ?? o1.mobile);
+        if (email1) {
+            if (!str(partial.clientEmail)) partial.clientEmail = email1;
+            if (!str(partial.guarantorEmail)) partial.guarantorEmail = email1;
+        }
+        if (phone1) {
+            if (!str(partial.clientPhone)) partial.clientPhone = phone1;
+            if (!str(partial.guarantorPhone)) partial.guarantorPhone = phone1;
+            if (!str(partial.authorizedBusinessPhone)) partial.authorizedBusinessPhone = phone1;
+            if (!str(partial.achAuthorizationAccountHolderPhone)) {
+                partial.achAuthorizationAccountHolderPhone = phone1;
+            }
+        }
+        if (n1 || ssn1 || dl1 || email1) {
             if (n1) {
                 syncPrimaryPartyNameToPrefillPartial(partial as Record<string, unknown>, n1);
             }
@@ -3878,6 +3954,16 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         achAuthorizationReferenceName3: str(row.achAuthorizationReferenceName3),
         achAuthorizationReferenceNumber3: str(row.achAuthorizationReferenceNumber3),
         achAuthorizationReferenceRelationship3: str(row.achAuthorizationReferenceRelationship3),
+        achAuthorizationReferenceName4: str(row.achAuthorizationReferenceName4),
+        achAuthorizationReferenceNumber4: str(row.achAuthorizationReferenceNumber4),
+        achAuthorizationReferenceRelationship4: str(row.achAuthorizationReferenceRelationship4),
+        landlordCompany: str(row.landlordCompany),
+        landlordContact: str(row.landlordContact),
+        landlordPhone: str(row.landlordPhone),
+        emergencyName: str(row.emergencyName),
+        emergencyRelationship: str(row.emergencyRelationship),
+        emergencyPhone: str(row.emergencyPhone),
+        emergencyEmail: str(row.emergencyEmail),
         exhibitOwnerName: str(row.exhibitOwnerName),
     });
 }
@@ -3927,6 +4013,15 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
             "",
         ),
         clientPhone: String(r.businessPhone || r.ownerPhone || ""),
+        authorizedBusinessPhone: String(r.businessPhone || r.ownerPhone || ""),
+        guarantorEmail: String(
+            r.ownerEmail ||
+            r.businessEmail ||
+            bi?.clientBusinessEmail ||
+            getApplicationPrimaryRecipientEmail(anyApp) ||
+            "",
+        ),
+        guarantorPhone: String(r.ownerPhone || r.businessPhone || ""),
         guarantyClientName: customerName,
         guarantySs: String(r.ownerSsn || ""),
         guarantySsDriverLicense: String(r.ownerDriverLicense || ""),
@@ -4087,7 +4182,10 @@ export function resolveBalanceTransferMerchantContext(
     const clientDba =
         str(c.doingBusinessAs) ||
         str(overrides.doingBusinessAs) ||
+        str(c.achAuthorizationAccountHolderDba) ||
+        str(overrides.achAuthorizationAccountHolderDba) ||
         str(app.doingBusinessAs) ||
+        str(app.achAuthorizationAccountHolderDba) ||
         str(c.securityDoingBusinessAs) ||
         str(overrides.securityDoingBusinessAs);
 

@@ -62,3 +62,18 @@ export function pick(
   if (variable.placeholder) return variable.placeholder;
   return variable.label;
 }
+
+/** Display id for letters: imported `dealId` when set, otherwise business `applicationId`. */
+export function letterApplicationIdFromApp(
+  app:
+    | { dealId?: string | null; applicationId?: number | string | null }
+    | null
+    | undefined,
+): string {
+  const fromDealId = String(app?.dealId ?? "").trim();
+  if (fromDealId) return fromDealId;
+  if (app?.applicationId != null && String(app.applicationId).trim() !== "") {
+    return String(app.applicationId).trim();
+  }
+  return "";
+}

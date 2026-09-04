@@ -31,7 +31,7 @@ export const CONTRACT_ENVELOPE_LENDER_NAME = String(
 /** @deprecated Use CONTRACT_ENVELOPE_LENDER_NAME */
 export const DOCUSIGN_EMAIL_LENDER_NAME = CONTRACT_ENVELOPE_LENDER_NAME;
 
-/** Contract envelope email subject: {FunderName}: BusinessName $Offer Amount */
+/** Contract / SignNow subject: Selected Funder Business name $Amount */
 export function buildContractEnvelopeEmailSubject(
     businessName: string,
     offerAmount?: number | string | null,
@@ -39,9 +39,9 @@ export function buildContractEnvelopeEmailSubject(
 ): string {
     const business = String(businessName || "").trim() || "Business";
     const amount = formatUSD(offerAmount, { fallback: "$0.00" });
-    const lender =
+    const selectedFunder =
         String(funderName || "").trim() || CONTRACT_ENVELOPE_LENDER_NAME;
-    return `${lender}: ${business} ${amount}`;
+    return `${selectedFunder} ${business} ${amount}`;
 }
 
 /** ACH / standalone envelope subject / PDF name: {FunderName}: BusinessName - ACH */

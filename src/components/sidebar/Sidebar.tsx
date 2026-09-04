@@ -7,6 +7,7 @@ import People from "@mui/icons-material/People";
 import Dashboard from "@mui/icons-material/Dashboard";
 import Settings from "@mui/icons-material/Settings";
 import Notifications from "@mui/icons-material/Notifications";
+import MailOutline from "@mui/icons-material/MailOutline";
 import {
   Sidebar as UISidebar,
   SidebarHeader,
@@ -97,6 +98,7 @@ const sidebarSections: SidebarNavSection[] = [
       { label: "Dashboard", url: "/", icon: Dashboard },
       { label: "Notifications", url: "/notifications", icon: Notifications },
       { label: "Clients", url: "/clients", icon: People },
+      { label: "Letters", url: "/letter-generator", icon: MailOutline },
     ],
   },
   {
@@ -225,6 +227,10 @@ function isNavItemActive(
 
   if (item.url === "/notifications") {
     return pathname === "/notifications" || pathname.startsWith("/notifications/");
+  }
+
+  if (item.url === "/letter-generator") {
+    return pathname === "/letter-generator" || pathname.startsWith("/letter-generator/");
   }
 
   if (item.url === "/user-setting") {

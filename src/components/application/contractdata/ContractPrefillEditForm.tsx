@@ -67,8 +67,11 @@ import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_SEND_HISTORY_KEY,
+    applyOnlineBankingFromTabsToMainPrefill,
+    applySharedDbaToMappingBlob,
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasStateDisclosurePrefillFieldMap,
+    resolveSharedDbaValue,
     LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
     LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID,
     stripDocumentTemplateBlobFromPrefillOverrides,
@@ -216,9 +219,19 @@ const FIELD_LABELS = {
     achAuthorizationReferenceName2: "Name",
     achAuthorizationReferenceNumber2: "Phone",
     achAuthorizationReferenceRelationship2: "Relationship",
-    achAuthorizationReferenceName3: "Name",
-    achAuthorizationReferenceNumber3: "Phone",
-    achAuthorizationReferenceRelationship3: "Relationship",
+    achAuthorizationReferenceName3: "Contact name",
+    achAuthorizationReferenceNumber3: "Business phone",
+    achAuthorizationReferenceRelationship3: "Company name",
+    achAuthorizationReferenceName4: "Contact name",
+    achAuthorizationReferenceNumber4: "Business phone",
+    achAuthorizationReferenceRelationship4: "Company name",
+    landlordCompany: "Company name",
+    landlordContact: "Contact name",
+    landlordPhone: "Business number",
+    emergencyName: "Name",
+    emergencyRelationship: "Relationship",
+    emergencyPhone: "Phone number",
+    emergencyEmail: "Email",
     addendumDated: "Date",
     addendumDatedPrincipalOwner: "Owner",
     addendumDatedPrincipalBusiness: "Business",
@@ -441,7 +454,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
     {
         id: "ach_portal_refs",
         title: "ACH — Portal & references",
-        description: "Bank portal login, security questions, notes, and emergency contacts.",
+        description: "Bank portal login, personal and business references, landlord, and emergency contacts.",
         Icon: Globe,
         groups: [
             {
@@ -456,11 +469,48 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                 ],
             },
             {
-                heading: "Reference 1",
+                heading: "Personal reference 1",
                 keys: [
                     "achAuthorizationReferenceName1",
                     "achAuthorizationReferenceNumber1",
                     "achAuthorizationReferenceRelationship1",
+                ],
+            },
+            {
+                heading: "Personal reference 2",
+                keys: [
+                    "achAuthorizationReferenceName2",
+                    "achAuthorizationReferenceNumber2",
+                    "achAuthorizationReferenceRelationship2",
+                ],
+            },
+            {
+                heading: "Business reference 1",
+                keys: [
+                    "achAuthorizationReferenceRelationship3",
+                    "achAuthorizationReferenceName3",
+                    "achAuthorizationReferenceNumber3",
+                ],
+            },
+            {
+                heading: "Business reference 2",
+                keys: [
+                    "achAuthorizationReferenceRelationship4",
+                    "achAuthorizationReferenceName4",
+                    "achAuthorizationReferenceNumber4",
+                ],
+            },
+            {
+                heading: "Landlord contact",
+                keys: ["landlordCompany", "landlordContact", "landlordPhone"],
+            },
+            {
+                heading: "Emergency contact",
+                keys: [
+                    "emergencyName",
+                    "emergencyRelationship",
+                    "emergencyPhone",
+                    "emergencyEmail",
                 ],
             },
         ],
@@ -516,9 +566,19 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
         ],
     },
     {
+        id: "clientEmail",
+        label: "Client / guarantor email",
+        keys: ["clientEmail", "guarantorEmail"],
+    },
+    {
         id: "businessPhone",
-        label: "Business phone",
-        keys: ["clientPhone", "authorizedBusinessPhone", "achAuthorizationAccountHolderPhone"],
+        label: "Business / guarantor phone",
+        keys: [
+            "clientPhone",
+            "guarantorPhone",
+            "authorizedBusinessPhone",
+            "achAuthorizationAccountHolderPhone",
+        ],
     },
     {
         id: "street",
@@ -576,6 +636,125 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
         keys: ["agreementDate"],
     },
 ];
+
+/** Main-form fields that reappear on the selected addendum (Exhibit C / ACH Weekly). */
+const MAIN_TO_LINKED_DOC_FIELD_MATCHERS: Array<{
+    mainKey: ContractPrefillFormFieldKey;
+    match: (id: string) => boolean;
+    combineWith?: ContractPrefillFormFieldKey;
+    alsoKeys?: ContractPrefillFormFieldKey[];
+}> = [
+    {
+        mainKey: "achAuthorizationBankPortalWebsite",
+        match: (id) => /bank_portal|bankportal|portal_website|portal_url/i.test(id),
+    },
+    {
+        mainKey: "achAuthorizationUsername",
+        match: (id) => /(?:^|_)(?:ach_)?username(?:_|$)/i.test(id) || /^bankUsername$/i.test(id),
+    },
+    {
+        mainKey: "achAuthorizationPassword",
+        match: (id) => /(?:^|_)(?:ach_)?password(?:_|$)/i.test(id) || /^bankPassword$/i.test(id),
+    },
+    {
+        mainKey: "achAuthorizationSecurityQuestion1",
+        match: (id) => /security_q(?:uestion)?_?1|securityQa1/i.test(id),
+        combineWith: "achAuthorizationSecurityAnswer1",
+    },
+    {
+        mainKey: "achAuthorizationSecurityQuestion2",
+        match: (id) => /security_q(?:uestion)?_?2|securityQa2/i.test(id),
+        combineWith: "achAuthorizationSecurityAnswer2",
+    },
+    {
+        mainKey: "doingBusinessAs",
+        match: (id) => /(?:^|_)dba(?:_|$)|doing_business|account_holder_dba|holder_dba|merchant_dba/i.test(id),
+        alsoKeys: ["achAuthorizationAccountHolderDba", "securityDoingBusinessAs"],
+    },
+    {
+        mainKey: "clientEmail",
+        match: (id) => /(?:client_email|billing_email|merchant_contact_email)/i.test(id),
+    },
+    {
+        mainKey: "clientPhone",
+        match: (id) => /(?:client_phone|billing_phone|merchant_contact_phone)/i.test(id),
+    },
+];
+
+function linkedDocValueFromMain(
+    matcher: (typeof MAIN_TO_LINKED_DOC_FIELD_MATCHERS)[number],
+    main: Record<string, string>,
+    typed?: { key: ContractPrefillFormFieldKey; value: string },
+): string {
+    const read = (key: ContractPrefillFormFieldKey) =>
+        typed?.key === key ? typed.value : String(main[key] ?? "");
+    const primary =
+        read(matcher.mainKey).trim() ||
+        (matcher.alsoKeys ?? []).map(read).map((v) => v.trim()).find(Boolean) ||
+        "";
+    if (!matcher.combineWith) return primary;
+    const secondary = read(matcher.combineWith).trim();
+    if (primary && secondary) return `${primary} / ${secondary}`;
+    return primary || secondary;
+}
+
+function overlayLinkedDocFieldsFromMain(
+    linked: Record<string, string>,
+    main: Record<string, string>,
+    options?: {
+        emptyOnly?: boolean;
+        typed?: { key: ContractPrefillFormFieldKey; value: string };
+        knownIds?: string[];
+    },
+): Record<string, string> {
+    const next = { ...linked };
+    for (const id of options?.knownIds ?? []) {
+        if (!(id in next)) next[id] = "";
+    }
+    const emptyOnly = options?.emptyOnly === true;
+    const ids = Object.keys(next);
+    if (ids.length === 0) return next;
+    for (const matcher of MAIN_TO_LINKED_DOC_FIELD_MATCHERS) {
+        if (
+            options?.typed &&
+            matcher.mainKey !== options.typed.key &&
+            matcher.combineWith !== options.typed.key &&
+            !(matcher.alsoKeys ?? []).includes(options.typed.key)
+        ) {
+            continue;
+        }
+        const source = linkedDocValueFromMain(matcher, main, options?.typed);
+        if (!source) continue;
+        for (const id of ids) {
+            if (!matcher.match(id)) continue;
+            if (emptyOnly && String(next[id] ?? "").trim()) continue;
+            next[id] = source;
+        }
+    }
+    return next;
+}
+
+function mainUpdatesFromLinkedDocField(
+    linkedId: string,
+    value: string,
+): Partial<Record<ContractPrefillFormFieldKey, string>> {
+    const updates: Partial<Record<ContractPrefillFormFieldKey, string>> = {};
+    for (const matcher of MAIN_TO_LINKED_DOC_FIELD_MATCHERS) {
+        if (!matcher.match(linkedId)) continue;
+        updates[matcher.mainKey] = value;
+        for (const also of matcher.alsoKeys ?? []) updates[also] = value;
+        if (matcher.mainKey === "doingBusinessAs") {
+            updates.achAuthorizationAccountHolderDba = value;
+        }
+        if (matcher.mainKey === "clientEmail") updates.guarantorEmail = value;
+        if (matcher.mainKey === "clientPhone") {
+            updates.guarantorPhone = value;
+            updates.authorizedBusinessPhone = value;
+            updates.achAuthorizationAccountHolderPhone = value;
+        }
+    }
+    return updates;
+}
 
 /** Shared logical values — mirrored on every keystroke (Katan-style sync across sections). */
 const PREFILL_REALTIME_MIRROR_BY_KEY = (() => {
@@ -676,6 +855,19 @@ function overlayAddendumBlobOntoMainPrefill(
         "ach_bank_account_p1",
         "ach_authorization_account_holder_bank_account_number",
     );
+    applyOnlineBankingFromTabsToMainPrefill(merged, fromAddendum);
+    if (!String(merged.achAuthorizationBankPortalWebsite ?? "").trim()) {
+        const portal = firstBlobValueMatching(fromAddendum, [/bank_portal|portal_website|portal_url/i]);
+        if (portal) merged.achAuthorizationBankPortalWebsite = portal;
+    }
+    if (!String(merged.achAuthorizationUsername ?? "").trim()) {
+        const username = firstBlobValueMatching(fromAddendum, [/(?:^|_)(?:ach_)?username(?:_|$)/i]);
+        if (username) merged.achAuthorizationUsername = username;
+    }
+    if (!String(merged.achAuthorizationPassword ?? "").trim()) {
+        const password = firstBlobValueMatching(fromAddendum, [/(?:^|_)(?:ach_)?password(?:_|$)/i]);
+        if (password) merged.achAuthorizationPassword = password;
+    }
 }
 
 function copySharedPrefillAliases(
@@ -700,6 +892,13 @@ function copySharedPrefillAliases(
     fill("authorizationClientBankName", "achAuthorizationAccountHolderBankName");
     fill("authorizationClientBankRouting", "achAuthorizationAccountHolderBankRoutingNumber");
     fill("authorizationClientBankAccount", "achAuthorizationAccountHolderBankAccountNumber");
+    fill("guarantorEmail", "clientEmail");
+    fill("clientEmail", "guarantorEmail");
+    fill("guarantorPhone", "clientPhone");
+    fill("authorizedBusinessPhone", "clientPhone");
+    fill("achAuthorizationAccountHolderPhone", "clientPhone");
+    fill("clientPhone", "guarantorPhone");
+    fill("clientPhone", "authorizedBusinessPhone");
     const frequency = coercePaymentFrequencyLabel(next.frequency);
     if (frequency) next.frequency = frequency;
     return next;
@@ -1258,6 +1457,8 @@ export function ContractPrefillEditForm({
 }: ContractPrefillEditFormProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
+    const valuesRef = useRef(values);
+    valuesRef.current = values;
     const [addendumFieldValues, setAddendumFieldValues] = useState<Record<string, string>>({});
     const [disclosureFieldValues, setDisclosureFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
@@ -1316,6 +1517,7 @@ export function ContractPrefillEditForm({
             application: applicationData as Record<string, unknown> | null,
             agreementDate: agreementDateForDefaults,
             mainPrefillOverrides: strippedMainPrefillOverrides ?? undefined,
+            siblingPrefillByMappingId: documentTemplatePrefillByMappingId,
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
         });
@@ -1629,11 +1831,13 @@ export function ContractPrefillEditForm({
                 ]),
             ),
         );
-        setValues(mergeFormState({ ...merged, ...aliased }));
+        const nextValues = mergeFormState({ ...merged, ...aliased });
+        setValues(nextValues);
         setFieldErrors({});
         if (forceLiveOfferMoney) {
             toast.success("Reloaded offer & deal terms from the application.");
         }
+        return nextValues;
     }, [
         applicationData,
         contractRecords,
@@ -1647,9 +1851,18 @@ export function ContractPrefillEditForm({
         documentTemplatePrefillByMappingId,
     ]);
 
-    const resetAddendumFromSources = useCallback(() => {
-        setAddendumFieldValues(Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""])));
-    }, [addendumEditorRows]);
+    const resetAddendumFromSources = useCallback(
+        (mainValues?: Record<string, string>) => {
+            const fromRows = Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""]));
+            setAddendumFieldValues(
+                overlayLinkedDocFieldsFromMain(fromRows, mainValues ?? valuesRef.current, {
+                    emptyOnly: true,
+                    knownIds: addendumEditorRows.map((r) => String(r.id)),
+                }),
+            );
+        },
+        [addendumEditorRows],
+    );
 
     const resetDisclosureFromSources = useCallback(() => {
         setDisclosureFieldValues(
@@ -1679,8 +1892,8 @@ export function ContractPrefillEditForm({
         if (!formReady) return;
         if (openedHydratedRef.current) return;
         openedHydratedRef.current = true;
-        resetFromSourcesRef.current();
-        resetAddendumFromSourcesRef.current();
+        const nextMain = resetFromSourcesRef.current();
+        resetAddendumFromSourcesRef.current(nextMain);
         resetDisclosureFromSourcesRef.current();
         prevActiveOwnerCountRef.current = activeOwnerCount;
         // Intentionally omit persistedPrefillOverrides — re-hydrating on parent updates resets in-progress edits.
@@ -1772,6 +1985,18 @@ export function ContractPrefillEditForm({
         activeIdx >= 0 && activeIdx < navSections.length - 1 ? navSections[activeIdx + 1] : null;
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
     const isLinkedDisclosureSection = activeSectionId === LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID;
+
+    useEffect(() => {
+        if (!open || !isLinkedAddendumSection || addendumEditorRows.length === 0) return;
+        setAddendumFieldValues((prev) =>
+            overlayLinkedDocFieldsFromMain(prev, valuesRef.current, {
+                emptyOnly: true,
+                knownIds: addendumEditorRows.map((r) => String(r.id)),
+            }),
+        );
+        // Intentionally only when entering the addendum stage.
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- live typing already mirrors via setField
+    }, [open, isLinkedAddendumSection]);
 
     /** After validation jumps sections, scroll/focus the first highlighted input. */
     useEffect(() => {
@@ -1929,7 +2154,13 @@ export function ContractPrefillEditForm({
             toast.info("Shared fields on this stage already match every other stage.");
             return;
         }
-        setValues((prev) => ({ ...prev, ...updates }));
+        const nextMain = { ...values, ...updates };
+        setValues(nextMain);
+        setAddendumFieldValues((linked) =>
+            overlayLinkedDocFieldsFromMain(linked, nextMain, {
+                knownIds: addendumEditorRows.map((r) => String(r.id)),
+            }),
+        );
         setFieldErrors((prev) => {
             const next = { ...prev };
             for (const k of Object.keys(updates) as (keyof BuildContractPrefillFieldsArgs)[]) {
@@ -1986,7 +2217,14 @@ export function ContractPrefillEditForm({
                     : {};
             const nextBlob = { ...existingBlob };
             if (linkedAddendumMapping?.id && addendumEditorRows.length > 0) {
-                const addendumValues = { ...addendumFieldValues };
+                const addendumValues = overlayLinkedDocFieldsFromMain(
+                    { ...addendumFieldValues },
+                    aliased,
+                    {
+                        emptyOnly: true,
+                        knownIds: addendumEditorRows.map((r) => String(r.id)),
+                    },
+                );
                 const remainingBalance =
                     String(
                         addendumValues.purchase_price ??
@@ -2006,12 +2244,26 @@ export function ContractPrefillEditForm({
             ) {
                 nextBlob[linkedDisclosureMapping.id] = { ...disclosureFieldValues };
             }
+            const sharedDba = resolveSharedDbaValue({
+                mainPrefill: aliased,
+                contract: resolvedContract,
+                mappingBlobs: nextBlob,
+            });
+            if (sharedDba) {
+                Object.assign(nextBlob, applySharedDbaToMappingBlob(nextBlob, sharedDba));
+            }
             const contractPrefillOverrides: Record<string, unknown> = {
                 ...pickPreservedContractPrefillMeta(
                     resolvedContract,
                     liveContractSignerOverrides,
                 ),
                 ...(payload as Record<string, unknown>),
+                ...(sharedDba
+                    ? {
+                          doingBusinessAs: sharedDba,
+                          achAuthorizationAccountHolderDba: sharedDba,
+                      }
+                    : {}),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
             };
             const netToMerchantRaw = String(
@@ -2260,28 +2512,32 @@ export function ContractPrefillEditForm({
             if (key === "purchasePercent") {
                 purchasePercentTouchedRef.current = true;
             }
-            setValues((prev) => {
-                const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {
-                    [key]: v,
-                };
-                const mirrorKeys = PREFILL_REALTIME_MIRROR_BY_KEY.get(key as ContractPrefillFormFieldKey);
-                if (mirrorKeys) {
-                    for (const mirrorKey of mirrorKeys) {
-                        if (mirrorKey === key) continue;
-                        if (
-                            !showSecondPartyFields &&
-                            (owner2KeySet.has(mirrorKey) || guarantor2KeySet.has(mirrorKey))
-                        ) {
-                            continue;
-                        }
-                        updates[mirrorKey] = v;
+            const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {
+                [key]: v,
+            };
+            const mirrorKeys = PREFILL_REALTIME_MIRROR_BY_KEY.get(key as ContractPrefillFormFieldKey);
+            if (mirrorKeys) {
+                for (const mirrorKey of mirrorKeys) {
+                    if (mirrorKey === key) continue;
+                    if (
+                        !showSecondPartyFields &&
+                        (owner2KeySet.has(mirrorKey) || guarantor2KeySet.has(mirrorKey))
+                    ) {
+                        continue;
                     }
+                    updates[mirrorKey] = v;
                 }
-                return { ...prev, ...updates };
-            });
+            }
+            const nextMain = { ...valuesRef.current, ...updates };
+            setValues(nextMain);
+            setAddendumFieldValues((linked) =>
+                overlayLinkedDocFieldsFromMain(linked, nextMain, {
+                    typed: { key: key as ContractPrefillFormFieldKey, value: v },
+                    knownIds: addendumEditorRows.map((r) => String(r.id)),
+                }),
+            );
             setSaveError(null);
             setFieldErrors((prev) => {
-                const mirrorKeys = PREFILL_REALTIME_MIRROR_BY_KEY.get(key as ContractPrefillFormFieldKey);
                 if (!prev[key] && !mirrorKeys?.some((k) => prev[k])) return prev;
                 const next = { ...prev };
                 delete next[key];
@@ -2291,7 +2547,7 @@ export function ContractPrefillEditForm({
                 return next;
             });
         },
-        [showSecondPartyFields, owner2KeySet, guarantor2KeySet],
+        [showSecondPartyFields, owner2KeySet, guarantor2KeySet, addendumEditorRows],
     );
 
     return (
@@ -2476,12 +2732,31 @@ export function ContractPrefillEditForm({
                                                 <Input
                                                     id={`addendum-prefill-${row.id}`}
                                                     value={addendumFieldValues[row.id] ?? ""}
-                                                    onChange={(e) =>
+                                                    onChange={(e) => {
+                                                        const nextValue = e.target.value;
                                                         setAddendumFieldValues((prev) => ({
                                                             ...prev,
-                                                            [row.id]: e.target.value,
-                                                        }))
-                                                    }
+                                                            [row.id]: nextValue,
+                                                        }));
+                                                        const mainUpdates = mainUpdatesFromLinkedDocField(
+                                                            String(row.id),
+                                                            nextValue,
+                                                        );
+                                                        if (Object.keys(mainUpdates).length === 0) return;
+                                                        setValues((prev) => {
+                                                            const next = { ...prev, ...mainUpdates };
+                                                            for (const [k, val] of Object.entries(mainUpdates)) {
+                                                                const mirrors = PREFILL_REALTIME_MIRROR_BY_KEY.get(
+                                                                    k as ContractPrefillFormFieldKey,
+                                                                );
+                                                                if (!mirrors) continue;
+                                                                for (const mk of mirrors) {
+                                                                    next[mk] = val;
+                                                                }
+                                                            }
+                                                            return next;
+                                                        });
+                                                    }}
                                                     disabled={readOnly}
                                                     className="h-9 text-sm"
                                                 />
