@@ -1033,7 +1033,7 @@ export const parseApplicationPdfForClientPrefill = createAsyncThunk(
                 formData,
                 { timeout: 180000 },
             );
-            void invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Parse application PDF error:', error);

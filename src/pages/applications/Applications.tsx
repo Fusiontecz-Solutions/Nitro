@@ -26,6 +26,7 @@ import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
   claimUnderwriterDeal,
+  getApplications,
   getApplicationStats,
   deleteApplication,
   permanentlyDeleteApplication,
@@ -80,7 +81,9 @@ import {
 } from "@/constants/dashboardApplicationsNavigation";
 import {
   applicationsListParamsCacheKey,
+  invalidateApplicationsListCache,
 } from "@/lib/applicationsListCache";
+import { invalidateDashboardData } from "@/lib/invalidateDashboardData";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 import {
   parseApplicationsListRouteFilters,
@@ -1266,33 +1269,48 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
     setExpandedProgressRowId(null);
   }, [pagination.pageIndex, listFetchKey]);
 
-  const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
+  useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
   });
 
   const fetchApplications = useCallback(async () => {
-    await applicationsListQuery.refetch();
-  }, [applicationsListQuery]);
+    invalidateApplicationsListCache();
+    await dispatch(
+      getApplications({ ...listFetchParams, skipListCache: true }),
+    ).unwrap();
+  }, [dispatch, listFetchParams]);
 
   fetchApplicationsRef.current = fetchApplications;
 
-  /** Sync one-time refresh flag cleanup after query-triggered fetch. */
+  /** After create/update, drop caches and reload the table immediately. */
   useEffect(() => {
     if (!isListFilterInitialized) return;
     const refreshList = Boolean(
       (location.state as { refreshApplicationsList?: boolean } | null)
         ?.refreshApplicationsList,
     );
-    if (refreshList) {
-      navigate(
-        { pathname: location.pathname, search: location.search },
-        { replace: true, state: {} },
-      );
-    }
+    if (!refreshList) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await fetchApplicationsRef.current?.();
+        if (cancelled) return;
+        invalidateDashboardData(dispatch);
+        void dispatch(fetchOperationsDashboardSummary());
+      } finally {
+        if (cancelled) return;
+        navigate(
+          { pathname: location.pathname, search: location.search },
+          { replace: true, state: {} },
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
-    fetchApplications,
+    dispatch,
     isListFilterInitialized,
-    listFetchKey,
     location.pathname,
     location.search,
     location.state,

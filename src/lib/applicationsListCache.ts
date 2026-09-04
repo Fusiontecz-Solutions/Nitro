@@ -11,6 +11,7 @@ import {
 } from "@/lib/persistentCache/idbStore";
 import { invalidateApplicationsListQueries } from "@/lib/applicationsListQuerySync";
 import { invalidateUnderwriterPipelineCounts } from "@/lib/underwriterPipelineCounts";
+import { invalidateHttpGetCacheForResource } from "@/lib/httpGetCache";
 
 const TTL_MS = 60_000;
 const MAX_ENTRIES = 40;
@@ -194,6 +195,7 @@ export function coalesceApplicationsListFetch(
 export function invalidateApplicationsListCache() {
   cache.clear();
   void idbClearNamespace(IDB_NAMESPACE);
+  invalidateHttpGetCacheForResource("applications");
   invalidateApplicationsListQueries();
   invalidateUnderwriterPipelineCounts();
 }

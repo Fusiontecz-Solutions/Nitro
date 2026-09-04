@@ -118,17 +118,28 @@ export function clearHttpGetCache(): void {
   memory.clear();
 }
 
+/** Drop cached GETs whose key mentions this resource path segment. */
+export function invalidateHttpGetCacheForResource(resource: string): void {
+  const needle = String(resource || "").replace(/^\//, "").split("/")[0];
+  if (!needle) return;
+  for (const key of [...memory.keys()]) {
+    if (key.includes(needle)) memory.delete(key);
+  }
+}
+
 /** Drop cached GETs for the mutated resource family only. */
 export function invalidateHttpGetCacheByUrl(url: string): void {
   const path = String(url || "").split("?")[0].replace(/^\//, "");
   if (!path) return;
   const family = path.split("/").slice(0, 2).join("/");
   const related = new Set<string>([path, family].filter(Boolean));
-  if (family.startsWith("clients") || path.includes("/clients")) {
+  if (family.includes("clients") || path.includes("/clients")) {
     related.add("applications");
-  }
-  if (family.startsWith("applications") || path.includes("/applications")) {
     related.add("clients");
+  }
+  if (family.includes("applications") || path.includes("/applications")) {
+    related.add("clients");
+    related.add("applications");
   }
   for (const key of [...memory.keys()]) {
     if ([...related].some((part) => key.includes(part))) {

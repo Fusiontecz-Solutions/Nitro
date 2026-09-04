@@ -8,6 +8,8 @@ import {
     prependNotification,
     type Notification,
 } from "@/redux/slices/notificationSlice";
+import { invalidateApplicationsListCache } from "@/lib/applicationsListCache";
+import { invalidateDashboardData } from "@/lib/invalidateDashboardData";
 
 /**
  * Real-time notifications bridge.
@@ -86,6 +88,11 @@ const RealtimeNotificationsListener = () => {
 
             // Reconcile into the inbox immediately for badge / dropdown / page.
             dispatch(prependNotification(incoming));
+
+            if (String(incoming.type || "").toLowerCase() === "application_created") {
+                invalidateApplicationsListCache();
+                invalidateDashboardData(dispatch);
+            }
 
             const role = userRoleRef.current;
             const kind = event?.meta?.realtimeKind;

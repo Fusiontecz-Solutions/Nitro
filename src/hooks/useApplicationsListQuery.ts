@@ -31,6 +31,7 @@ export function useApplicationsListQuery(
       return dispatch(getApplications(params)).unwrap();
     },
     staleTime: QUERY_STALE_TIME_MS,
-    refetchOnWindowFocus: false,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
 }
