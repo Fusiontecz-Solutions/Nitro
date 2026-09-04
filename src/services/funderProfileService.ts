@@ -47,6 +47,11 @@ function toStatesJson(
   return states.map((s) => String(s).trim()).filter(Boolean);
 }
 
+export type SignNowTemplateLinkItem = {
+  name: string;
+  link: string;
+};
+
 export type FunderProfileInput = {
   name: string;
   displayName?: string | null;
@@ -85,7 +90,45 @@ export type FunderProfileInput = {
   letterWireCityStateZip?: string | null;
   letterWireRoutingNumber?: string | null;
   letterWireAccountNumber?: string | null;
+  signnowContractTemplateLink?: string | null;
+  signnowAddendumTemplates?: SignNowTemplateLinkItem[] | null;
+  signnowDisclosureTemplates?: SignNowTemplateLinkItem[] | null;
 };
+
+function normalizeSignNowTemplateLinkItems(
+  raw: unknown,
+): SignNowTemplateLinkItem[] {
+  let list: unknown[] = [];
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) list = parsed;
+    } catch {
+      list = [];
+    }
+  }
+
+  return list
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const row = item as Record<string, unknown>;
+      const name = String(row.name ?? '').trim();
+      const link = String(row.link ?? row.url ?? row.templateLink ?? '').trim();
+      if (!name && !link) return null;
+      return { name, link };
+    })
+    .filter((item): item is SignNowTemplateLinkItem => Boolean(item));
+}
+
+function toSignNowTemplateLinksJson(
+  raw: unknown,
+): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  const items = normalizeSignNowTemplateLinkItems(raw);
+  if (!items.length) return Prisma.JsonNull;
+  return items;
+}
 
 function normalizeStateToken(state?: string | null): string {
   return normalizeContractStateToken(state);
@@ -203,6 +246,16 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
       row.letterWireRoutingNumber != null ? String(row.letterWireRoutingNumber) : null,
     letterWireAccountNumber:
       row.letterWireAccountNumber != null ? String(row.letterWireAccountNumber) : null,
+    signnowContractTemplateLink:
+      row.signnowContractTemplateLink != null
+        ? String(row.signnowContractTemplateLink)
+        : null,
+    signnowAddendumTemplates: normalizeSignNowTemplateLinkItems(
+      row.signnowAddendumTemplates,
+    ),
+    signnowDisclosureTemplates: normalizeSignNowTemplateLinkItems(
+      row.signnowDisclosureTemplates,
+    ),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -1125,6 +1178,15 @@ export async function createFunderProfile(input: FunderProfileInput) {
       letterWireAccountNumber: input.letterWireAccountNumber
         ? String(input.letterWireAccountNumber).trim()
         : null,
+      signnowContractTemplateLink: input.signnowContractTemplateLink
+        ? String(input.signnowContractTemplateLink).trim()
+        : null,
+      signnowAddendumTemplates: toSignNowTemplateLinksJson(
+        input.signnowAddendumTemplates,
+      ),
+      signnowDisclosureTemplates: toSignNowTemplateLinksJson(
+        input.signnowDisclosureTemplates,
+      ),
     },
     include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
@@ -1291,6 +1353,21 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
     data.letterWireAccountNumber = input.letterWireAccountNumber
       ? String(input.letterWireAccountNumber).trim()
       : null;
+  }
+  if (input.signnowContractTemplateLink !== undefined) {
+    data.signnowContractTemplateLink = input.signnowContractTemplateLink
+      ? String(input.signnowContractTemplateLink).trim()
+      : null;
+  }
+  if (input.signnowAddendumTemplates !== undefined) {
+    data.signnowAddendumTemplates = toSignNowTemplateLinksJson(
+      input.signnowAddendumTemplates,
+    );
+  }
+  if (input.signnowDisclosureTemplates !== undefined) {
+    data.signnowDisclosureTemplates = toSignNowTemplateLinksJson(
+      input.signnowDisclosureTemplates,
+    );
   }
 
   const row = await prisma.funderProfile.update({

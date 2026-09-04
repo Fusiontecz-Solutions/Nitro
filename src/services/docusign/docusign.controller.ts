@@ -1,7 +1,12 @@
 import type { Request, Response } from 'express';
+import prisma from '../../config/prismaClient';
 import { DocusignService } from './docusign.service';
 import { formatDocusignRouteError } from './utils/docusign-client';
-import { isSignNowConfigured, isSignNowEnvelopeId } from '../signnow/utils/signnow-client';
+import {
+  extractSignNowTemplateId,
+  isSignNowConfigured,
+  isSignNowEnvelopeId,
+} from '../signnow/utils/signnow-client';
 import { signNowService } from '../signnow/signnow.service';
 import { resolveSignNowAddendumTemplate } from '../signnow/utils/signnow-addendum-templates';
 import { isAchStandaloneLayoutRef } from './utils/standalone-package-docusign';
@@ -353,17 +358,60 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
     }
     const ref = String(templateId).trim();
     const signNowAddendum = resolveSignNowAddendumTemplate(ref);
+    const signNowContractTemplateQuery =
+      typeof req.query.signnowTemplateId === 'string'
+        ? req.query.signnowTemplateId.trim()
+        : '';
+    const funderProfileIdForSignNow =
+      typeof req.query.funderProfileId === 'string'
+        ? req.query.funderProfileId.trim()
+        : '';
+    const isSignNowContractRef = /^signnow-contract$/i.test(ref);
+    const rawSignNowTemplateId = extractSignNowTemplateId(ref);
     const signNowPreview =
       isSignNowConfigured() &&
-      (/^signnow-contract$/i.test(ref) || Boolean(signNowAddendum));
+      (isSignNowContractRef || Boolean(signNowAddendum) || Boolean(rawSignNowTemplateId));
     if (signNowPreview) {
-      const pdfBuffer = signNowAddendum
-        ? await signNowService.downloadGroupTemplatePdf(ref)
-        : await signNowService.downloadAgreementPdf();
+      if (signNowAddendum) {
+        const pdfBuffer = await signNowService.downloadGroupTemplatePdf(ref);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `inline; filename="${signNowAddendum.name}.pdf"`,
+        );
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        return res.send(pdfBuffer);
+      }
+
+      let contractTemplateId = signNowContractTemplateQuery || rawSignNowTemplateId;
+      let previewFileName = 'Agreement.pdf';
+      if (funderProfileIdForSignNow) {
+        const funder = await prisma.funderProfile.findUnique({
+          where: { id: funderProfileIdForSignNow },
+          select: {
+            name: true,
+            signnowContractTemplateLink: true,
+          },
+        });
+        const funderTemplateId = extractSignNowTemplateId(
+          funder?.signnowContractTemplateLink,
+        );
+        if (funderTemplateId) {
+          contractTemplateId = funderTemplateId;
+        }
+        if (funder?.name) previewFileName = `Agreement - ${funder.name}.pdf`;
+      }
+      if (!contractTemplateId) {
+        return res.status(400).json({
+          message:
+            'No SignNow contract template is configured for this funder (Settings → Funders).',
+        });
+      }
+      const pdfBuffer = await signNowService.downloadAgreementPdf(contractTemplateId);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${signNowAddendum ? signNowAddendum.name : 'Agreement - Nitro Advance'}.pdf"`,
+        `inline; filename="${previewFileName}"`,
       );
       res.setHeader('Cache-Control', 'private, max-age=3600');
       return res.send(pdfBuffer);

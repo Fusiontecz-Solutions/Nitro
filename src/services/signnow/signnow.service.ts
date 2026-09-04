@@ -19,6 +19,7 @@ import {
 import { buildContractEnvelopeEmailSubject } from '../../utils/contractEnvelopeEmailSubject';
 import {
   createSignNowApiClient,
+  extractSignNowTemplateId,
   isSignNowConfigured,
   isSignNowDailyLimitError,
   isSignNowEnvelopeId,
@@ -807,9 +808,10 @@ function hasActiveEmbeddedInvites(payload: unknown): boolean {
 }
 
 let cachedAgreementDocumentId = '';
-let cachedAgreementPdf: { buffer: Buffer; at: number } | null = null;
+const cachedAgreementDocumentIdByTemplate = new Map<string, string>();
+const cachedAgreementPdfByTemplate = new Map<string, { buffer: Buffer; at: number }>();
+const agreementPdfInflightByTemplate = new Map<string, Promise<Buffer>>();
 const cachedAddendumPdf = new Map<string, { buffer: Buffer; at: number }>();
-let agreementPdfInflight: Promise<Buffer> | null = null;
 const addendumPdfInflight = new Map<string, Promise<Buffer>>();
 /** Blank template PDFs change rarely — keep them warm so View Contract is instant. */
 const AGREEMENT_PDF_TTL_MS = 6 * 60 * 60 * 1000;
@@ -828,28 +830,41 @@ export class SignNowService {
     return isSignNowConfigured();
   }
 
-  /** Blank Agreement PDF from the SignNow document-group template (for CRM preview). */
-  async downloadAgreementPdf(): Promise<Buffer> {
-    const now = Date.now();
-    if (cachedAgreementPdf && now - cachedAgreementPdf.at < AGREEMENT_PDF_TTL_MS) {
-      return cachedAgreementPdf.buffer;
+  /** Blank Agreement PDF from a SignNow document-group template (for CRM preview). */
+  async downloadAgreementPdf(templateId?: string | null): Promise<Buffer> {
+    const resolvedTemplateId =
+      extractSignNowTemplateId(templateId) || SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID;
+    if (!resolvedTemplateId) {
+      throw new BadRequestException(
+        'No SignNow main contract template id was provided.',
+      );
     }
-    if (agreementPdfInflight) return agreementPdfInflight;
-    agreementPdfInflight = this.fetchAgreementPdfUncached(now).finally(() => {
-      agreementPdfInflight = null;
+    const now = Date.now();
+    const cached = cachedAgreementPdfByTemplate.get(resolvedTemplateId);
+    if (cached && now - cached.at < AGREEMENT_PDF_TTL_MS) {
+      return cached.buffer;
+    }
+    const inflight = agreementPdfInflightByTemplate.get(resolvedTemplateId);
+    if (inflight) return inflight;
+    const pending = this.fetchAgreementPdfUncached(now, resolvedTemplateId).finally(() => {
+      agreementPdfInflightByTemplate.delete(resolvedTemplateId);
     });
-    return agreementPdfInflight;
+    agreementPdfInflightByTemplate.set(resolvedTemplateId, pending);
+    return pending;
   }
 
-  private async fetchAgreementPdfUncached(now: number): Promise<Buffer> {
+  private async fetchAgreementPdfUncached(
+    now: number,
+    templateId: string,
+  ): Promise<Buffer> {
     const client = await createSignNowApiClient();
-    const documentId = await this.resolveAgreementDocumentId(client);
+    const documentId = await this.resolveAgreementDocumentId(client, templateId);
     const buffer = await this.downloadDocumentPdfBuffer(
       client,
       documentId,
-      'Agreement - Nitro Advance',
+      'Agreement',
     );
-    cachedAgreementPdf = { buffer, at: now };
+    cachedAgreementPdfByTemplate.set(templateId, { buffer, at: now });
     return buffer;
   }
 
@@ -884,14 +899,29 @@ export class SignNowService {
 
   private async resolveAgreementDocumentId(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    templateId?: string | null,
   ): Promise<string> {
-    if (cachedAgreementDocumentId) return cachedAgreementDocumentId;
+    const resolvedTemplateId =
+      extractSignNowTemplateId(templateId) || SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID;
+    if (!resolvedTemplateId) {
+      throw new BadRequestException(
+        'No SignNow main contract template id is configured.',
+      );
+    }
+    if (resolvedTemplateId === SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID && cachedAgreementDocumentId) {
+      return cachedAgreementDocumentId;
+    }
+    const cached = cachedAgreementDocumentIdByTemplate.get(resolvedTemplateId);
+    if (cached) return cached;
     const origin = await this.resolveGroupTemplateOriginDocumentId(
       client,
-      SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID,
+      resolvedTemplateId,
     );
-    cachedAgreementDocumentId = origin;
-    return cachedAgreementDocumentId;
+    cachedAgreementDocumentIdByTemplate.set(resolvedTemplateId, origin);
+    if (resolvedTemplateId === SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID) {
+      cachedAgreementDocumentId = origin;
+    }
+    return origin;
   }
 
   async createContractFromGroupTemplate(
@@ -933,7 +963,41 @@ export class SignNowService {
       String(options.title || '').trim() ||
       buildContractEnvelopeEmailSubject(signers[0].name, null, options.funderName);
     const includeMainContract = options.sendPackage?.includeMainContract !== false;
-    const supplementals = resolveSignNowAddendaFromRefs(options.supplementalDocumentRefs);
+    const funderProfileId = String(options.funderProfileId || '').trim();
+    const funderRow = funderProfileId
+      ? await prisma.funderProfile.findUnique({
+          where: { id: funderProfileId },
+          select: {
+            id: true,
+            name: true,
+            signnowContractTemplateLink: true,
+            signnowAddendumTemplates: true,
+            signnowDisclosureTemplates: true,
+          },
+        })
+      : null;
+    const funderContractTemplateId = extractSignNowTemplateId(
+      funderRow?.signnowContractTemplateLink,
+    );
+    // Never silently fall back to the Nitro/platform DGT when a funder is selected.
+    if (funderProfileId && !funderContractTemplateId) {
+      throw new BadRequestException(
+        `No SignNow main contract template is configured for ${
+          funderRow?.name || 'this funder'
+        } (Settings → Funders).`,
+      );
+    }
+    const resolvedContractTemplateId =
+      funderContractTemplateId || SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID;
+    if (!resolvedContractTemplateId) {
+      throw new BadRequestException(
+        'No SignNow main contract template is configured (Settings → Funders).',
+      );
+    }
+    const supplementals = resolveSignNowAddendaFromRefs(
+      options.supplementalDocumentRefs,
+      funderRow,
+    );
     const toAttach = supplementals.filter((row) => {
       if (row.type === 'disclosure') {
         return options.sendPackage?.includeDisclosure !== false;
@@ -986,8 +1050,13 @@ export class SignNowService {
               ),
             )
           : null;
+        console.info('[SignNow] creating contract group from funder/template', {
+          funderProfileId: funderRow?.id || null,
+          funderName: funderRow?.name || options.funderName || null,
+          contractTemplateId: resolvedContractTemplateId,
+        });
         const createRes = await client.post(
-          `/v2/document-group-templates/${SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID}/document-group`,
+          `/v2/document-group-templates/${resolvedContractTemplateId}/document-group`,
           { group_name: groupName },
           { validateStatus: () => true },
         );
