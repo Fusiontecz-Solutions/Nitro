@@ -477,6 +477,97 @@ class ContractService {
   }
 
   /**
+   * Replace every mapping of `documentType` with `templateRefs` in one round trip.
+   * Used by the addendum multi-select so five checkboxes do not fire five POSTs.
+   */
+  async replaceContractDocumentTemplateMappings(data: {
+    contractId: number;
+    documentType: string;
+    templateRefs: string[];
+  }) {
+    const contractId = Number(data.contractId);
+    if (!Number.isFinite(contractId) || contractId <= 0) {
+      throw new Error('Contract not found');
+    }
+    const documentType = String(data.documentType || '').trim() || 'other';
+    const nextRefs = [
+      ...new Set(
+        (Array.isArray(data.templateRefs) ? data.templateRefs : [])
+          .map((ref) => String(ref || '').trim())
+          .filter(Boolean),
+      ),
+    ];
+
+    const contract = await (prisma as any).contract.findUnique({
+      where: { id: contractId },
+      select: { id: true },
+    });
+    if (!contract) {
+      throw new Error('Contract not found');
+    }
+
+    const existing = await (prisma as any).contractDocumentTemplateMapping.findMany({
+      where: { contractId, documentType },
+      select: { id: true, templateId: true, order: true },
+      orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    const resolved = await Promise.all(
+      nextRefs.map(async (templateRef) => ({
+        templateRef,
+        templateId: await this.resolveBoldSignTemplateRowId(templateRef),
+      })),
+    );
+    const wantedIds = resolved.map((row) => row.templateId);
+    const wantedSet = new Set(wantedIds);
+
+    const seenKeep = new Set<string>();
+    const deleteIds: string[] = [];
+    for (const row of existing) {
+      const tid = String(row.templateId || '');
+      if (!wantedSet.has(tid) || seenKeep.has(tid)) {
+        deleteIds.push(row.id);
+        continue;
+      }
+      seenKeep.add(tid);
+    }
+
+    if (deleteIds.length) {
+      await (prisma as any).contractDocumentTemplateMapping.deleteMany({
+        where: { id: { in: deleteIds } },
+      });
+    }
+
+    const remainingTids = new Set(
+      existing
+        .filter((row: { id: string }) => !deleteIds.includes(row.id))
+        .map((row: { templateId: string }) => row.templateId),
+    );
+    const toCreate = resolved.filter((row) => !remainingTids.has(row.templateId));
+    if (toCreate.length) {
+      const maxOrderRow = await (prisma as any).contractDocumentTemplateMapping.findFirst({
+        where: { contractId },
+        orderBy: { order: 'desc' },
+        select: { order: true },
+      });
+      let nextOrder = Number(maxOrderRow?.order || 0);
+      await (prisma as any).contractDocumentTemplateMapping.createMany({
+        data: toCreate.map((row) => {
+          nextOrder += 1;
+          return {
+            contractId,
+            templateId: row.templateId,
+            documentType,
+            order: nextOrder,
+          };
+        }),
+      });
+    }
+
+    return this.getAllContractDocumentTemplateMappings(contractId);
+  }
+
+  /**
    * Persist KYC extraction into contract prefill JSON, contract scalar columns, and ACH row.
    * Voided-check scans must update bank fields everywhere they are read (not only JSON overrides).
    */
@@ -953,13 +1044,51 @@ class ContractService {
     const application = data.applicationId
       ? await (prisma as any).application.findUnique({
         where: { id: data.applicationId },
-        include: {
-          client: true,
-          businessInfo: true,
-          salesRepresentative: { select: { id: true, userId: true, firstName: true, lastName: true, email: true } },
-          referringAgent: { select: { id: true, userId: true, firstName: true, lastName: true, email: true } },
-          OfferDecision: true,
-          termsOffers: { orderBy: { createdAt: 'desc' }, take: 1 },
+        select: {
+          id: true,
+          applicationId: true,
+          clientId: true,
+          createdById: true,
+          client: {
+            select: {
+              id: true,
+              businessName: true,
+              businessEmail: true,
+              businessNumber: true,
+              businessAddress1: true,
+              businessAddress2: true,
+              businessCity: true,
+              businessState: true,
+              businessZipCode: true,
+              businessEinNumber: true,
+              businessEntityType: true,
+              ownerFirstName: true,
+              ownerLastName: true,
+              ownerEmail: true,
+              ownerMobileNumber: true,
+              ownerAddress1: true,
+              ownerAddress2: true,
+              ownerCity: true,
+              ownerState: true,
+              ownerZipCode: true,
+              ownerOwnershipPercentage: true,
+            },
+          },
+          salesRepresentative: { select: { id: true } },
+          referringAgent: { select: { id: true } },
+          OfferDecision: {
+            select: {
+              id: true,
+              offer: true,
+              totalRemit: true,
+              term: true,
+              frequency: true,
+              repayPerPeriod: true,
+              rate: true,
+              fees: true,
+            },
+          },
+          businessInfo: { select: { id: true } },
         },
       })
       : null;
@@ -977,16 +1106,15 @@ class ContractService {
       application?.salesRepresentative?.id,
       application?.referringAgent?.id,
     ].filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+    const uniqueCreatedByIds = [...new Set(createdByCandidates)];
     let derivedCreatedById: string | null = null;
-    for (const candidateId of createdByCandidates) {
-      const user = await (prisma as any).user.findUnique({
-        where: { id: candidateId },
+    if (uniqueCreatedByIds.length > 0) {
+      const users = await (prisma as any).user.findMany({
+        where: { id: { in: uniqueCreatedByIds } },
         select: { id: true },
       });
-      if (user?.id) {
-        derivedCreatedById = user.id;
-        break;
-      }
+      const found = new Set((users as Array<{ id: string }>).map((u) => u.id));
+      derivedCreatedById = createdByCandidates.find((id) => found.has(id)) ?? null;
     }
     // Contract.offerId FK → OfferDecision.id (never TermsOffer.id).
     const derivedOfferId =
@@ -1539,21 +1667,6 @@ class ContractService {
     if (data.contractPrefillOverrides !== undefined) {
       if (data.contractPrefillOverrides === null) {
         updateData.contractPrefillOverrides = Prisma.DbNull;
-      } else {
-        // FE prefill saves often rebuild the JSON blob and omit DocuSign history keys.
-        // Preserve voided/sent/completed history + ACH/package capsules from existing.
-        const existing = await prisma.contract.findUnique({
-          where: { id },
-          select: { contractPrefillOverrides: true },
-        });
-        const merged =
-          mergePreservingDocuSignEnvelopeMeta(
-            existing?.contractPrefillOverrides,
-            data.contractPrefillOverrides,
-          ) ?? data.contractPrefillOverrides;
-        updateData.contractPrefillOverrides = decryptEncryptedStringsInJson(
-          merged,
-        ) as Prisma.InputJsonValue;
       }
     }
     if (data.reverseDisbursementEnabled !== undefined) {
@@ -1567,14 +1680,35 @@ class ContractService {
     }
     applyContractExtraFields(updateData, data);
 
+    const existingMeta = await prisma.contract.findUnique({
+      where: { id },
+      select: {
+        applicationId: true,
+        state: true,
+        funderName: true,
+        contractPrefillOverrides: true,
+      },
+    });
+
+    if (data.contractPrefillOverrides !== undefined && data.contractPrefillOverrides !== null) {
+      // FE prefill saves often rebuild the JSON blob and omit DocuSign history keys.
+      // Preserve voided/sent/completed history + ACH/package capsules from existing.
+      const merged =
+        mergePreservingDocuSignEnvelopeMeta(
+          existingMeta?.contractPrefillOverrides,
+          data.contractPrefillOverrides,
+        ) ?? data.contractPrefillOverrides;
+      updateData.contractPrefillOverrides = decryptEncryptedStringsInJson(
+        merged,
+      ) as Prisma.InputJsonValue;
+    }
+
     if (Object.keys(updateData).length === 0) {
       throw new Error('No contract fields provided for update');
     }
 
-    const existingMeta = await prisma.contract.findUnique({
-      where: { id },
-      select: { applicationId: true, state: true, funderName: true },
-    });
+    const funderOrStateChanged =
+      data.funderName !== undefined || data.state !== undefined;
 
     // Write without `include`: Prisma 7.9 adapter-pg runs relation fetches concurrently
     // on the implicit transaction connection, which poisons the pg client.
@@ -1599,30 +1733,32 @@ class ContractService {
         }
         return updated;
       },
-      { maxAttempts: 4, label: 'updateContract' },
+      { maxAttempts: 2, label: 'updateContract' },
     );
 
-    const nextFunder =
-      data.funderName !== undefined
-        ? data.funderName === '' || data.funderName == null
-          ? null
-          : String(data.funderName).trim()
-        : String(existingMeta?.funderName ?? (row as { funderName?: string | null }).funderName ?? '').trim() ||
-          null;
-    const applicationId =
-      (data.applicationId !== undefined ? data.applicationId : existingMeta?.applicationId) ??
-      (row as { applicationId?: string | null }).applicationId ??
-      null;
-    const state =
-      (data.state !== undefined ? data.state : existingMeta?.state) ??
-      (row as { state?: string | null }).state ??
-      null;
-    if (nextFunder && applicationId) {
-      await applyFunderDealIdPrefixToApplication({
-        applicationId,
-        funderName: nextFunder,
-        state,
-      });
+    if (funderOrStateChanged) {
+      const nextFunder =
+        data.funderName !== undefined
+          ? data.funderName === '' || data.funderName == null
+            ? null
+            : String(data.funderName).trim()
+          : String(existingMeta?.funderName ?? (row as { funderName?: string | null }).funderName ?? '').trim() ||
+            null;
+      const applicationId =
+        (data.applicationId !== undefined ? data.applicationId : existingMeta?.applicationId) ??
+        (row as { applicationId?: string | null }).applicationId ??
+        null;
+      const state =
+        (data.state !== undefined ? data.state : existingMeta?.state) ??
+        (row as { state?: string | null }).state ??
+        null;
+      if (nextFunder && applicationId) {
+        await applyFunderDealIdPrefixToApplication({
+          applicationId,
+          funderName: nextFunder,
+          state,
+        });
+      }
     }
 
     return mapContractRecordForApi(row as Record<string, unknown>);

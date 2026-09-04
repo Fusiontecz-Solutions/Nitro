@@ -4,6 +4,24 @@
 import path from 'path';
 import { getPdfExtractionService } from './pdf-extraction/pdfExtraction.context';
 import { claudePdfResultToSyntheticParseText } from './claudePdfResultToSyntheticParseText';
+import {
+    extractEmbeddedPdfText,
+    PdfClaudeExtractionUtils,
+    type PdfClaudeExtractResultDTO,
+} from '../nestjs-claude-pdf/claude-pdf-extraction.service';
+
+const LOCAL_TEXT_MIN_LETTERS = 400;
+
+function emptyExtractResult(): PdfClaudeExtractResultDTO {
+    return {
+        document_type: 'application',
+        title: '',
+        summary: '',
+        key_data: {},
+        pages: [],
+        transactions: [],
+    };
+}
 
 export async function extractPdfPlainTextForParsing(
     pdfBuffer: Buffer,
@@ -16,6 +34,26 @@ export async function extractPdfPlainTextForParsing(
         'document.pdf';
 
     try {
+        const embedded = await extractEmbeddedPdfText(pdfBuffer);
+        const letters = (embedded.match(/[A-Za-z]/g) || []).length;
+        // Text PDFs: skip Google Document AI. parseBusinessData often misses first+last
+        // even when enrichFromRawText (the same post-processor Document AI uses) finds them.
+        if (letters >= 200) {
+            const result = PdfClaudeExtractionUtils.withCanonicalBusinessName(
+                PdfClaudeExtractionUtils.enrichFromRawText(emptyExtractResult(), embedded),
+            );
+            const kd = result.key_data || {};
+            const fn = String(kd.owner_first_name || '').trim();
+            const ln = String(kd.owner_last_name || '').trim();
+            if (letters >= LOCAL_TEXT_MIN_LETTERS || (fn && ln)) {
+                const synthetic = claudePdfResultToSyntheticParseText(result);
+                console.log(
+                    `[pdfIngestion] local-text fast path (${name}): letters=${letters} owner="${fn} ${ln}"`,
+                );
+                return `${synthetic}\n\n${embedded}`;
+            }
+        }
+
         const svc = getPdfExtractionService();
         const { result, meta } = await svc.extractHybridFromPdfBuffer(pdfBuffer);
         const dbg = svc.getRuntimeDebugConfig();

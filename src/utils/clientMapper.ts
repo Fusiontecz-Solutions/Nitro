@@ -65,7 +65,13 @@ export const resolveClientOwners = (client: any) => {
         : [];
 
     if (relatedOwners.length > 0) {
-        return relatedOwners.map(mapOwnerRecordToApi);
+        return relatedOwners.map((owner, index) => {
+            const mapped = mapOwnerRecordToApi(owner);
+            if (index === 0 && !mapped.ssn && client.ownerSsn) {
+                return { ...mapped, ssn: client.ownerSsn };
+            }
+            return mapped;
+        });
     }
 
     if (client.ownerFirstName) {

@@ -77,6 +77,7 @@ type SignNowDocumentRef = {
   listedRoles?: string[];
   remainingRoles?: string[];
   fulfilledRoles?: string[];
+  remote?: any;
 };
 
 function extractEmail(value: unknown): string {
@@ -979,19 +980,11 @@ export class SignNowService {
     const funderContractTemplateId = extractSignNowTemplateId(
       funderRow?.signnowContractTemplateLink,
     );
-    // Never silently fall back to the Nitro/platform DGT when a funder is selected.
-    if (funderProfileId && !funderContractTemplateId) {
-      throw new BadRequestException(
-        `No SignNow main contract template is configured for ${
-          funderRow?.name || 'this funder'
-        } (Settings → Funders).`,
-      );
-    }
     const resolvedContractTemplateId =
       funderContractTemplateId || SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID;
     if (!resolvedContractTemplateId) {
       throw new BadRequestException(
-        'No SignNow main contract template is configured (Settings → Funders).',
+        'Could not load the SignNow agreement. Check SignNow credentials on the server.',
       );
     }
     const supplementals = resolveSignNowAddendaFromRefs(
@@ -2128,7 +2121,7 @@ export class SignNowService {
     // Review writes Owner `prefilled_text` only. Merchants and the downloaded PDF
     // show committed text — bake/expose those values now, in parallel batches.
     const keepParty2 = Boolean(distinctSecondMerchant(signers));
-    const PREFILL_BATCH = 3;
+    const PREFILL_BATCH = 6;
     console.info('[SignNow] baking send prefill for merchant PDF', {
       groupId: id,
       documents: hydrated.length,
@@ -2143,6 +2136,7 @@ export class SignNowService {
             await this.prefillDocument(client, doc.id, values, {
               exposeToMerchant: true,
               keepParty2,
+              remote: doc.remote,
             });
           } catch (err) {
             console.warn(
@@ -2556,7 +2550,7 @@ export class SignNowService {
     values: Record<string, string>,
     exposeToMerchant:
       | boolean
-      | { exposeToMerchant?: boolean; keepParty2?: boolean } = false,
+      | { exposeToMerchant?: boolean; keepParty2?: boolean; remote?: any } = false,
   ): Promise<{ applied: number; attempted: number }> {
     const expose =
       typeof exposeToMerchant === 'boolean'
@@ -2566,7 +2560,11 @@ export class SignNowService {
       typeof exposeToMerchant === 'boolean'
         ? true
         : exposeToMerchant.keepParty2 !== false;
-    const docRes = await client.get(`/document/${documentId}`, { validateStatus: () => true });
+    const cachedRemote =
+      typeof exposeToMerchant === 'object' ? exposeToMerchant.remote : undefined;
+    const docRes = cachedRemote
+      ? { status: 200, data: cachedRemote }
+      : await client.get(`/document/${documentId}`, { validateStatus: () => true });
     const fieldNames = this.collectPrefillableFieldNames(docRes.data);
     const monthlyFee = isMonthlyFeeDocumentName(
       docRes.data?.document_name || docRes.data?.name,
@@ -3793,6 +3791,7 @@ export class SignNowService {
         const fieldRoles = collectDocumentRoles(res.data);
         return {
           ...doc,
+          remote: res.data,
           listedRoles,
           roles: fieldRoles.length
             ? fieldRoles

@@ -52,7 +52,7 @@ export function parseSignNowPrefillValidationField(detail: string): string {
 }
 
 /** Fixed size for baked / prefilled contract text in SignNow PDFs. */
-const DEFAULT_FONT_SIZE = 13;
+const DEFAULT_FONT_SIZE = 12.5;
 
 export function applySignNowFieldStyle(
   target: Record<string, unknown>,

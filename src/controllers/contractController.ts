@@ -180,8 +180,11 @@ class ContractController {
       const id = Number(req.params.id);
       if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id parameter' });
 
-      const existing = await contractService.getByIdContract(id);
-      if (!existing) return res.status(404).json({ success: false, message: 'Contract not found' });
+      const exists = await prisma.contract.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+      if (!exists) return res.status(404).json({ success: false, message: 'Contract not found' });
 
       const {
         clientId,
@@ -1433,6 +1436,32 @@ class ContractController {
       return res.status(201).json({ success: true, message: 'Template mapping created', data });
     } catch (error: any) {
       console.error('Create contract template mapping error:', error);
+      const statusCode = error?.message === 'Contract not found' ? 404 : 500;
+      return res.status(statusCode).json({ success: false, message: error?.message || 'Internal server error' });
+    }
+  }
+
+  async replaceContractDocumentTemplateMappings(req: Request, res: Response) {
+    try {
+      const contractId = Number(req.params.id);
+      if (!Number.isFinite(contractId) || contractId <= 0) {
+        return res.status(400).json({ success: false, message: 'Invalid contract id parameter' });
+      }
+      const { templateRefs, documentType } = req.body || {};
+      if (!documentType) {
+        return res.status(400).json({ success: false, message: 'documentType is required' });
+      }
+      if (!Array.isArray(templateRefs)) {
+        return res.status(400).json({ success: false, message: 'templateRefs must be an array' });
+      }
+      const data = await contractService.replaceContractDocumentTemplateMappings({
+        contractId,
+        documentType: String(documentType),
+        templateRefs: templateRefs.map((ref: unknown) => String(ref ?? '')),
+      });
+      return res.status(200).json({ success: true, message: 'Template mappings updated', data });
+    } catch (error: any) {
+      console.error('Replace contract template mappings error:', error);
       const statusCode = error?.message === 'Contract not found' ? 404 : 500;
       return res.status(statusCode).json({ success: false, message: error?.message || 'Internal server error' });
     }

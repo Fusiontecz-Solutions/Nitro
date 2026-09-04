@@ -11,7 +11,6 @@ import {
     getApplicationForUser,
     createClientAndApplicationFromPDFBuffer,
     InsufficientParsedPdfError,
-    assertReadyToCreateNewClientFromPdf,
     applyPdfExtractToApplicationFromStoredFile,
     type AuthenticatedUser,
 } from '../services/applicationService';
@@ -135,8 +134,7 @@ import { normalizeOcrTextForParsing } from '../services/ocrFieldExtraction';
 import { parseBusinessData } from "../services/parseBusinessData";
 import { formatOcrBusinessBlock } from "../services/ocrLineParser";
 import { toCanonicalApplicationJson } from "../services/canonicalApplicationJson";
-import { attachBufferAsApplicationFile } from '../services/applicationPdfAttachService';
-import { convertToCSV, logExtractedBusinessDataCsv } from "../services/csvConverter";
+import { logExtractedBusinessDataCsv } from "../services/csvConverter";
 import {
     processApplicationBulkExcelBuffer,
     parseApplicationBulkSheet,
@@ -279,27 +277,28 @@ export const processPDF = async (filePath: string) => {
     const name = path.basename(filePath) || 'application.pdf';
     // Extraction + parsing run outside any DB transaction (see createClientAndApplicationFromPDFBuffer / autoCreateFromPDF).
     const textRaw = await extractPdfPlainTextForParsing(buffer, name, filePath);
-    const previewLen = Math.max(200, Number(process.env.PDF_EXTRACT_DEBUG_PREVIEW_CHARS || 800));
-    console.log(
-        '[processPDF] Synthetic extract text preview (first chars):\n',
-        (textRaw || '').length > previewLen ? `${(textRaw || '').slice(0, previewLen)}G?` : textRaw || '',
-    );
+    if (String(process.env.PDF_EXTRACT_DEBUG || '').trim() === '1') {
+        const previewLen = Math.max(200, Number(process.env.PDF_EXTRACT_DEBUG_PREVIEW_CHARS || 800));
+        console.log(
+            '[processPDF] Synthetic extract text preview (first chars):\n',
+            (textRaw || '').length > previewLen ? `${(textRaw || '').slice(0, previewLen)}…` : textRaw || '',
+        );
+    }
     const text = normalizeOcrTextForParsing(textRaw);
 
     const parsedData = parseBusinessData(text);
 
-    console.log(
-        '[processPDF] Business (5-field) preview:',
-        JSON.stringify(formatOcrBusinessBlock(parsedData.business), null, 2),
-    );
-    console.log(
-        '[processPDF] Canonical application JSON:',
-        JSON.stringify(toCanonicalApplicationJson(parsedData as { business: Record<string, unknown>; owner: Record<string, unknown> }), null, 2),
-    );
-    console.log('[processPDF] Parsed structured data:', JSON.stringify(parsedData, null, 2));
-
-    logExtractedBusinessDataCsv(parsedData, { tag: "[processPDF]", fileName: name });
-    convertToCSV(parsedData);
+    if (String(process.env.PDF_EXTRACT_DEBUG || '').trim() === '1') {
+        console.log(
+            '[processPDF] Business (5-field) preview:',
+            JSON.stringify(formatOcrBusinessBlock(parsedData.business), null, 2),
+        );
+        console.log(
+            '[processPDF] Canonical application JSON:',
+            JSON.stringify(toCanonicalApplicationJson(parsedData as { business: Record<string, unknown>; owner: Record<string, unknown> }), null, 2),
+        );
+        logExtractedBusinessDataCsv(parsedData, { tag: "[processPDF]", fileName: name });
+    }
 
     return parsedData;
 };
@@ -539,7 +538,18 @@ const APPLICATION_DETAIL_INCLUDE = {
         },
     },
     iso: true,
-    files: true,
+    files: {
+        select: {
+            id: true,
+            url: true,
+            publicId: true,
+            originalName: true,
+            mimeType: true,
+            size: true,
+            uploadedAt: true,
+            requestedDocumentSlug: true,
+        },
+    },
     claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
     approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
     assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
@@ -2344,31 +2354,6 @@ class ApplicationController {
                             ownerFirstName: true,
                             ownerLastName: true,
                             ownerEmail: true,
-                            businessNumber: true,
-                            businessWebsite: true,
-                            businessIncorporationDate: true,
-                            businessIncorporationState: true,
-                            businessEntityType: true,
-                            businessEinNumber: true,
-                            businessAnnualRevenue: true,
-                            businessMonthlyRevenue: true,
-                            businessAddress1: true,
-                            businessAddress2: true,
-                            businessCity: true,
-                            businessState: true,
-                            businessZipCode: true,
-                            ownerMiddleName: true,
-                            ownerMobileNumber: true,
-                            ownerDateOfBirth: true,
-                            ownerSsn: true,
-                            ownerFicoScore: true,
-                            ownerOwnershipStartDate: true,
-                            ownerOwnershipPercentage: true,
-                            ownerAddress1: true,
-                            ownerAddress2: true,
-                            ownerCity: true,
-                            ownerState: true,
-                            ownerZipCode: true,
                         },
                     },
                     iso: { select: { id: true, name: true, email: true, phone: true } },
@@ -3488,21 +3473,9 @@ class ApplicationController {
                 ? { applicationId: Number(idStr) }
                 : { id: idStr };
 
-            const activityLogInclude = {
-                client: { select: { id: true, businessName: true, clientId: true } },
-                iso: { select: { id: true, name: true } },
-                referringAgent: {
-                    select: { id: true, firstName: true, lastName: true, email: true },
-                },
-                salesRepresentative: {
-                    select: { id: true, firstName: true, lastName: true, email: true },
-                },
-            } as const;
-
             const { application, forbidden } = await getApplicationForUser(
                 whereClause,
                 authUser,
-                activityLogInclude,
             );
 
             if (forbidden) {
@@ -3913,19 +3886,28 @@ class ApplicationController {
             const updatedRecord = await prisma.application.update({
                 where: whereClause,
                 data,
-                include: {
-                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    client: true,
-                    iso: true,
-                    files: true,
-                    claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
-                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
-                },
             });
 
-            const updatedApplication = mapApplicationToApi(updatedRecord);
+            // Return scalars only so the FE merge keeps existing client/files/owners.
+            const updatedApplication = {
+                id: updatedRecord.id,
+                _id: updatedRecord.id,
+                applicationId: updatedRecord.applicationId,
+                loanAmount: updatedRecord.loanAmount,
+                note: updatedRecord.note,
+                currentQueue:
+                    normalizeWorkflowQueueForApi(updatedRecord.currentQueue) ??
+                    updatedRecord.currentQueue,
+                currentState: toWorkflowApiState(
+                    updatedRecord.currentQueue,
+                    updatedRecord.currentState,
+                ),
+                statsCurrentState: updatedRecord.currentState,
+                updatedAt: updatedRecord.updatedAt,
+                priority: updatedRecord.priority,
+                type: updatedRecord.type,
+                isoQueryResolved: updatedRecord.isoQueryResolved === true,
+            };
 
             if (
                 data.currentQueue !== undefined ||
@@ -3944,17 +3926,15 @@ class ApplicationController {
                 });
             }
 
-            try {
-                await recordApplicationUpdateActivityLog({
-                    req,
-                    before: application as any,
-                    after: updatedRecord as any,
-                    user: authUserForUpdate,
-                    actorName: (req as any).user?.name || '',
-                });
-            } catch (logError) {
+            void recordApplicationUpdateActivityLog({
+                req,
+                before: application as any,
+                after: updatedRecord as any,
+                user: authUserForUpdate,
+                actorName: (req as any).user?.name || '',
+            }).catch((logError) => {
                 console.error('Failed to create activity log for application update:', logError);
-            }
+            });
 
             invalidateAllApplicationStatsCache();
 
@@ -5932,6 +5912,7 @@ class ApplicationController {
 
     // Auto-create Client + Application from uploaded PDF with SSN-based duplicate handling
     async autoCreateFromPDF(req: Request, res: Response) {
+        const startedAt = Date.now();
         try {
             const reqFiles = (req as any).files;
             if (!reqFiles || !reqFiles.pdf) {
@@ -5954,12 +5935,10 @@ class ApplicationController {
             const pdfBuffer = fs.readFileSync(tempFilePath);
             const pdfOriginalName = String(pdfFile.name || 'application.pdf').trim() || 'application.pdf';
 
-            // Extract structured business/owner data from PDF
             let parsedData: any;
             try {
                 parsedData = await processPDF(tempFilePath);
             } finally {
-                // Best-effort cleanup of temporary file
                 try {
                     if (tempFilePath && fs.existsSync(tempFilePath)) {
                         fs.unlinkSync(tempFilePath);
@@ -5976,42 +5955,6 @@ class ApplicationController {
                 });
             }
 
-            console.log(
-                '[autoCreateFromPDF] Parsed structured data (extract/parse complete; DB transaction next):',
-                JSON.stringify(parsedData, null, 2),
-            );
-
-            const business = parsedData.business || {};
-            const owner = parsedData.owner || {};
-
-            // Helper to normalize SSN (digits only)
-            const normalizeSsn = (ssn: string | null | undefined) =>
-                ssn ? String(ssn).replace(/\D/g, '') : null;
-
-            // Helper to parse numeric amounts like "$12,345.67"
-            const parseNumericAmount = (value: string | number | null | undefined): number | null => {
-                if (value === null || value === undefined) return null;
-                const str = String(value).replace(/[$,\s]/g, '').trim();
-                if (!str) return null;
-                const num = parseFloat(str);
-                return isNaN(num) ? null : num;
-            };
-
-            // Helper to parse ISO-like date strings into Date objects
-            const parseDate = (dateStr: string | null | undefined): Date | null => {
-                if (!dateStr) return null;
-
-                const parsed = new Date(dateStr);
-                return isNaN(parsed.getTime()) ? null : parsed;
-            };
-
-            const ownerSsnRaw =
-                owner.owner_ssn ||
-                owner.ownerSsn ||
-                owner.ssn ||
-                null;
-            const ownerSsnNorm = normalizeSsn(ownerSsnRaw);
-
             const currentUserId = (req as any).user?.id;
             if (!currentUserId) {
                 return res.status(401).json({
@@ -6021,21 +5964,16 @@ class ApplicationController {
             }
 
             const pdfRoleUpper = String((req as any).user?.role || '').toUpperCase();
-            const pdfAgentCreationQueue = 'New';
-            const pdfAgentCreationState = ApplicationState.DRAFT;
-            const requestedApplicationTypeRaw = (req as any).body?.applicationType;
-            const requestedIsoIdRaw = (req as any).body?.isoId;
-            const requestedApplicationType = String(requestedApplicationTypeRaw || '')
+            const requestedApplicationType = String((req as any).body?.applicationType || '')
                 .trim()
                 .replace(/-/g, '_')
                 .toUpperCase();
-            const requestedIsoId = String(requestedIsoIdRaw || '').trim();
+            const requestedIsoId = String((req as any).body?.isoId || '').trim();
             let validatedIsoId: string | null = null;
-            let commissionPercentageFromIso = 0;
             if (requestedIsoId) {
                 const isoRecord = await (prisma as any).iso.findUnique({
                     where: { id: requestedIsoId },
-                    select: { id: true, commissionPercentage: true },
+                    select: { id: true },
                 });
                 if (!isoRecord) {
                     return res.status(404).json({
@@ -6044,260 +5982,43 @@ class ApplicationController {
                     });
                 }
                 validatedIsoId = isoRecord.id;
-                commissionPercentageFromIso = Number(isoRecord.commissionPercentage ?? 0);
             }
             const applicationTypeForCreate =
                 pdfRoleUpper === 'OPERATIONS' && requestedApplicationType === 'BYPASS'
                     ? 'Bypass'
                     : 'New';
 
-            // Try to find existing client by SSN (full match or last 4 digits)
-            let clientRecord: any | null = null;
-            let existingClient = false;
-
-            if (ownerSsnNorm && ownerSsnNorm.length >= 4) {
-                const ssnLast4 = ownerSsnNorm.slice(-4);
-                const clientsWithSsn = await prisma.client.findMany({
-                    where: { ownerSsn: { not: null } },
-                    orderBy: { createdAt: 'desc' },
-                    take: 200,
-                });
-                clientRecord =
-                    clientsWithSsn.find((c) => {
-                        const cNorm = normalizeSsn(c.ownerSsn);
-                        return cNorm && (cNorm === ownerSsnNorm || cNorm.slice(-4) === ssnLast4);
-                    }) || null;
-
-                if (clientRecord) {
-                    existingClient = true;
-                }
-            }
-
-            // Parse requested loan amount from business_requested_amount (or fallback aliases)
-            const requestedAmountRaw =
-                business.business_requested_amount ||
-                business.requested_amount ||
-                null;
-            const loanAmountNum = parseNumericAmount(requestedAmountRaw);
-
-            // Parse Gross Annual Sales and calculate monthly revenue (annual ++ 12)
-            const grossAnnualRaw = business.business_monthly_revenue; // parsed from "Gross Annual Sales"
-            const annualRevenue = parseNumericAmount(grossAnnualRaw);
-            const monthlyRevenue =
-                annualRevenue != null ? Math.round((annualRevenue / 12) * 100) / 100 : null;
-
-            let createdClient: any;
-            let createdApplication: any;
-
-            if (clientRecord) {
-                // Case 1: Client already exists G?? create application only
-                createdClient = clientRecord;
-
-                createdApplication = await withAllocatedDealId((dealId, tx) =>
-                    tx.application.create({
-                        data: applicationCreateUncheckedData({
-                            priority: 'High',
-                            type: applicationTypeForCreate,
-                            salesRepresentativeId: currentUserId,
-                            referringAgentId: currentUserId,
-                            clientId: createdClient.id,
-                            isoId: validatedIsoId,
-                            commissionPercentage: commissionPercentageFromIso,
-                            loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                            createdById: currentUserId,
-                            currentQueue: pdfAgentCreationQueue,
-                            currentState: pdfAgentCreationState,
-                            dealId,
-                        }),
-                        include: {
-                            referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                            salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                            createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                            client: true,
-                            iso: true,
-                            files: true,
-                        },
-                    }),
-                );
-
-                await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, pdfOriginalName);
-                const applicationAfterPdf = await prisma.application.findUnique({
-                    where: { id: createdApplication.id },
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
-                });
-                const populatedApplication = mapApplicationToApi(applicationAfterPdf || createdApplication);
-                const mappedClient = mapClientToApi(createdClient);
-
-                console.log(
-                    '[autoCreateFromPDF] Final DB response (existing client):',
-                    JSON.stringify(
-                        { client: mappedClient, application: populatedApplication, existingClient: true },
-                        null,
-                        2,
-                    ),
-                );
-
-                scheduleApplicationStageNotification({
-                    application: (applicationAfterPdf || createdApplication) as any,
-                    transitionAction: 'CREATED',
-                    actorId: currentUserId,
-                    actorName: (req as any).user?.name || '',
-                });
-
-                return res.status(200).json({
-                    success: true,
-                    message: 'Client already exists. Application has been created for the existing client.',
-                    data: {
-                        client: mappedClient,
-                        application: populatedApplication,
-                        existingClient: true,
-                    },
-                });
-            }
-
-            try {
-                assertReadyToCreateNewClientFromPdf(parsedData, clientRecord);
-            } catch (assertErr) {
-                if (assertErr instanceof InsufficientParsedPdfError) {
-                    return res.status(400).json({
-                        success: false,
-                        message: assertErr.message,
-                    });
-                }
-                throw assertErr;
-            }
-
-            // Case 2: Client does not exist G?? create client + application atomically
-            const result = await prisma.$transaction(async (tx) => {
-                const dealId = await allocateNextDealId(tx);
-
-                const businessNameFallback =
-                    String(business.business_name || '').trim() ||
-                    String(business.dba_name || '').trim() ||
-                    (owner.owner_first_name || owner.owner_last_name
-                        ? `${String(owner.owner_first_name || '').trim()} ${String(owner.owner_last_name || '').trim()}`.trim() + ' Business'
-                        : 'Unknown Business');
-
-                const newClient = await tx.client.create({
-                    data: {
-                        businessName: businessNameFallback,
-                        businessEmail: business.business_email || null,
-                        businessNumber: business.phone_number || null,
-                        businessWebsite: business.business_website || null,
-                        businessIncorporationDate: parseDate(business.business_incorporation_date),
-                        businessIncorporationState:
-                            business.business_incorporation_state || business.business_state || null,
-                        businessEntityType: business.business_type_of_entity || null,
-                        businessEinNumber: business.business_ein_number || null,
-                        businessAnnualRevenue: annualRevenue ?? null,
-                        businessMonthlyRevenue: monthlyRevenue ?? null,
-                        businessAddress1: business.business_address1 || null,
-                        businessAddress2: business.business_address2 || null,
-                        businessCity: business.business_city || null,
-                        businessState: business.business_state || null,
-                        businessZipCode: business.business_zip_code || null,
-                        ownerFirstName: owner.owner_first_name || null,
-                        ownerMiddleName: owner.owner_middle_name || null,
-                        ownerLastName: owner.owner_last_name || null,
-                        ownerEmail: owner.owner_email || null,
-                        ownerMobileNumber: owner.owner_mobile_number || null,
-                        ownerDateOfBirth: parseDate(owner.owner_date_of_birth),
-                        ownerSsn: ownerSsnNorm || null,
-                        ownerFicoScore: owner.owner_fico_score
-                            ? Number(owner.owner_fico_score)
-                            : null,
-                        ownerOwnershipStartDate: null,
-                        ownerOwnershipPercentage: owner.owner_ownership_percentage
-                            ? Number(owner.owner_ownership_percentage)
-                            : null,
-                        ownerAddress1: owner.owner_address1 || null,
-                        ownerAddress2: null,
-                        ownerCity: owner.owner_city || null,
-                        ownerState: owner.owner_state || null,
-                        ownerZipCode: owner.owner_zip_code || null,
-                        createdById: currentUserId,
-                    },
-                });
-
-                const newApplication = await tx.application.create({
-                    data: applicationCreateUncheckedData({
-                        priority: 'High',
-                        type: applicationTypeForCreate,
-                        salesRepresentativeId: currentUserId,
-                        referringAgentId: currentUserId,
-                        clientId: newClient.id,
-                        isoId: validatedIsoId,
-                        commissionPercentage: commissionPercentageFromIso,
-                        loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                        createdById: currentUserId,
-                        currentQueue: pdfAgentCreationQueue,
-                        currentState: pdfAgentCreationState,
-                        dealId,
-                    }),
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
-                });
-
-                return { newClient, newApplication };
-            }, { maxWait: 20_000, timeout: 120_000 });
-
-            createdClient = result.newClient;
-            createdApplication = result.newApplication;
-
-            await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, pdfOriginalName);
-            const applicationAfterPdf = await prisma.application.findUnique({
-                where: { id: createdApplication.id },
-                include: {
-                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    client: true,
-                    iso: true,
-                    files: true,
-                },
+            const result = await createClientAndApplicationFromPDFBuffer(pdfBuffer, currentUserId, {
+                preParsedData: parsedData,
+                originalFileName: pdfOriginalName,
+                isoId: validatedIsoId,
+                applicationType: applicationTypeForCreate,
             });
-            const populatedApplication = mapApplicationToApi(applicationAfterPdf || createdApplication);
-            const mappedClient = mapClientToApi(createdClient);
 
+            const populatedApplication = mapApplicationToApi(result.application);
+            const mappedClient = mapClientToApi(result.client);
             console.log(
-                '[autoCreateFromPDF] Final DB response (new client):',
-                JSON.stringify(
-                    { client: mappedClient, application: populatedApplication, existingClient: false },
-                    null,
-                    2,
-                ),
+                `[autoCreateFromPDF] done in ${Date.now() - startedAt}ms existingClient=${result.existingClient} applicationId=${result.application?.id}`,
             );
-
-            scheduleApplicationStageNotification({
-                application: (applicationAfterPdf || createdApplication) as any,
-                transitionAction: 'CREATED',
-                actorId: currentUserId,
-                actorName: (req as any).user?.name || '',
-            });
 
             return res.status(200).json({
                 success: true,
-                message: 'Client created successfully and application generated.',
+                message: result.existingClient
+                    ? 'Client already exists. Application has been created for the existing client.'
+                    : 'Client created successfully and application generated.',
                 data: {
                     client: mappedClient,
                     application: populatedApplication,
-                    existingClient: false,
+                    existingClient: result.existingClient,
                 },
             });
         } catch (error: any) {
+            if (error instanceof InsufficientParsedPdfError) {
+                return res.status(400).json({
+                    success: false,
+                    message: error.message,
+                });
+            }
             console.error('Auto-create from PDF error:', error);
             return res.status(500).json({
                 success: false,

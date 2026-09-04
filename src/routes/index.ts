@@ -30,6 +30,7 @@ import sendgridWebhookRoutes from './sendgridWebhookRoutes';
 import backgroundCheckRoutes from './backgroundCheckRoutes';
 import opencorporatesRoutes from './opencorporatesRoutes';
 import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
+import notificationRoutes from './notificationRoutes';
 
 /**
  * Contract-workflow API surface.
@@ -65,5 +66,6 @@ router.use('/integration-settings', integrationSettingsRoutes);
 router.use('/background-checks', backgroundCheckRoutes);
 router.use('/opencorporates', opencorporatesRoutes);
 router.use('/background-check-report', backgroundCheckReportRoutes);
+router.use('/notifications', notificationRoutes);
 
 export default router;

@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import prisma from '../config/prismaClient';
 import { parseBusinessData } from './parseBusinessData';
-import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
+import { scheduleAttachBufferAsApplicationFile } from './applicationPdfAttachService';
 import { extractPdfPlainTextForParsing } from './pdfIngestionService';
 import { normalizeOcrTextForParsing } from './ocrFieldExtraction';
 import { logExtractedBusinessDataCsv } from './csvConverter';
@@ -327,15 +327,19 @@ export async function findExistingClientFromPdfExtract(
         (owner.owner_ssn ?? owner.ownerSsn ?? owner.ssn ?? null) as string | null | undefined;
 
     if (einNorm) {
-        const clientsWithEin = await prisma.client.findMany({
-            where: { businessEinNumber: { not: null } },
+        const formattedEin =
+            einNorm.length === 9 ? `${einNorm.slice(0, 2)}-${einNorm.slice(2)}` : einNorm;
+        const existingByEin = await prisma.client.findFirst({
+            where: {
+                OR: [
+                    { businessEinNumber: einNorm },
+                    { businessEinNumber: formattedEin },
+                    { businessEinNumber: { endsWith: einNorm } },
+                ],
+            },
             orderBy: { createdAt: 'desc' },
-            take: 500,
         });
-        const existingByEin = clientsWithEin.find(
-            (c) => normalizeEin(c.businessEinNumber) === einNorm,
-        );
-        if (existingByEin) {
+        if (existingByEin && normalizeEin(existingByEin.businessEinNumber) === einNorm) {
             return { client: existingByEin, matchedBy: 'ein' };
         }
     }
@@ -354,24 +358,36 @@ export async function findExistingClientFromPdfExtract(
     }
 
     if (ownerSsnRaw) {
-        const clientsWithSsn = await prisma.client.findMany({
-            where: { ownerSsn: { not: null } },
+        const ownerSsnNorm = normalizeSsn(ownerSsnRaw);
+        const ssnLast4 = ownerSsnNorm && ownerSsnNorm.length >= 4 ? ownerSsnNorm.slice(-4) : null;
+        const existingBySsn = await prisma.client.findFirst({
+            where: {
+                ownerSsn: { not: null },
+                OR: [
+                    { ownerSsn: String(ownerSsnRaw).trim() },
+                    ...(ownerSsnNorm ? [{ ownerSsn: ownerSsnNorm }] : []),
+                    ...(ssnLast4 ? [{ ownerSsn: { endsWith: ssnLast4 } }] : []),
+                ],
+            },
             orderBy: { createdAt: 'desc' },
-            take: 500,
         });
-        const existingBySsn = clientsWithSsn.find((c) => ssnMatches(c.ownerSsn, ownerSsnRaw));
-        if (existingBySsn) {
+        if (existingBySsn && ssnMatches(existingBySsn.ownerSsn, ownerSsnRaw)) {
             return { client: existingBySsn, matchedBy: 'owner_ssn' };
         }
 
-        const clientOwnersWithSsn = await prisma.clientOwner.findMany({
-            where: { ssn: { not: null } },
+        const ownerRecordMatch = await prisma.clientOwner.findFirst({
+            where: {
+                ssn: { not: null },
+                OR: [
+                    { ssn: String(ownerSsnRaw).trim() },
+                    ...(ownerSsnNorm ? [{ ssn: ownerSsnNorm }] : []),
+                    ...(ssnLast4 ? [{ ssn: { endsWith: ssnLast4 } }] : []),
+                ],
+            },
             include: { client: true },
             orderBy: { createdAt: 'desc' },
-            take: 500,
         });
-        const ownerRecordMatch = clientOwnersWithSsn.find((co) => ssnMatches(co.ssn, ownerSsnRaw));
-        if (ownerRecordMatch?.client) {
+        if (ownerRecordMatch?.client && ssnMatches(ownerRecordMatch.ssn, ownerSsnRaw)) {
             return { client: ownerRecordMatch.client, matchedBy: 'owner_ssn_client_owner' };
         }
     }
@@ -502,6 +518,8 @@ export interface CreatePdfApplicationOptions {
     preParsedData?: unknown;
     /** Gmail cron: one Claude call per PDF (no business-name retry). */
     skipClaudeBusinessNameRetry?: boolean;
+    /** Manual create / OPERATIONS bypass. */
+    applicationType?: string | null;
 }
 
 /** Thrown when parsed PDF data cannot satisfy Prisma for a *new* client (e.g. missing business name). */
@@ -543,20 +561,13 @@ const PDF_EMAIL_AUTO_CREATE_QUEUE = 'New';
 /** PDF auto-create starts in New (same as a manual create). */
 const PDF_EMAIL_AUTO_CREATE_STATE = 'Draft';
 
-const applicationWithFilesInclude = {
+const applicationCreateInclude = {
     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
     salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
     client: true,
-    files: true,
+    iso: true,
 } as const;
-
-async function refetchApplicationWithFiles(applicationId: string) {
-    return prisma.application.findUnique({
-        where: { id: applicationId },
-        include: applicationWithFilesInclude,
-    });
-}
 
 export async function createClientAndApplicationFromPDFBuffer(
     pdfBuffer: Buffer | string,
@@ -578,6 +589,8 @@ export async function createClientAndApplicationFromPDFBuffer(
     }
     const agentCreationQueue = PDF_EMAIL_AUTO_CREATE_QUEUE;
     const agentCreationState = PDF_EMAIL_AUTO_CREATE_STATE;
+    const resolvedApplicationType =
+        String(options?.applicationType || '').trim() === 'Bypass' ? 'Bypass' : 'New';
     const gmailMessageId = String(options?.gmailMessageId || '').trim();
     const gmailNote = gmailMessageId ? gmailAutoCreateMessageNote(gmailMessageId) : '';
 
@@ -648,7 +661,7 @@ export async function createClientAndApplicationFromPDFBuffer(
             tx.application.create({
                 data: applicationCreateUncheckedData({
                     priority: 'High',
-                    type: 'New',
+                    type: resolvedApplicationType,
                     salesRepresentativeId: userId,
                     referringAgentId: userId,
                     clientId: clientRecord.id,
@@ -661,23 +674,17 @@ export async function createClientAndApplicationFromPDFBuffer(
                     note: gmailNote || undefined,
                     dealId,
                 }),
-                include: applicationWithFilesInclude,
+                include: applicationCreateInclude,
             }),
         );
 
         if (Buffer.isBuffer(pdfBuffer)) {
-            await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, storedPdfName);
+            scheduleAttachBufferAsApplicationFile(createdApplication.id, pdfBuffer, storedPdfName);
         }
-        const applicationWithFiles =
-            (await refetchApplicationWithFiles(createdApplication.id)) || createdApplication;
+        const applicationWithFiles = createdApplication;
 
         console.log(
-            '[createClientAndApplicationFromPDFBuffer] Final DB result (existing client):',
-            JSON.stringify(
-                { clientId: clientRecord.id, applicationId: applicationWithFiles.id },
-                null,
-                2,
-            ),
+            `[createClientAndApplicationFromPDFBuffer] existing client ${clientRecord.id} application ${applicationWithFiles.id}`,
         );
 
         scheduleApplicationStageNotification({
@@ -747,7 +754,7 @@ export async function createClientAndApplicationFromPDFBuffer(
         const newApplication = await tx.application.create({
             data: applicationCreateUncheckedData({
                 priority: 'High',
-                type: 'New',
+                type: resolvedApplicationType,
                 salesRepresentativeId: userId,
                 referringAgentId: userId,
                 clientId: newClient.id,
@@ -760,25 +767,19 @@ export async function createClientAndApplicationFromPDFBuffer(
                 note: gmailNote || undefined,
                 dealId,
             }),
-            include: applicationWithFilesInclude,
+            include: applicationCreateInclude,
         });
 
         return { newClient, newApplication };
     }, { maxWait: 20_000, timeout: 120_000 });
 
     if (Buffer.isBuffer(pdfBuffer)) {
-        await attachBufferAsApplicationFile(result.newApplication.id, pdfBuffer, storedPdfName);
+        scheduleAttachBufferAsApplicationFile(result.newApplication.id, pdfBuffer, storedPdfName);
     }
-    const applicationWithFiles =
-        (await refetchApplicationWithFiles(result.newApplication.id)) || result.newApplication;
+    const applicationWithFiles = result.newApplication;
 
     console.log(
-        '[createClientAndApplicationFromPDFBuffer] Final DB result (new client):',
-        JSON.stringify(
-            { clientId: result.newClient.id, applicationId: applicationWithFiles.id },
-            null,
-            2,
-        ),
+        `[createClientAndApplicationFromPDFBuffer] new client ${result.newClient.id} application ${applicationWithFiles.id}`,
     );
 
     scheduleApplicationStageNotification({
@@ -862,14 +863,13 @@ export async function createApplicationFromGmailSubjectFallback(
                 note: gmailMessageId ? gmailAutoCreateMessageNote(gmailMessageId) : '',
                 dealId,
             }),
-            include: applicationWithFilesInclude,
+            include: applicationCreateInclude,
         });
 
         return { newClient, newApplication };
     }, { maxWait: 20_000, timeout: 120_000 });
 
-    const applicationWithFiles =
-        (await refetchApplicationWithFiles(result.newApplication.id)) || result.newApplication;
+    const applicationWithFiles = result.newApplication;
 
     console.log(
         '[createApplicationFromGmailSubjectFallback] Created from subject:',
@@ -1050,7 +1050,7 @@ export async function applyPdfExtractToApplicationFromStoredFile(
     const updatedApplication = await prisma.application.update({
         where: { id: applicationId },
         data: applicationPatch,
-        include: applicationWithFilesInclude,
+        include: applicationCreateInclude,
     });
 
     console.log(

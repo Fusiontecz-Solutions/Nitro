@@ -321,20 +321,15 @@ class BankDetailController {
 
       const bankDetails = await prisma.bankDetail.findMany({
         where: { applicationId: applicationRecord.id },
-        include: {
-          application: {
-            select: {
-              id: true,
-              applicationId: true,
-              priority: true,
-              type: true,
-              currentQueue: true,
-              currentState: true,
-            },
-          },
-          createdBy: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
+        select: {
+          id: true,
+          bankName: true,
+          accountNumber: true,
+          routingNumber: true,
+          applicationId: true,
+          createdById: true,
+          createdAt: true,
+          updatedAt: true,
         },
         orderBy: { createdAt: 'desc' },
       });

@@ -44,6 +44,61 @@ const collectOwnerSsns = (owners: ReturnType<typeof normalizeOwnersInput>) =>
         .map((owner) => (owner.ssn ? String(owner.ssn).trim() : ''))
         .filter(Boolean);
 
+const ownerFingerprint = (owner: {
+    ssn?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+    mobileNumber?: string | null;
+    address1?: string | null;
+    city?: string | null;
+    state?: string | null;
+    zipCode?: string | null;
+    address?: {
+        address1?: string | null;
+        city?: string | null;
+        state?: string | null;
+        zipCode?: string | null;
+    };
+}) => {
+    const digits = (v: unknown) => String(v ?? '').replace(/\D/g, '');
+    const norm = (v: unknown) => String(v ?? '').trim().toLowerCase();
+    return [
+        digits(owner.ssn),
+        norm(owner.firstName),
+        norm(owner.lastName),
+        norm(owner.email),
+        norm(owner.mobileNumber),
+        norm(owner.address1 ?? owner.address?.address1),
+        norm(owner.city ?? owner.address?.city),
+        norm(owner.state ?? owner.address?.state),
+        norm(owner.zipCode ?? owner.address?.zipCode),
+    ].join('|');
+};
+
+const ownersUnchanged = (
+    existing: Array<{
+        ssn?: string | null;
+        firstName?: string | null;
+        lastName?: string | null;
+        email?: string | null;
+        mobileNumber?: string | null;
+        address1?: string | null;
+        city?: string | null;
+        state?: string | null;
+        zipCode?: string | null;
+    }>,
+    incoming: ReturnType<typeof normalizeOwnersInput>,
+) => {
+    if (existing.length !== incoming.length) return false;
+    return existing.every((row, index) => {
+        const next = incoming[index];
+        if (!next) return false;
+        const created = buildOwnerCreateData(next, index);
+        return ownerFingerprint(row) === ownerFingerprint(created);
+    });
+};
+
 const findDuplicateSsnClient = async (ssns: string[], excludeClientId?: string) => {
     if (!ssns.length) return null;
 
@@ -182,6 +237,7 @@ class ClientController {
                 search,
                 sortBy = 'createdAt',
                 sortOrder = 'desc',
+                lite,
             } = req.query;
 
             const pageNum = Number(page);
@@ -222,20 +278,27 @@ class ClientController {
             }
             const orderBy: any = { [orderByField]: sortOrder === 'asc' ? 'asc' : 'desc' };
 
+            const useLitePayload = String(lite ?? '').trim() === '1';
             const [clients, total] = await Promise.all([
                 prisma.client.findMany({
                     where,
                     orderBy,
                     skip,
                     take: limitNum,
-                    include: {
-                        assignedTo: {
-                            select: { id: true, firstName: true, lastName: true, email: true },
-                        },
-                        owners: {
-                            orderBy: { sortOrder: 'asc' },
-                        },
-                    },
+                    include: useLitePayload
+                        ? {
+                              assignedTo: {
+                                  select: { id: true, firstName: true, lastName: true, email: true },
+                              },
+                          }
+                        : {
+                              assignedTo: {
+                                  select: { id: true, firstName: true, lastName: true, email: true },
+                              },
+                              owners: {
+                                  orderBy: { sortOrder: 'asc' },
+                              },
+                          },
                 }),
                 prisma.client.count({ where }),
             ]);
@@ -327,7 +390,25 @@ class ClientController {
             const owners = normalizeOwnersInput(req.body);
             const ownerOnly = normalizeOwnerOnlyInput(req.body);
 
-            const client = await prisma.client.findUnique({ where: { id } });
+            const client = await prisma.client.findUnique({
+                where: { id },
+                include: {
+                    owners: {
+                        select: {
+                            ssn: true,
+                            firstName: true,
+                            lastName: true,
+                            email: true,
+                            mobileNumber: true,
+                            address1: true,
+                            city: true,
+                            state: true,
+                            zipCode: true,
+                        },
+                        orderBy: { sortOrder: 'asc' },
+                    },
+                },
+            });
 
             if (!client) {
                 return res.status(404).json({
@@ -335,6 +416,15 @@ class ClientController {
                     message: 'Client not found',
                 });
             }
+
+            const existingOwnerSsns = new Set(
+                [
+                    ...((client as { owners?: Array<{ ssn?: string | null }> }).owners || []).map(
+                        (o) => String(o.ssn || '').replace(/\D/g, ''),
+                    ),
+                    String((client as { ownerSsn?: string | null }).ownerSsn || '').replace(/\D/g, ''),
+                ].filter(Boolean),
+            );
 
             const updateData: any = {};
 
@@ -351,8 +441,12 @@ class ClientController {
                 if (business.incorporationState !== undefined) updateData.businessIncorporationState = business.incorporationState;
                 if (business.businessEntityType !== undefined) updateData.businessEntityType = business.businessEntityType;
                 if (business.einNumber !== undefined) updateData.businessEinNumber = business.einNumber;
-                if (business.annualRevenue !== undefined) updateData.businessAnnualRevenue = Number(business.annualRevenue);
-                if (business.monthlyRevenue !== undefined) updateData.businessMonthlyRevenue = Number(business.monthlyRevenue);
+                if (business.annualRevenue !== undefined && String(business.annualRevenue).trim() !== '') {
+                    updateData.businessAnnualRevenue = Number(business.annualRevenue);
+                }
+                if (business.monthlyRevenue !== undefined && String(business.monthlyRevenue).trim() !== '') {
+                    updateData.businessMonthlyRevenue = Number(business.monthlyRevenue);
+                }
 
                 if (business.address?.address1 !== undefined) updateData.businessAddress1 = business.address.address1;
                 if (business.address?.address2 !== undefined) updateData.businessAddress2 = business.address.address2;
@@ -365,14 +459,21 @@ class ClientController {
                 if (owner.ssn === undefined) return true;
                 const newSsn = String(owner.ssn).trim();
                 if (!newSsn) return true;
-                const existingWithSsn = await findDuplicateSsnClient([newSsn], id);
+                const newSsnNorm = newSsn.replace(/\D/g, '');
+                if (existingOwnerSsns.has(newSsn) || (newSsnNorm && existingOwnerSsns.has(newSsnNorm))) {
+                    return true;
+                }
+                const existingWithSsn = await findDuplicateSsnClient([newSsn, newSsnNorm].filter(Boolean), id);
                 if (!existingWithSsn) return true;
                 return false;
             };
 
             if (owners.length > 0) {
-                const ownerSsns = collectOwnerSsns(owners);
-                const duplicateClient = await findDuplicateSsnClient(ownerSsns, id);
+                const changedSsns = collectOwnerSsns(owners).filter((ssn) => {
+                    const norm = String(ssn).replace(/\D/g, '');
+                    return !existingOwnerSsns.has(ssn) && !(norm && existingOwnerSsns.has(norm));
+                });
+                const duplicateClient = await findDuplicateSsnClient(changedSsns, id);
                 if (duplicateClient) {
                     console.warn(
                         'Duplicate client SSN update attempt detected. existing clientId:',
@@ -425,41 +526,54 @@ class ClientController {
             if (notes !== undefined) updateData.notes = notes;
             if (assignedTo !== undefined) updateData.assignedToId = assignedTo;
 
-            const updatedClient = await prisma.$transaction(async (tx) => {
-                if (owners.length > 0) {
-                    await tx.clientOwner.deleteMany({ where: { clientId: id } });
-                    await tx.clientOwner.createMany({
-                        data: owners.map((owner, index) => ({
-                            clientId: id,
-                            ...buildOwnerCreateData(owner, index),
-                        })),
-                    });
-                } else if (ownerOnly) {
-                    const primaryData = buildOwnerCreateData(ownerOnly, 0);
-                    const existingPrimary = await tx.clientOwner.findFirst({
-                        where: { clientId: id },
-                        orderBy: { sortOrder: 'asc' },
-                    });
-                    if (existingPrimary) {
-                        await tx.clientOwner.update({
-                            where: { id: existingPrimary.id },
-                            data: primaryData,
-                        });
-                    } else {
-                        await tx.clientOwner.create({
-                            data: {
-                                clientId: id,
-                                ...primaryData,
-                            },
-                        });
-                    }
-                }
+            const existingOwners = (client as { owners?: Array<{
+                ssn?: string | null;
+                firstName?: string | null;
+                lastName?: string | null;
+                email?: string | null;
+                mobileNumber?: string | null;
+                address1?: string | null;
+                city?: string | null;
+                state?: string | null;
+                zipCode?: string | null;
+            }> }).owners || [];
+            const skipOwnerRewrite =
+                owners.length > 0 && ownersUnchanged(existingOwners, owners);
 
-                return tx.client.update({
-                    where: { id },
-                    data: updateData,
-                    include: CLIENT_INCLUDE,
+            // Neon interactive transactions are slow; keep owner rewrite as sequential writes.
+            if (owners.length > 0 && !skipOwnerRewrite) {
+                await prisma.clientOwner.deleteMany({ where: { clientId: id } });
+                await prisma.clientOwner.createMany({
+                    data: owners.map((owner, index) => ({
+                        clientId: id,
+                        ...buildOwnerCreateData(owner, index),
+                    })),
                 });
+            } else if (ownerOnly) {
+                const primaryData = buildOwnerCreateData(ownerOnly, 0);
+                const existingPrimary = await prisma.clientOwner.findFirst({
+                    where: { clientId: id },
+                    orderBy: { sortOrder: 'asc' },
+                });
+                if (existingPrimary) {
+                    await prisma.clientOwner.update({
+                        where: { id: existingPrimary.id },
+                        data: primaryData,
+                    });
+                } else {
+                    await prisma.clientOwner.create({
+                        data: {
+                            clientId: id,
+                            ...primaryData,
+                        },
+                    });
+                }
+            }
+
+            const updatedClient = await prisma.client.update({
+                where: { id },
+                data: updateData,
+                include: CLIENT_INCLUDE,
             });
 
             return res.status(200).json({

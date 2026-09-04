@@ -14,7 +14,6 @@
  */
 
 import {
-  extractEmbeddedPdfText,
   PdfClaudeExtractionUtils,
   type ClaudePdfExtractMetaDTO,
   type PdfClaudeExtractResultDTO,
@@ -117,12 +116,6 @@ export class DocumentAiPdfExtractionService {
       const ocrResult = mapDocumentAiToExtractResult(document);
       result.key_data = { ...ocrResult.key_data, ...result.key_data };
       fullText = String(document.text || fullText).trim();
-    }
-
-    const embeddedText = await extractEmbeddedPdfText(pdf);
-    if (embeddedText.length > 40) {
-      const alreadyHas = fullText.includes(embeddedText.slice(0, 80));
-      fullText = alreadyHas ? fullText : `${embeddedText}\n\n${fullText}`.trim();
     }
 
     result.raw_ocr_text = fullText;

@@ -287,20 +287,33 @@ function catalogRowFromFunderLink(
   };
 }
 
-/** Look up Settings → Funders name/layout for a raw SignNow template id. */
+/** Persist a CRM template row so the addendum picker can map `ach_weekly` (etc.). */
+const signNowTemplateRowIdCache = new Map<string, Promise<string>>();
+let funderSignNowSettingsCache:
+  | { at: number; rows: Array<{ signnowAddendumTemplates: unknown; signnowDisclosureTemplates: unknown }> }
+  | null = null;
+const FUNDER_SIGNNOW_SETTINGS_TTL_MS = 60_000;
+
 async function resolveSignNowTemplateFromFunderSettings(
   templateId: string,
 ): Promise<SignNowAddendumTemplate | null> {
   const id = extractSignNowTemplateId(templateId);
   if (!id) return null;
-  const funders = await prisma.funderProfile.findMany({
-    select: {
-      signnowAddendumTemplates: true,
-      signnowDisclosureTemplates: true,
-    },
-  });
+  const now = Date.now();
+  if (
+    !funderSignNowSettingsCache ||
+    now - funderSignNowSettingsCache.at > FUNDER_SIGNNOW_SETTINGS_TTL_MS
+  ) {
+    const funders = await prisma.funderProfile.findMany({
+      select: {
+        signnowAddendumTemplates: true,
+        signnowDisclosureTemplates: true,
+      },
+    });
+    funderSignNowSettingsCache = { at: now, rows: funders };
+  }
 
-  for (const funder of funders) {
+  for (const funder of funderSignNowSettingsCache.rows) {
     const buckets: Array<{ rows: unknown; type: 'addendum' | 'disclosure' }> = [
       { rows: funder.signnowAddendumTemplates, type: 'addendum' },
       { rows: funder.signnowDisclosureTemplates, type: 'disclosure' },
@@ -410,6 +423,27 @@ export function resolveSignNowAddendaFromRefs(
 
 /** Persist a CRM template row so the addendum picker can map `ach_weekly` (etc.). */
 export async function ensureSignNowAddendumTemplateRow(
+  layoutKeyOrId: string,
+): Promise<string> {
+  const cacheKey = String(layoutKeyOrId || '').trim().toLowerCase();
+  if (!cacheKey) {
+    throw new Error('Unknown SignNow addendum ""');
+  }
+  const cached = signNowTemplateRowIdCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = ensureSignNowAddendumTemplateRowUncached(layoutKeyOrId);
+  signNowTemplateRowIdCache.set(cacheKey, pending);
+  try {
+    const id = await pending;
+    signNowTemplateRowIdCache.set(cacheKey, Promise.resolve(id));
+    return id;
+  } catch (err) {
+    signNowTemplateRowIdCache.delete(cacheKey);
+    throw err;
+  }
+}
+
+async function ensureSignNowAddendumTemplateRowUncached(
   layoutKeyOrId: string,
 ): Promise<string> {
   let def = resolveSignNowAddendumTemplate(layoutKeyOrId);

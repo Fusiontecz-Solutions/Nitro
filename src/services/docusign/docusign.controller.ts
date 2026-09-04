@@ -6,6 +6,7 @@ import {
   extractSignNowTemplateId,
   isSignNowConfigured,
   isSignNowEnvelopeId,
+  SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID,
 } from '../signnow/utils/signnow-client';
 import { signNowService } from '../signnow/signnow.service';
 import { resolveSignNowAddendumTemplate } from '../signnow/utils/signnow-addendum-templates';
@@ -402,9 +403,11 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
         if (funder?.name) previewFileName = `Agreement - ${funder.name}.pdf`;
       }
       if (!contractTemplateId) {
+        contractTemplateId = SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID;
+      }
+      if (!contractTemplateId) {
         return res.status(400).json({
-          message:
-            'No SignNow contract template is configured for this funder (Settings → Funders).',
+          message: 'Could not load the SignNow agreement PDF.',
         });
       }
       const pdfBuffer = await signNowService.downloadAgreementPdf(contractTemplateId);

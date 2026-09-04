@@ -218,7 +218,7 @@ class OfferDecisionController {
           : null;
       }
 
-      const priorOfferDecision = await prisma.offerDecision.findUnique({
+      const priorOfferDecisionPromise = prisma.offerDecision.findUnique({
         where: { applicationId: app.id },
         select: {
           offer: true,
@@ -238,127 +238,24 @@ class OfferDecisionController {
         update: updateData,
       });
 
-      /**
-       * Mirror the saved offer onto `Application.commissionAmount` using the ISO commission
-       * percentage that is already stamped on the application at link/create time.
-       * Formula matches the read path used in `isoCommission.controller.ts#getMyDeals`:
-       *   commissionAmount = offer * (Application.commissionPercentage / 100)
-       * If the offer is missing/zero we clear the column instead of leaving stale data.
-       */
-      const offerForCommission =
-        result.offer != null ? Number(result.offer) : parseNumber(offer);
-      const commissionPercentage = Number(app.commissionPercentage ?? 0);
-      const newCommissionAmount =
-        offerForCommission != null && Number.isFinite(offerForCommission)
-          ? (Number(offerForCommission) * commissionPercentage) / 100
-          : null;
+      const priorOfferDecision = await priorOfferDecisionPromise;
 
-      try {
-        await prisma.application.update({
-          where: { id: app.id },
-          data: { commissionAmount: newCommissionAmount },
-        });
-      } catch (commissionErr) {
-        // Don't fail the offer save if mirroring the commission amount fails.
-        console.error(
-          'OfferDecision upsert: failed to update Application.commissionAmount',
-          commissionErr,
-        );
-      }
-
-      /**
-       * Keep TermsOffer in lockstep with OfferDecision so Overview / public approval /
-       * list amounts never show a stale terms snapshot after Live Offer save.
-       */
       const decisionNorm = String(decision).trim().toLowerCase();
-      if (decisionNorm === 'approved') {
-        try {
-          await syncTermsOfferFromOfferDecision(app.id, authUserFromReq(req)?.id ?? null);
-        } catch (termsSyncErr) {
-          console.error(
-            'OfferDecision upsert: failed to sync TermsOffer from OfferDecision',
-            termsSyncErr,
-          );
-        }
-
-        /**
-         * Draft contracts keep a snapshot of approved/total amounts. Refresh them from
-         * the live offer so Prefill / DocuSign email subjects match Overview.
-         */
-        try {
-          const draftContract = await prisma.contract.findUnique({
-            where: { applicationId: app.id },
-            select: { id: true, status: true, offerId: true },
-          });
-          if (draftContract && draftContract.status === 'DRAFT') {
-            const offerAmt =
-              result.offer != null && Number.isFinite(Number(result.offer))
-                ? Number(result.offer)
-                : null;
-            const totalAmt =
-              result.totalRemit != null && Number.isFinite(Number(result.totalRemit))
-                ? Number(result.totalRemit)
-                : null;
-            const moneyPatch: Record<string, unknown> = {};
-            if (offerAmt != null) {
-              moneyPatch.approvedAmount = offerAmt;
-              moneyPatch.purchaseAmount = String(offerAmt);
-            }
-            if (totalAmt != null) {
-              moneyPatch.totalAmount = totalAmt;
-              moneyPatch.purchasePrice = String(totalAmt);
-            }
-            if (result.id && draftContract.offerId !== result.id) {
-              moneyPatch.offerId = result.id;
-            }
-            if (Object.keys(moneyPatch).length > 0) {
-              await prisma.contract.update({
-                where: { id: draftContract.id },
-                data: moneyPatch,
-              });
-            }
-          }
-        } catch (contractSyncErr) {
-          console.error(
-            'OfferDecision upsert: failed to sync draft Contract amounts from OfferDecision',
-            contractSyncErr,
-          );
-        }
-      }
+      const authUser = authUserFromReq(req);
+      const actorName = String((req as any).user?.name || '').trim();
 
       /**
        * Create & Save Offer → advance the deal to Contract Pending so Operations
-       * can generate the contract. Skips if already Contract Pending or past
-       * Contract Signed / Funded / etc.
+       * can generate the contract. Keep this on the hot path so `meta` is accurate.
        */
       let movedToContractPending = false;
       if (decisionNorm === 'approved') {
         try {
-          const previousStatus =
-            `${app.currentQueue ?? ''} / ${app.currentState ?? ''}`.trim();
           movedToContractPending = await syncApplicationToContractPending(
             prisma,
             app.id,
             { source: 'offerDecisionController.upsert' },
           );
-          if (movedToContractPending) {
-            const authUser = authUserFromReq(req);
-            const actorName = String((req as any).user?.name || '').trim();
-            const actorPrefix = actorName || authUser?.role || 'User';
-            await createApplicationActivityLog({
-              applicationId: app.id,
-              user: authUser,
-              req,
-              actionType: 'QUEUE_CHANGED',
-              actionDescription: `${actorPrefix} saved offer and moved deal to Contract Pending.`,
-              previousStatus,
-              currentStatus: 'Contract Pending / CONTRACT_PENDING',
-              metadata: {
-                source: 'offerDecisionController.upsert',
-                offer: result.offer ?? null,
-              },
-            });
-          }
         } catch (queueErr) {
           console.error(
             'OfferDecision upsert: failed to set Application to Contract Pending',
@@ -367,53 +264,155 @@ class OfferDecisionController {
         }
       }
 
-      try {
-        const existingContract = await prisma.contract.findUnique({
-          where: { applicationId: app.id },
-          select: { id: true },
-        });
-        const offerChanged = offerDecisionValuesChanged(priorOfferDecision, {
-          offer: result.offer,
-          rate: result.rate,
-          totalRemit: result.totalRemit,
-          term: result.term,
-          frequency: result.frequency,
-        });
-        if (
-          existingContract &&
-          offerChanged &&
-          isQueueEligibleForContractReinitiation(app.currentQueue)
-        ) {
-          await flagNeedsContractReinitiation(app.id);
-          await recordContractWorkflowActivityLog(
-            app.id,
-            'REINITIATION_REQUIRED',
-            {
-              user: authUserFromReq(req),
-              req,
-              actorName: String((req as any).user?.name || ''),
-              source: 'offerDecisionController.upsert',
-            },
-            {
-              previousStatus: `${app.currentQueue ?? ''} / ${app.currentState ?? ''}`.trim(),
-              metadata: {
-                contractId: existingContract.id,
-                priorOffer: priorOfferDecision?.offer ?? null,
-                newOffer: result.offer ?? null,
-                priorRate: priorOfferDecision?.rate ?? null,
-                newRate: result.rate ?? null,
-                priorTotalRemit: priorOfferDecision?.totalRemit ?? null,
-                newTotalRemit: result.totalRemit ?? null,
-              },
-            },
-          );
-        }
-      } catch (reinitErr) {
-        console.error(
-          'OfferDecision upsert: failed to flag contract reinitiation',
-          reinitErr,
-        );
-      }
+      const previousStatus =
+        `${app.currentQueue ?? ''} / ${app.currentState ?? ''}`.trim();
+
+      setImmediate(() => {
+        void (async () => {
+          const offerForCommission =
+            result.offer != null ? Number(result.offer) : parseNumber(offer);
+          const commissionPercentage = Number(app.commissionPercentage ?? 0);
+          const newCommissionAmount =
+            offerForCommission != null && Number.isFinite(offerForCommission)
+              ? (Number(offerForCommission) * commissionPercentage) / 100
+              : null;
+
+          try {
+            await prisma.application.update({
+              where: { id: app.id },
+              data: { commissionAmount: newCommissionAmount },
+            });
+          } catch (commissionErr) {
+            console.error(
+              'OfferDecision upsert: failed to update Application.commissionAmount',
+              commissionErr,
+            );
+          }
+
+          if (decisionNorm === 'approved') {
+            try {
+              await syncTermsOfferFromOfferDecision(app.id, authUser?.id ?? null);
+            } catch (termsSyncErr) {
+              console.error(
+                'OfferDecision upsert: failed to sync TermsOffer from OfferDecision',
+                termsSyncErr,
+              );
+            }
+
+            try {
+              const draftContract = await prisma.contract.findUnique({
+                where: { applicationId: app.id },
+                select: { id: true, status: true, offerId: true },
+              });
+              if (draftContract && draftContract.status === 'DRAFT') {
+                const offerAmt =
+                  result.offer != null && Number.isFinite(Number(result.offer))
+                    ? Number(result.offer)
+                    : null;
+                const totalAmt =
+                  result.totalRemit != null && Number.isFinite(Number(result.totalRemit))
+                    ? Number(result.totalRemit)
+                    : null;
+                const moneyPatch: Record<string, unknown> = {};
+                if (offerAmt != null) {
+                  moneyPatch.approvedAmount = offerAmt;
+                  moneyPatch.purchaseAmount = String(offerAmt);
+                }
+                if (totalAmt != null) {
+                  moneyPatch.totalAmount = totalAmt;
+                  moneyPatch.purchasePrice = String(totalAmt);
+                }
+                if (result.id && draftContract.offerId !== result.id) {
+                  moneyPatch.offerId = result.id;
+                }
+                if (Object.keys(moneyPatch).length > 0) {
+                  await prisma.contract.update({
+                    where: { id: draftContract.id },
+                    data: moneyPatch,
+                  });
+                }
+              }
+            } catch (contractSyncErr) {
+              console.error(
+                'OfferDecision upsert: failed to sync draft Contract amounts from OfferDecision',
+                contractSyncErr,
+              );
+            }
+          }
+
+          if (movedToContractPending) {
+            try {
+              const actorPrefix = actorName || authUser?.role || 'User';
+              await createApplicationActivityLog({
+                applicationId: app.id,
+                user: authUser,
+                req,
+                actionType: 'QUEUE_CHANGED',
+                actionDescription: `${actorPrefix} saved offer and moved deal to Contract Pending.`,
+                previousStatus,
+                currentStatus: 'Contract Pending / CONTRACT_PENDING',
+                metadata: {
+                  source: 'offerDecisionController.upsert',
+                  offer: result.offer ?? null,
+                },
+              });
+            } catch (logErr) {
+              console.error(
+                'OfferDecision upsert: failed to write Contract Pending activity log',
+                logErr,
+              );
+            }
+          }
+
+          try {
+            const existingContract = await prisma.contract.findUnique({
+              where: { applicationId: app.id },
+              select: { id: true },
+            });
+            const offerChanged = offerDecisionValuesChanged(priorOfferDecision, {
+              offer: result.offer,
+              rate: result.rate,
+              totalRemit: result.totalRemit,
+              term: result.term,
+              frequency: result.frequency,
+            });
+            if (
+              existingContract &&
+              offerChanged &&
+              isQueueEligibleForContractReinitiation(app.currentQueue)
+            ) {
+              await flagNeedsContractReinitiation(app.id);
+              await recordContractWorkflowActivityLog(
+                app.id,
+                'REINITIATION_REQUIRED',
+                {
+                  user: authUser,
+                  req,
+                  actorName,
+                  source: 'offerDecisionController.upsert',
+                },
+                {
+                  previousStatus,
+                  metadata: {
+                    contractId: existingContract.id,
+                    priorOffer: priorOfferDecision?.offer ?? null,
+                    newOffer: result.offer ?? null,
+                    priorRate: priorOfferDecision?.rate ?? null,
+                    newRate: result.rate ?? null,
+                    priorTotalRemit: priorOfferDecision?.totalRemit ?? null,
+                    newTotalRemit: result.totalRemit ?? null,
+                  },
+                },
+              );
+            }
+          } catch (reinitErr) {
+            console.error(
+              'OfferDecision upsert: failed to flag contract reinitiation',
+              reinitErr,
+            );
+          }
+        })();
+      });
 
       return res.status(200).json({
         success: true,

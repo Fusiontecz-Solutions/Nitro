@@ -55,6 +55,7 @@ router.get('/:id/documents/:fileId', contractController.getUploadedContractDocum
 router.put('/:id/documents/:fileId', contractController.updateUploadedContractDocument.bind(contractController));
 router.delete('/:id/documents/:fileId', contractController.deleteUploadedContractDocument.bind(contractController));
 router.post('/:id/document-template-mappings', contractController.createContractDocumentTemplateMapping.bind(contractController));
+router.put('/:id/document-template-mappings', contractController.replaceContractDocumentTemplateMappings.bind(contractController));
 router.get('/:id/document-template-mappings', contractController.getAllContractDocumentTemplateMappings.bind(contractController));
 router.put('/:id/document-template-mappings/:mappingId', contractController.updateContractDocumentTemplateMapping.bind(contractController));
 router.delete('/:id/document-template-mappings/:mappingId', contractController.deleteContractDocumentTemplateMapping.bind(contractController));

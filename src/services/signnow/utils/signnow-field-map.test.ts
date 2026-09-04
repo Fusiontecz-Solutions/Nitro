@@ -16,6 +16,8 @@ describe('signnow-field-map', () => {
       '5615778267',
     );
     expect(formatSignNowPrefillValue('FUSIONTECZ', 'client_legal_name')).toBe('FUSIONTECZ');
+    expect(formatSignNowPrefillValue('$ 1,025.00', 'origination_fee')).toBe('1,025.00');
+    expect(formatSignNowPrefillValue('$49.00', 'ach_program_fee_p13')).toBe('49.00');
   });
 
   it('strips page suffixes from SignNow unique names', () => {
@@ -262,22 +264,37 @@ describe('signnow-field-map', () => {
 
   it('always fills purchase_price / purchased_amount / total_fees / ach_program_fee', () => {
     const prefill = {
-      purchase_price: '14900.00',
+      purchase_price: '10000.00',
+      purchased_amount: '14900.00',
       purchase_amount: '10000.00',
-      net_to_merchant: '8950.00',
+      net_to_merchant: '8975.00',
       monthly_fee: '49.00',
       doing_business_as: 'FUSION DBA',
     };
-    expect(resolveSignNowPrefillValue('purchase_price_p1', prefill)).toBe('14900.00');
-    expect(resolveSignNowPrefillValue('purchased_amount_p1', prefill)).toBe('10000.00');
-    expect(resolveSignNowPrefillValue('Purchased Amount', prefill)).toBe('10000.00');
+    expect(resolveSignNowPrefillValue('purchase_price_p1', prefill)).toBe('10000.00');
+    expect(resolveSignNowPrefillValue('purchased_amount_p1', prefill)).toBe('14900.00');
+    expect(resolveSignNowPrefillValue('Purchased Amount', prefill)).toBe('14900.00');
     // No explicit total_fees → derive offer − net
-    expect(resolveSignNowPrefillValue('total_fees_p1', prefill)).toBe('1050');
+    expect(resolveSignNowPrefillValue('total_fees_p1', prefill)).toBe('1,025.00');
     expect(resolveSignNowPrefillValue('ach_program_fee_p13', prefill)).toBe('49.00');
+    expect(resolveSignNowPrefillValue('disclosure_page3_line_1_p3', {
+      appendix_underwriting_fees: '1,025.00',
+      net_to_merchant: '8975.00',
+    })).toBe('1,025.00');
+    expect(resolveSignNowPrefillValue('disclosure_page3_line_2_p3', {
+      refinance_amount: '900.00',
+    })).toBe('900.00');
+    expect(resolveSignNowPrefillValue('previous_lender_name_p3', {
+      refinance_amount: '900.00',
+      funder_name: 'NITRO ADVANCE',
+    })).toBe('NITRO ADVANCE');
+    expect(
+      resolveSignNowPrefillValue('ach_program_fee_p13', { ach_program_fee_p1: '49.00' }),
+    ).toBe('49.00');
     // Agreement widgets use default SignNow names on this template.
-    expect(resolveSignNowPrefillValue('Text Field 36', prefill)).toBe('14900.00');
-    expect(resolveSignNowPrefillValue('Text Field 35', prefill)).toBe('10000.00');
-    expect(resolveSignNowPrefillValue('Text Field 34', prefill)).toBe('1050');
+    expect(resolveSignNowPrefillValue('Text Field 36', prefill)).toBe('10000.00');
+    expect(resolveSignNowPrefillValue('Text Field 35', prefill)).toBe('14900.00');
+    expect(resolveSignNowPrefillValue('Text Field 34', prefill)).toBe('1,025.00');
     expect(resolveSignNowPrefillValue('Text Field 29', {})).toBe('OWNER');
     expect(resolveSignNowPrefillValue('Text Field 29', { owner_print_title: 'CEO' })).toBe(
       'CEO',
@@ -335,6 +352,42 @@ describe('signnow-field-map', () => {
     expect(byName.business_address_p1).toBe('123 MAIN ST');
     expect(byName.authorization_client_bank_name_p1).toBe('CHASE');
     expect(byName['Text Field 13']).toBeUndefined();
+  });
+
+  it('uses Verify Prefill page-3 values instead of calculator N/A and 0.00', () => {
+    const prefill = {
+      disclosure_page3_3a: 'Hello',
+      disclosure_page3_3b: 'Hello',
+      disclosure_page3_3c: 'Hello',
+      disclosure_page3_third_parties: '90',
+      disclosure_page3_line_2: '900',
+    };
+    expect(resolveSignNowPrefillValue('disclosure_page3_3a_p3', prefill)).toBe('Hello');
+    expect(resolveSignNowPrefillValue('disclosure_page3_3b_p3', prefill)).toBe('Hello');
+    expect(resolveSignNowPrefillValue('disclosure_page3_3c_p3', prefill)).toBe('Hello');
+    expect(resolveSignNowPrefillValue('disclosure_page3_third_parties_p3', prefill)).toBe('90');
+    expect(resolveSignNowPrefillValue('disclosure_page3_line_2_p3', prefill)).toBe('900');
+  });
+
+  it('prefers CRM page-3 values over calculator placeholders on the same canon', () => {
+    expect(
+      resolveSignNowPrefillValue('disclosure_page3_3a_p3', {
+        disclosure_page3_3a: 'N/A',
+        disclosure_page3_3a_p3: 'Hello',
+      }),
+    ).toBe('Hello');
+    expect(
+      resolveSignNowPrefillValue('disclosure_page3_third_parties_p3', {
+        disclosure_page3_third_parties: '0.00',
+        disclosure_page3_third_parties_p3: '90',
+      }),
+    ).toBe('90');
+    expect(
+      resolveSignNowPrefillValue('disclosure_page3_line_2_p3', {
+        disclosure_page3_line_2: '0.00',
+        refinance_amount: '900',
+      }),
+    ).toBe('900');
   });
 
   it('fills last-page s2 contact slots from owner 1 when there is no owner 2', () => {

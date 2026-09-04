@@ -198,6 +198,8 @@ const ALIASES: Record<string, string[]> = {
     'monthly_program_fee',
     'ach_program_fee_amount',
     'program_fee_amount',
+    'ach_program_fee_p1',
+    'ach_program_fee_p13',
   ],
   monthly_fee: ['ach_program_fee', 'program_fee', 'ach_monthly_fee', 'monthly_program_fee'],
   program_fee: ['ach_program_fee', 'monthly_fee', 'ach_monthly_fee'],
@@ -211,8 +213,16 @@ const ALIASES: Record<string, string[]> = {
     'total_dollar_cost',
     'finance_charge',
   ],
-  // purchase_price = payback; purchased_amount = offer/advance on the SignNow PDF.
+  // PDF header PURCHASE PRICE = funding / offer.
   purchase_price: [
+    'purchase_amount',
+    'approved_amount',
+    'offer_amount',
+    'total_amount_business_fund',
+    'disclosure_purchase_price',
+  ],
+  // PDF header PURCHASED AMOUNT = payback / receivables purchased.
+  purchased_amount: [
     'payment_total',
     'disclosure_total_payment',
     'total_repayment_amount',
@@ -220,17 +230,8 @@ const ALIASES: Record<string, string[]> = {
     'payback_amount',
     'estimated_total_payment',
   ],
-  purchased_amount: [
-    'purchase_amount',
-    'funding_provided',
-    'approved_amount',
-    'offer_amount',
-    'total_amount_business_fund',
-    'disclosure_amount_financed',
-    'disclosure_purchase_price',
-  ],
   purchase_amount: [
-    'purchased_amount',
+    'purchase_price',
     'funding_provided',
     'approved_amount',
     'offer_amount',
@@ -385,6 +386,21 @@ const ALIASES: Record<string, string[]> = {
   ],
   disclosure_page3_third_parties: ['disclosure_page3_third_parties'],
   previous_lender_name: ['previous_lender_name'],
+  disclosure_page3_line_1: [
+    'appendix_underwriting_fees',
+    'total_fees',
+    'origination_fee',
+    'underwriter_fee',
+    'disclosure_broker_fee',
+    'disclosure_fees_deducted',
+  ],
+  disclosure_page3_line_2: ['refinance_amount', 'previous_refi_balance'],
+  disclosure_page3_net: [
+    'disclosure_amount_financed',
+    'disclosure_recipient_funds',
+    'net_to_merchant',
+  ],
+  disclosure_page3_subtotal: ['disclosure_page3_subtotal'],
   // CA-style disclosure page 1 — SignNow still uses default "Text Field N" names.
   'text field 1': [
     'funding_provided',
@@ -447,24 +463,20 @@ const ALIASES: Record<string, string[]> = {
   ],
   'text field 35': [
     'purchased_amount',
-    'purchase_amount',
-    'funding_provided',
-    'approved_amount',
-    'offer_amount',
-    'total_amount_business_fund',
-    'disclosure_amount_financed',
-  ],
-  'text field 36': [
-    'purchase_price',
     'payment_total',
     'disclosure_total_payment',
     'total_repayment_amount',
     'total_of_payments',
     'payback_amount',
     'estimated_total_payment',
-    // Last resort so the cell is never blank when only offer amount exists.
+  ],
+  'text field 36': [
+    'purchase_price',
     'purchase_amount',
-    'purchased_amount',
+    'approved_amount',
+    'offer_amount',
+    'total_amount_business_fund',
+    'disclosure_purchase_price',
     'funding_provided',
   ],
 };
@@ -549,10 +561,38 @@ function parsePrefillMoney(value: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function isNaPrefillValue(value: string): boolean {
+  return /^n\/a$/i.test(String(value || '').trim());
+}
+
+function isZeroMoneyPrefill(value: string): boolean {
+  const n = parsePrefillMoney(value);
+  return n != null && n === 0;
+}
+
+/** Calculator defaults that must not hide a real Verify Prefill value. */
+function isWeakSignNowPrefillHit(canon: string, value: string): boolean {
+  const v = String(value || '').trim();
+  if (!v) return true;
+  if (isNaPrefillValue(v)) {
+    return (
+      /^disclosure_page3_3[abc]$/.test(canon) ||
+      canon === 'disclosure_page3_third_parties' ||
+      canon === 'disclosure_page3_line_2'
+    );
+  }
+  if (canon === 'disclosure_page3_third_parties' || canon === 'disclosure_page3_line_2') {
+    return isZeroMoneyPrefill(v);
+  }
+  return false;
+}
+
 function formatPrefillMoney(value: number): string {
   if (!Number.isFinite(value)) return '';
-  const rounded = Math.round(value * 100) / 100;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Math.round(value * 100) / 100);
 }
 
 /**
@@ -574,6 +614,17 @@ function resolveForcedContractMoneyField(
   if (canon === 'purchase_price') {
     return first(
       'purchase_price',
+      'purchase_amount',
+      'approved_amount',
+      'offer_amount',
+      'total_amount_business_fund',
+      'disclosure_purchase_price',
+    );
+  }
+
+  if (canon === 'purchased_amount') {
+    return first(
+      'purchased_amount',
       'payment_total',
       'disclosure_total_payment',
       'total_repayment_amount',
@@ -583,10 +634,10 @@ function resolveForcedContractMoneyField(
     );
   }
 
-  if (canon === 'purchased_amount' || canon === 'purchase_amount') {
+  if (canon === 'purchase_amount') {
     return first(
-      'purchased_amount',
       'purchase_amount',
+      'purchase_price',
       'funding_provided',
       'approved_amount',
       'offer_amount',
@@ -609,7 +660,7 @@ function resolveForcedContractMoneyField(
     const offer = parsePrefillMoney(
       first(
         'purchase_amount',
-        'purchased_amount',
+        'purchase_price',
         'funding_provided',
         'approved_amount',
       ),
@@ -623,6 +674,49 @@ function resolveForcedContractMoneyField(
     return '';
   }
 
+  if (canon === 'disclosure_page3_line_1') {
+    return first(
+      'disclosure_page3_line_1',
+      'appendix_underwriting_fees',
+      'total_fees',
+      'origination_fee',
+      'underwriter_fee',
+      'disclosure_broker_fee',
+      'disclosure_fees_deducted',
+    );
+  }
+
+  if (canon === 'disclosure_page3_line_2') {
+    const firstStrong = (...keys: string[]) => {
+      for (const key of keys) {
+        const hit = mapGet(map, key);
+        if (hit && !isWeakSignNowPrefillHit('disclosure_page3_line_2', hit)) return hit;
+      }
+      return '';
+    };
+    return (
+      firstStrong(
+        'disclosure_page3_line_2',
+        'refinance_amount',
+        'previous_refi_balance',
+      ) ||
+      first(
+        'disclosure_page3_line_2',
+        'refinance_amount',
+        'previous_refi_balance',
+      )
+    );
+  }
+
+  if (canon === 'disclosure_page3_net') {
+    return first(
+      'disclosure_page3_net',
+      'disclosure_amount_financed',
+      'disclosure_recipient_funds',
+      'net_to_merchant',
+    );
+  }
+
   if (canon === 'ach_program_fee') {
     return first(
       'ach_program_fee',
@@ -632,6 +726,8 @@ function resolveForcedContractMoneyField(
       'monthly_program_fee',
       'ach_program_fee_amount',
       'program_fee_amount',
+      'ach_program_fee_p1',
+      'ach_program_fee_p13',
     );
   }
 
@@ -722,13 +818,31 @@ function hasDistinctParty2Prefill(prefill: Record<string, string>): boolean {
 
 function lookupMap(prefill: Record<string, string>): Map<string, string> {
   const map = new Map<string, string>();
+  const prefer = (key: string, v: string) => {
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, v);
+      return;
+    }
+    if (isNaPrefillValue(existing) && !isNaPrefillValue(v)) {
+      map.set(key, v);
+      return;
+    }
+    const existingN = parsePrefillMoney(existing);
+    const incomingN = parsePrefillMoney(v);
+    if (existingN === 0 && incomingN != null && incomingN > 0) {
+      map.set(key, v);
+    }
+  };
   for (const [key, value] of Object.entries(prefill)) {
     const v = String(value ?? '').trim();
     if (!v) continue;
     const k = String(key || '').trim();
     if (!k) continue;
-    map.set(k, v);
-    map.set(k.toLowerCase(), v);
+    prefer(k, v);
+    prefer(k.toLowerCase(), v);
+    const canon = canonicalizeSignNowFieldName(k);
+    if (canon) prefer(canon, v);
   }
   return map;
 }
@@ -795,11 +909,13 @@ export function resolveSignNowPrefillValue(
 
   if (canon === 'previous_lender_name') {
     const explicit = mapGet(map, 'previous_lender_name');
-    if (explicit) return explicit;
-    const line2 = parseFloat(
-      mapGet(map, 'disclosure_page3_line_2').replace(/[$,%\s]/g, ''),
+    if (explicit && !/^n\/a$/i.test(explicit)) return explicit;
+    const line2 = parsePrefillMoney(
+      mapGet(map, 'disclosure_page3_line_2') ||
+        mapGet(map, 'refinance_amount') ||
+        mapGet(map, 'previous_refi_balance'),
     );
-    if (Number.isFinite(line2) && line2 > 0) {
+    if (line2 != null && line2 > 0) {
       return (
         mapGet(map, 'funder_name') ||
         mapGet(map, 'disclosure_funder_name') ||
@@ -807,9 +923,6 @@ export function resolveSignNowPrefillValue(
       );
     }
     return 'N/A';
-  }
-  if (canon === 'disclosure_page3_third_parties') {
-    return mapGet(map, 'disclosure_page3_third_parties') || '0.00';
   }
 
   const tryKeys = [
@@ -822,11 +935,13 @@ export function resolveSignNowPrefillValue(
   ];
   for (const key of tryKeys) {
     const hit = mapGet(map, key);
-    if (hit) return hit;
+    if (hit && !isWeakSignNowPrefillHit(canon, hit)) return hit;
   }
   const forcedMoney = resolveForcedContractMoneyField(canon, map);
+  if (forcedMoney && !isWeakSignNowPrefillHit(canon, forcedMoney)) return forcedMoney;
   if (forcedMoney) return forcedMoney;
   if (/^disclosure_page3_3[abc]$/.test(canon)) return 'N/A';
+  if (canon === 'disclosure_page3_third_parties') return '0.00';
   return '';
 }
 
@@ -923,6 +1038,14 @@ export function formatSignNowPrefillValue(value: string, fieldName?: string): st
     if (!digits) return '';
     if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
     return digits;
+  }
+  // PDF already prints `$` before origination / ACH program fee blanks.
+  if (
+    /(?:^|_)(?:origination_fee|underwriter_fee|underwriting_fee|appendix_underwriting|ach_program_fee)(?:_|$)/i.test(
+      name,
+    )
+  ) {
+    return v.replace(/^\$+\s*/g, '').trim();
   }
   return v;
 }

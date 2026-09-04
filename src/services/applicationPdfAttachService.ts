@@ -7,6 +7,21 @@ const APPLICATION_FILES_FOLDER = 'ih-crm/applications';
  * Uploads a PDF buffer to Cloudinary and links it to the application as an ApplicationFile.
  * Best-effort: logs and swallows errors so caller can still succeed if storage fails.
  */
+export function scheduleAttachBufferAsApplicationFile(
+    applicationId: string,
+    buffer: Buffer,
+    originalName: string,
+): void {
+    setImmediate(() => {
+        void attachBufferAsApplicationFile(applicationId, buffer, originalName).catch((err) => {
+            console.error(
+                '[scheduleAttachBufferAsApplicationFile]',
+                err instanceof Error ? err.message : err,
+            );
+        });
+    });
+}
+
 export async function attachBufferAsApplicationFile(
     applicationId: string,
     buffer: Buffer,

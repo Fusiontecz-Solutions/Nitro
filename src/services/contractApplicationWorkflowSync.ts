@@ -473,6 +473,19 @@ function isSigningCompletedDocumentStatus(status: unknown): boolean {
  * SignNow currently updates Document.status to `completed` without always writing
  * Contract.status=COMPLETED first — treat either as signed.
  */
+function queueLooksLikeAwaitingSignature(queue: string | null | undefined): boolean {
+  const q = String(queue || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+  return (
+    q === 'contract sent' ||
+    q === 'contract out' ||
+    q === 'contracts out' ||
+    q === 'contracted'
+  );
+}
+
 export async function applyContractCompletedSyncToApplicationRecord(
   prismaClient: PrismaLike,
   applicationRecord: {
@@ -483,6 +496,11 @@ export async function applyContractCompletedSyncToApplicationRecord(
   source: string,
 ): Promise<boolean> {
   if (isApplicationPastContractSignedStage(applicationRecord)) {
+    return false;
+  }
+  // Skip extra contract/document lookups on Application / Contract Generated / etc.
+  // Only Contract Sent (and legacy sent aliases) can still need a completed-envelope sync on GET.
+  if (!queueLooksLikeAwaitingSignature(applicationRecord.currentQueue)) {
     return false;
   }
 
