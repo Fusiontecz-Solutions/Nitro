@@ -1,5 +1,6 @@
 import type { google } from '@google-cloud/documentai/build/protos/protos';
 import type { PdfClaudeExtractResultDTO } from '../../nestjs-claude-pdf/claude-pdf-extraction.service';
+import { preferBetterEin, resolveEin } from '../einSanitizer';
 
 type Document = google.cloud.documentai.v1.IDocument;
 type TextAnchor = google.cloud.documentai.v1.Document.ITextAnchor;
@@ -57,7 +58,11 @@ const FIELD_ALIASES: Record<string, string> = {
   business_email: 'email',
   email_address: 'email',
   federal_tax_id: 'ein',
+  federal_tax_id_number: 'ein',
   tax_id: 'ein',
+  tax_id_number: 'ein',
+  fein: 'ein',
+  employer_identification_number: 'ein',
   ein: 'ein',
   business_ein_number: 'ein',
   requested_amount: 'requested_amount',
@@ -139,6 +144,11 @@ function mergeKeyData(target: Record<string, string>, label: string, value: stri
   const v = String(value || '').trim();
   if (!v) return;
   const key = canonicalKey(label);
+  if (key === 'ein') {
+    const chosen = preferBetterEin(target[key], v);
+    if (chosen) target[key] = chosen;
+    return;
+  }
   if (!target[key] || target[key].length < v.length) {
     target[key] = v;
   }
@@ -183,6 +193,10 @@ export function mapDocumentAiToExtractResult(document: Document): PdfClaudeExtra
   }));
 
   const fullText = String(document.text || '').trim();
+  const ein = resolveEin(key_data.ein, fullText);
+  if (ein) key_data.ein = ein;
+  else delete key_data.ein;
+
   const docTypeGuess = /driver|license|identification/i.test(fullText)
     ? 'driver_license'
     : /routing|account number|voided check|direct deposit/i.test(fullText)
@@ -199,6 +213,7 @@ export function mapDocumentAiToExtractResult(document: Document): PdfClaudeExtra
     pages,
     transactions: [],
     model_notes: 'extracted_via_google_document_ai',
+    raw_ocr_text: fullText,
   };
 }
 

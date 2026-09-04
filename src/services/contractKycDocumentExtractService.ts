@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
-import { getClaudePdfExtractionService } from '../nestjs-claude-pdf/claude-pdf-extraction.context';
+import { DocumentAiPdfExtractionService } from './document-ai/documentAiPdfExtraction.service';
+import { resolveMimeTypeFromBuffer } from '../utils/mimeTypeFromBuffer';
 import {
   type KycDocumentType,
   type KycExtractionMapped,
@@ -24,14 +25,15 @@ async function readFileBuffer(file: UploadedFileLike): Promise<Buffer> {
   throw new Error('Uploaded file has no readable data');
 }
 
-function mimeFromFile(file: UploadedFileLike): string {
+function declaredMimeFromFile(file: UploadedFileLike): string {
   const mt = String(file.mimetype || '').toLowerCase().trim();
   if (mt) return mt;
   const name = String(file.name || '').toLowerCase();
   if (name.endsWith('.pdf')) return 'application/pdf';
   if (name.endsWith('.png')) return 'image/png';
   if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  return 'application/octet-stream';
+  if (name.endsWith('.webp')) return 'image/webp';
+  return '';
 }
 
 class ContractKycDocumentExtractService {
@@ -40,7 +42,7 @@ class ContractKycDocumentExtractService {
     mimeType: string,
     documentType: KycDocumentType,
   ): Promise<KycExtractionMapped> {
-    const svc = getClaudePdfExtractionService();
+    const svc = new DocumentAiPdfExtractionService();
     const { key_data } = await svc.extractKycDocument(buffer, mimeType, documentType);
     return mapKycKeyDataToPrefill(documentType, key_data);
   }
@@ -50,7 +52,7 @@ class ContractKycDocumentExtractService {
     documentType: KycDocumentType,
   ): Promise<KycExtractionMapped> {
     const buffer = await readFileBuffer(file);
-    const mimeType = mimeFromFile(file);
+    const mimeType = resolveMimeTypeFromBuffer(declaredMimeFromFile(file), buffer);
     return this.extractFromBuffer(buffer, mimeType, documentType);
   }
 

@@ -43,6 +43,14 @@ export function canLockSignNowPrefill(field: Record<string, unknown>): boolean {
   return Boolean(String(field.prefilled_text || '').trim());
 }
 
+/** Parse `Field merchant_contact_phone validation failed.` → field name. */
+export function parseSignNowPrefillValidationField(detail: string): string {
+  const match = String(detail || '').match(
+    /Field\s+([A-Za-z0-9 _.-]+?)\s+validation failed/i,
+  );
+  return match?.[1] ? String(match[1]).trim() : '';
+}
+
 /** Fixed size for baked / prefilled contract text in SignNow PDFs. */
 const DEFAULT_FONT_SIZE = 13;
 

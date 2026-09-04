@@ -10,6 +10,8 @@ build/
 # Environment variables
 .env
 .env.*
+gcp-service-account.json
+*-service-account.json
 src/utils/CLEAR_Connection_Info/Credentials.txt
 src/utils/CLEAR_Connection_Info/*.pfx
 *.pfx

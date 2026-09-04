@@ -66,9 +66,12 @@ export function loadBackendEnv(): void {
     `[env] BOOTSTRAP_SUPER_ADMIN_SECRET ${bootstrapSecretLen >= 24 ? 'loaded' : 'MISSING'} (${bootstrapSecretLen} chars) from ${loadedFrom ?? '(none)'}`,
   );
 
+  const docAiProcessorId = String(
+    process.env.DOCUMENT_AI_PROCESSOR_ID || process.env.DOCAI_PROCESSOR_ID || '',
+  ).trim();
   const docAiOk =
     !!String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim() &&
-    !!String(process.env.DOCUMENT_AI_PROCESSOR_ID || '').trim();
+    !!docAiProcessorId;
   const provider = String(process.env.PDF_EXTRACTION_PROVIDER || 'claude').trim().toLowerCase();
   const useClaude = provider !== 'documentai' && provider !== 'document_ai' && provider !== 'google';
   const keyOk = useClaude
@@ -87,6 +90,18 @@ export function loadBackendEnv(): void {
             ` - Optional: DOCUMENT_AI_KYC_PROCESSOR_ID, DOCUMENT_AI_OCR_PROCESSOR_ID, DOCUMENT_AI_LOCATION\n` +
             ` - Auth: GOOGLE_APPLICATION_CREDENTIALS or Application Default Credentials\n` +
             ` - Default is Claude; remove PDF_EXTRACTION_PROVIDER=documentai to use Claude`,
+    );
+  } else if (!useClaude) {
+    const credRaw = String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
+    const credResolved = credRaw
+      ? path.isAbsolute(credRaw)
+        ? credRaw
+        : fs.existsSync(path.resolve(process.cwd(), credRaw))
+          ? path.resolve(process.cwd(), credRaw)
+          : path.resolve(BACKEND_PACKAGE_ROOT, credRaw)
+      : '';
+    console.log(
+      `[env] Document AI ready (provider=documentai, project=${String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim()}, processor=${docAiProcessorId}, creds=${credResolved && fs.existsSync(credResolved) ? 'file-ok' : 'missing-or-adc'})`,
     );
   }
 }

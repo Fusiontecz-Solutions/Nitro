@@ -1,11 +1,23 @@
 import {
   buildSignNowDocumentPrefillTexts,
   canonicalizeSignNowFieldName,
+  formatSignNowPrefillValue,
   resolveSignNowPrefillValue,
   shouldSkipSignNowPrefill,
 } from './signnow-field-map';
 
 describe('signnow-field-map', () => {
+  it('strips dashes from phone values for SignNow Number validators', () => {
+    expect(formatSignNowPrefillValue('561-577-8267', 'merchant_contact_phone')).toBe(
+      '5615778267',
+    );
+    expect(formatSignNowPrefillValue('(561) 577-8267', 'client_phone')).toBe('5615778267');
+    expect(formatSignNowPrefillValue('1-561-577-8267', 'guarantor_phone_p22')).toBe(
+      '5615778267',
+    );
+    expect(formatSignNowPrefillValue('FUSIONTECZ', 'client_legal_name')).toBe('FUSIONTECZ');
+  });
+
   it('strips page suffixes from SignNow unique names', () => {
     expect(canonicalizeSignNowFieldName('guaranty_guarantor1_ss_p12')).toBe(
       'guaranty_guarantor1_ss',

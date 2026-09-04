@@ -1,10 +1,10 @@
 /**
  * PDF / image → Google Document AI → structured key_data
- * (same downstream shape as the legacy Claude extractor).
+ * (same downstream shape as the Ocean Claude extractor).
  *
  * Required env:
  *   GOOGLE_CLOUD_PROJECT (or GCP_PROJECT_ID)
- *   DOCUMENT_AI_PROCESSOR_ID
+ *   DOCUMENT_AI_PROCESSOR_ID (or DOCAI_PROCESSOR_ID)
  *
  * Optional:
  *   DOCUMENT_AI_LOCATION
@@ -14,6 +14,7 @@
  */
 
 import {
+  extractEmbeddedPdfText,
   PdfClaudeExtractionUtils,
   type ClaudePdfExtractMetaDTO,
   type PdfClaudeExtractResultDTO,
@@ -92,7 +93,7 @@ export class DocumentAiPdfExtractionService {
   getRuntimeDebugConfig(): Record<string, string> {
     return {
       provider: 'document_ai',
-      processorId: resolveProcessorId('DOCUMENT_AI_PROCESSOR_ID'),
+      processorId: resolveProcessorId('DOCUMENT_AI_PROCESSOR_ID', 'DOCAI_PROCESSOR_ID'),
       kycProcessorId: resolveProcessorId('DOCUMENT_AI_KYC_PROCESSOR_ID', 'DOCUMENT_AI_PROCESSOR_ID'),
       ocrProcessorId: resolveProcessorId('DOCUMENT_AI_OCR_PROCESSOR_ID'),
     };
@@ -101,9 +102,9 @@ export class DocumentAiPdfExtractionService {
   async extractHybridFromPdfBuffer(
     pdf: Buffer,
   ): Promise<{ result: PdfClaudeExtractResultDTO; meta: ClaudePdfExtractMetaDTO }> {
-    const processorId = resolveProcessorId('DOCUMENT_AI_PROCESSOR_ID');
+    const processorId = resolveProcessorId('DOCUMENT_AI_PROCESSOR_ID', 'DOCAI_PROCESSOR_ID');
     if (!processorId) {
-      throw new Error('DOCUMENT_AI_PROCESSOR_ID is required for Document AI PDF extraction');
+      throw new Error('DOCUMENT_AI_PROCESSOR_ID (or DOCAI_PROCESSOR_ID) is required for Document AI PDF extraction');
     }
 
     let document = await processDocumentWithProcessor(pdf, processorId, 'application/pdf');
@@ -118,8 +119,16 @@ export class DocumentAiPdfExtractionService {
       fullText = String(document.text || fullText).trim();
     }
 
+    const embeddedText = await extractEmbeddedPdfText(pdf);
+    if (embeddedText.length > 40) {
+      const alreadyHas = fullText.includes(embeddedText.slice(0, 80));
+      fullText = alreadyHas ? fullText : `${embeddedText}\n\n${fullText}`.trim();
+    }
+
+    result.raw_ocr_text = fullText;
     result = PdfClaudeExtractionUtils.enrichFromRawText(result, fullText);
     result = PdfClaudeExtractionUtils.withCanonicalBusinessName(result);
+    result.raw_ocr_text = fullText;
 
     return {
       result,
@@ -139,7 +148,10 @@ export class DocumentAiPdfExtractionService {
       throw new Error('extractKycDocument: empty file buffer');
     }
 
-    const processorId = resolveProcessorId('DOCUMENT_AI_KYC_PROCESSOR_ID', 'DOCUMENT_AI_PROCESSOR_ID');
+    const processorId = resolveProcessorId(
+      'DOCUMENT_AI_KYC_PROCESSOR_ID',
+      'DOCUMENT_AI_PROCESSOR_ID',
+    ) || resolveProcessorId('DOCAI_PROCESSOR_ID');
     if (!processorId) {
       throw new Error('DOCUMENT_AI_KYC_PROCESSOR_ID or DOCUMENT_AI_PROCESSOR_ID is required');
     }

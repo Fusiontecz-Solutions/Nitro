@@ -17,7 +17,16 @@ import {
 } from '../services/applicationService';
 import { allocateNextDealId, withAllocatedDealId } from '../services/nextDealIdService';
 import { resolveFinalApprovalUnderwriterTarget } from '../services/finalApprovalTargetService';
-import { mapClientToApi, resolveClientOwners } from '../utils/clientMapper';
+import {
+    buildOwnerCreateData,
+    buildPrimaryOwnerFlatFields,
+    mapClientToApi,
+    resolveClientOwners,
+} from '../utils/clientMapper';
+import {
+    scheduleApplicationFileUploads,
+    snapshotRequestFiles,
+} from '../services/applicationCreateUploadService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import {
     buildUnderwriterPipelineWhere,
@@ -1097,9 +1106,87 @@ const resolveApplicationWhere = (
     return { id: ref };
 };
 
+const isFormTrue = (value: unknown): boolean => {
+    const s = String(value ?? '').trim().toLowerCase();
+    return s === 'true' || s === '1' || s === 'yes';
+};
+
+const parseRefinanceMoney = (v: unknown): number | null => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = typeof v === 'number' ? v : Number(String(v).replace(/[$,\s]/g, ''));
+    return Number.isFinite(n) ? n : null;
+};
+
+const parseRefinanceDate = (v: unknown): Date | null => {
+    if (v === undefined || v === null || String(v).trim() === '') return null;
+    const t = String(v).trim();
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) {
+        const [mm, dd, yyyy] = t.split('/');
+        const d = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)));
+        return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(t);
+    return Number.isNaN(d.getTime()) ? null : d;
+};
+
+async function applyRefinanceAfterCreate(args: {
+    applicationId: string;
+    clientId: string;
+    previousAppId: string;
+    refinanceAmount: unknown;
+    previousDealDate: unknown;
+    createdById: string | null;
+}): Promise<void> {
+    const refiAmt = parseRefinanceMoney(args.refinanceAmount);
+    const refiDate = parseRefinanceDate(args.previousDealDate);
+
+    await prisma.offerDecision.upsert({
+        where: { applicationId: args.applicationId },
+        create: {
+            applicationId: args.applicationId,
+            decision: 'pending',
+            refinanceAmount: refiAmt,
+            previousDealDate: refiDate,
+            userId: args.createdById || null,
+        },
+        update: {
+            refinanceAmount: refiAmt,
+            previousDealDate: refiDate,
+        },
+    });
+
+    const priorWhere: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(args.previousAppId)
+        ? { applicationId: Number(args.previousAppId) }
+        : { id: args.previousAppId };
+
+    const priorApp = await prisma.application.findUnique({
+        where: priorWhere,
+        select: { id: true, clientId: true },
+    });
+
+    if (!priorApp || priorApp.id === args.applicationId) return;
+
+    if (priorApp.clientId !== args.clientId) {
+        console.warn(
+            'Refinance previous deal belongs to a different client; queue not updated.',
+            { previousAppId: args.previousAppId, newAppId: args.applicationId },
+        );
+        return;
+    }
+
+    await prisma.application.update({
+        where: { id: priorApp.id },
+        data: {
+            currentQueue: 'Funded',
+            currentState: ApplicationState.FUNDED,
+        },
+    });
+}
+
 class ApplicationController {
     // Create a new application
     async create(req: Request, res: Response) {
+        const startedAt = Date.now();
         try {
             const {
                 priority,
@@ -1115,11 +1202,22 @@ class ApplicationController {
                 previousDealDate,
             } = req.body;
 
+            const createNewClient = isFormTrue(req.body.createNewClient);
+            const newBusinessName = String(req.body.newBusinessName || '').trim();
+            const newOwnerFirstName = String(req.body.newOwnerFirstName || '').trim();
+
             // Validate required fields
-            if (!priority || !type || !salesRepresentative || !client) {
+            if (!priority || !type || !salesRepresentative || (!client && !createNewClient)) {
                 return res.status(400).json({
                     success: false,
                     message: 'Priority, application type, sales representative, and client are required',
+                });
+            }
+
+            if (createNewClient && (!newBusinessName || !newOwnerFirstName)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Business name and owner first name are required to create a client.',
                 });
             }
 
@@ -1137,73 +1235,71 @@ class ApplicationController {
                 });
             }
 
-            // Verify client exists; body `client` may be a UUID (id) or numeric clientId
-            let clientRecord = null;
-            if (typeof client === 'number' || (typeof client === 'string' && /^\d+$/.test(client))) {
-                clientRecord = await prisma.client.findUnique({
-                    where: { clientId: Number(client) },
+            const pendingFiles = await snapshotRequestFiles((req as any).files);
+
+            const authUser = getAuthenticatedUser(req);
+            const createdById = resolveTenantUserId(req);
+
+            const isoLookupPromise = (async () => {
+                if (isoId === undefined || isoId === null || String(isoId).trim() === '') {
+                    return { normalizedIsoId: null as string | null, commissionPercentageFromIso: 0 };
+                }
+                const normalizedIsoId = String(isoId).trim();
+                const isoRecord = await (prisma as any).iso.findUnique({
+                    where: { id: normalizedIsoId },
+                    select: { id: true, commissionPercentage: true },
                 });
-            } else {
-                clientRecord = await prisma.client.findUnique({
-                    where: { id: String(client) },
-                });
+                if (!isoRecord) {
+                    const err = new Error('ISO not found');
+                    (err as any).statusCode = 404;
+                    throw err;
+                }
+                return {
+                    normalizedIsoId,
+                    commissionPercentageFromIso: Number(isoRecord.commissionPercentage ?? 0),
+                };
+            })();
+
+            let clientRecord: any = null;
+            const existingClientPromise = createNewClient
+                ? Promise.resolve(null)
+                : (typeof client === 'number' || (typeof client === 'string' && /^\d+$/.test(client)))
+                    ? prisma.client.findUnique({ where: { clientId: Number(client) } })
+                    : prisma.client.findUnique({ where: { id: String(client) } });
+
+            let normalizedIsoId: string | null = null;
+            let commissionPercentageFromIso = 0;
+            try {
+                const [isoResult, existingClient] = await Promise.all([
+                    isoLookupPromise,
+                    existingClientPromise,
+                ]);
+                normalizedIsoId = isoResult.normalizedIsoId;
+                commissionPercentageFromIso = isoResult.commissionPercentageFromIso;
+                clientRecord = existingClient;
+            } catch (isoError: any) {
+                if (isoError?.statusCode === 404) {
+                    return res.status(404).json({
+                        success: false,
+                        message: 'ISO not found',
+                    });
+                }
+                throw isoError;
             }
-            if (!clientRecord) {
+
+            if (!createNewClient && !clientRecord) {
                 return res.status(404).json({
                     success: false,
                     message: 'Client not found',
                 });
             }
 
-            let normalizedIsoId: string | null = null;
-            let commissionPercentageFromIso = 0;
-            if (isoId !== undefined && isoId !== null && String(isoId).trim() !== '') {
-                normalizedIsoId = String(isoId).trim();
-                const isoRecord = await (prisma as any).iso.findUnique({
-                    where: { id: normalizedIsoId },
-                    select: { id: true, commissionPercentage: true },
-                });
-                if (!isoRecord) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'ISO not found',
-                    });
-                }
-                commissionPercentageFromIso = Number(isoRecord.commissionPercentage ?? 0);
-            }
+            const newOwnerLastName = String(req.body.newOwnerLastName || '').trim();
+            const newBusinessPhone = String(req.body.newBusinessPhone || '').trim() || null;
+            const newEin = String(req.body.newEin || '').trim() || null;
+            const assignedToId =
+                authUser && String(authUser.role).toUpperCase() === 'AGENT' ? authUser.id : null;
 
-            // Process uploaded files if any
-            const uploadedFiles: any[] = [];
-            const reqFiles = (req as any).files;
-
-            // Check if files exist in the request (files field from FormData)
-            if (reqFiles && reqFiles.files) {
-                let filesToUpload = reqFiles.files;
-
-                // Handle both single file and multiple files
-                if (!Array.isArray(filesToUpload)) {
-                    filesToUpload = [filesToUpload];
-                }
-
-                const folder = 'ih-crm/applications';
-                const uploadResults = await uploadService.uploadMultipleFiles(filesToUpload, folder);
-
-                for (const result of uploadResults) {
-                    if (result.success && result.data) {
-                        uploadedFiles.push({
-                            url: result.data.secure_url,
-                            publicId: result.data.public_id,
-                            originalName: result.fileName,
-                            mimeType: result.data.format,
-                            size: result.data.bytes,
-                            uploadedAt: new Date(),
-                        });
-                    }
-                }
-            }
-
-            const authUser = getAuthenticatedUser(req);
-            const createdById = resolveTenantUserId(req);
             // When an AGENT creates an application, set referringAgentId to them so they see it in their list
             const effectiveReferringAgentId = referringAgent
                 ? String(referringAgent)
@@ -1216,8 +1312,33 @@ class ApplicationController {
             const creationQueue = roleUpper === 'AGENT' ? WORKFLOW_QUEUES.AGENT : undefined;
             const creationState = roleUpper === 'AGENT' ? ApplicationState.PENDING : undefined;
 
-            const application = await withAllocatedDealId((dealId, tx) =>
-                tx.application.create({
+            const application = await withAllocatedDealId(async (dealId, tx) => {
+                if (createNewClient) {
+                    const owner = {
+                        firstName: newOwnerFirstName,
+                        lastName: newOwnerLastName,
+                    };
+                    const primaryOwnerFields = buildPrimaryOwnerFlatFields(owner);
+                    clientRecord = await tx.client.create({
+                        data: {
+                            businessName: newBusinessName,
+                            businessNumber: newBusinessPhone,
+                            businessEinNumber: newEin,
+                            ...primaryOwnerFields,
+                            createdById: authUser?.id || null,
+                            assignedToId,
+                            owners: {
+                                create: [buildOwnerCreateData(owner, 0)],
+                            },
+                        },
+                    });
+                }
+
+                if (!clientRecord?.id) {
+                    throw new Error('Client is required');
+                }
+
+                return tx.application.create({
                     data: applicationCreateUncheckedData({
                         priority,
                         type,
@@ -1232,108 +1353,28 @@ class ApplicationController {
                         currentQueue: creationQueue,
                         currentState: creationState,
                         dealId,
-                        files: uploadedFiles.length
-                            ? {
-                                createMany: {
-                                    data: uploadedFiles.map((f) => ({
-                                        url: f.url,
-                                        publicId: f.publicId,
-                                        originalName: f.originalName,
-                                        mimeType: f.mimeType,
-                                        size: f.size,
-                                        uploadedAt: f.uploadedAt,
-                                    })),
-                                },
-                            }
-                            : undefined,
                     }),
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
-                }),
-            );
+                });
+            });
 
-            const populatedApplication = mapApplicationToApi(application);
+            scheduleApplicationFileUploads(application.id, pendingFiles);
 
-            // Refinance: seed OfferDecision REFI fields on the new app and mark prior deal Funded.
             if (isRefinanceType && previousAppId) {
-                try {
-                    const parseMoney = (v: unknown): number | null => {
-                        if (v === undefined || v === null || v === '') return null;
-                        const n =
-                            typeof v === 'number'
-                                ? v
-                                : Number(String(v).replace(/[$,\s]/g, ''));
-                        return Number.isFinite(n) ? n : null;
-                    };
-                    const parseDate = (v: unknown): Date | null => {
-                        if (v === undefined || v === null || String(v).trim() === '') return null;
-                        const t = String(v).trim();
-                        if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) {
-                            const [mm, dd, yyyy] = t.split('/');
-                            const d = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)));
-                            return Number.isNaN(d.getTime()) ? null : d;
-                        }
-                        const d = new Date(t);
-                        return Number.isNaN(d.getTime()) ? null : d;
-                    };
-
-                    const refiAmt = parseMoney(refinanceAmount);
-                    const refiDate = parseDate(previousDealDate);
-
-                    await prisma.offerDecision.upsert({
-                        where: { applicationId: application.id },
-                        create: {
-                            applicationId: application.id,
-                            decision: 'pending',
-                            refinanceAmount: refiAmt,
-                            previousDealDate: refiDate,
-                            userId: createdById || null,
-                        },
-                        update: {
-                            refinanceAmount: refiAmt,
-                            previousDealDate: refiDate,
-                        },
-                    });
-
-                    const priorWhere: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(
+                setImmediate(() => {
+                    void applyRefinanceAfterCreate({
+                        applicationId: application.id,
+                        clientId: clientRecord.id,
                         previousAppId,
-                    )
-                        ? { applicationId: Number(previousAppId) }
-                        : { id: previousAppId };
-
-                    const priorApp = await prisma.application.findUnique({
-                        where: priorWhere,
-                        select: { id: true, clientId: true },
+                        refinanceAmount,
+                        previousDealDate,
+                        createdById,
+                    }).catch((refiError) => {
+                        console.error(
+                            'Failed to apply refinance previous-deal updates after create:',
+                            refiError,
+                        );
                     });
-
-                    if (priorApp && priorApp.id !== application.id) {
-                        if (priorApp.clientId !== clientRecord.id) {
-                            console.warn(
-                                'Refinance previous deal belongs to a different client; queue not updated.',
-                                { previousAppId, newAppId: application.id },
-                            );
-                        } else {
-                            await prisma.application.update({
-                                where: { id: priorApp.id },
-                                data: {
-                                    currentQueue: 'Funded',
-                                    currentState: ApplicationState.FUNDED,
-                                },
-                            });
-                        }
-                    }
-                } catch (refiError) {
-                    console.error(
-                        'Failed to apply refinance previous-deal updates after create:',
-                        refiError,
-                    );
-                }
+                });
             }
 
             // Best-effort activity log (do not block main response)
@@ -1365,7 +1406,7 @@ class ApplicationController {
             }
 
             scheduleApplicationStageNotification({
-                application: application as any,
+                application: { ...application, client: clientRecord } as any,
                 transitionAction: 'CREATED',
                 actorId: createdById,
                 actorName: (req as any).user?.name || '',
@@ -1373,6 +1414,16 @@ class ApplicationController {
             });
 
             invalidateAllApplicationStatsCache();
+
+            const populatedApplication = mapApplicationToApi({
+                ...application,
+                client: clientRecord,
+                files: [],
+            });
+
+            console.log(
+                `[create application] responded in ${Date.now() - startedAt}ms filesQueued=${pendingFiles.length} dealId=${application.dealId ?? ''}`,
+            );
 
             return res.status(201).json({
                 success: true,
@@ -5970,9 +6021,8 @@ class ApplicationController {
             }
 
             const pdfRoleUpper = String((req as any).user?.role || '').toUpperCase();
-            // Same as Gmail PDF auto-create (`createClientAndApplicationFromPDFBuffer`): always land in Scrubbing.
-            const pdfAgentCreationQueue = WORKFLOW_QUEUES.SCRUBBING;
-            const pdfAgentCreationState = ApplicationState.IN_PROGRESS;
+            const pdfAgentCreationQueue = 'New';
+            const pdfAgentCreationState = ApplicationState.DRAFT;
             const requestedApplicationTypeRaw = (req as any).body?.applicationType;
             const requestedIsoIdRaw = (req as any).body?.isoId;
             const requestedApplicationType = String(requestedApplicationTypeRaw || '')
@@ -6128,9 +6178,16 @@ class ApplicationController {
             const result = await prisma.$transaction(async (tx) => {
                 const dealId = await allocateNextDealId(tx);
 
+                const businessNameFallback =
+                    String(business.business_name || '').trim() ||
+                    String(business.dba_name || '').trim() ||
+                    (owner.owner_first_name || owner.owner_last_name
+                        ? `${String(owner.owner_first_name || '').trim()} ${String(owner.owner_last_name || '').trim()}`.trim() + ' Business'
+                        : 'Unknown Business');
+
                 const newClient = await tx.client.create({
                     data: {
-                        businessName: business.business_name || business.dba_name || null,
+                        businessName: businessNameFallback,
                         businessEmail: business.business_email || null,
                         businessNumber: business.phone_number || null,
                         businessWebsite: business.business_website || null,

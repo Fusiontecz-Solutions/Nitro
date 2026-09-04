@@ -845,6 +845,7 @@ export function buildSignNowDocumentPrefillTexts(
     }
     const value = formatSignNowPrefillValue(
       resolveSignNowPrefillValue(fieldName, prefill, options),
+      fieldName,
     );
     if (!value || /^enter text$/i.test(value)) continue;
     seen.add(fieldName);
@@ -871,7 +872,7 @@ export function expandSignNowPrefillForUnguidedPut(
   const byName = new Map<string, string>();
   const put = (name: string, value: string) => {
     const fieldName = String(name || '').trim();
-    const prefilled = formatSignNowPrefillValue(value);
+    const prefilled = formatSignNowPrefillValue(value, fieldName);
     if (!fieldName || !prefilled || shouldSkipSignNowPrefill(fieldName)) return;
     if (!byName.has(fieldName)) byName.set(fieldName, prefilled);
   };
@@ -902,7 +903,7 @@ export function expandSignNowPrefillForUnguidedPut(
   }));
 }
 
-export function formatSignNowPrefillValue(value: string): string {
+export function formatSignNowPrefillValue(value: string, fieldName?: string): string {
   const v = String(value || '').trim();
   if (!v) return '';
   if (/^\d{4}-\d{2}-\d{2}/.test(v)) {
@@ -913,6 +914,15 @@ export function formatSignNowPrefillValue(value: string): string {
       const yyyy = d.getUTCFullYear();
       return `${mm}/${dd}/${yyyy}`;
     }
+  }
+  const name = String(fieldName || '').toLowerCase();
+  // SignNow phone widgets often use a Number/phone regex that rejects dashes
+  // (e.g. "561-577-8267" → whole prefill-texts batch fails → agreement stays empty).
+  if (/(?:^|_)(?:phone|mobile|fax)(?:_|$)/i.test(name) || /phone_number/i.test(name)) {
+    const digits = v.replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
+    return digits;
   }
   return v;
 }

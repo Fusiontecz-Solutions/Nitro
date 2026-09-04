@@ -20,11 +20,24 @@ export interface PdfExtractionServiceLike {
 
 let singleton: PdfExtractionServiceLike | undefined;
 
+function hasDocumentAiConfig(): boolean {
+  const project = String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim();
+  const processor = String(
+    process.env.DOCUMENT_AI_PROCESSOR_ID || process.env.DOCAI_PROCESSOR_ID || '',
+  ).trim();
+  return !!(project && processor);
+}
+
 function readProvider(): PdfExtractionProvider {
-  const raw = String(process.env.PDF_EXTRACTION_PROVIDER || 'claude')
+  const raw = String(process.env.PDF_EXTRACTION_PROVIDER || '')
     .trim()
     .toLowerCase();
   if (raw === 'documentai' || raw === 'document_ai' || raw === 'google') return 'documentai';
+  if (raw === 'claude') return 'claude';
+  // No explicit provider: use Document AI when GCP is configured and Claude is not.
+  if (hasDocumentAiConfig() && !String(process.env.ANTHROPIC_API_KEY || '').trim()) {
+    return 'documentai';
+  }
   return 'claude';
 }
 

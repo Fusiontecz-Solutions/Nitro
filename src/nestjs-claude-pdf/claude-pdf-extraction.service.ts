@@ -23,6 +23,8 @@ export interface PdfClaudeExtractResultDTO {
   pages: Array<{ page_number: number; note: string }>;
   transactions: Array<Record<string, unknown>>;
   model_notes?: string;
+  /** Full Document AI / OCR text — used when structured key_data is sparse. */
+  raw_ocr_text?: string;
 }
 
 export interface ClaudePdfExtractMetaDTO {
@@ -78,6 +80,16 @@ async function parsePdfBufferForHybrid(buffer: Buffer): Promise<{
     perPage,
     numpages: rendered.numpages,
   };
+}
+
+/** Embedded PDF text with line breaks — used by Claude hybrid and Document AI fallback. */
+export async function extractEmbeddedPdfText(buffer: Buffer): Promise<string> {
+  try {
+    const parsed = await parsePdfBufferForHybrid(buffer);
+    return String(parsed.combined || "").trim();
+  } catch {
+    return "";
+  }
 }
 
 @Injectable()
@@ -557,7 +569,14 @@ export class PdfClaudeExtractionUtils {
       keyData[k] = cleaned(String(v ?? ""));
     }
 
-    if (!String(keyData.business_name || "").trim()) {
+    const isGarbageBusinessName = (value: string): boolean =>
+      /^(owner|mobile|datebusiness|city|state|zip|address|phone|email|ssn|first|last)\b/i.test(value) ||
+      /^(city|state|zip|address|owner|phone|email)\s*:/i.test(value);
+
+    if (!String(keyData.business_name || "").trim() || isGarbageBusinessName(String(keyData.business_name))) {
+      if (isGarbageBusinessName(String(keyData.business_name || ""))) {
+        delete keyData.business_name;
+      }
       const patterns = [
         /(?:legal\s*(?:business|corporate)?\s*name|business\s*name|company\s*name|merchant\s*name|dba(?:\s*name)?)\s*[:\-]\s*([^\n\r]{2,120})/i,
         /(?:legal\s*(?:business|corporate)?\s*name|business\s*name|company\s*name|merchant\s*name|dba(?:\s*name)?)\s+([^\n\r]{2,120})/i,
@@ -565,7 +584,7 @@ export class PdfClaudeExtractionUtils {
       for (const p of patterns) {
         const m = fullText.match(p);
         const value = cleaned(m?.[1] ?? "");
-        if (value && !/^(owner|mobile|datebusiness)$/i.test(value)) {
+        if (value && !isGarbageBusinessName(value)) {
           keyData.business_name = value;
           break;
         }
@@ -573,22 +592,91 @@ export class PdfClaudeExtractionUtils {
     }
 
     if (!String(keyData.owner_first_name || "").trim() || !String(keyData.owner_last_name || "").trim()) {
-      const ownerMatch = fullText.match(
-        /(?:applicant|owner|principal)\s*(?:name)?\s*[:\-]\s*([A-Za-z][A-Za-z '\.-]{2,80})/i
-      );
-      const full = cleaned(ownerMatch?.[1] ?? "");
-      const parts = full.split(/\s+/).filter(Boolean);
-      if (parts.length >= 2) {
-        if (!String(keyData.owner_first_name || "").trim()) {
-          keyData.owner_first_name = parts.slice(0, -1).join(" ");
+      const lines = fullText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const isLabelLine = (s: string) =>
+        /^(owner|applicant|principal|first|last|business|city|state|zip|ssn|email|phone|address|date|fico|credit|home|legal|federal|requested|gross|type|website|mobile|dob)\b/i.test(
+          s,
+        );
+      const valueAfter = (i: number, sameLine: string): string => {
+        const inline = cleaned(sameLine);
+        if (inline && !isLabelLine(inline)) return inline;
+        const next = lines[i + 1] || "";
+        if (next && !isLabelLine(next) && /^[A-Za-z][A-Za-z '\.-]{1,80}$/.test(next)) {
+          return cleaned(next);
         }
-        if (!String(keyData.owner_last_name || "").trim()) {
-          keyData.owner_last_name = parts[parts.length - 1] || "";
+        return "";
+      };
+
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]!;
+        const firstM = line.match(/^(?:owner\s+)?first\s*name\s*[:\-]?\s*(.*)$/i);
+        const lastM = line.match(/^(?:owner\s+)?last\s*name\s*[:\-]?\s*(.*)$/i);
+        const fullM = line.match(
+          /^(?:owner|principal|applicant)(?:\s+full)?\s*name\s*[:\-]?\s*(.+)$/i,
+        );
+        if (firstM && !String(keyData.owner_first_name || "").trim()) {
+          const v = valueAfter(i, firstM[1] || "");
+          if (v && !isLabelLine(v)) {
+            keyData.owner_first_name = v.includes(" ") ? v.split(/\s+/)[0]! : v;
+          }
         }
+        if (lastM && !String(keyData.owner_last_name || "").trim()) {
+          const v = valueAfter(i, lastM[1] || "");
+          if (v && !isLabelLine(v)) {
+            keyData.owner_last_name = v.split(/\s+/).pop() || v;
+          }
+        }
+        if (fullM?.[1] && (!String(keyData.owner_first_name || "").trim() || !String(keyData.owner_last_name || "").trim())) {
+          const parts = cleaned(fullM[1]).split(/\s+/).filter(Boolean);
+          if (parts.length >= 2 && !isLabelLine(parts[0]!)) {
+            if (!String(keyData.owner_first_name || "").trim()) {
+              keyData.owner_first_name = parts.slice(0, -1).join(" ");
+            }
+            if (!String(keyData.owner_last_name || "").trim()) {
+              keyData.owner_last_name = parts[parts.length - 1] || "";
+            }
+          }
+        }
+      }
+
+      if (!String(keyData.owner_first_name || "").trim() || !String(keyData.owner_last_name || "").trim()) {
+        const ownerMatch = fullText.match(
+          /(?:applicant|owner|principal)\s*(?:name)?\s*[:\-]\s*([A-Za-z][A-Za-z '\.-]{2,80})/i
+        );
+        const full = cleaned(ownerMatch?.[1] ?? "");
+        const parts = full.split(/\s+/).filter(Boolean);
+        if (parts.length >= 2 && !isLabelLine(parts[0]!)) {
+          if (!String(keyData.owner_first_name || "").trim()) {
+            keyData.owner_first_name = parts.slice(0, -1).join(" ");
+          }
+          if (!String(keyData.owner_last_name || "").trim()) {
+            keyData.owner_last_name = parts[parts.length - 1] || "";
+          }
+        }
+      }
+
+      // Flattened OCR (Document AI often drops newlines): "Owner First Name : Jane Owner Last Name : Doe"
+      if (!String(keyData.owner_first_name || "").trim()) {
+        const flatFirst = fullText.match(
+          /(?:owner|applicant|principal)?\s*first\s*name\s*[:\-]?\s*([A-Za-z][A-Za-z'.-]{1,40})/i,
+        );
+        const v = cleaned(flatFirst?.[1] ?? "");
+        if (v && !isLabelLine(v)) keyData.owner_first_name = v;
+      }
+      if (!String(keyData.owner_last_name || "").trim()) {
+        const flatLast = fullText.match(
+          /(?:owner|applicant|principal)?\s*last\s*name\s*[:\-]?\s*([A-Za-z][A-Za-z'.-]{1,40})/i,
+        );
+        const v = cleaned(flatLast?.[1] ?? "");
+        if (v && !isLabelLine(v)) keyData.owner_last_name = v;
       }
     }
 
-    return PdfClaudeExtractionUtils.withCanonicalBusinessName({ ...result, key_data: keyData });
+    return PdfClaudeExtractionUtils.withCanonicalBusinessName({
+      ...result,
+      key_data: keyData,
+      raw_ocr_text: result.raw_ocr_text || fullText,
+    });
   }
 
   static withCanonicalBusinessName(result: PdfClaudeExtractResultDTO): PdfClaudeExtractResultDTO {

@@ -43,6 +43,38 @@ export function extractOwnerFullNameFromOcrText(raw: string): string | null {
                 }
             }
         }
+        const fullLine = lines[i]!.match(
+            /^(?:owner|principal|applicant)(?:\s+full)?\s*name\s*[:\-]\s*([A-Za-z][A-Za-z\s.'-]{2,80})$/i,
+        );
+        if (fullLine?.[1] && !isLikelyOcrLabelArtifact(fullLine[1])) {
+            return fullLine[1].replace(/\s+/g, ' ').trim();
+        }
+    }
+
+    const firstLast: { first?: string; last?: string } = {};
+    for (let i = 0; i < lines.length; i += 1) {
+        const firstM = lines[i]!.match(/^(?:owner\s+)?first\s*name\s*[:\-]?\s*(.*)$/i);
+        const lastM = lines[i]!.match(/^(?:owner\s+)?last\s*name\s*[:\-]?\s*(.*)$/i);
+        const take = (inline: string, idx: number): string => {
+            const same = String(inline || '').trim();
+            if (same && !isLikelyOcrLabelArtifact(same) && /^[A-Za-z]/.test(same)) return same;
+            const next = lines[idx + 1];
+            if (next && !isLikelyOcrLabelArtifact(next) && /^[A-Za-z][A-Za-z '\.-]{1,80}$/.test(next)) {
+                return next;
+            }
+            return '';
+        };
+        if (firstM && !firstLast.first) {
+            const v = take(firstM[1] || '', i);
+            if (v) firstLast.first = v.split(/\s+/)[0];
+        }
+        if (lastM && !firstLast.last) {
+            const v = take(lastM[1] || '', i);
+            if (v) firstLast.last = v.split(/\s+/).pop();
+        }
+    }
+    if (firstLast.first && firstLast.last) {
+        return `${firstLast.first} ${firstLast.last}`;
     }
 
     return null;

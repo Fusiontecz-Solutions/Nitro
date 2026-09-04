@@ -526,7 +526,7 @@ export function assertReadyToCreateNewClientFromPdf(parsedData: unknown, clientR
     const ln = o.owner_last_name != null ? String(o.owner_last_name).trim() : '';
     if (!fn || !ln) {
         throw new InsufficientParsedPdfError(
-            'Could not determine owner first and last name from this PDF. Prisma requires both; ensure Claude key_data includes owner_first_name / owner_last_name.',
+            'Could not determine owner first and last name from this PDF. The document must include the owner or applicant first and last name.',
         );
     }
 }
@@ -539,9 +539,9 @@ export function assertReadyToCreateNewClientFromPdf(parsedData: unknown, clientR
  * but decoupled from Express (Request/Response) so it can be reused by
  * the Gmail auto-import flow or any other caller.
  */
-const PDF_EMAIL_AUTO_CREATE_QUEUE = 'Scrubbing';
-/** Route PDF-created applications directly to scrubbing review queue. */
-const PDF_EMAIL_AUTO_CREATE_STATE = 'IN_PROGRESS';
+const PDF_EMAIL_AUTO_CREATE_QUEUE = 'New';
+/** PDF auto-create starts in New (same as a manual create). */
+const PDF_EMAIL_AUTO_CREATE_STATE = 'Draft';
 
 const applicationWithFilesInclude = {
     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },

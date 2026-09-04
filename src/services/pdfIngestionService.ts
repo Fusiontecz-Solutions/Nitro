@@ -27,7 +27,22 @@ export async function extractPdfPlainTextForParsing(
         console.log(
             `[pdfIngestion] key preview (${name}): business_name="${String(kd.business_name ?? '').trim()}" legal_business_name="${String(kd.legal_business_name ?? '').trim()}" owner_first_name="${String(kd.owner_first_name ?? '').trim()}" owner_last_name="${String(kd.owner_last_name ?? '').trim()}"`,
         );
-        return claudePdfResultToSyntheticParseText(result);
+        const synthetic = claudePdfResultToSyntheticParseText(result);
+        const rawOcr = String(result.raw_ocr_text || result.summary || '').trim();
+        const hasOwner =
+            !!String(kd.owner_first_name || '').trim() &&
+            !!String(kd.owner_last_name || '').trim();
+        if (!hasOwner && rawOcr.length > 40) {
+            console.log(
+                `[pdfIngestion] owner names missing from key_data; appending OCR/PDF text (${rawOcr.length} chars)`,
+            );
+            console.log(
+                `[pdfIngestion] OCR preview (${name}):\n`,
+                rawOcr.length > 800 ? `${rawOcr.slice(0, 800)}…` : rawOcr,
+            );
+            return `${synthetic}\n\n${rawOcr}`;
+        }
+        return synthetic;
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(`[pdfIngestion] PDF extraction failed for "${name}". ${msg}`);

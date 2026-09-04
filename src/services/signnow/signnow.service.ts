@@ -46,6 +46,7 @@ import {
 } from './utils/signnow-field-map';
 import {
   applySignNowFieldStyle,
+  parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
   splitPrefillPutPayload,
@@ -193,12 +194,13 @@ function signNowFieldKey(field: any, container?: string): string {
 }
 
 function signNowDocumentPageCount(remote: any): number {
-  const n = Number(
+  const fromMeta = Number(
     remote?.page_count ?? remote?.pages_amount ?? remote?.document_pages ?? 0,
   );
-  if (Number.isFinite(n) && n > 0) return Math.floor(n);
-  if (Array.isArray(remote?.pages) && remote.pages.length) return remote.pages.length;
-  return 0;
+  const fromPages = Array.isArray(remote?.pages) ? remote.pages.length : 0;
+  const meta = Number.isFinite(fromMeta) && fromMeta > 0 ? Math.floor(fromMeta) : 0;
+  // Prefer the larger count — a stale page_count of 1 would drop agreement page-1+ fields.
+  return Math.max(meta, fromPages);
 }
 
 function fieldsOnExistingPages(
@@ -1054,6 +1056,25 @@ export class SignNowService {
       throw new BadRequestException(
         'SignNow did not return a contract group to review. Try Review in SignNow again.',
       );
+    }
+
+    // Reused drafts often already have an Owner embedded invite. SignNow then
+    // rejects prefill with "Document has been already sent to a signer".
+    if (reusedExisting) {
+      try {
+        await this.deleteEmbeddedInvites(client, groupId, documents);
+        const hydrated = await this.hydrateDocumentRoles(client, documents);
+        await this.cancelPendingFieldInvites(client, hydrated);
+        console.info('[SignNow] cleared prior review invites before re-prefill', {
+          groupId,
+          documents: documents.length,
+        });
+      } catch (err) {
+        console.warn(
+          '[SignNow] could not clear prior invites before prefill',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
 
     const contractIdNum = Number(options.contractId);
@@ -2048,12 +2069,22 @@ export class SignNowService {
     for (let i = 0; i < hydrated.length; i += PREFILL_BATCH) {
       const batch = hydrated.slice(i, i + PREFILL_BATCH);
       await Promise.all(
-        batch.map((doc) =>
-          this.prefillDocument(client, doc.id, values, {
-            exposeToMerchant: true,
-            keepParty2,
-          }),
-        ),
+        batch.map(async (doc) => {
+          try {
+            await this.prefillDocument(client, doc.id, values, {
+              exposeToMerchant: true,
+              keepParty2,
+            });
+          } catch (err) {
+            console.warn(
+              '[SignNow] send bake prefill threw; continuing',
+              {
+                documentId: doc.id,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }
+        }),
       );
     }
     const inviteId = await this.sendGroupInvite(
@@ -2365,22 +2396,27 @@ export class SignNowService {
     signers: Array<{ name: string; email: string; roleName: string }>,
   ): Promise<{ applied: number; attempted: number }> {
     const keepParty2 = Boolean(distinctSecondMerchant(signers));
-    const BATCH = 6;
+    // Prefill agreement first so a slow addendum PUT cannot block Owner review values.
+    const { main, extras } = this.splitReviewPrefillDocuments(documents);
+    const ordered = [...main, ...extras];
     let applied = 0;
     let attempted = 0;
-    for (let i = 0; i < documents.length; i += BATCH) {
-      const batch = documents.slice(i, i + BATCH);
-      const results = await Promise.all(
-        batch.map((doc) =>
-          this.prefillDocument(client, String(doc.id || '').trim(), values, {
-            exposeToMerchant: false,
-            keepParty2,
-          }),
-        ),
-      );
-      for (const row of results) {
+    for (const doc of ordered) {
+      const id = String(doc.id || '').trim();
+      if (!id) continue;
+      try {
+        const row = await this.prefillDocument(client, id, values, {
+          exposeToMerchant: false,
+          keepParty2,
+        });
         applied += row.applied;
         attempted += row.attempted;
+      } catch (err) {
+        // One slow/failed doc must not wipe success on the agreement or abort Review.
+        console.warn(
+          '[SignNow] prefill document threw; continuing with remaining docs',
+          { documentId: id, error: err instanceof Error ? err.message : String(err) },
+        );
       }
     }
     return { applied, attempted };
@@ -2595,6 +2631,7 @@ export class SignNowService {
       const next = { ...field };
       const crmValue = formatSignNowPrefillValue(
         resolveSignNowPrefillValue(String(next.name || ''), values, prefillOpts),
+        String(next.name || ''),
       );
       if (!SIGN_FIELD_TYPES.has(type) && crmValue) {
         next.prefilled_text = crmValue;
@@ -2635,40 +2672,99 @@ export class SignNowService {
     const signFields = putFields.filter((field) =>
       SIGN_FIELD_TYPES.has(String(field.type || '')),
     ).length;
-    if (signFields === 0 && !monthlyFee) {
-      console.warn(
-        '[SignNow] refusing to publish without signature fields — merchant would have nothing to sign',
-        { documentId },
-      );
-      return applied;
-    }
-
-    const textPrefills = signNowPrefillTextPayload(putFields);
+    // Always write CRM values via prefill-texts first. One invalid field (e.g.
+    // dashed phone on a Number validator) rejects the WHOLE batch — retry after
+    // dropping the failing field so the rest of the agreement still fills.
+    let textPrefills = signNowPrefillTextPayload(putFields);
     let textsApplied = 0;
     if (textPrefills.length) {
-      const textAttempts = [
-        { path: `/v2/documents/${documentId}/prefill-texts`, body: { fields: textPrefills } },
-        { path: `/v2/documents/${documentId}/prefill-text`, body: { fields: textPrefills } },
+      const paths = [
+        `/v2/documents/${documentId}/prefill-texts`,
+        `/v2/documents/${documentId}/prefill-text`,
       ];
-      for (const attempt of textAttempts) {
-        const res = await client.put(attempt.path, attempt.body, {
-          validateStatus: () => true,
-        });
-        if (res.status < 400) {
-          textsApplied = textPrefills.length;
-          console.info('[SignNow] wrote CRM prefill via prefill-texts', {
-            documentId,
-            applied: textsApplied,
-            path: attempt.path,
-          });
-          break;
+      for (let round = 0; round < 8 && textPrefills.length; round += 1) {
+        let wrote = false;
+        let dropField = '';
+        for (const path of paths) {
+          try {
+            const res = await client.put(
+              path,
+              { fields: textPrefills },
+              { validateStatus: () => true, timeout: 60_000 },
+            );
+            if (res.status < 400) {
+              textsApplied = textPrefills.length;
+              wrote = true;
+              console.info('[SignNow] wrote CRM prefill via prefill-texts', {
+                documentId,
+                applied: textsApplied,
+                path,
+                round,
+              });
+              break;
+            }
+            const detail = this.signNowErrorDetail(res);
+            dropField = parseSignNowPrefillValidationField(detail);
+            console.warn('[SignNow] prefill-texts failed', path, detail);
+            // Only the real prefill-texts endpoint returns field validation errors.
+            if (dropField) break;
+          } catch (err) {
+            console.warn(
+              '[SignNow] prefill-texts threw',
+              path,
+              err instanceof Error ? err.message : String(err),
+            );
+          }
         }
-        console.warn(
-          '[SignNow] prefill-texts failed',
-          attempt.path,
-          this.signNowErrorDetail(res),
+        if (wrote) break;
+        if (!dropField) break;
+        const before = textPrefills.length;
+        textPrefills = textPrefills.filter(
+          (row) =>
+            row.field_name.toLowerCase() !== dropField.toLowerCase() &&
+            canonicalizeSignNowFieldName(row.field_name) !==
+              canonicalizeSignNowFieldName(dropField),
         );
+        // Also clear from putFields so fallback PUT does not reintroduce it.
+        for (const field of putFields) {
+          if (
+            String(field.name || '').toLowerCase() === dropField.toLowerCase() ||
+            canonicalizeSignNowFieldName(String(field.name || '')) ===
+              canonicalizeSignNowFieldName(dropField)
+          ) {
+            delete field.prefilled_text;
+            delete field.lock_to_sign_prefill;
+          }
+        }
+        console.warn('[SignNow] dropped invalid prefill field; retrying', {
+          documentId,
+          dropField,
+          remaining: textPrefills.length,
+          removed: before - textPrefills.length,
+        });
+        if (textPrefills.length === before) break;
       }
+    }
+
+    if (signFields === 0 && !monthlyFee) {
+      console.warn(
+        '[SignNow] skipping field PUT without signature fields — keeping prefill-texts only',
+        { documentId, textsApplied, applied },
+      );
+      return textsApplied || applied;
+    }
+
+    // Owner review: prefill-texts is enough for SignNow to show CRM values.
+    // Skipping PUT avoids a 45s+ timeout on the agreement that can wipe those values.
+    if (!exposeToMerchant && textsApplied > 0) {
+      console.info('[SignNow] review prefill complete via prefill-texts (skipped field PUT)', {
+        documentId,
+        textsApplied,
+        applied,
+        signatures: signFields,
+        pages: pageCount,
+      });
+      return textsApplied;
     }
 
     const bakedRaw = splitPrefillPutPayload(putFields, exposeToMerchant);
@@ -2716,24 +2812,36 @@ export class SignNowService {
       pushPut(putFields, false);
     }
     for (const attempt of attempts) {
-      const res = await client.put(attempt.path, attempt.body, { validateStatus: () => true });
-      if (res.status < 400) {
-        console.info('[SignNow] wrote CRM prefill onto SignNow fields', {
-          documentId,
-          applied,
-          count: (attempt.body.fields as unknown[])?.length ?? 0,
-          texts: baked.texts.length,
-          signatures: signFields,
-          exposeToMerchant,
-          path: attempt.path,
+      try {
+        const res = await client.put(attempt.path, attempt.body, {
+          validateStatus: () => true,
+          // Agreement field rewrite can exceed the default 45s client timeout.
+          timeout: 90_000,
         });
-        return applied;
+        if (res.status < 400) {
+          console.info('[SignNow] wrote CRM prefill onto SignNow fields', {
+            documentId,
+            applied,
+            count: (attempt.body.fields as unknown[])?.length ?? 0,
+            texts: baked.texts.length,
+            signatures: signFields,
+            exposeToMerchant,
+            path: attempt.path,
+          });
+          return applied;
+        }
+        console.warn(
+          '[SignNow] publish Owner fields failed',
+          attempt.path,
+          this.signNowErrorDetail(res),
+        );
+      } catch (err) {
+        console.warn(
+          '[SignNow] publish Owner fields threw',
+          attempt.path,
+          err instanceof Error ? err.message : String(err),
+        );
       }
-      console.warn(
-        '[SignNow] publish Owner fields failed',
-        attempt.path,
-        this.signNowErrorDetail(res),
-      );
     }
     return textsApplied || 0;
   }

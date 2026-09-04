@@ -1,6 +1,7 @@
 import {
   applySignNowFieldStyle,
   canLockSignNowPrefill,
+  parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
   splitPrefillPutPayload,
@@ -8,6 +9,15 @@ import {
 } from './signnow-prefill-put';
 
 describe('signnow-prefill-put', () => {
+  it('parses the field name from SignNow prefill validation errors', () => {
+    expect(
+      parseSignNowPrefillValidationField(
+        'Field merchant_contact_phone validation failed.',
+      ),
+    ).toBe('merchant_contact_phone');
+    expect(parseSignNowPrefillValidationField('unrelated error')).toBe('');
+  });
+
   it('locks only text fields that already have a value', () => {
     expect(
       canLockSignNowPrefill({

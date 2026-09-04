@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { randomUUID } from 'crypto';
 import { Readable } from 'stream';
 import { cloudinary } from '../config/cloudinary';
 
@@ -103,7 +104,7 @@ class UploadToCloudinaryService {
         try {
             const safeBase = String(fileName || 'document.pdf').replace(/[^\w.\-]+/g, '_');
             const withoutExt = safeBase.replace(/\.[^/.]+$/, '');
-            const publicId = `${Date.now()}_${withoutExt || 'document'}`;
+            const publicId = `${Date.now()}_${randomUUID().slice(0, 8)}_${withoutExt || 'document'}`;
             const isPdf =
                 options?.forcePdf === true || safeBase.toLowerCase().endsWith('.pdf');
 
