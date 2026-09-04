@@ -2852,7 +2852,7 @@ const PDFViewerModal = ({
                           ),
                           contractPrefillFromDb,
                       );
-                      const next =
+                      const next: Record<string, unknown> =
                           Object.keys(o).length > 0 ? { ...contractRow, ...o } : { ...contractRow };
                       if (
                           mainBank &&
@@ -5774,24 +5774,6 @@ const PDFViewerModal = ({
             setLoadingTemplateMappings(false);
         }
     }, [effectiveContractId]);
-
-    const reloadContractPrefillSnapshots = useCallback(async () => {
-        const appId = applicationIdForLookup;
-        if (!appId) return;
-        try {
-            const res = await dispatch(getByApplicationIdContract(appId)).unwrap();
-            const contract = (res as { data?: unknown })?.data ?? res;
-            const c = contract as { contractPrefillOverrides?: unknown } | null;
-            setContractPrefillFromDb(
-                stripDocumentTemplateBlobFromPrefillOverrides(
-                    normalizeContractPrefillOverrides(c?.contractPrefillOverrides),
-                ),
-            );
-            setDocumentTemplatePrefillByMappingId(parseDocumentTemplatePrefillByMappingId(c?.contractPrefillOverrides));
-        } catch {
-            /* ignore */
-        }
-    }, [applicationIdForLookup, dispatch]);
 
     const lastDocuSignSyncAtRef = useRef(0);
     /** Last time CRM contract status changed (webhook or CRM refetch) — drives stale DocuSign fallback. */
@@ -10516,9 +10498,15 @@ const PDFViewerModal = ({
                                                                                               template: {
                                                                                                   ...(row.template ??
                                                                                                       {}),
-                                                                                                  name: prefillName,
+                                                                                                  id:
+                                                                                                      row.template?.id ??
+                                                                                                      row.id,
+                                                                                                  name:
+                                                                                                      prefillName ??
+                                                                                                      undefined,
                                                                                                   layoutKey:
-                                                                                                      prefillLayoutKey,
+                                                                                                      prefillLayoutKey ??
+                                                                                                      undefined,
                                                                                                   templateId:
                                                                                                       prefillTemplateId ??
                                                                                                       undefined,

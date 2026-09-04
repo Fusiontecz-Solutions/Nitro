@@ -2611,7 +2611,7 @@ export function ContractPrefillEditForm({
                                                                             values[key] !== "false" &&
                                                                             values[key] !== "0"
                                                                         }
-                                                                        onCheckedChange={(checked) =>
+                                                                        onCheckedChange={(checked: boolean | "indeterminate") =>
                                                                             setField(
                                                                                 key,
                                                                                 checked === true

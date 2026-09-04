@@ -1074,7 +1074,7 @@ const CreateApplication = () => {
                                             render={({ field }) => (
                                                 <Select
                                                     value={field.value}
-                                                    onOpenChange={(open) => {
+                                                    onOpenChange={(open: boolean) => {
                                                         if (open) setClientsRequested(true)
                                                     }}
                                                     onValueChange={(value: string) => {

@@ -9,7 +9,7 @@ import { Button } from "../ui/button";
 import { CheckCircle2, Pencil } from "lucide-react";
 // import MyNotes from "./MyNotes";
 // import RawEligibilityAndBankTotalSection from "./EligibilityAndBankTotalSection";
-import RawBankAnalysisTable from "./BankAnalysisTable";
+// import RawBankAnalysisTable from "./BankAnalysisTable";
 // import RawPositionsTable from "./PositionsTable";
 // import { useTheme } from "@/context/ThemeContext";
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -150,7 +150,7 @@ function positionsForBankSeedSignature(arr: Array<Record<string, unknown>>): str
 
 // New reusable table/summary components (typed as any so we can evolve props gradually)
 // const EligibilityAndBankTotalSection: any = RawEligibilityAndBankTotalSection;
-const BankAnalysisTable: any = RawBankAnalysisTable;
+// const BankAnalysisTable: any = RawBankAnalysisTable;
 // const PositionsTable: any = RawPositionsTable;
 
 // Local UI state for expanded months (not stored in Redux)
@@ -220,12 +220,6 @@ const BankAnalysis = ({
     useEffect(() => {
         setEditingLoanAmount(false);
     }, [resolvedApplicationId]);
-
-    /** Bulk-save hook registered by {@link PositionTableCalculator} for Approve & Save. */
-    const saveAllPositionsRef = useRef<(() => Promise<boolean>) | null>(null);
-
-    /** Bulk-save hook registered by {@link BankAnalysisTable} for Approve & Save. */
-    const saveAllBanksRef = useRef<(() => Promise<boolean>) | null>(null);
 
     /**
      * Persist the requested loan amount as part of the combined "Approve & Save"

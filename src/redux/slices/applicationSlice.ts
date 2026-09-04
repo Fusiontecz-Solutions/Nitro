@@ -46,7 +46,7 @@ function mergeApplicationDetailFromUpdate(
         Number(curAid) === Number(upAid);
     if (idMatch || aidMatch) {
         const patch: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(u as Record<string, unknown>)) {
+        for (const [key, value] of Object.entries(u as unknown as Record<string, unknown>)) {
             if (value !== undefined) patch[key] = value;
         }
         state.data = { ...d, ...patch } as Application;

@@ -211,7 +211,7 @@ export default function FunderProfileModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
+    <Dialog open={open} onOpenChange={(next: boolean) => (!next ? onClose() : undefined)}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{initial ? "Edit funder" : "Add funder"}</DialogTitle>
