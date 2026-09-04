@@ -24,6 +24,7 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -46,6 +47,8 @@ import {
     normalizeContractPrefillOverrides,
     omitLiveOfferMoneyPrefillKeys,
     stripStaleOfferOverridesFromPersisted,
+    coercePaymentFrequencyLabel,
+    mergeNonemptyPrefillPartial,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./Contract";
@@ -132,6 +135,8 @@ const FIELD_LABELS = {
     remittance: "Total remit (payment amount)",
     refinanceAmount: "REFI Amount",
     frequency: "Frequency",
+    achProgramFee: "ACH Program Fee",
+    includeWireFee: "Include $25 wire fee",
     netToMerchant: "Recipient funds",
     clientName: "Name",
     ownerPrintTitle: "Print title",
@@ -250,6 +255,13 @@ const ENTITY_TYPE_OPTIONS = [
     { value: "Other", label: "Other" },
 ] as const;
 
+const PAYMENT_FREQUENCY_OPTIONS = [
+    { value: "Daily", label: "Daily" },
+    { value: "Weekly", label: "Weekly" },
+    { value: "Bi-Weekly", label: "Bi-Weekly" },
+    { value: "Monthly", label: "Monthly" },
+] as const;
+
 type ContractPrefillSectionGroup = {
     /** Sub-heading inside the section (e.g. Client, Guarantor). */
     heading?: string;
@@ -346,7 +358,9 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                     "remittance",
                     "refinanceAmount",
                     "frequency",
+                    "includeWireFee",
                     "netToMerchant",
+                    "achProgramFee",
                     "appendixUnderwritingFees",
                 ],
             },
@@ -364,14 +378,6 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                 keys: ["guarantyOwner1Ss", "guarantyOwner1DriverLicense"],
             },
             {
-                heading: "Guarantor 1",
-                keys: [
-                    "guarantyGuarantor1Name",
-                    "guarantyGuarantor1Ss",
-                    "guarantyGuarantor1DriverLicense",
-                ],
-            },
-            {
                 heading: "Guarantor 2",
                 keys: [
                     "guarantyGuarantor2Name",
@@ -379,7 +385,6 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                     "guarantyGuarantor2DriverLicense",
                 ],
             },
-            { heading: "Tax ID", keys: ["securityTaxEin"] },
             {
                 heading: "Security address",
                 keys: [
@@ -428,18 +433,6 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                 ],
             },
             {
-                heading: "Bank",
-                keys: [
-                    "achAuthorizationAccountHolderBankName",
-                    "achAuthorizationAccountHolderBankBranchCity",
-                    "achAuthorizationAccountHolderBankState",
-                    "achAuthorizationAccountHolderBankZip",
-                    "achAuthorizationAccountHolderBankRoutingNumber",
-                    "achAuthorizationAccountHolderBankAccountNumber",
-                    "achAuthorizationAccountHolderBankTransactionFee",
-                ],
-            },
-            {
                 heading: "Consent",
                 keys: ["achAuthorizationConcentAccountHolderName"],
             },
@@ -459,7 +452,6 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                     "achAuthorizationPassword",
                     "achAuthorizationSecurityQuestion1",
                     "achAuthorizationSecurityQuestion2",
-                    "achAuthorizationSecurityQuestion3",
                     "achAuthorizationOtherInfomation",
                 ],
             },
@@ -469,22 +461,6 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                     "achAuthorizationReferenceName1",
                     "achAuthorizationReferenceNumber1",
                     "achAuthorizationReferenceRelationship1",
-                ],
-            },
-            {
-                heading: "Reference 2",
-                keys: [
-                    "achAuthorizationReferenceName2",
-                    "achAuthorizationReferenceNumber2",
-                    "achAuthorizationReferenceRelationship2",
-                ],
-            },
-            {
-                heading: "Reference 3",
-                keys: [
-                    "achAuthorizationReferenceName3",
-                    "achAuthorizationReferenceNumber3",
-                    "achAuthorizationReferenceRelationship3",
                 ],
             },
         ],
@@ -612,6 +588,123 @@ const PREFILL_REALTIME_MIRROR_BY_KEY = (() => {
     return map;
 })();
 
+const ADDENDUM_VERIFY_SKIP_ID_RE =
+    /bank_name|bank_account|bank_routing|routing_number|account_number|authorization_client_bank|agreement_date|client_legal_name|^client_name|ach_account_holder_|federal_tax|doing_business|guaranty_ss|ein|_dba/i;
+
+function collectMappingBlobValues(
+    blob: Record<string, Record<string, string>> | null | undefined,
+): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!blob) return out;
+    for (const row of Object.values(blob)) {
+        if (!row || typeof row !== "object") continue;
+        for (const [key, raw] of Object.entries(row)) {
+            const value = String(raw ?? "").trim();
+            if (value && !out[key]) out[key] = value;
+        }
+    }
+    return out;
+}
+
+function firstBlobValueMatching(
+    values: Record<string, string>,
+    patterns: RegExp[],
+): string {
+    for (const [id, value] of Object.entries(values)) {
+        if (!value) continue;
+        if (patterns.some((pattern) => pattern.test(id))) return value;
+    }
+    return "";
+}
+
+function overlayAddendumBlobOntoMainPrefill(
+    merged: Record<string, unknown>,
+    blob: Record<string, Record<string, string>> | null | undefined,
+): void {
+    const fromAddendum = collectMappingBlobValues(blob);
+    const pick = (...ids: string[]) => {
+        for (const id of ids) {
+            const value = String(fromAddendum[id] ?? "").trim();
+            if (value) return value;
+        }
+        return "";
+    };
+    const fill = (key: string, ...ids: string[]) => {
+        if (String(merged[key] ?? "").trim()) return;
+        const value = pick(...ids);
+        if (value) merged[key] = value;
+    };
+    fill(
+        "doingBusinessAs",
+        "ach_account_holder_dba_p1",
+        "doing_business_as_p1",
+        "doing_business_as",
+        "merchant_dba",
+        "dba",
+    );
+    if (!String(merged.doingBusinessAs ?? "").trim()) {
+        const dba = firstBlobValueMatching(fromAddendum, [/dba/i, /doing_business/i]);
+        if (dba) merged.doingBusinessAs = dba;
+    }
+    fill(
+        "federalTaxIdEin",
+        "addendum_ein_1_p1",
+        "federal_tax_id_EIN",
+        "federal_tax_id_ein",
+        "security_tax_ein",
+        "ein",
+        "tax_id",
+    );
+    if (!String(merged.federalTaxIdEin ?? "").trim()) {
+        const ein = firstBlobValueMatching(fromAddendum, [/ein/i, /tax_id/i, /federal_tax/i]);
+        if (ein) merged.federalTaxIdEin = ein;
+    }
+    fill("legalName", "client_legal_name_p1", "client_legal_name");
+    fill("guarantyOwner1Ss", "guaranty_ss_p1", "guaranty_ss", "owner1_ssn", "owner_1_ssn");
+    fill(
+        "authorizationClientBankName",
+        "ach_bank_name_p1",
+        "ach_authorization_account_holder_bank_name",
+    );
+    fill(
+        "authorizationClientBankRouting",
+        "ach_bank_routing_p1",
+        "ach_authorization_account_holder_bank_routing_number",
+    );
+    fill(
+        "authorizationClientBankAccount",
+        "ach_bank_account_p1",
+        "ach_authorization_account_holder_bank_account_number",
+    );
+}
+
+function copySharedPrefillAliases(
+    values: Record<string, string>,
+): Record<string, string> {
+    const next = { ...values };
+    const fill = (target: string, source: string) => {
+        if (String(next[target] ?? "").trim()) return;
+        const value = String(next[source] ?? "").trim();
+        if (value) next[target] = value;
+    };
+    fill("guarantyGuarantor1Name", "owner1GuarantorName");
+    fill("guarantyGuarantor1Ss", "guarantyOwner1Ss");
+    fill("guarantyGuarantor1DriverLicense", "guarantyOwner1DriverLicense");
+    fill("securityTaxEin", "federalTaxIdEin");
+    fill("achAuthorizationAccountHolderDba", "doingBusinessAs");
+    fill("doingBusinessAs", "achAuthorizationAccountHolderDba");
+    fill("federalTaxIdEin", "securityTaxEin");
+    fill("achAuthorizationAccountHolderBankName", "authorizationClientBankName");
+    fill("achAuthorizationAccountHolderBankRoutingNumber", "authorizationClientBankRouting");
+    fill("achAuthorizationAccountHolderBankAccountNumber", "authorizationClientBankAccount");
+    fill("authorizationClientBankName", "achAuthorizationAccountHolderBankName");
+    fill("authorizationClientBankRouting", "achAuthorizationAccountHolderBankRoutingNumber");
+    fill("authorizationClientBankAccount", "achAuthorizationAccountHolderBankAccountNumber");
+    const frequency = coercePaymentFrequencyLabel(next.frequency);
+    if (frequency) next.frequency = frequency;
+    return next;
+}
+
 function pickPreservedContractPrefillMeta(
     resolvedContract: Record<string, unknown> | null | undefined,
     liveSignerRows: ContractSignerOverrideRow[] | null | undefined,
@@ -672,7 +765,7 @@ function applySecondOwnerNameToPrefillPartial(
 function emptyValuesRecord(): Record<keyof BuildContractPrefillFieldsArgs, string> {
     const out = {} as Record<keyof BuildContractPrefillFieldsArgs, string>;
     for (const k of Object.keys(FIELD_LABELS) as (keyof BuildContractPrefillFieldsArgs)[]) {
-        out[k] = "";
+        out[k] = k === "includeWireFee" ? "true" : "";
     }
     return out;
 }
@@ -683,8 +776,11 @@ function mergeFormState(
     const rec = emptyValuesRecord();
     for (const k of Object.keys(FIELD_LABELS) as (keyof BuildContractPrefillFieldsArgs)[]) {
         const v = base[k];
-        rec[k] = v === undefined || v === null ? "" : String(v);
+        rec[k] = v === undefined || v === null ? rec[k] : String(v);
     }
+    if (!String(rec.includeWireFee ?? "").trim()) rec.includeWireFee = "true";
+    const frequency = coercePaymentFrequencyLabel(rec.frequency);
+    if (frequency) rec.frequency = frequency;
     return rec;
 }
 
@@ -1234,6 +1330,11 @@ export function ContractPrefillEditForm({
         strippedMainPrefillOverrides,
     ]);
 
+    const visibleAddendumEditorRows = useMemo(
+        () => addendumEditorRows.filter((row) => !ADDENDUM_VERIFY_SKIP_ID_RE.test(String(row.id))),
+        [addendumEditorRows],
+    );
+
     const linkedDisclosureTemplateName =
         linkedDisclosureMapping?.template?.name?.trim() ||
         linkedDisclosureMapping?.template?.templateId ||
@@ -1447,10 +1548,13 @@ export function ContractPrefillEditForm({
         const defaultsForMerge = forceLiveOfferMoney
             ? omitLiveOfferMoneyPrefillKeys(defaults)
             : defaults;
-        const mergedBase = applyLiveBankDetailsToPrefillMerge(defaultsForMerge, {
-            ...defaultsForMerge,
-            ...persistedForMerge,
-        });
+        const mergedBase = applyLiveBankDetailsToPrefillMerge(
+            defaultsForMerge,
+            mergeNonemptyPrefillPartial(
+                defaultsForMerge as Record<string, unknown>,
+                persistedForMerge as Record<string, unknown>,
+            ) as Partial<BuildContractPrefillFieldsArgs>,
+        );
         let merged = applyAuthorizationBusinessNamePrefillFields(
             finalizeContractPrefillMoneyFields(mergedBase, {
                 application: applicationData as Record<string, unknown> | undefined,
@@ -1497,7 +1601,35 @@ export function ContractPrefillEditForm({
         clearParty2PrefillPartial(merged as Record<string, unknown>, ownerCount);
         /** Undo stale overrides that mirrored business address onto contact / owner tabs. */
         merged = applySeparatedAddressPrefillFields(merged, applicationData);
-        setValues(mergeFormState(merged));
+        overlayAddendumBlobOntoMainPrefill(
+            merged as Record<string, unknown>,
+            documentTemplatePrefillByMappingId,
+        );
+        if (!String(merged.guarantyOwner1Ss ?? "").trim()) {
+            const fromApp = String(
+                getContractPrefillEditDefaultsFromApplication(applicationData, {
+                    agreementDate: agreementDateForDefaults,
+                    contractRecords,
+                    offerDecision,
+                }).guarantyOwner1Ss ?? "",
+            ).trim();
+            if (fromApp) {
+                merged.guarantyOwner1Ss = fromApp;
+                if (!String(merged.guarantySs ?? "").trim()) merged.guarantySs = fromApp;
+                if (!String(merged.guarantyGuarantor1Ss ?? "").trim()) {
+                    merged.guarantyGuarantor1Ss = fromApp;
+                }
+            }
+        }
+        const aliased = copySharedPrefillAliases(
+            Object.fromEntries(
+                Object.entries(merged as Record<string, unknown>).map(([key, value]) => [
+                    key,
+                    value === true ? "true" : value === false ? "false" : String(value ?? ""),
+                ]),
+            ),
+        );
+        setValues(mergeFormState({ ...merged, ...aliased }));
         setFieldErrors({});
         if (forceLiveOfferMoney) {
             toast.success("Reloaded offer & deal terms from the application.");
@@ -1512,6 +1644,7 @@ export function ContractPrefillEditForm({
         activeOwnerCount,
         resolvedOwnerRows,
         liveContractSignerOverrides,
+        documentTemplatePrefillByMappingId,
     ]);
 
     const resetAddendumFromSources = useCallback(() => {
@@ -1835,7 +1968,11 @@ export function ContractPrefillEditForm({
         setSaveErrorSections([]);
         setSaving(true);
         try {
-            const rawPayload = toPayload(values);
+            const aliased = copySharedPrefillAliases({ ...values }) as Record<
+                keyof BuildContractPrefillFieldsArgs,
+                string
+            >;
+            const rawPayload = toPayload(aliased);
             const separated = applySeparatedAddressPrefillFields(rawPayload, applicationData);
             const payload = finalizeContractPrefillMoneyFields(separated, {
                 application: applicationData as Record<string, unknown> | undefined,
@@ -1905,20 +2042,11 @@ export function ContractPrefillEditForm({
                     },
                 }),
             ).unwrap();
-            const appKey = String(applicationUuid ?? "").trim();
-            let rawOverrides: unknown =
+            const rawOverrides: unknown =
                 (updateRes as { data?: { contractPrefillOverrides?: unknown } })?.data
                     ?.contractPrefillOverrides ??
-                (updateRes as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides;
-            if (appKey) {
-                try {
-                    const res = await dispatch(getByApplicationIdContract(appKey)).unwrap();
-                    const contract = (res as { data?: unknown })?.data ?? res;
-                    rawOverrides = (contract as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides;
-                } catch {
-                    /* use update response */
-                }
-            }
+                (updateRes as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides ??
+                contractPrefillOverrides;
             const parsedBlob = (() => {
                 if (rawOverrides == null || typeof rawOverrides !== "object" || Array.isArray(rawOverrides)) {
                     return nextBlob;
@@ -1966,7 +2094,7 @@ export function ContractPrefillEditForm({
                 toast.warn(syncMsg);
             }
             setSaveError(null);
-            toast.success("Saved — contract, application, offer, client, owners, and bank updated.");
+            toast.success("Prefill saved.");
             queueMicrotask(() => {
                 onAfterPrefillSaved?.();
             });
@@ -2333,7 +2461,14 @@ export function ContractPrefillEditForm({
                                 </div>
                                 {isLinkedAddendumSection ? (
                                     <div className="grid gap-4 sm:grid-cols-2">
-                                        {addendumEditorRows.map((row) => (
+                                        {visibleAddendumEditorRows.length === 0 ? (
+                                            <p className="text-sm text-slate-600 dark:text-slate-400">
+                                                Merchant, EIN, DBA, and bank fields for this addendum are
+                                                filled from the sections above. Edit them there instead of
+                                                re-entering them here.
+                                            </p>
+                                        ) : (
+                                        visibleAddendumEditorRows.map((row) => (
                                             <div key={row.id} className="space-y-1.5">
                                                 <Label htmlFor={`addendum-prefill-${row.id}`} className="text-xs font-medium">
                                                     {row.label}
@@ -2351,7 +2486,8 @@ export function ContractPrefillEditForm({
                                                     className="h-9 text-sm"
                                                 />
                                             </div>
-                                        ))}
+                                        ))
+                                        )}
                                     </div>
                                 ) : isLinkedDisclosureSection ? (
                                     <div className="space-y-4">
@@ -2467,6 +2603,30 @@ export function ContractPrefillEditForm({
                                                                         REPAYMENT column (ACH), not monthly pmts.
                                                                     </p>
                                                                 </>
+                                                            ) : key === "includeWireFee" ? (
+                                                                <div className="flex items-center gap-2 pt-1">
+                                                                    <Checkbox
+                                                                        id={`prefill-${key}`}
+                                                                        checked={
+                                                                            values[key] !== "false" &&
+                                                                            values[key] !== "0"
+                                                                        }
+                                                                        onCheckedChange={(checked) =>
+                                                                            setField(
+                                                                                key,
+                                                                                checked === true
+                                                                                    ? "true"
+                                                                                    : "false",
+                                                                            )
+                                                                        }
+                                                                        disabled={readOnly}
+                                                                    />
+                                                                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                                                                        Usually added to contracts. Uncheck to omit
+                                                                        the $25 wire fee from total fees and net
+                                                                        amount.
+                                                                    </span>
+                                                                </div>
                                                             ) : key === "entityType" ? (
                                                                 <Select
                                                                     value={values[key] ?? ""}
@@ -2502,6 +2662,70 @@ export function ContractPrefillEditForm({
                                                                         ) ? (
                                                                             <SelectItem value={values[key]!}>
                                                                                 {values[key]}
+                                                                            </SelectItem>
+                                                                        ) : null}
+                                                                    </SelectContent>
+                                                                </Select>
+                                                            ) : key === "frequency" ? (
+                                                                <Select
+                                                                    value={
+                                                                        coercePaymentFrequencyLabel(
+                                                                            values[key],
+                                                                        ) ||
+                                                                        values[key] ||
+                                                                        ""
+                                                                    }
+                                                                    onValueChange={(v: string) =>
+                                                                        setField(key, v)
+                                                                    }
+                                                                    disabled={readOnly}
+                                                                >
+                                                                    <SelectTrigger
+                                                                        id={`prefill-${key}`}
+                                                                        className={cn(
+                                                                            "h-9 text-sm",
+                                                                            fieldErrors[key] &&
+                                                                                "border-destructive focus-visible:ring-destructive",
+                                                                        )}
+                                                                        aria-invalid={Boolean(
+                                                                            fieldErrors[key],
+                                                                        )}
+                                                                    >
+                                                                        <SelectValue placeholder="Select frequency" />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent
+                                                                        position="popper"
+                                                                        className="z-[10200]"
+                                                                    >
+                                                                        {PAYMENT_FREQUENCY_OPTIONS.map(
+                                                                            (opt) => (
+                                                                                <SelectItem
+                                                                                    key={opt.value}
+                                                                                    value={opt.value}
+                                                                                >
+                                                                                    {opt.label}
+                                                                                </SelectItem>
+                                                                            ),
+                                                                        )}
+                                                                        {values[key] &&
+                                                                        !PAYMENT_FREQUENCY_OPTIONS.some(
+                                                                            (o) =>
+                                                                                o.value ===
+                                                                                coercePaymentFrequencyLabel(
+                                                                                    values[key],
+                                                                                ),
+                                                                        ) &&
+                                                                        coercePaymentFrequencyLabel(
+                                                                            values[key],
+                                                                        ) ? (
+                                                                            <SelectItem
+                                                                                value={coercePaymentFrequencyLabel(
+                                                                                    values[key],
+                                                                                )}
+                                                                            >
+                                                                                {coercePaymentFrequencyLabel(
+                                                                                    values[key],
+                                                                                )}
                                                                             </SelectItem>
                                                                         ) : null}
                                                                     </SelectContent>

@@ -167,25 +167,8 @@ export default function DecisionMakeFinalValues({
 
   const useDeferredSave = allowOfferEdit || allowPositionsEdit;
 
-  const handleApproveSaveAll = useCallback(async (): Promise<boolean> => {
+    const handleApproveSaveAll = useCallback(async (): Promise<boolean> => {
     if (!useDeferredSave) return true;
-
-    try {
-      const banksOk = (await saveAllBanksRef.current?.()) ?? true;
-      if (!banksOk) return false;
-    } catch (err) {
-      console.error("Failed to save bank analysis on approve:", err);
-      return false;
-    }
-
-    try {
-      const positionsOk = (await saveAllPositionsRef.current?.()) ?? true;
-      if (!positionsOk) return false;
-    } catch (err) {
-      console.error("Failed to save positions on approve:", err);
-      return false;
-    }
-
     return true;
   }, [useDeferredSave]);
 

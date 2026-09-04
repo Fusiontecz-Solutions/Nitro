@@ -1,30 +1,43 @@
 import type { LoaderFunction, RouteObject } from 'react-router';
-import React from 'react';
-import { Navigate, useLocation, useSearchParams } from 'react-router';
+import React, { lazy } from 'react';
+import { Navigate, useSearchParams } from 'react-router';
 import RootLayout from '../components/layout/RootLayout';
 import LoginPage from '../pages/auth/LoginPage';
 import ForgotPasswordPage from '../pages/auth/ForgotPasswordPage';
-import Clients from '../pages/clients/Clients';
-import Applications from '../pages/applications/Applications';
-import CreateClient from '../pages/clients/clientDetails/CreateClient';
-import CreateApplication from '../pages/applications/applicationDetails/CreateApplication';
-import ApplicationDetails from '../pages/applications/applicationDetails/ApplicationDetails';
-import CreateTermsOffer from '../pages/applications/applicationDetails/CreateTermsOffer';
-import CreatePosition from '../pages/applications/applicationDetails/CreatePosition';
-import UserSetting from '../pages/Userssettings/UserSetting';
-import PublicApprovalPage from '../pages/public/PublicApprovalPage';
-import PublicDocumentRequestPage from '../pages/public/PublicDocumentRequestPage';
-import PublicApplicationStatusPage from '../pages/public/PublicApplicationStatusPage';
-import SignNowEmbeddedCompletePage from '../pages/public/SignNowEmbeddedCompletePage';
-import OperationsDashboard from '../pages/dashboard/OperationsDashboard';
-import NotificationDashboard from '../pages/NotificationDashboard/NotificationDashboard';
 import { applicationsPageLoader } from './applicationsLoader';
 
-/** Remount when `?query` changes so list state matches URL + route loader. */
-const ApplicationsRouteEntry: React.FC = () => {
-    const { search } = useLocation();
-    return <Applications key={search || '_'} />;
-};
+const Clients = lazy(() => import('../pages/clients/Clients'));
+const Applications = lazy(() => import('../pages/applications/Applications'));
+const CreateClient = lazy(() => import('../pages/clients/clientDetails/CreateClient'));
+const CreateApplication = lazy(
+    () => import('../pages/applications/applicationDetails/CreateApplication'),
+);
+const ApplicationDetails = lazy(
+    () => import('../pages/applications/applicationDetails/ApplicationDetails'),
+);
+const CreateTermsOffer = lazy(
+    () => import('../pages/applications/applicationDetails/CreateTermsOffer'),
+);
+const CreatePosition = lazy(
+    () => import('../pages/applications/applicationDetails/CreatePosition'),
+);
+const UserSetting = lazy(() => import('../pages/Userssettings/UserSetting'));
+const PublicApprovalPage = lazy(() => import('../pages/public/PublicApprovalPage'));
+const PublicDocumentRequestPage = lazy(
+    () => import('../pages/public/PublicDocumentRequestPage'),
+);
+const PublicApplicationStatusPage = lazy(
+    () => import('../pages/public/PublicApplicationStatusPage'),
+);
+const SignNowEmbeddedCompletePage = lazy(
+    () => import('../pages/public/SignNowEmbeddedCompletePage'),
+);
+const OperationsDashboard = lazy(() => import('../pages/dashboard/OperationsDashboard'));
+const NotificationDashboard = lazy(
+    () => import('../pages/NotificationDashboard/NotificationDashboard'),
+);
+
+const ApplicationsRouteEntry: React.FC = () => <Applications />;
 
 /** Alias `/settings` → `/user-setting`, keeping `?tab=` (e.g. funders). */
 const SettingsAliasRedirect: React.FC = () => {

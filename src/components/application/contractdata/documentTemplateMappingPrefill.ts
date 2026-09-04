@@ -10,7 +10,8 @@ import {
     resolveBalanceTransferMerchantContext,
     resolveContractBusinessLegalNameForPrefill,
 } from "./Contract";
-import { overlayCanonicalBankOnPrefillRows } from "./sharedBankDetails";
+import { bankSlotFromRecords, overlayCanonicalBankOnPrefillRows } from "./sharedBankDetails";
+import { addendumCompanySlots } from "./exhibitCompanyPrefill";
 import {
     buildBalanceTransferSheetContractPrefillFields,
     formatFunderNameWithDealIdPrefix,
@@ -118,6 +119,7 @@ import {
     buildDisclosureEditorFieldsFromContext,
     collapsePdfFieldsToDisclosureEditorValues,
     expandDisclosureEditorValuesToPdfFields,
+    isWeakDisclosurePage3PrefillValue,
 } from "./disclosureEditorFields";
 import { isUtahDisclosureState } from "./daily_utah";
 import {
@@ -474,10 +476,20 @@ function isSignNowDisclosureTemplateRef(
     templateId?: string | null,
     name?: string | null,
 ): boolean {
+    const normName = normalizeKey(name);
+    if (resolveAddendumKind(templateId, normName, layoutKey)) return false;
+    if (
+        isSignNowAddendumLayoutKey(layoutKey) &&
+        !isSignNowDisclosureLayoutKey(layoutKey)
+    ) {
+        return false;
+    }
     return (
         isSignNowDisclosureLayoutKey(layoutKey) ||
         isSignNowDisclosureLayoutKey(templateId) ||
-        isSignNowDisclosureLayoutKey(name)
+        (normName.includes("disclosure") &&
+            !normName.includes("addendum") &&
+            !normName.includes("exhibit"))
     );
 }
 
@@ -655,6 +667,17 @@ function buildEffectiveContractForTemplatePrefill(options: {
     };
 }
 
+function isOptionalExtraBankField(field: ContractPrefillField): boolean {
+    const group = String(field.group ?? "").toLowerCase();
+    if (/bank account\s*[23]/.test(group)) return true;
+    const id = String(field.id ?? "")
+        .toLowerCase()
+        .replace(/-/g, "_");
+    return /(?:bank_)?(?:name|account|routing)[_-]?(?:2|3)(?:_|$)|bank_(?:name|account|routing)[23]/.test(
+        id,
+    );
+}
+
 function mergeFieldRows(
     allDefs: ContractPrefillField[],
     computed: ContractPrefillField[],
@@ -663,7 +686,7 @@ function mergeFieldRows(
     const computedById = new Map(computed.map((f) => [f.id, f]));
     const saved = savedForRow ?? {};
     return allDefs.map((def) => {
-        const fromSaved = saved[def.id];
+        const fromSaved = saved[def.id] ?? saved[`${def.id}_p3`];
         const fromSavedTrim =
             fromSaved !== undefined ? String(fromSaved).trim() : "";
         const computedVal = String(computedById.get(def.id)?.value ?? "").trim();
@@ -671,18 +694,26 @@ function mergeFieldRows(
             const savedNum = parsePrefillMoneyForMerge(fromSavedTrim);
             const computedNum = parsePrefillMoneyForMerge(computedVal);
             if (
+                isWeakDisclosurePage3PrefillValue(def.id, fromSavedTrim) &&
+                !isWeakDisclosurePage3PrefillValue(def.id, computedVal)
+            ) {
+                return { id: def.id, label: def.label, value: computedVal, group: def.group };
+            }
+            if (
                 savedNum === 0 &&
                 computedNum !== undefined &&
-                computedNum > 0
+                computedNum > 0 &&
+                !isWeakDisclosurePage3PrefillValue(def.id, computedVal)
             ) {
-                return { id: def.id, label: def.label, value: computedVal };
+                return { id: def.id, label: def.label, value: computedVal, group: def.group };
             }
-            return { id: def.id, label: def.label, value: fromSavedTrim };
+            return { id: def.id, label: def.label, value: fromSavedTrim, group: def.group };
         }
         return {
             id: def.id,
             label: def.label,
             value: computedVal,
+            group: def.group,
         };
     });
 }
@@ -1027,7 +1058,21 @@ function buildAddendumAchWeeklyComputed(
         clientName: printName,
         remittance: sctx.estimatedPayment || get("remittance"),
         remittanceStartDate: sctx.signatureDate || todayUsDate(),
-        purchaseAmount: sctx.fundingProvided || get("purchase_amount", "purchase_price"),
+        purchaseAmount:
+            sctx.fundingProvided ||
+            sctx.amountBusinessFund ||
+            get(
+                "purchase_amount",
+                "purchase_price",
+                "approvedAmount",
+                "approved_amount",
+                "amountFinanced",
+                "amount_financed",
+            ) ||
+            str(c.approvedAmount) ||
+            str((c.offer as Record<string, unknown> | null)?.offer) ||
+            str((c.offer as Record<string, unknown> | null)?.approvedAmount) ||
+            str(c.totalAmount),
         billingName,
         billingAddress:
             get("business_address", "business_address_contract", "ach_authorization_account_holder_address") ||
@@ -1090,6 +1135,7 @@ function buildAddendumExhibitCComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
     application: Record<string, unknown> | null,
+    contractRecords?: ContractPrefillContractRecords | null,
 ): ContractPrefillField[] {
     const c = contract ?? {};
     const fromApp = buildContractPrefillFieldsFromApplication(application, {
@@ -1116,6 +1162,7 @@ function buildAddendumExhibitCComputed(
         get("ach_authorization_account_holder_name", "ach_account_holder_name") ||
         legalName ||
         guarantor;
+
     return buildExhibitCContractPrefillFields({
         agreementDate: sctx.signatureDate || todayUsDate(),
         clientLegalName: legalName,
@@ -1142,7 +1189,8 @@ function buildAddendumExhibitCComputed(
             ) ||
             str(c.authorizationClientBankName) ||
             str(c.achAuthorizationAccountHolderBankName) ||
-            str(c.bankName),
+            str(c.bankName) ||
+            str((c.paymentBank as Record<string, unknown> | null)?.bankName),
         bankAccount:
             get(
                 "ach_authorization_account_holder_bank_account_number",
@@ -1151,7 +1199,8 @@ function buildAddendumExhibitCComputed(
             ) ||
             str(c.authorizationClientBankAccount) ||
             str(c.achAuthorizationAccountHolderBankAccountNumber) ||
-            str(c.accountNumber),
+            str(c.accountNumber) ||
+            str((c.paymentBank as Record<string, unknown> | null)?.accountNumber),
         bankRouting:
             get(
                 "ach_authorization_account_holder_bank_routing_number",
@@ -1160,7 +1209,8 @@ function buildAddendumExhibitCComputed(
             ) ||
             str(c.authorizationClientBankRouting) ||
             str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
-            str(c.routingNumber),
+            str(c.routingNumber) ||
+            str((c.paymentBank as Record<string, unknown> | null)?.routingNumber),
         bankPortal: get(
             "ach_authorization_bank_portal_website",
             "ach_bank_portal",
@@ -1295,6 +1345,7 @@ function buildAddendumMonthlyFeeComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
     application: Record<string, unknown> | null,
+    contractRecords?: ContractPrefillContractRecords | null,
 ): ContractPrefillField[] {
     const c = contract ?? {};
     const fromApp = buildContractPrefillFieldsFromApplication(application, {
@@ -1317,6 +1368,17 @@ function buildAddendumMonthlyFeeComputed(
         get("ach_account_holder_name", "ach_authorization_account_holder_name") ||
         businessName;
     const startDate = sctx.signatureDate || todayUsDate();
+    const bank1 = bankSlotFromRecords(
+        [
+            ...(contractRecords?.bankDetails ?? []),
+            ...(contractRecords?.achs ?? []),
+            contractRecords?.bankDetail ?? null,
+            (c.paymentBank as Record<string, unknown> | null) ?? null,
+            contractRecords?.ach ?? null,
+            contract,
+        ],
+        0,
+    );
     return buildMonthlyFeeContractPrefillFields({
         businessName,
         businessPhone: get(
@@ -1327,11 +1389,8 @@ function buildAddendumMonthlyFeeComputed(
         businessAddress:
             get("business_address", "business_address_contract") || sctx.recipientAddress,
         holderName,
-        holderDba: get(
-            "ach_account_holder_dba",
-            "doing_business_as",
-            "dba",
-        ),
+        holderDba:
+            get("ach_account_holder_dba", "doing_business_as", "dba") || businessName,
         holderAddress:
             get("ach_account_holder_address", "business_address") || sctx.recipientAddress,
         bankName:
@@ -1342,7 +1401,9 @@ function buildAddendumMonthlyFeeComputed(
             ) ||
             str(c.authorizationClientBankName) ||
             str(c.achAuthorizationAccountHolderBankName) ||
-            str(c.bankName),
+            str(c.bankName) ||
+            str((c.paymentBank as Record<string, unknown> | null)?.bankName) ||
+            bank1.bankName,
         bankRouting:
             get(
                 "authorization_client_bank_routing",
@@ -1351,7 +1412,9 @@ function buildAddendumMonthlyFeeComputed(
             ) ||
             str(c.authorizationClientBankRouting) ||
             str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
-            str(c.routingNumber),
+            str(c.routingNumber) ||
+            str((c.paymentBank as Record<string, unknown> | null)?.routingNumber) ||
+            bank1.routingNumber,
         bankAccount:
             get(
                 "authorization_client_bank_account",
@@ -1360,7 +1423,9 @@ function buildAddendumMonthlyFeeComputed(
             ) ||
             str(c.authorizationClientBankAccount) ||
             str(c.achAuthorizationAccountHolderBankAccountNumber) ||
-            str(c.accountNumber),
+            str(c.accountNumber) ||
+            str((c.paymentBank as Record<string, unknown> | null)?.accountNumber) ||
+            bank1.accountNumber,
         programFee: get("ach_program_fee", "monthly_fee", "program_fee"),
         paymentDate: startDate,
         firstPaymentDate: startDate,
@@ -1373,11 +1438,16 @@ function buildAddendumExhibitAComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
     application: Record<string, unknown> | null,
+    contractRecords?: ContractPrefillContractRecords | null,
 ): ContractPrefillField[] {
     const c = contract ?? {};
+    const addendum = contractRecords?.addendum ?? null;
+    const addendumSlots = addendumCompanySlots(
+        contractRecords?.addendums?.length ? contractRecords.addendums : addendum,
+    );
     const fromApp = buildContractPrefillFieldsFromApplication(application, {
         agreementDate: sctx.signatureDate || todayUsDate(),
-        contractRecords: { contract: c },
+        contractRecords: { contract: c, addendum },
     });
     const get = (...ids: string[]) => {
         const fromFields = fieldValueById(fromApp, ...ids);
@@ -1397,20 +1467,30 @@ function buildAddendumExhibitAComputed(
     const companyEins: string[] = [];
     const companyEntities: string[] = [];
     for (let i = 1; i <= 10; i += 1) {
-        let name = get(`exhibit_a_value_${i}`, `exhibitAValue${i}`, `exhibit_a_value_${i}_p1`);
-        let companyEin = get(`addendum_ein_${i}`, i === 1 ? "ein" : "", i === 1 ? "security_tax_ein" : "");
+        let name = get(
+            `exhibit_a_value_${i}`,
+            `exhibitAValue${i}`,
+            `exhibit_a_value_${i}_p1`,
+            `addendum_legal_name_${i}`,
+        );
+        let companyEin = get(
+            `addendum_ein_${i}`,
+            i === 1 ? "ein" : "",
+            i === 1 ? "security_tax_ein" : "",
+        );
         let entity = get(
             `addendum_type_of_entity_${i}`,
             i === 1 ? "entity_type" : "",
             i === 1 ? "type_of_entity" : "",
         );
+        const slot = addendumSlots[i - 1];
+        if (!name && slot?.name) name = slot.name;
+        if (!companyEin && slot?.ein) companyEin = slot.ein;
+        if (!entity && slot?.entity) entity = slot.entity;
         if (i === 1) {
             if (!name) name = legalName || "";
             if (!entity) entity = entityType;
             if (!companyEin) companyEin = ein;
-        } else if (companyEin) {
-            if (!name) name = legalName || "N/A";
-            if (!entity) entity = entityType || "N/A";
         }
         companyNames.push(name);
         companyEins.push(companyEin);
@@ -1516,9 +1596,11 @@ function dotExhibitC(): ExhibitCContractPrefillFields {
         accountHolderName: DUMMY,
         accountHolderDba: DUMMY,
         accountHolderAddress: DUMMY,
-        bankName: DUMMY,
-        bankAccount: DUMMY,
-        bankRouting: DUMMY,
+        bankPortal: DUMMY,
+        bankUsername: DUMMY,
+        bankPassword: DUMMY,
+        securityQa1: DUMMY,
+        securityQa2: DUMMY,
     };
 }
 
@@ -1712,13 +1794,17 @@ function resolveAddendumKind(
     ) {
         return "exhibit_a";
     }
+    const compactKey = key.replace(/_/g, "");
+    const compactName = normName.replace(/_/g, "");
     if (
         key === SIGNNOW_EXHIBIT_C_LAYOUT_KEY ||
         key.endsWith("_exhibit_c") ||
-        tid === SIGNNOW_EXHIBIT_C_TEMPLATE_ID ||
-        (normName.includes("exhibit_c") ||
-            normName.includes("exhibit c") ||
-            (normName.includes("exhibit") && normName.includes("ach")))
+        compactKey === "exhibitc" ||
+        compactKey.endsWith("exhibitc") ||
+        tid === SIGNNOW_EXHIBIT_C_TEMPLATE_ID.toLowerCase() ||
+        compactName.includes("exhibitc") ||
+        normName.includes("exhibit_c") ||
+        (normName.includes("exhibit") && normName.includes("ach"))
     ) {
         return "exhibit_c";
     }
@@ -1919,6 +2005,7 @@ function addendumComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
     application: Record<string, unknown> | null,
+    contractRecords?: ContractPrefillContractRecords | null,
 ): ContractPrefillField[] {
     switch (kind) {
         case "balance_transfer_sheet":
@@ -1942,9 +2029,9 @@ function addendumComputed(
         case "ach_weekly":
             return buildAddendumAchWeeklyComputed(contract, sctx, application);
         case "exhibit_c":
-            return buildAddendumExhibitCComputed(contract, sctx, application);
+            return buildAddendumExhibitCComputed(contract, sctx, application, contractRecords);
         case "exhibit_a":
-            return buildAddendumExhibitAComputed(contract, sctx, application);
+            return buildAddendumExhibitAComputed(contract, sctx, application, contractRecords);
         case "flex_addendum":
             return buildAddendumFlexComputed(contract, sctx, application);
         case "payoff_addendum":
@@ -1952,7 +2039,7 @@ function addendumComputed(
         case "epa":
             return buildAddendumEpaComputed(contract, sctx, application);
         case "monthly_fee":
-            return buildAddendumMonthlyFeeComputed(contract, sctx, application);
+            return buildAddendumMonthlyFeeComputed(contract, sctx, application, contractRecords);
         default:
             return [];
     }
@@ -2113,11 +2200,15 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
 }): ContractPrefillField[] {
     const withCanonicalBank = (rows: ContractPrefillField[]) =>
         overlayCanonicalBankOnPrefillRows(rows, {
-            bankDetail: options.bankDetail ?? options.contractRecords?.bankDetail ?? null,
+            bankDetail:
+                options.bankDetail ??
+                options.contractRecords?.bankDetail ??
+                options.contractRecords?.bankDetails?.[0] ??
+                null,
             ach: options.ach ?? options.contractRecords?.ach ?? null,
             contract: options.contract ?? null,
             mainPrefillOverrides: options.mainPrefillOverrides ?? null,
-        });
+        }).filter((row) => !isOptionalExtraBankField(row));
 
     const effectiveContract = buildEffectiveContractForTemplatePrefill({
         contract: options.contract ?? null,
@@ -2148,6 +2239,30 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
         contract: effectiveContract,
     });
     const templateId = options.templateId;
+    const norm = normalizeKey(name ?? "");
+    const addendum = resolveAddendumKind(
+        templateId,
+        norm,
+        options.templateLayoutKey,
+    );
+
+    // Addendum mappings must never use the disclosure calculator catalog.
+    // SignNow stores a 40-char hex templateId on every document — that used to
+    // match `isSignNowDisclosureLayoutKey` and show Amount financed / Page 3
+    // fields on Exhibit C, ACH Daily, Flex, etc.
+    if (docType === "addendum" || addendum) {
+        if (!addendum) return [];
+        const all = addendumAllDefs(addendum);
+        const computed = addendumComputed(
+            addendum,
+            effectiveContract,
+            sctx,
+            options.application ?? null,
+            options.contractRecords ?? null,
+        );
+        return withCanonicalBank(mergeFieldRows(all, computed, options.savedOverridesForMapping));
+    }
+
     const isSignNowDisclosure = isSignNowDisclosureTemplateRef(
         options.templateLayoutKey,
         templateId,
@@ -2203,24 +2318,6 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
             options.agreementDate,
             options.mainPrefillOverrides,
             options.contractRecords ?? null,
-        );
-        return withCanonicalBank(mergeFieldRows(all, computed, options.savedOverridesForMapping));
-    }
-
-    // Addendums must also win over disclosure matching for the same reason.
-    const norm = normalizeKey(name ?? "");
-    const addendum = resolveAddendumKind(
-        templateId,
-        norm,
-        options.templateLayoutKey,
-    );
-    if (addendum) {
-        const all = addendumAllDefs(addendum);
-        const computed = addendumComputed(
-            addendum,
-            effectiveContract,
-            sctx,
-            options.application ?? null,
         );
         return withCanonicalBank(mergeFieldRows(all, computed, options.savedOverridesForMapping));
     }
@@ -2452,9 +2549,14 @@ function upsertPrefillFieldValuePreserveMainMoney(
     const key = String(id || "").trim();
     const v = String(value ?? "").trim();
     if (!key || !v) return;
-    if (isMainContractProtectedMoneyFieldId(key)) {
-        const existing = String(byId.get(key)?.value ?? "").trim();
-        if (existing) return;
+    const existing = String(byId.get(key)?.value ?? "").trim();
+    if (isMainContractProtectedMoneyFieldId(key) && existing) return;
+    if (
+        existing &&
+        isWeakDisclosurePage3PrefillValue(key, v) &&
+        !isWeakDisclosurePage3PrefillValue(key, existing)
+    ) {
+        return;
     }
     upsertPrefillFieldValue(byId, key, v);
 }
@@ -2723,8 +2825,11 @@ export function mergeStateDisclosurePrefillFallback(args: {
         const expandedSaved = expandDisclosureEditorValuesToPdfFields(
             collapsePdfFieldsToDisclosureEditorValues(savedDisclosure),
         );
-        for (const [id, value] of Object.entries({ ...savedDisclosure, ...expandedSaved })) {
-            upsertPrefillFieldValue(byId, id, String(value ?? ""));
+        for (const [id, value] of Object.entries(savedDisclosure)) {
+            upsertPrefillFieldValuePreserveMainMoney(byId, id, String(value ?? ""));
+        }
+        for (const [id, value] of Object.entries(expandedSaved)) {
+            upsertPrefillFieldValuePreserveMainMoney(byId, id, String(value ?? ""));
         }
     }
     for (const field of fields) {
@@ -2977,6 +3082,14 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
         // Verify Prefill / Final Calculation money on the main RPA must win over
         // disclosure calculator aliases (purchase_price, remittance, etc.).
         if (isMainContractProtectedMoneyFieldId(id) && existingVal) {
+            continue;
+        }
+        // Calculator defaults (N/A, 0.00) must not clobber values typed in Verify Prefill.
+        if (
+            existingVal &&
+            isWeakDisclosurePage3PrefillValue(id, v) &&
+            !isWeakDisclosurePage3PrefillValue(id, existingVal)
+        ) {
             continue;
         }
         const existingNum = parsePrefillMoneyForMerge(existing?.value);

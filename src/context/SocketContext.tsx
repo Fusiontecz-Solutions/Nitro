@@ -17,7 +17,14 @@ interface SocketProviderProps {
   children: ReactNode;
 }
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
+function resolveSocketUrl(): string {
+  const explicit = String(import.meta.env.VITE_SOCKET_URL || '').trim();
+  if (explicit) return explicit.replace(/\/$/, '');
+  const api = String(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1');
+  return api.replace(/\/api\/v1\/?$/i, '').replace(/\/$/, '') || 'http://localhost:5000';
+}
+
+const SOCKET_URL = resolveSocketUrl();
 
 export const SocketProvider = ({ children }: SocketProviderProps) => {
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -42,12 +49,12 @@ export const SocketProvider = ({ children }: SocketProviderProps) => {
       auth: {
         token,
       },
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      reconnectionAttempts: 10,
-      timeout: 25000,
+      reconnectionDelayMax: 4000,
+      reconnectionAttempts: 3,
+      timeout: 5000,
       forceNew: false,
       withCredentials: false,
     });

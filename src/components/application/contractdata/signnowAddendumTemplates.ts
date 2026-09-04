@@ -78,8 +78,7 @@ export function isSignNowDisclosureLayoutKey(value: unknown): boolean {
     if (!key) return false;
     return (
         key === SIGNNOW_DISCLOSURE_LAYOUT_KEY ||
-        key === SIGNNOW_DISCLOSURE_TEMPLATE_ID ||
-        key.endsWith("_signnow_disclosure") ||
-        /^[a-f0-9]{40}$/i.test(key)
+        key === SIGNNOW_DISCLOSURE_TEMPLATE_ID.toLowerCase() ||
+        key.endsWith("_signnow_disclosure")
     );
 }

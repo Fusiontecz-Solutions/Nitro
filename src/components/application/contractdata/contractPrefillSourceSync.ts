@@ -4,10 +4,8 @@ import { sanitizePaymentFrequencyForPersist } from "./Contract";
 import type { UpdateBankDetailPayload } from "@/types/bankDetailTypes";
 import { parseNumberUS } from "@/lib/utils";
 import type { AppDispatch } from "@/redux/store";
-import { getApplicationById } from "@/redux/actions/applicationActions";
 import { getClientById, updateClient } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
-import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import {
     updateACH,
     updateContractGuarantor,
@@ -29,6 +27,160 @@ function parseMoney(v: unknown): number | null {
     if (v == null || v === "") return null;
     const n = parseNumberUS(v);
     return Number.isFinite(n) ? n : null;
+}
+
+function numericishEq(a: unknown, b: unknown): boolean {
+    const na = parseMoney(a);
+    const nb = parseMoney(b);
+    if (na != null && nb != null) return na === nb;
+    return str(a) === str(b);
+}
+
+function digitsEq(a: unknown, b: unknown): boolean {
+    const da = str(a).replace(/\D/g, "");
+    const db = str(b).replace(/\D/g, "");
+    if (da && db) return da === db;
+    return str(a) === str(b);
+}
+
+function recordPatchUnchanged(
+    existing: Record<string, unknown> | null | undefined,
+    patch: Record<string, unknown>,
+): boolean {
+    if (!existing) return false;
+    for (const [key, raw] of Object.entries(patch)) {
+        if (raw == null || str(raw) === "") continue;
+        const next = str(raw);
+        const prev = str(existing[key]);
+        if (key === "frequency") {
+            if (
+                sanitizePaymentFrequencyForPersist(next) !==
+                sanitizePaymentFrequencyForPersist(prev)
+            ) {
+                return false;
+            }
+            continue;
+        }
+        if (
+            key === "offer" ||
+            key === "totalRemit" ||
+            key === "repayPerPeriod" ||
+            key === "refinanceAmount" ||
+            key === "fees" ||
+            key === "paymentAmount"
+        ) {
+            if (!numericishEq(next, prev)) return false;
+            continue;
+        }
+        if (prev !== next) return false;
+    }
+    return true;
+}
+
+function partyPatchUnchanged(
+    row: Record<string, unknown> | null | undefined,
+    data: Record<string, unknown>,
+): boolean {
+    if (!row) return false;
+    const aliases: Record<string, string[]> = {
+        ssn: ["ssn", "ssnNumber"],
+        driverLicense: ["driverLicense", "driverLicenseNumber"],
+        address: ["address", "address1"],
+    };
+    for (const [key, raw] of Object.entries(data)) {
+        if (raw == null || str(raw) === "") continue;
+        const next = str(raw);
+        const keys = aliases[key] ?? [key];
+        const prev = keys.map((k) => str(row[k])).find(Boolean) ?? "";
+        if (key === "ssn") {
+            if (!digitsEq(next, prev)) return false;
+            continue;
+        }
+        if (prev !== next) return false;
+    }
+    return true;
+}
+
+function offerPayloadUnchanged(
+    payload: Record<string, unknown>,
+    existing: Record<string, unknown> | null | undefined,
+): boolean {
+    if (!existing) return false;
+    if (
+        str(payload.decision).toLowerCase() &&
+        str(payload.decision).toLowerCase() !== str(existing.decision).toLowerCase() &&
+        str(existing.decision)
+    ) {
+        return false;
+    }
+    if ("offer" in payload && !numericishEq(payload.offer, existing.offer ?? existing.approvedAmount)) {
+        return false;
+    }
+    if ("totalRemit" in payload && !numericishEq(payload.totalRemit, existing.totalRemit)) {
+        return false;
+    }
+    if (
+        "repayPerPeriod" in payload &&
+        !numericishEq(payload.repayPerPeriod, existing.repayPerPeriod ?? existing.paymentAmount)
+    ) {
+        return false;
+    }
+    if (
+        "refinanceAmount" in payload &&
+        !numericishEq(payload.refinanceAmount, existing.refinanceAmount ?? existing.RefinanceAmount)
+    ) {
+        return false;
+    }
+    if ("fees" in payload && !numericishEq(payload.fees, existing.fees)) {
+        return false;
+    }
+    if (
+        "frequency" in payload &&
+        sanitizePaymentFrequencyForPersist(payload.frequency) !==
+            sanitizePaymentFrequencyForPersist(existing.frequency)
+    ) {
+        return false;
+    }
+    return true;
+}
+
+function ownerFingerprint(owner: Partial<OwnerDetail> | OwnerDetail): string {
+    return [
+        str(owner.firstName),
+        str(owner.lastName),
+        str(owner.ssn).replace(/\D/g, ""),
+        str(owner.email),
+        str(owner.mobileNumber),
+        str(owner.address?.address1),
+        str(owner.address?.city),
+        str(owner.address?.state),
+        str(owner.address?.zipCode),
+    ].join("|");
+}
+
+function clientPayloadUnchanged(
+    next: ClientUpdatePayload,
+    existing: ReturnType<typeof existingClientPayload>,
+): boolean {
+    if (!existing || !next.business) return false;
+    const b = next.business;
+    const e = existing.business;
+    if (str(b.name) !== str(e.name)) return false;
+    if (str(b.einNumber) !== str(e.einNumber)) return false;
+    if (str(b.email) !== str(e.email)) return false;
+    if (str(b.number) !== str(e.number)) return false;
+    if (str(b.businessEntityType) !== str(e.businessEntityType)) return false;
+    if (str(b.incorporationState) !== str(e.incorporationState)) return false;
+    if (str(b.address?.address1) !== str(e.address?.address1)) return false;
+    if (str(b.address?.city) !== str(e.address?.city)) return false;
+    if (str(b.address?.state) !== str(e.address?.state)) return false;
+    if (str(b.address?.zipCode) !== str(e.address?.zipCode)) return false;
+    const nextOwners = next.owners?.length ? next.owners : next.owner ? [next.owner] : [];
+    const prevOwners = existing.owners.length ? existing.owners : [existing.owner];
+    if (nextOwners.length !== prevOwners.length) return false;
+    return nextOwners.every(
+        (row, i) => ownerFingerprint(row) === ownerFingerprint(prevOwners[i]!),
+    );
 }
 
 /** Same resolution as OfferDecisionToggle / approval modal. */
@@ -469,6 +621,8 @@ async function syncContractPartyRowsFromPrefill(
             if (firstName) data.firstName = firstName;
             data.lastName = lastName;
         }
+        if (Object.keys(data).length === 0) continue;
+        if (partyPatchUnchanged(patch.row, data)) continue;
         if (kind === "guarantor") {
             await dispatch(
                 updateContractGuarantor({
@@ -552,6 +706,7 @@ async function syncContractAchFromPrefill(
         data.bankZip = str(prefill.achAuthorizationAccountHolderBankZip);
     }
     if (Object.keys(data).length === 0) return;
+    if (recordPatchUnchanged(ach, data)) return;
 
     await dispatch(
         updateACH({
@@ -587,7 +742,19 @@ export async function upsertApplicationBankDetailFromPrefill({
         str(applicationUuid) ||
         resolveApplicationUuidForUpdate(applicationData) ||
         resolveApplicationIdForOfferDecision(applicationData);
-    let bankId = resolveBankDetailId(bankDetail);
+    let existingRow = (bankDetail as Record<string, unknown> | null) ?? null;
+    let bankId = resolveBankDetailId(existingRow);
+
+    const matchesExisting = (row: Record<string, unknown> | null | undefined) => {
+        if (!row) return false;
+        return (
+            (!payload.bankName || str(payload.bankName) === str(row.bankName)) &&
+            (!payload.accountNumber || digitsEq(payload.accountNumber, row.accountNumber)) &&
+            (!payload.routingNumber || digitsEq(payload.routingNumber, row.routingNumber))
+        );
+    };
+
+    if (bankId && matchesExisting(existingRow)) return;
 
     if (!bankId && appKey) {
         try {
@@ -602,7 +769,9 @@ export async function upsertApplicationBankDetailFromPrefill({
                 const tb = new Date(String(a.updatedAt ?? a.createdAt ?? 0)).getTime();
                 return ta - tb;
             })[0];
-            bankId = resolveBankDetailId(latest ?? null);
+            existingRow = latest ?? null;
+            bankId = resolveBankDetailId(existingRow);
+            if (bankId && matchesExisting(existingRow)) return;
         } catch {
             /* create below if still missing */
         }
@@ -615,7 +784,10 @@ export async function upsertApplicationBankDetailFromPrefill({
                 data: payload,
             }),
         ).unwrap();
-    } else if (appKey && str(payload.accountNumber)) {
+        return;
+    }
+
+    if (appKey && str(payload.accountNumber)) {
         await dispatch(
             createBankDetail({
                 bankName: str(payload.bankName),
@@ -624,12 +796,6 @@ export async function upsertApplicationBankDetailFromPrefill({
                 application: appKey,
             }),
         ).unwrap();
-    } else {
-        return;
-    }
-
-    if (appKey) {
-        await dispatch(getBankDetails({ application: appKey })).unwrap();
     }
 }
 
@@ -677,20 +843,24 @@ export async function syncContractPrefillToSourceRecords({
     const tasks: Promise<unknown>[] = [];
 
     const offerPayload = buildOfferDecisionUpsertFromPrefill(prefill, offerDecision);
-    if (offerPayload && offerAppId) {
+    if (
+        offerPayload &&
+        offerAppId &&
+        !offerPayloadUnchanged(offerPayload, offerDecision)
+    ) {
         tasks.push(
             axiosPost("/offer-decisions", {
                 applicationId: offerAppId,
                 ...offerPayload,
             }).then(() => {
-                emitOfferDecisionUpdated(offerAppId);
-                return dispatch(getOfferDecisionByApplication(offerAppId)).unwrap();
+                emitOfferDecisionUpdated(offerAppId, { skipRefetch: true });
             }),
         );
     }
 
+    const existingClient = existingClientPayload(appForClient);
     const clientPayload = buildClientUpdateFromPrefill(prefill, appForClient);
-    if (clientPayload && clientId) {
+    if (clientPayload && clientId && !clientPayloadUnchanged(clientPayload, existingClient)) {
         tasks.push(
             dispatch(
                 updateClient({
@@ -726,11 +896,6 @@ export async function syncContractPrefillToSourceRecords({
             bankDetail,
         }),
     );
-
-    // Always refresh application last so Deal Review / app screens see all synced sources.
-    if (appUuid) {
-        tasks.push(dispatch(getApplicationById(appUuid)).unwrap());
-    }
 
     if (tasks.length === 0) return;
 

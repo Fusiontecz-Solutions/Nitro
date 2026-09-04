@@ -22,7 +22,11 @@ import {
     applyDisclosurePlatformFee,
     formatDisclosurePaymentFrequencyLabel,
 } from "./disclosureAprCalculator";
-import { DISCLOSURE_PLATFORM_FEE_USD, PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
+import {
+    PLATFORM_DISCLOSURE_FUNDER_NAME,
+    resolveDisclosureWireFeeUsd,
+    resolveIncludeWireFee,
+} from "./platformDocumentConfig";
 import {
     calculateRefinanceDealMetrics,
     isRefinanceDeal,
@@ -180,10 +184,8 @@ function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): Contract
               };
           })();
 
-    /** CA REFI: left = net contracted funding; right = actual disbursement. NO REFI: both = net funding. */
-    const fundingLeft = isRefi
-        ? ctx.netContractedFunding || ctx.fundingDisbursed || netFunding
-        : netFunding;
+    /** Main box = contract / purchase price. Adjacent “directly” = net (REFI: actual disbursement). */
+    const fundingLeft = ctx.fundingProvided || ctx.amountBusinessFund || netFunding;
     const fundingRight = isRefi
         ? ctx.actualDisbursement || ctx.fundingDisbursed || netFunding
         : netFunding;
@@ -220,12 +222,12 @@ function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): Contract
 function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPrefillField[] {
     const isRefi = Boolean(ctx.isRefinance);
     /**
-     * PDF NY Funding Provided (both sides): Net Amount = Contract − Fee.
-     * Do NOT subtract REFI balance from the funding boxes.
-     * Page-3 REFI itemization uses actual disbursement as line 1.
+     * Funding Provided (main box) = contract / purchase price.
+     * Adjacent “directly” = net after fees. Page-3 REFI line 1 = actual disbursement.
      */
     const fundingNet =
         ctx.netContractedFunding || ctx.fundingDisbursed || ctx.fundingProvided;
+    const fundingProvidedPrimary = ctx.fundingProvided || ctx.amountBusinessFund || fundingNet;
     const page3TopLine = isRefi
         ? ctx.actualDisbursement || ctx.fundingDisbursed || fundingNet
         : fundingNet;
@@ -260,7 +262,7 @@ function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPre
           });
     return [
         ...buildDailyCaliforniaContractPrefillFields({
-            fundingProvided: fundingNet,
+            fundingProvided: fundingProvidedPrimary,
             fundingProvidedDirect: fundingNet,
             previousAgreementDate: isRefi ? ctx.previousDealDate : "",
             estimatedAnnualPercentageRate: ctx.estimatedAnnualPercentageRate,
@@ -732,24 +734,50 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     const offer = (contract.offer ?? null) as Record<string, unknown> | null;
 
     const purchaseAmount = coerceFiniteNumber(
-        contract.purchaseAmount ?? offer?.offer ?? offer?.approvedAmount ?? contract.approvedAmount,
+        contract.purchase_price ??
+            contract.purchaseAmount ??
+            contract.purchase_amount ??
+            offer?.offer ??
+            offer?.approvedAmount ??
+            contract.approvedAmount,
     );
     const purchasePrice = coerceFiniteNumber(
-        contract.purchasePrice ?? offer?.totalRemit ?? offer?.paybackAmount ?? contract.totalAmount,
+        contract.purchased_amount ??
+            contract.purchasePrice ??
+            offer?.totalRemit ??
+            offer?.paybackAmount ??
+            contract.totalAmount,
     );
     const purchasePercent = coerceFiniteNumber(
-        contract.purchasePercent ?? offer?.rate ?? offer?.factorRate,
+        contract.purchasePercent ??
+            contract.purchase_percent ??
+            offer?.rate ??
+            offer?.factorRate,
     );
     const underwritingFeesApplicable =
         resolveAppendixUnderwritingFeesDollars(
-            contract.appendixUnderwritingFees ?? offer?.fees,
+            contract.appendixUnderwritingFees ??
+                contract.appendix_underwriting_fees ??
+                contract.underwriter_fee ??
+                contract.total_fees ??
+                offer?.fees,
             purchaseAmount,
-        ) ?? coerceFiniteNumber(contract.appendixUnderwritingFees);
-    /** Display / net stack includes the $50 platform fee (calculators also apply it). */
+        ) ??
+        coerceFiniteNumber(
+            contract.appendixUnderwritingFees ??
+                contract.appendix_underwriting_fees ??
+                contract.underwriter_fee ??
+                contract.total_fees,
+        );
+    /** Display / net stack includes the optional $25 wire fee (calculators also apply it). */
+    const includeWireFee = resolveIncludeWireFee(
+        (contract.contractPrefillOverrides as Record<string, unknown> | null)?.includeWireFee ??
+            contract.includeWireFee,
+    );
     const underwritingFees =
         underwritingFeesApplicable !== undefined
-            ? applyDisclosurePlatformFee(underwritingFeesApplicable)
-            : DISCLOSURE_PLATFORM_FEE_USD;
+            ? applyDisclosurePlatformFee(underwritingFeesApplicable, includeWireFee)
+            : resolveDisclosureWireFeeUsd(includeWireFee);
 
     /** Per-period payment lives on the TermsOffer / OfferDecision row. */
     const periodicPayment = coerceFiniteNumber(
@@ -781,7 +809,7 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         positionRow?.mcaRemit,
     );
     const frequency = String(
-        offer?.frequency ?? (contract as Record<string, unknown>).remittance ?? "",
+        contract.frequency ?? contract.paymentTerms ?? offer?.frequency ?? "",
     ).trim();
 
     const fundingProvided = formatUsd(purchaseAmount);
@@ -789,10 +817,14 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
 
     const prefillOverrides =
         (contract.contractPrefillOverrides as Record<string, unknown> | null) ?? null;
+    const netFromPrefill = coerceFiniteNumber(
+        contract.netToMerchant ?? contract.net_to_merchant,
+    );
     const refinanceAmountRaw =
-        coerceFiniteNumber(offer?.refinanceAmount) ??
         coerceFiniteNumber(contract.refinanceAmount) ??
+        coerceFiniteNumber(contract.refinance_amount) ??
         coerceFiniteNumber(prefillOverrides?.refinanceAmount) ??
+        coerceFiniteNumber(offer?.refinanceAmount) ??
         0;
     const isRefi = isRefinanceDeal(refinanceAmountRaw);
     const previousDealDate = formatUsDate(
@@ -839,6 +871,26 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
             actualDisbursement = netContractedFunding;
         }
     }
+    if (netFromPrefill !== undefined) {
+        const netPrefillUsd = formatUsd(netFromPrefill);
+        if (isRefi) {
+            actualDisbursement = netPrefillUsd;
+            const stateKey = normalizeStateKey(
+                String(
+                    contract.state ??
+                        (contract as Record<string, unknown>).businessAddressState ??
+                        "",
+                ),
+            );
+            if (stateKey === "connecticut" || stateKey === "ct") {
+                fundingDisbursed = netPrefillUsd;
+            }
+        } else {
+            netContractedFunding = netPrefillUsd;
+            fundingDisbursed = netPrefillUsd;
+            actualDisbursement = netPrefillUsd;
+        }
+    }
 
     const totalDollarCostNum =
         purchasePrice !== undefined && purchaseAmount !== undefined
@@ -847,7 +899,12 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     const totalDollarCost = formatUsd(totalDollarCostNum);
 
     /** Fall back to derived per-period payment when not stored explicitly. */
-    let estimatedPayment = formatUsd(periodicPayment);
+    const remittanceFromPrefill = coerceFiniteNumber(
+        contract.remittance ?? offer?.paymentAmount,
+    );
+    let estimatedPayment = formatUsd(
+        remittanceFromPrefill ?? periodicPayment,
+    );
     if (!estimatedPayment && purchasePrice !== undefined && numberOfPayments && numberOfPayments > 0) {
         estimatedPayment = formatUsd(purchasePrice / numberOfPayments);
     }

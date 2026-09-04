@@ -27,12 +27,13 @@ export function useApplicationClientOwners(applicationClient: unknown) {
 
     useEffect(() => {
         if (!fetchArg || !fetchKey) return;
+        if (currentClientId === fetchArg && clientDetail) return;
         if (fetchKey.startsWith("clientId:")) {
             void dispatch(getClientByClientId(fetchArg));
             return;
         }
         void dispatch(getClientById(fetchArg));
-    }, [dispatch, fetchArg, fetchKey]);
+    }, [dispatch, fetchArg, fetchKey, currentClientId, clientDetail]);
 
     const hasFullClientDetail = Boolean(
         clientDetail && fetchArg && currentClientId === fetchArg,

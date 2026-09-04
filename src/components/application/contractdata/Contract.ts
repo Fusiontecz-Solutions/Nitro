@@ -19,15 +19,18 @@ import {
     parseContractSignerOverridesFromPrefill,
 } from "./templateRecipients";
 import {
-    DISCLOSURE_PLATFORM_FEE_USD,
     isTexasContractState,
     isTexasFundingGroupFunder,
+    resolveDisclosureWireFeeUsd,
+    resolveIncludeWireFee,
 } from "./platformDocumentConfig";
 
 export interface ContractPrefillField {
     id: string;
     label: string;
     value: string;
+    /** Optional editor section heading (Exhibit A companies, Exhibit C extra banks). */
+    group?: string;
 }
 
 export interface BuildContractPrefillFieldsArgs {
@@ -64,8 +67,15 @@ export interface BuildContractPrefillFieldsArgs {
     refinanceAmount?: string;
     /** Payment frequency (Day / Week on the contract PDF). DocuSign: `frequency`; BoldSign may use `paymentTerms`. */
     frequency?: string;
+    /**
+     * When "false", skip the $25 wire fee on total fees / origination / net.
+     * Default (missing or "true") includes the wire fee.
+     */
+    includeWireFee?: string;
     /** Recipient funds / net cash to merchant (offer − fees − refinance). DocuSign: `net_to_merchant`. */
     netToMerchant?: string;
+    /** Monthly ACH program fee (SignNow `ach_program_fee_p13`). */
+    achProgramFee?: string;
 
     clientName?: string;
     owner1GuarantorName?: string;
@@ -223,12 +233,24 @@ const FIELD_IDS = {
     guarantorEmail: ["guarantor_email"],
     guarantorPhone: ["guarantor_phone"],
     clientPhone: ["client_phone"],
-    purchasePrice: ["purchase_price"],
-    purchaseAmount: ["purchase_amount"],
+    /** PDF “PURCHASED AMOUNT” = payback / receivables purchased. */
+    purchasePrice: ["purchased_amount"],
+    /** PDF “PURCHASE PRICE” = funding / offer. `purchase_amount` kept for disclosure aliases. */
+    purchaseAmount: ["purchase_price", "purchase_amount"],
     purchasePercent: ["purchase_percent", "specified_percentage"],
     remittance: ["remittance"],
     refinanceAmount: ["refinance_amount"],
     frequency: ["frequency", "paymentTerms"],
+    /** Contract page 14 “ACH Program Fee” + Monthly Fee addendum amount. */
+    achProgramFee: [
+        "ach_program_fee",
+        "monthly_fee",
+        "program_fee",
+        "ach_monthly_fee",
+        "monthly_program_fee",
+        "ach_program_fee_amount",
+        "program_fee_amount",
+    ],
     /** DocuSign: `net_to_merchant`; BoldSign template tabs often use `NetFundProvided`. */
     netToMerchant: ["net_to_merchant", "NetFundProvided"],
 
@@ -270,6 +292,7 @@ const FIELD_IDS = {
         "underwriter_fees",
         "originationFee",
         "origination_fee",
+        "total_fees",
     ],
     appendixClientName: ["appendix_client_name"],
     authorizationApplication: ["authorization_application"],
@@ -395,7 +418,41 @@ export function uppercaseContractDocumentPrefillFields<
     });
 }
 
-function normalizePrefillValueForUsFormat(id: string, value: string): string {
+const INSTALLMENT_FREQUENCY_SUFFIX =
+    /\s+(Daily|Weekly|Monthly|Bi-Weekly|Day|Week|Month|Bi-Week)\s*$/i;
+
+export function formatInitialInstallmentFrequencyLabel(raw: unknown): string {
+    const coerced = coercePaymentFrequencyLabel(raw);
+    const text = (coerced || str(raw))
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ");
+    if (!text) return "";
+    if (text === "day" || text === "daily") return "Daily";
+    if (text === "week" || text === "weekly") return "Weekly";
+    if (text === "bi week" || text === "biweekly") return "Bi-Weekly";
+    if (text === "month" || text === "monthly") return "Monthly";
+    return coerced || str(raw);
+}
+
+export function stripInitialInstallmentFrequency(value: string): string {
+    return String(value ?? "").replace(INSTALLMENT_FREQUENCY_SUFFIX, "").trim();
+}
+
+export function appendInitialInstallmentFrequency(amount: string, frequency: string): string {
+    const money = stripInitialInstallmentFrequency(amount);
+    if (!money) return money;
+    const freq = formatInitialInstallmentFrequencyLabel(frequency);
+    if (!freq) return money;
+    return `${money} ${freq}`;
+}
+
+function normalizePrefillValueForUsFormat(
+    id: string,
+    value: string,
+    includeWireFee = true,
+): string {
     const k = String(id || "").trim().toLowerCase();
     if (!k) return toContractDocumentUppercase(value);
 
@@ -406,13 +463,26 @@ function normalizePrefillValueForUsFormat(id: string, value: string): string {
     ) {
         formatted = formatUsDateString(value);
     } else if (isContractOriginationFeeFieldId(k)) {
-        /** Contract PDF origination / underwriting fees = applicable fees + $50 platform. */
-        const applicable = coerceToFiniteNumber(value);
+        /** Contract PDF origination / total fees = applicable fees + optional $25 wire. */
+        const applicable = coerceToFiniteNumber(stripInitialInstallmentFrequency(value));
         if (applicable !== undefined) {
             formatted = truncateDecimalPrefill(
-                Math.max(0, applicable) + DISCLOSURE_PLATFORM_FEE_USD,
+                Math.max(0, applicable) + resolveDisclosureWireFeeUsd(includeWireFee),
             );
         }
+    } else if (k === "remittance") {
+        /** Initial installment cell is amount-only; cadence goes on `frequency`. */
+        formatted = formatUsNumberString(stripInitialInstallmentFrequency(value));
+    } else if (
+        k === "ach_program_fee" ||
+        k === "monthly_fee" ||
+        k === "program_fee" ||
+        k === "ach_monthly_fee" ||
+        k === "monthly_program_fee" ||
+        k === "ach_program_fee_amount" ||
+        k === "program_fee_amount"
+    ) {
+        formatted = formatUsNumberString(value);
     } else if (
         k.includes("amount") ||
         k.includes("price") ||
@@ -420,8 +490,7 @@ function normalizePrefillValueForUsFormat(id: string, value: string): string {
         k.includes("netfund") ||
         k.includes("net_fund") ||
         k.includes("transaction_fee") ||
-        /^epo_amount_received_\d+$/.test(k) ||
-        k === "remittance"
+        /^epo_amount_received_\d+$/.test(k)
     ) {
         formatted = formatUsNumberString(value);
     } else if (k === "purchase_percent" || k === "specified_percentage") {
@@ -452,17 +521,24 @@ function isContractOriginationFeeFieldId(id: string): boolean {
         k === "underwriter_fees" ||
         k === "underwriterfees" ||
         k === "originationfee" ||
-        k === "origination_fee"
+        k === "origination_fee" ||
+        k === "total_fees" ||
+        k === "totalfees"
     );
 }
 
-const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
+const mapIds = (
+    ids: readonly string[],
+    label: string,
+    value: string,
+    includeWireFee = true,
+): ContractPrefillField[] => {
     const trimmed = String(value || "").trim();
     if (!trimmed) return [];
     return ids.map((id) => ({
         id,
         label,
-        value: normalizePrefillValueForUsFormat(id, trimmed),
+        value: normalizePrefillValueForUsFormat(id, trimmed, includeWireFee),
     }));
 };
 
@@ -541,7 +617,9 @@ export const buildContractPrefillFields = ({
     remittance = "",
     refinanceAmount = "",
     frequency = "",
+    includeWireFee = "true",
     netToMerchant = "",
+    achProgramFee = "",
 
     clientName = "",
     owner1GuarantorName = "",
@@ -656,6 +734,8 @@ export const buildContractPrefillFields = ({
     exhibitAValue9 = "",
     exhibitAValue10 = "",
 }: BuildContractPrefillFieldsArgs): ContractPrefillField[] => {
+    const wireFeeOn = resolveIncludeWireFee(includeWireFee);
+    const remittanceAmountOnly = stripInitialInstallmentFrequency(remittance);
     return [
         ...mapIds(FIELD_IDS.legalName, "Legal Name", legalName),
         ...mapIds(FIELD_IDS.stateOfInc, "State Of Incorporation", state),
@@ -693,13 +773,14 @@ export const buildContractPrefillFields = ({
         ),
         ...mapIds(FIELD_IDS.federalTaxIdEin, "Federal Tax ID EIN", federalTaxIdEin),
         ...mapIds(FIELD_IDS.agreementDate, "Agreement Date", agreementDate),
-        ...mapIds(FIELD_IDS.purchasePrice, "Purchase Price", purchasePrice),
-        ...mapIds(FIELD_IDS.purchaseAmount, "Purchase Amount", purchaseAmount),
-        ...mapIds(FIELD_IDS.purchasePercent, "Specific Percentage", purchasePercent),
-        ...mapIds(FIELD_IDS.remittance, "Remittance", remittance),
+        ...mapIds(FIELD_IDS.purchasePrice, "Purchased Amount", purchasePrice, wireFeeOn),
+        ...mapIds(FIELD_IDS.purchaseAmount, "Purchase Price", purchaseAmount, wireFeeOn),
+        ...mapIds(FIELD_IDS.purchasePercent, "Specific Percentage", purchasePercent, wireFeeOn),
+        ...mapIds(FIELD_IDS.remittance, "Initial Installment", remittanceAmountOnly, wireFeeOn),
         ...mapIds(FIELD_IDS.refinanceAmount, "REFI Amount", refinanceAmount),
         ...mapIds(FIELD_IDS.frequency, "Frequency", frequency),
         ...mapIds(FIELD_IDS.netToMerchant, "Recipient funds", netToMerchant),
+        ...mapIds(FIELD_IDS.achProgramFee, "ACH Program Fee", achProgramFee, wireFeeOn),
         ...mapIds(FIELD_IDS.clientName, "Client Name", clientName),
         ...mapIds(FIELD_IDS.owner1GuarantorName, "Owner1 Guarantor Name", owner1GuarantorName),
         ...mapIds(FIELD_IDS.owner2GuarantorName, "Owner2 Guarantor Name", owner2GuarantorName),
@@ -737,7 +818,7 @@ export const buildContractPrefillFields = ({
             "Guaranty Guarantor2 Driver License",
             guarantyGuarantor2DriverLicense,
         ),
-        ...mapIds(FIELD_IDS.appendixUnderwritingFees, "Appendix Underwriting Fees", appendixUnderwritingFees),
+        ...mapIds(FIELD_IDS.appendixUnderwritingFees, "Appendix Underwriting Fees", appendixUnderwritingFees, wireFeeOn),
         ...mapIds(FIELD_IDS.appendixClientName, "Appendix Client Name", appendixClientName),
         ...mapIds(FIELD_IDS.authorizationApplication, "Authorization Merchant Name", authorizationApplication),
         ...mapIds(FIELD_IDS.authorizationClientBankName, "Authorization Client Bank Name", authorizationClientBankName),
@@ -888,9 +969,15 @@ export const buildContractPrefillFields = ({
 export type ContractPrefillContractRecords = {
     contract?: Record<string, unknown> | null;
     ach?: Record<string, unknown> | null;
+    /** All ACH authorization rows for extra bank-account slots. */
+    achs?: Record<string, unknown>[] | null;
     /** Latest application BankDetail (decrypted from API); wins over stale ACH for routing/account. */
     bankDetail?: Record<string, unknown> | null;
+    /** All application bank accounts (main + additional), oldest-first for slot 1/2/3. */
+    bankDetails?: Record<string, unknown>[] | null;
     addendum?: Record<string, unknown> | null;
+    /** All addendum rows (each Info Required company is often its own record). */
+    addendums?: Record<string, unknown>[] | null;
     epo?: Record<string, unknown> | null;
     owners?: Record<string, unknown>[] | null;
     guarantors?: Record<string, unknown>[] | null;
@@ -927,7 +1014,7 @@ function str(v: unknown): string {
 }
 
 /** Apply persisted contract rows without wiping application defaults with empty strings. */
-function mergeNonemptyPrefillPartial<T extends Record<string, unknown>>(
+export function mergeNonemptyPrefillPartial<T extends Record<string, unknown>>(
     base: Partial<T>,
     overlay: Partial<T>,
 ): Partial<T> {
@@ -1065,6 +1152,8 @@ const TEXAS_CONTRACT_USD_MONEY_FIELD_IDS = new Set([
     "purchase_amount",
     "purchaseamount",
     "purchaseAmount",
+    "purchased_amount",
+    "purchasedamount",
     "purchase_price",
     "purchaseprice",
     "purchasePrice",
@@ -1190,6 +1279,7 @@ const MONEY_STRING_PREFILL_KEYS: readonly (keyof BuildContractPrefillFieldsArgs)
     "remittance",
     "refinanceAmount",
     "netToMerchant",
+    "achProgramFee",
     "appendixUnderwritingFees",
     "addendumDatedPrincipalOwnerAmount",
     "addendumDatedPrincipalOwnerAmount2",
@@ -1487,8 +1577,14 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
                 ? appendixFees
                 : 0;
 
-    /** Always include the $50 platform fee so Final Calculation matches disclosures. */
-    const feesWithPlatform = (fees || 0) + DISCLOSURE_PLATFORM_FEE_USD;
+    /** Include the optional $25 wire fee so Final Calculation matches disclosures. */
+    const includeWireFee = resolveIncludeWireFee(
+        sources.prefill?.includeWireFee ??
+            (normalizeContractPrefillOverrides(
+                sources.contract?.contractPrefillOverrides,
+            ) as Partial<BuildContractPrefillFieldsArgs> | null)?.includeWireFee,
+    );
+    const feesWithPlatform = (fees || 0) + resolveDisclosureWireFeeUsd(includeWireFee);
 
     const refinance =
         coerceToFiniteNumber(odRoot?.refinanceAmount) ??
@@ -1611,12 +1707,21 @@ export function deriveOfferFeesDollarsForNetToMerchant(
         coerceToFiniteNumber(sources.prefill?.refinanceAmount) ??
         0;
 
-    /** Total gap includes the $50 platform fee; persist applicable fee only. */
+    /** Total gap includes the optional $25 wire fee; persist applicable fee only. */
+    const includeWireFee = resolveIncludeWireFee(
+        sources.prefill?.includeWireFee ??
+            (normalizeContractPrefillOverrides(
+                sources.contract?.contractPrefillOverrides,
+            ) as Partial<BuildContractPrefillFieldsArgs> | null)?.includeWireFee,
+    );
     const totalFees = Math.max(
         0,
         Math.round((advance - refinance - netToMerchantDollars) * 100) / 100,
     );
-    return Math.max(0, Math.round((totalFees - DISCLOSURE_PLATFORM_FEE_USD) * 100) / 100);
+    return Math.max(
+        0,
+        Math.round((totalFees - resolveDisclosureWireFeeUsd(includeWireFee)) * 100) / 100,
+    );
 }
 
 export function formatNetToMerchantPrefillValue(amount: number | undefined): string {
@@ -1697,6 +1802,64 @@ export function formatContractDocumentFrequencyLabel(raw: unknown): string {
     return coerced || str(raw);
 }
 
+const ACH_PROGRAM_FEE_SOURCE_KEYS = [
+    "achProgramFee",
+    "ach_program_fee",
+    "monthly_fee",
+    "program_fee",
+    "ach_monthly_fee",
+    "monthly_program_fee",
+    "ach_program_fee_amount",
+    "program_fee_amount",
+    "ach_program_fee_p1",
+    "ach_program_fee_p13",
+] as const;
+
+function firstAchProgramFeeFromRecord(row: Record<string, unknown> | null | undefined): string {
+    if (!row) return "";
+    for (const key of ACH_PROGRAM_FEE_SOURCE_KEYS) {
+        const v = str(row[key]).trim();
+        if (v) return v;
+    }
+    return "";
+}
+
+function achProgramFeeFromMappingBlob(raw: unknown): string {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return "";
+    const rec = raw as Record<string, unknown>;
+    const blob = rec.documentTemplatePrefillByMappingId;
+    if (blob == null || typeof blob !== "object" || Array.isArray(blob)) {
+        return firstAchProgramFeeFromRecord(rec);
+    }
+    for (const row of Object.values(blob as Record<string, unknown>)) {
+        if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+        const hit = firstAchProgramFeeFromRecord(row as Record<string, unknown>);
+        if (hit) return hit;
+    }
+    return firstAchProgramFeeFromRecord(rec);
+}
+
+/** Monthly ACH program fee for SignNow `ach_program_fee_p13` / Monthly Fee addendum. */
+export function resolveAchProgramFeePrefillValue(sources: NetToMerchantPrefillSources): string {
+    const contract = sources.contract ?? null;
+    const app =
+        sources.application && typeof sources.application === "object"
+            ? (sources.application as Record<string, unknown>)
+            : null;
+    const od = sources.offerDecision ?? null;
+    const prefill = (sources.prefill ?? null) as Record<string, unknown> | null;
+    const overrides = normalizeContractPrefillOverrides(contract?.contractPrefillOverrides);
+    const picked =
+        firstAchProgramFeeFromRecord(prefill) ||
+        firstAchProgramFeeFromRecord(overrides as Record<string, unknown> | null) ||
+        achProgramFeeFromMappingBlob(contract?.contractPrefillOverrides) ||
+        firstAchProgramFeeFromRecord(contract) ||
+        firstAchProgramFeeFromRecord(od) ||
+        firstAchProgramFeeFromRecord(app);
+    if (!picked) return "";
+    return formatUsNumberString(picked) || picked;
+}
+
 /** Persist-only: cadence label or null (never save "0.00%" / bare numbers as frequency). */
 export function sanitizePaymentFrequencyForPersist(raw: unknown): string | null {
     const label = coercePaymentFrequencyLabel(raw);
@@ -1732,7 +1895,7 @@ export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources)
         contract?.frequency,
     ];
     for (const raw of candidates) {
-        const label = formatContractDocumentFrequencyLabel(raw);
+        const label = coercePaymentFrequencyLabel(raw);
         if (label) return label;
     }
     return "";
@@ -1754,7 +1917,7 @@ export function remittanceStoredValueNeedsRecompute(
     sources: NetToMerchantPrefillSources,
     frequencyLabel?: string,
 ): boolean {
-    const trimmed = String(stored ?? "").trim();
+    const trimmed = stripInitialInstallmentFrequency(String(stored ?? "").trim());
     if (!trimmed) return true;
     if (looksLikePaymentFrequencyLabel(trimmed)) return true;
     const freq = String(frequencyLabel ?? resolveOfferFrequencyLabel(sources)).trim();
@@ -1789,7 +1952,7 @@ export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSourc
 
     const stored = str(contract?.remittance);
     if (stored && !remittanceStoredValueNeedsRecompute(stored, sources)) {
-        const asMoney = coerceToFiniteNumber(stored);
+        const asMoney = coerceToFiniteNumber(stripInitialInstallmentFrequency(stored));
         if (asMoney !== undefined) return truncateDecimalPrefill(asMoney);
     }
 
@@ -2055,7 +2218,8 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
     }
 
     if (category === "Deal Terms") {
-        if (norm === "purchase_price") return PLATFORM_LABEL.paybackAmount;
+        if (norm === "purchase_price") return "Purchase Price";
+        if (norm === "purchased_amount") return "Purchased Amount";
         if (norm === "purchase_amount") return PLATFORM_LABEL.offerAmount;
         if (norm === "purchase_percent" || norm === "specified_percentage") return PLATFORM_LABEL.specificPercentage;
         if (norm === "remittance") return PLATFORM_LABEL.totalRemit;
@@ -2284,6 +2448,9 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     guaranty_guarantor2_driver_license: "Guarantor 2 — License",
     net_to_merchant: PLATFORM_LABEL.netToMerchant,
     netfundprovided: PLATFORM_LABEL.netToMerchant,
+    ach_program_fee: "ACH Program Fee",
+    monthly_fee: "ACH Program Fee",
+    program_fee: "ACH Program Fee",
     appendix_underwriting_fees: PLATFORM_LABEL.underwritingFees,
     underwriter_fee: PLATFORM_LABEL.underwritingFees,
     underwriterfee: PLATFORM_LABEL.underwritingFees,
@@ -2318,7 +2485,8 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     business_address_contract_city: "City",
     business_address_contract_state: "State",
     business_address_contract_zip: "ZIP",
-    purchase_price: PLATFORM_LABEL.paybackAmount,
+    purchase_price: "Purchase Price",
+    purchased_amount: "Purchased Amount",
     purchase_amount: PLATFORM_LABEL.offerAmount,
     purchase_percent: PLATFORM_LABEL.specificPercentage,
     specified_percentage: PLATFORM_LABEL.specificPercentage,
@@ -2451,7 +2619,11 @@ export function prepareDealReviewPrefillDisplay(fields: ContractPrefillField[]):
         if (seenSection.has(dedupeKey)) continue;
 
         seenSection.add(dedupeKey);
-        out.push({ id: f.id, label: displayLabel, value: f.value });
+        const displayValue =
+            f.id === "frequency" || f.id === "paymentterms" || f.id === "payment_terms"
+                ? coercePaymentFrequencyLabel(f.value) || f.value
+                : f.value;
+        out.push({ id: f.id, label: displayLabel, value: displayValue });
     }
     for (const [dedupeKey, field] of globalDedupeLastBySection) {
         if (seenSection.has(dedupeKey)) continue;
@@ -2467,8 +2639,8 @@ const DEAL_REVIEW_ALWAYS_SHOW_MONEY_FIELDS: ReadonlyArray<{
     label: string;
     aliases?: readonly string[];
 }> = [
-    { id: "purchase_amount", label: PLATFORM_LABEL.offerAmount },
-    { id: "purchase_price", label: PLATFORM_LABEL.paybackAmount },
+    { id: "purchase_price", label: "Purchase Price" },
+    { id: "purchased_amount", label: "Purchased Amount" },
     { id: "remittance", label: PLATFORM_LABEL.totalRemit },
     { id: "frequency", label: PLATFORM_LABEL.frequency, aliases: ["paymentterms"] },
     { id: "refinance_amount", label: PLATFORM_LABEL.refiAmount },
@@ -2541,6 +2713,46 @@ function resolveOwnerAddressForPrefill(own: Record<string, any>, client: Record<
     };
 }
 
+function firstPersonSsn(...sources: unknown[]): string {
+    for (const src of sources) {
+        if (src == null) continue;
+        if (typeof src === "string" || typeof src === "number") {
+            const value = str(src);
+            if (value) return value;
+            continue;
+        }
+        if (typeof src !== "object") continue;
+        const row = src as Record<string, unknown>;
+        for (const key of [
+            "ownerSsn",
+            "ssn",
+            "ssnNumber",
+            "owner_ssn",
+            "socialSecurityNumber",
+            "social_security_number",
+        ]) {
+            const value = str(row[key]);
+            if (value) return value;
+        }
+        const nestedOwner = row.owner;
+        if (nestedOwner && typeof nestedOwner === "object") {
+            const nested = firstPersonSsn(nestedOwner);
+            if (nested) return nested;
+        }
+        const nestedClient = row.client;
+        if (nestedClient && typeof nestedClient === "object") {
+            const nested = firstPersonSsn(nestedClient);
+            if (nested) return nested;
+        }
+        const owners = row.owners;
+        if (Array.isArray(owners) && owners[0]) {
+            const nested = firstPersonSsn(owners[0]);
+            if (nested) return nested;
+        }
+    }
+    return "";
+}
+
 function resolveClientForPrefill(anyApp: Record<string, any> | null | undefined) {
     const c = anyApp?.client || {};
     const biz = c.business || {};
@@ -2575,7 +2787,7 @@ function resolveClientForPrefill(anyApp: Record<string, any> | null | undefined)
         ownerPhone: str(
             c.ownerMobileNumber || primaryOwn.mobileNumber || own.mobileNumber || c.ownerPhone,
         ),
-        ownerSsn: str(c.ownerSsn || primaryOwn.ssn || own.ssn),
+        ownerSsn: firstPersonSsn(c, own, primaryOwn, anyApp),
         ownerDriverLicense: str(c.driverLicense || primaryOwn.driverLicense || own.driverLicense),
         ...ownerAddr,
     };
@@ -2709,7 +2921,8 @@ export function overlaySavedAppendixFeeOnPrefillFields(
           })
         : undefined;
     const displayFee = resolveAppendixUnderwritingFeesDisplay(rawFee, purchase) || rawFee;
-    const value = normalizePrefillValueForUsFormat("underwriter_fee", displayFee);
+    const includeWireFee = resolveIncludeWireFee(normalized.includeWireFee);
+    const value = normalizePrefillValueForUsFormat("underwriter_fee", displayFee, includeWireFee);
 
     return fields.map((f) =>
         DEAL_REVIEW_APPENDIX_FEE_IDS.has(normalizeDealReviewFieldId(f.id))
@@ -2757,12 +2970,20 @@ export function contractPrefillFieldsToPartial(
             partial.frequency = freq;
             continue;
         }
-        // DocuSign / Deal Review show origination as fees + $50; persist applicable fees only.
+        if (key === "remittance") {
+            (partial as Record<string, string>)[key] = stripInitialInstallmentFrequency(value);
+            continue;
+        }
+        // DocuSign / Deal Review show origination as fees + optional wire; persist applicable fees only.
         if (key === "appendixUnderwritingFees") {
             const withPlatform = coerceToFiniteNumber(value);
             if (withPlatform !== undefined) {
+                const includeWireFee = resolveIncludeWireFee(
+                    fields.find((f) => String(f.id).toLowerCase() === "includewirefee")?.value ??
+                        partial.includeWireFee,
+                );
                 (partial as Record<string, string>)[key] = truncateDecimalPrefill(
-                    Math.max(0, withPlatform - DISCLOSURE_PLATFORM_FEE_USD),
+                    Math.max(0, withPlatform - resolveDisclosureWireFeeUsd(includeWireFee)),
                 );
             } else {
                 (partial as Record<string, string>)[key] = value;
@@ -3536,6 +3757,11 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
     const frequency =
         coercePaymentFrequencyLabel(row.frequency) ||
         resolveOfferFrequencyLabel({ contract: row, offerDecision: offer });
+    const overrides = normalizeContractPrefillOverrides(row.contractPrefillOverrides) ?? {};
+    const includeWireFee =
+        str(overrides.includeWireFee) ||
+        str(row.includeWireFee) ||
+        "true";
 
     const agreementDatePrefill =
         prefillIsoDate(row.agreementDate) || prefillIsoDate(row.contractDate);
@@ -3570,6 +3796,7 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
             offerDecision: offer,
         }),
         frequency,
+        includeWireFee,
         netToMerchant,
         remittance: resolveRemittancePrefillValue({ contract: row, offerDecision: offer }),
         refinanceAmount: (() => {
@@ -4134,10 +4361,10 @@ export function buildContractPrefillFieldsFromApplication(
         contractRecords: rec,
         offerDecision: options?.offerDecision ?? null,
     });
-    const merged: Partial<BuildContractPrefillFieldsArgs> = {
-        ...baseMerged,
-        ...savedOverrides,
-    };
+    const merged: Partial<BuildContractPrefillFieldsArgs> = mergeNonemptyPrefillPartial(
+        baseMerged as Record<string, unknown>,
+        (savedOverrides ?? {}) as Record<string, unknown>,
+    ) as Partial<BuildContractPrefillFieldsArgs>;
 
     /**
      * Apply Final Calculation + live OfferDecision money BEFORE gap-fills.
@@ -4159,6 +4386,17 @@ export function buildContractPrefillFieldsFromApplication(
             prefill: moneyMerged,
         });
         if (freq) moneyMerged.frequency = freq;
+    } else {
+        const coerced = coercePaymentFrequencyLabel(moneyMerged.frequency);
+        if (coerced) moneyMerged.frequency = coerced;
+    }
+    if (!str(moneyMerged.guarantyOwner1Ss) && !str(moneyMerged.guarantySs)) {
+        const ssn = firstPersonSsn(anyApp, rec?.owners?.[0], rec?.guarantors?.[0]);
+        if (ssn) {
+            moneyMerged.guarantySs = ssn;
+            moneyMerged.guarantyOwner1Ss = ssn;
+            moneyMerged.guarantyGuarantor1Ss = ssn;
+        }
     }
     if (!str(moneyMerged.purchasePercent)) {
         const purchasePercent = resolvePurchasePercentPrefillValue({
@@ -4231,6 +4469,13 @@ export function buildContractPrefillFieldsFromApplication(
         const remitForAch =
             str(moneyMerged.remittance) || resolveRemittancePrefillValue(remittanceSources);
         if (remitForAch) moneyMerged.achAuthorizationAccountHolderBankTransactionFee = remitForAch;
+    }
+    if (!str(moneyMerged.achProgramFee)) {
+        const programFee = resolveAchProgramFeePrefillValue({
+            ...remittanceSources,
+            prefill: moneyMerged,
+        });
+        if (programFee) moneyMerged.achProgramFee = programFee;
     }
 
     const moneySources: NetToMerchantPrefillSources = {

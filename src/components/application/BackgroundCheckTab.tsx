@@ -73,10 +73,10 @@ export default function BackgroundCheckTab() {
   const applicationData = useSelector(
     (state: RootState) => state.applicationDetail.data as Record<string, unknown> | null,
   );
-  const { data: offerDecisionData } = useSelector(
+  const { data: offerDecisionData, loadedForApplicationId: offerLoadedFor } = useSelector(
     (state: RootState) => state.offerDecision,
   );
-  const { data: termsOffers } = useSelector(
+  const { data: termsOffers, loadedForApplicationId: termsLoadedFor } = useSelector(
     (state: RootState) => state.termsOffers,
   );
   const loginUser = useSelector(
@@ -114,9 +114,13 @@ export default function BackgroundCheckTab() {
 
   useEffect(() => {
     if (!apiApplicationKey) return;
-    void dispatch(getOfferDecisionByApplication(apiApplicationKey));
-    void dispatch(getTermsOffers({ application: apiApplicationKey }));
-  }, [apiApplicationKey, dispatch]);
+    if (offerLoadedFor !== apiApplicationKey) {
+      void dispatch(getOfferDecisionByApplication(apiApplicationKey));
+    }
+    if (termsLoadedFor !== apiApplicationKey) {
+      void dispatch(getTermsOffers({ application: apiApplicationKey }));
+    }
+  }, [apiApplicationKey, dispatch, offerLoadedFor, termsLoadedFor]);
 
   const linkContext = useMemo(() => {
     const client = applicationData?.client as Record<string, unknown> | undefined;

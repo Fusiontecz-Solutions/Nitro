@@ -21,6 +21,7 @@ export function clientsListParamsCacheKey(params: {
   status?: string;
   sortBy?: string;
   sortOrder?: string;
+  lite?: number | string | boolean;
 }): string {
   return JSON.stringify({
     page: params.page ?? 1,
@@ -29,6 +30,7 @@ export function clientsListParamsCacheKey(params: {
     status: params.status ?? "",
     sortBy: params.sortBy ?? "",
     sortOrder: params.sortOrder ?? "",
+    lite: params.lite ? "1" : "",
   });
 }
 
@@ -40,6 +42,7 @@ export function buildClientsListUrl(
     status?: string;
     sortBy?: string;
     sortOrder?: "asc" | "desc";
+    lite?: number | string | boolean;
   } = {},
 ): string {
   const qp = new URLSearchParams();
@@ -49,6 +52,7 @@ export function buildClientsListUrl(
   if (params.status) qp.append("status", params.status);
   if (params.sortBy) qp.append("sortBy", params.sortBy);
   if (params.sortOrder) qp.append("sortOrder", params.sortOrder);
+  if (params.lite) qp.append("lite", "1");
   const q = qp.toString();
   return `/clients${q ? `?${q}` : ""}`;
 }

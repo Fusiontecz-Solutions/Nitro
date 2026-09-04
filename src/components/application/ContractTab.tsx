@@ -5,11 +5,11 @@ import { store, type AppDispatch, type RootState } from "@/redux/store";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import {
-    getApplicationByApplicationId,
     getApplicationById,
     reinitiateContract,
     updateApplication,
 } from "@/redux/actions/applicationActions";
+import { patchApplicationDetail } from "@/redux/slices/applicationSlice";
 import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
 import { isContractSignedApplication } from "@/lib/applicationWorkflowState";
 import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
@@ -380,14 +380,14 @@ export default function ContractTab({
     const { data: applicationData } = useSelector(
         (state: RootState) => state.applicationDetail,
     );
-    const { data: termsOffers, loading: termsOffersLoading } = useSelector(
+    const { data: termsOffers, loading: termsOffersLoading, loadedForApplicationId: termsLoadedFor } = useSelector(
         (state: RootState) => state.termsOffers,
     );
-    const { data: offerDecision, loading: offerDecisionLoading } = useSelector(
+    const { data: offerDecision, loading: offerDecisionLoading, loadedForApplicationId: offerLoadedFor } = useSelector(
         (state: RootState) => state.offerDecision,
     );
     const { data: loginData } = useSelector((state: RootState) => state.login);
-    const { data: bankDetailsList } = useSelector(
+    const { data: bankDetailsList, loadedForApplicationId: bankDetailsLoadedFor } = useSelector(
         (state: RootState) => state.bankDetails,
     );
     const achListState = useSelector((state: RootState) => state.achList);
@@ -463,7 +463,14 @@ export default function ContractTab({
     const contractStateForFunders = String(
         (fetchedContract as { state?: string | null } | null)?.state ?? "",
     ).trim();
-    const { resolveLayoutKey, findFunder, findFunderById } = useFunderProfiles(contractStateForFunders || null);
+    const [contractSupportDataEnabled, setContractSupportDataEnabled] = useState(false);
+    const enableContractSupportData = useCallback(() => {
+        setContractSupportDataEnabled(true);
+    }, []);
+    const { resolveLayoutKey, findFunder, findFunderById } = useFunderProfiles(
+        contractStateForFunders || null,
+        { enabled: contractSupportDataEnabled },
+    );
 
     const persistContractFunderMeta = useCallback(
         async (
@@ -536,12 +543,35 @@ export default function ContractTab({
         // Backend now accepts numeric display ids; keep as fallback for early loads.
         return fromData || fromRoute || (appId ? String(appId) : null);
     }, [applicationData, applicationId, appId]);
+
+    const alreadyLoadedForApp = useCallback(
+        (loadedFor: string | null | undefined) => {
+            const loaded = String(loadedFor ?? "").trim();
+            if (!loaded) return false;
+            const keys = [
+                applicationUuid,
+                appId,
+                (applicationData as { applicationId?: number | string } | null)?.applicationId,
+            ];
+            return keys.some((key) => key != null && String(key).trim() === loaded);
+        },
+        [applicationUuid, appId, applicationData],
+    );
     useEffect(() => {
         const termsApplicationKey = applicationUuid ?? appId;
-        if (termsApplicationKey) {
-            dispatch(getTermsOffers({ application: String(termsApplicationKey) }));
-        }
-    }, [applicationUuid, appId, dispatch]);
+        if (!termsApplicationKey) return;
+        if (alreadyLoadedForApp(termsLoadedFor)) return;
+        if (alreadyLoadedForApp(offerLoadedFor) && offerDecision) return;
+        dispatch(getTermsOffers({ application: String(termsApplicationKey) }));
+    }, [
+        applicationUuid,
+        appId,
+        dispatch,
+        termsLoadedFor,
+        offerLoadedFor,
+        offerDecision,
+        alreadyLoadedForApp,
+    ]);
 
     // Load existing contract by application so "Contracts Generated" can show
     // persisted backend data even before creating/selecting a contract in this session.
@@ -578,7 +608,13 @@ export default function ContractTab({
                     .toUpperCase();
                 const looksSent = docStatus === "sent" || contractStatus === "SENT";
                 if (looksSent && isSignNowEnvelopeId(envelopeId)) {
-                    void dispatch(getApplicationById(String(applicationUuid)));
+                    const existingEnv = String(
+                        (applicationData as { document?: { envelopeId?: string } } | null)
+                            ?.document?.envelopeId ?? "",
+                    ).trim();
+                    if (!existingEnv) {
+                        void dispatch(getApplicationById(String(applicationUuid)));
+                    }
                 }
             } catch {
                 setFetchedContract(null);
@@ -611,18 +647,32 @@ export default function ContractTab({
     }, [dispatch, selectedContractId]);
 
     useEffect(() => {
-        if (!selectedContractId) return;
+        if (!contractSupportDataEnabled || !selectedContractId) return;
         const id = selectedContractId;
         void dispatch(getAllACH({ contractId: id }));
         void dispatch(getAllAddendum({ contractId: id }));
         void dispatch(getAllEPO({ contractId: id }));
         void dispatch(getAllContractOwners({ contractId: id }));
         void dispatch(getAllContractGuarantors({ contractId: id }));
-    }, [dispatch, selectedContractId]);
+    }, [dispatch, selectedContractId, contractSupportDataEnabled]);
 
+    const templatesFetchAttemptedRef = useRef(false);
     useEffect(() => {
+        if (!contractSupportDataEnabled) return;
+        if (templatesFetchAttemptedRef.current) return;
+        if (boldSignTemplatesState.loading) return;
+        if (Array.isArray(boldSignTemplatesState.data) && boldSignTemplatesState.data.length > 0) {
+            templatesFetchAttemptedRef.current = true;
+            return;
+        }
+        templatesFetchAttemptedRef.current = true;
         void dispatch(getBoldSignTemplates({}));
-    }, [dispatch]);
+    }, [
+        dispatch,
+        contractSupportDataEnabled,
+        boldSignTemplatesState.loading,
+        boldSignTemplatesState.data,
+    ]);
 
     const fetchAchTemplateMappings = useCallback(
         async (contractIdOverride?: number): Promise<AchDocumentTemplateMappingRow[]> => {
@@ -653,8 +703,9 @@ export default function ContractTab({
     );
 
     useEffect(() => {
+        if (!contractSupportDataEnabled) return;
         void fetchAchTemplateMappings();
-    }, [fetchAchTemplateMappings]);
+    }, [fetchAchTemplateMappings, contractSupportDataEnabled]);
 
     const achTemplateOptions = useMemo(
         () =>
@@ -760,11 +811,13 @@ export default function ContractTab({
     );
 
     useEffect(() => {
+        if (!contractSupportDataEnabled) return;
         if (!selectedContractId || loadingAchMappings || linkedAchMapping) return;
         const ref = getBoldSignTemplateMappingRef(primaryAchTemplate);
         if (!ref) return;
         void ensureAchTemplateMapping(ref);
     }, [
+        contractSupportDataEnabled,
         selectedContractId,
         loadingAchMappings,
         linkedAchMapping,
@@ -894,25 +947,26 @@ export default function ContractTab({
 
     useEffect(() => {
         if (!appId) return;
+        if (alreadyLoadedForApp(offerLoadedFor)) return;
         dispatch(getOfferDecisionByApplication(String(appId)));
-    }, [appId, dispatch]);
+    }, [appId, dispatch, offerLoadedFor, alreadyLoadedForApp]);
 
     // Refresh offer / prefill when Live Offer is saved elsewhere (scrubbing Offer Decision).
     useEffect(() => {
         const matchId = applicationUuid ?? appId;
         if (!matchId) return;
         const onOfferDecisionUpdated = (event: Event) => {
-            const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+            const detail = (
+                event as CustomEvent<{ applicationId?: string; skipRefetch?: boolean }>
+            ).detail;
             if (
                 !offerDecisionUpdateMatchesApplication(detail?.applicationId, matchId) &&
                 !offerDecisionUpdateMatchesApplication(detail?.applicationId, appId)
             ) {
                 return;
             }
+            if (detail?.skipRefetch) return;
             void dispatch(getOfferDecisionByApplication(String(matchId)));
-            if (applicationUuid) {
-                void dispatch(getApplicationById(String(applicationUuid)));
-            }
             void dispatch(getTermsOffers({ application: String(matchId) }));
         };
         window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
@@ -922,24 +976,17 @@ export default function ContractTab({
     }, [applicationUuid, appId, dispatch]);
 
     useEffect(() => {
+        if (!contractSupportDataEnabled) return;
         if (!applicationUuid) return;
+        if (alreadyLoadedForApp(bankDetailsLoadedFor)) return;
         dispatch(getBankDetails({ application: String(applicationUuid) }));
-    }, [applicationUuid, dispatch]);
-
-    useEffect(() => {
-        if (!applicationUuid) return;
-        const refreshBankDetails = () => {
-            if (document.visibilityState === "visible") {
-                void dispatch(getBankDetails({ application: String(applicationUuid) }));
-            }
-        };
-        window.addEventListener("focus", refreshBankDetails);
-        document.addEventListener("visibilitychange", refreshBankDetails);
-        return () => {
-            window.removeEventListener("focus", refreshBankDetails);
-            document.removeEventListener("visibilitychange", refreshBankDetails);
-        };
-    }, [applicationUuid, dispatch]);
+    }, [
+        applicationUuid,
+        dispatch,
+        bankDetailsLoadedFor,
+        alreadyLoadedForApp,
+        contractSupportDataEnabled,
+    ]);
 
     // Note: BoldSign callback is handled in RootLayout.tsx to ensure it runs on every page load
 
@@ -1480,75 +1527,24 @@ export default function ContractTab({
     ]);
 
     useEffect(() => {
-        let cancelled = false;
-        const fetchTemplate = async () => {
-            if (isSignNowContractUiEnabled()) {
-                const preview = await fetchMainContractTemplatePreview({
-                    layoutKey: PLATFORM_LAYOUT_KEYS.contract,
-                    previewName: NITRO_ADVANCE_CONTRACT_PREVIEW_NAME,
-                });
-                if (cancelled || !preview?.url) return;
-                globalTemplateUrlRef.current = preview.url;
-                setGlobalTemplateUrl(preview.url);
-                setGlobalTemplateName(sanitizeContractPreviewName(preview.name));
-                return;
-            }
-
-            try {
-                const response = await axiosGet("/contract-templates/latest");
-                const data = response.data?.data;
-                const originalName = String(data?.originalName || "").trim();
-                const looksLikePcm =
-                    /pcm|preferred\s*capital/i.test(originalName) ||
-                    /pcm|preferred\s*capital/i.test(String(data?.url || ""));
-                if (data?.url && !looksLikePcm) {
-                    const template = {
-                        url: data.url as string,
-                        originalName: originalName || "Contract.pdf",
-                    };
-                    if (cancelled) return;
-                    globalTemplateUrlRef.current = template.url;
-                    setGlobalTemplateUrl(template.url);
-                    setGlobalTemplateName(sanitizeContractPreviewName(template.originalName));
-                    if (typeof window !== "undefined") {
-                        localStorage.setItem(
-                            "globalContractTemplate",
-                            JSON.stringify(template),
-                        );
-                    }
-                    return;
-                }
-            } catch (error) {
-                console.error("Failed to fetch latest contract template:", error);
-            }
-
-            if (typeof window === "undefined") return;
-            try {
-                const raw = localStorage.getItem("globalContractTemplate");
-                if (!raw) return;
-                const parsed = JSON.parse(raw);
-                const storedName = String(parsed?.originalName || "");
-                if (/pcm|preferred\s*capital/i.test(storedName)) return;
-                if (parsed?.url) {
-                    if (cancelled) return;
-                    globalTemplateUrlRef.current = parsed.url as string;
-                    setGlobalTemplateUrl(parsed.url as string);
-                    setGlobalTemplateName(
-                        sanitizeContractPreviewName(storedName || "Contract.pdf"),
-                    );
-                }
-            } catch (err) {
-                console.error(
-                    "Failed to read global contract template from storage:",
-                    err,
+        // Cached local template only — SignNow / latest-template fetch waits until Preview.
+        if (typeof window === "undefined") return;
+        try {
+            const raw = localStorage.getItem("globalContractTemplate");
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            const storedName = String(parsed?.originalName || "");
+            if (/pcm|preferred\s*capital/i.test(storedName)) return;
+            if (parsed?.url) {
+                globalTemplateUrlRef.current = parsed.url as string;
+                setGlobalTemplateUrl(parsed.url as string);
+                setGlobalTemplateName(
+                    sanitizeContractPreviewName(storedName || "Contract.pdf"),
                 );
             }
-        };
-
-        void fetchTemplate();
-        return () => {
-            cancelled = true;
-        };
+        } catch {
+            /* ignore */
+        }
     }, []);
 
     const ensureContractPreviewUrl = async (options?: {
@@ -1596,6 +1592,7 @@ export default function ContractTab({
         setPdfViewerInitialRightPaneTab(
             options?.rightPaneTab ?? (linkedEnvelopeId ? "prefilled" : "template"),
         );
+        enableContractSupportData();
         const cachedUrl = globalTemplateUrlRef.current;
         if (cachedUrl) setPdfUrl(cachedUrl);
         setPdfViewerOpen(true);
@@ -2047,28 +2044,8 @@ export default function ContractTab({
         }
     };
 
-    /** Draft created — Contract Generated (not sent until DocuSign envelope is delivered). */
-    const persistContractGeneratedStage = async () => {
-        if (!applicationUuid) return;
-        try {
-            await dispatch(
-                updateApplication({
-                    id: String(applicationUuid),
-                    data: {
-                        currentQueue: "Contract Generated",
-                        currentState: "Contract Generated",
-                    },
-                }),
-            ).unwrap();
-        } catch (err) {
-            console.error(
-                "Failed to set application currentQueue/currentState to Contract Generated:",
-                err,
-            );
-        }
-    };
-
     const handleGenerateContract = async () => {
+        enableContractSupportData();
         if (isReadOnly) {
             const opened = await tryOpenExistingDraftViewer();
             if (!opened) {
@@ -2102,9 +2079,13 @@ export default function ContractTab({
                     const contractId = Number((contract as { id?: unknown }).id);
                     setSelectedContractId(Number.isFinite(contractId) && contractId > 0 ? contractId : null);
                 }
-                if (applicationUuid) {
-                    void dispatch(getApplicationById(String(applicationUuid)));
-                }
+                dispatch(
+                    patchApplicationDetail({
+                        currentQueue: "Contract Generated",
+                        currentState: "CONTRACT_GENERATED",
+                        statsCurrentState: "CONTRACT_GENERATED",
+                    }),
+                );
             } catch (error: unknown) {
                 const message =
                     typeof error === "string"
@@ -2132,7 +2113,6 @@ export default function ContractTab({
 
         const anyApp = applicationData as any;
         openContractViewerImmediately({ rightPaneTab: "template" });
-        void persistContractGeneratedStage();
 
         const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
         const userFromStorage = (() => {
@@ -2225,10 +2205,14 @@ export default function ContractTab({
             }
 
             const numericAppId = anyApp?.applicationId;
-            if (numericAppId != null && String(numericAppId).trim() !== "" && !Number.isNaN(Number(numericAppId))) {
-                void dispatch(getApplicationByApplicationId(Number(numericAppId)));
-            } else if (applicationUuid) {
-                void dispatch(getApplicationById(String(applicationUuid)));
+            if (numericAppId != null || applicationUuid) {
+                dispatch(
+                    patchApplicationDetail({
+                        currentQueue: "Contract Generated",
+                        currentState: "CONTRACT_GENERATED",
+                        statsCurrentState: "CONTRACT_GENERATED",
+                    }),
+                );
             }
 
             if (!globalTemplateUrlRef.current) {
@@ -2335,6 +2319,7 @@ export default function ContractTab({
         sendUrl?: string | null;
         embeddedInviteUrl?: string | null;
     }> => {
+        enableContractSupportData();
         const failDocuSignEnvelope = (message: string): never => {
             toast.error(message);
             throw new Error(message);
@@ -2475,7 +2460,11 @@ export default function ContractTab({
             }
 
             const contractNumericIdForPersist = Number((latestContract as { id?: unknown })?.id);
-            if (Number.isFinite(contractNumericIdForPersist) && contractNumericIdForPersist > 0) {
+            if (
+                !openSignNowFast &&
+                Number.isFinite(contractNumericIdForPersist) &&
+                contractNumericIdForPersist > 0
+            ) {
                 const persistFunder = persistContractFunderMeta(
                     contractNumericIdForPersist,
                     {
@@ -2484,23 +2473,19 @@ export default function ContractTab({
                     },
                     latestContract as Record<string, unknown>,
                 );
-                if (openSignNowFast) {
-                    void persistFunder.catch(() => undefined);
-                } else {
-                    await persistFunder;
-                    try {
-                        const refreshedAfterMeta = await dispatch(
-                            getByApplicationIdContract(String(applicationUuid)),
-                        ).unwrap();
-                        const refreshedContract =
-                            (refreshedAfterMeta as { data?: unknown })?.data ?? refreshedAfterMeta;
-                        if (refreshedContract) {
-                            latestContract = refreshedContract;
-                            setFetchedContract(refreshedContract);
-                        }
-                    } catch {
-                        /* use latestContract */
+                await persistFunder;
+                try {
+                    const refreshedAfterMeta = await dispatch(
+                        getByApplicationIdContract(String(applicationUuid)),
+                    ).unwrap();
+                    const refreshedContract =
+                        (refreshedAfterMeta as { data?: unknown })?.data ?? refreshedAfterMeta;
+                    if (refreshedContract) {
+                        latestContract = refreshedContract;
+                        setFetchedContract(refreshedContract);
                     }
+                } catch {
+                    /* use latestContract */
                 }
             }
 
@@ -2874,7 +2859,11 @@ export default function ContractTab({
                 );
 
                 const contractNumericIdPersist = Number((latestContract as { id?: unknown })?.id);
-                if (Number.isFinite(contractNumericIdPersist) && contractNumericIdPersist > 0) {
+                if (
+                    !openSignNowFast &&
+                    Number.isFinite(contractNumericIdPersist) &&
+                    contractNumericIdPersist > 0
+                ) {
                     const persistPrefill = async () => {
                         const rawOverrides = (latestContract as { contractPrefillOverrides?: unknown })
                             ?.contractPrefillOverrides;
@@ -2936,16 +2925,10 @@ export default function ContractTab({
                             bankDetail: contractPrefillRecords.bankDetail ?? null,
                         });
                     };
-                    if (openSignNowFast) {
-                        void persistPrefill().catch((persistErr) => {
-                            console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
-                        });
-                    } else {
-                        try {
-                            await persistPrefill();
-                        } catch (persistErr) {
-                            console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
-                        }
+                    try {
+                        await persistPrefill();
+                    } catch (persistErr) {
+                        console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
                     }
                 }
             }

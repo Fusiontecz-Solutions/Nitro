@@ -6,21 +6,14 @@ import { useTheme } from "@/context/ThemeContext";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import {
-    getClientByClientId,
-    getClientById,
     updateClient,
 } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
-import { getApplicationById, getApplicationByApplicationId, updateApplication } from "@/redux/actions/applicationActions";
+import { updateApplication } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
 import { Pencil, ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
-import {
-    getClientFetchArg,
-    getClientFetchKeyFromApplicationClient,
-} from "@/lib/clientOwners";
-import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch";
 
 interface ApplicationBasicDetailsProps {
     /** When provided (e.g. on application-detail overview for agent), only show data for this application — no static values */
@@ -344,63 +337,46 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         setSaving(true);
         try {
             const ownersPayload = owners.map(ownerFormToPayload);
-            await dispatch(
-                updateClient({
-                    id: clientId,
-                    data: {
-                        business: {
-                            name: form.businessName,
-                            email: form.businessEmail,
-                            number: form.businessNumber,
-                            website: form.website,
-                            incorporationDate: form.incorporationDate || null,
-                            incorporationState: form.incorporationState,
-                            businessEntityType: form.businessEntityType,
-                            einNumber: form.einNumber,
-                            monthlyRevenue: form.monthlyRevenue === "" ? null : Number(form.monthlyRevenue),
-                            address: {
-                                address1: form.businessAddress1,
-                                city: form.businessCity,
-                                state: form.businessState,
-                                zipCode: form.businessZipCode,
+            await Promise.all([
+                dispatch(
+                    updateClient({
+                        id: clientId,
+                        data: {
+                            business: {
+                                name: form.businessName,
+                                email: form.businessEmail,
+                                number: form.businessNumber,
+                                website: form.website,
+                                incorporationDate: form.incorporationDate || null,
+                                incorporationState: form.incorporationState,
+                                businessEntityType: form.businessEntityType,
+                                einNumber: form.einNumber,
+                                monthlyRevenue: form.monthlyRevenue === "" ? null : Number(form.monthlyRevenue),
+                                address: {
+                                    address1: form.businessAddress1,
+                                    city: form.businessCity,
+                                    state: form.businessState,
+                                    zipCode: form.businessZipCode,
+                                },
                             },
-                        },
-                        owners: ownersPayload,
-                        owner: ownersPayload[0],
-                    } as any,
-                })
-            ).unwrap();
-
-            await dispatch(
-                updateApplication({
-                    id: updateApplicationId,
-                    data: {
-                        loanAmount: form.loanAmount === "" ? null : Number(form.loanAmount),
-                        note: mergeUserNoteWithStructuredSections(
-                            form.note,
-                            String((applicationData as any)?.note ?? ""),
-                        ),
-                    } as any,
-                })
-            ).unwrap();
-
-            if (routeApplicationRef) {
-                if (isNumericApplicationRouteParam(routeApplicationRef)) {
-                    await dispatch(getApplicationByApplicationId(routeApplicationRef)).unwrap();
-                } else {
-                    await dispatch(getApplicationById(routeApplicationRef)).unwrap();
-                }
-            }
-
-            const fetchKey = getClientFetchKeyFromApplicationClient(applicationClient);
-            const fetchArg = getClientFetchArg(fetchKey);
-            if (fetchArg) {
-                if (fetchKey?.startsWith("clientId:")) {
-                    await dispatch(getClientByClientId(fetchArg)).unwrap();
-                } else {
-                    await dispatch(getClientById(fetchArg)).unwrap();
-                }
-            }
+                            owners: ownersPayload,
+                            owner: ownersPayload[0],
+                        } as any,
+                    })
+                ).unwrap(),
+                dispatch(
+                    updateApplication({
+                        id: updateApplicationId,
+                        data: {
+                            loanAmount: form.loanAmount === "" ? null : Number(form.loanAmount),
+                            note: mergeUserNoteWithStructuredSections(
+                                form.note,
+                                String((applicationData as any)?.note ?? ""),
+                            ),
+                        } as any,
+                    })
+                ).unwrap(),
+            ]);
 
             toast.success("Application details updated successfully.");
             setIsEditMode(false);

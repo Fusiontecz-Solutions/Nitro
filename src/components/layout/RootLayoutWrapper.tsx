@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { Outlet, useLocation } from "react-router";
 import Header from "../sidebar/Header";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -16,7 +16,15 @@ const RootLayoutWrapper = () => {
             className={`mx-0 ${state === "expanded" ? "w-[calc(100%-var(--sidebar-width))]" : "w-[calc(100%-var(--sidebar-width-icon))]"}`}
         >
             <Header />
-            <Outlet />
+            <Suspense
+                fallback={
+                    <div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">
+                        Loading...
+                    </div>
+                }
+            >
+                <Outlet />
+            </Suspense>
         </main>
     );
 };

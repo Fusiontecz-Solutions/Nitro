@@ -1,6 +1,7 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { Application } from '@/types/applicationTypes';
 import { buildDetailHydrationPayload } from '@/lib/applicationDetailCache.ts';
+import { routeParamMatchesApplication } from '@/lib/applicationRouteMatch';
 import {
     createApplication,
     getApplications,
@@ -44,7 +45,11 @@ function mergeApplicationDetailFromUpdate(
         upAid != null &&
         Number(curAid) === Number(upAid);
     if (idMatch || aidMatch) {
-        state.data = { ...d, ...u } as Application;
+        const patch: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(u as Record<string, unknown>)) {
+            if (value !== undefined) patch[key] = value;
+        }
+        state.data = { ...d, ...patch } as Application;
     }
 }
 
@@ -346,26 +351,28 @@ export const applicationDetailSlice = createSlice({
             state.isRefreshing = false;
             state.error = null;
         },
+        patchApplicationDetail: (state, action: PayloadAction<Record<string, unknown>>) => {
+            if (!state.data) return;
+            const patch: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(action.payload || {})) {
+                if (value !== undefined) patch[key] = value;
+            }
+            state.data = { ...state.data, ...patch } as Application;
+        },
     },
     extraReducers: (builder) => {
         builder
             // Get by ID
             .addCase(getApplicationById.pending, (state, action) => {
                 const requestedId = String(action.meta.arg).trim();
-                const cur = state.data;
-                const curPk = cur
-                    ? String(
-                        (cur as Application & { id?: string }).id ??
-                        cur._id ??
-                        '',
-                    ).trim()
-                    : '';
                 state.error = null;
-                if (cur && curPk && curPk === requestedId) {
+                if (state.data && routeParamMatchesApplication(requestedId, state.data)) {
                     state.isRefreshing = true;
-                } else {
-                    state.loading = true;
-                    state.isRefreshing = false;
+                    return;
+                }
+                state.loading = true;
+                state.isRefreshing = false;
+                if (state.data && !routeParamMatchesApplication(requestedId, state.data)) {
                     state.data = null;
                 }
             })
@@ -382,19 +389,15 @@ export const applicationDetailSlice = createSlice({
             })
             // Get by applicationId
             .addCase(getApplicationByApplicationId.pending, (state, action) => {
-                const requestedAid = Number(action.meta.arg);
-                const curAid = state.data?.applicationId;
+                const requestedAid = String(action.meta.arg).trim();
                 state.error = null;
-                if (
-                    state.data &&
-                    curAid != null &&
-                    !Number.isNaN(requestedAid) &&
-                    Number(curAid) === requestedAid
-                ) {
+                if (state.data && routeParamMatchesApplication(requestedAid, state.data)) {
                     state.isRefreshing = true;
-                } else {
-                    state.loading = true;
-                    state.isRefreshing = false;
+                    return;
+                }
+                state.loading = true;
+                state.isRefreshing = false;
+                if (state.data && !routeParamMatchesApplication(requestedAid, state.data)) {
                     state.data = null;
                 }
             })
@@ -858,6 +861,7 @@ export const { resetCreateApplication } = createApplicationSlice.actions;
 export const {
     clearApplicationDetail,
     hydrateApplicationDetailFromCache,
+    patchApplicationDetail,
 } = applicationDetailSlice.actions;
 export const setApplicationDetail = hydrateApplicationDetailFromCache;
 export const { clearClientApplications } = clientApplicationsSlice.actions;

@@ -2810,10 +2810,10 @@ export default function ACHFormViewerModal({
                 titleSuffix={
                     String(selectedFunder || selectedFunderProfile?.name || "").trim() || null
                 }
-                onSaved={(savedTabValues) => {
+                onSaved={(saved) => {
                     void (async () => {
                         // Sync draft envelope first with the exact saved values, then refresh CRM.
-                        const synced = await syncAchPrefillToDraftEnvelope(savedTabValues);
+                        const synced = await syncAchPrefillToDraftEnvelope(saved?.tabValues);
                         await refreshContractRow();
                         if (synced === true) {
                             toast.success("ACH fields updated on the DocuSign draft envelope.");

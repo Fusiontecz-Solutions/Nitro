@@ -93,7 +93,7 @@ const CommentSection = ({
     // console.log("loggedInUser", loggedInUser);
 
     // Redux selectors
-    const { loading: commentsLoading, data: comments } = useSelector(
+    const { loading: commentsLoading, data: comments, loadedForApplicationId: commentsLoadedFor } = useSelector(
         (state: RootState) => state.comments
     );
     const { loading: createLoading, success: createSuccess, error: createError } = useSelector(
@@ -146,12 +146,12 @@ const CommentSection = ({
         return { replyToId, quoteText, bodyText };
     };
 
-    // Fetch comments when applicationId changes
+    // Fetch comments when applicationId changes — skip if this deal is already loaded.
     useEffect(() => {
-        if (applicationId) {
-            dispatch(getCommentsByApplication({ applicationId }));
-        }
-    }, [dispatch, applicationId]);
+        if (!applicationId) return;
+        if (commentsLoadedFor === String(applicationId)) return;
+        dispatch(getCommentsByApplication({ applicationId }));
+    }, [dispatch, applicationId, commentsLoadedFor]);
 
     // Fetch document requests when applicationId changes
     useEffect(() => {

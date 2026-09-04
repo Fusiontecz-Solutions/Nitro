@@ -27,6 +27,8 @@ import {
   getApplicationById,
   rejectApplication,
 } from "@/redux/actions/applicationActions";
+import { patchApplicationDetail } from "@/redux/slices/applicationSlice";
+import { setOfferDecisionFromSave } from "@/redux/slices/offerDecisionSlice";
 import { Badge } from "@/components/ui/badge";
 import MyNotes from "./MyNotes";
 import { ApprovedOfferDisplay } from "./ApprovedOfferDisplay";
@@ -630,11 +632,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
   // Real-time sync when approval modal (or elsewhere) saves offer-decision
   useEffect(() => {
     const onOfferDecisionUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+      const detail = (event as CustomEvent<{ applicationId?: string; skipRefetch?: boolean }>).detail;
       if (!offerDecisionUpdateMatchesApplication(detail?.applicationId, applicationId)) {
         return;
       }
-      if (skipNextOfferDecisionReloadRef.current) {
+      if (detail?.skipRefetch || skipNextOfferDecisionReloadRef.current) {
         skipNextOfferDecisionReloadRef.current = false;
         return;
       }
@@ -1417,22 +1419,31 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       setShowApproveForm(true);
 
       skipNextOfferDecisionReloadRef.current = true;
-      emitOfferDecisionUpdated(applicationId);
-
-      // Refresh application so header status shows Contract Pending
-      try {
-        const idStr = String(applicationId);
-        if (/^\d+$/.test(idStr)) {
-          await dispatch(getApplicationByApplicationId(idStr));
-        } else {
-          await dispatch(getApplicationById(idStr));
-        }
-      } catch (refreshErr) {
-        console.error(
-          "Offer saved but failed to refresh application status:",
-          refreshErr,
+      if (saved) {
+        dispatch(
+          setOfferDecisionFromSave({
+            applicationId: String(applicationId),
+            data: saved,
+          }),
         );
       }
+      const movedToContractPending = Boolean(
+        (saveRes?.data as { meta?: { movedToContractPending?: boolean } } | undefined)
+          ?.meta?.movedToContractPending,
+      );
+      if (movedToContractPending) {
+        dispatch(
+          patchApplicationDetail({
+            currentQueue: "Contract Pending",
+            currentState: "CONTRACT_PENDING",
+            statsCurrentState: "CONTRACT_PENDING",
+          }),
+        );
+      }
+      emitOfferDecisionUpdated(applicationId, {
+        skipRefetch: true,
+        movedToContractPending,
+      });
 
       toast.success("Offer saved successfully.");
     } catch (error: any) {

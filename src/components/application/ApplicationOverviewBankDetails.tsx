@@ -20,21 +20,6 @@ export default function ApplicationOverviewBankDetails({
         dispatch(getBankDetails({ application: applicationId }));
     }, [applicationId, dispatch]);
 
-    useEffect(() => {
-        if (!applicationId) return;
-        const refreshBankDetails = () => {
-            if (document.visibilityState === "visible") {
-                void dispatch(getBankDetails({ application: applicationId }));
-            }
-        };
-        window.addEventListener("focus", refreshBankDetails);
-        document.addEventListener("visibilitychange", refreshBankDetails);
-        return () => {
-            window.removeEventListener("focus", refreshBankDetails);
-            document.removeEventListener("visibilitychange", refreshBankDetails);
-        };
-    }, [applicationId, dispatch]);
-
     return (
         <ApplicationSheetBankDetail
             applicationId={applicationId}

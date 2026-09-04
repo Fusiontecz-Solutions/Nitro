@@ -13,6 +13,7 @@ import {
 interface TermsOffersState {
     loading: boolean;
     data: TermsOffer[];
+    loadedForApplicationId: string | null;
     pagination: {
         total: number;
         page: number;
@@ -25,6 +26,7 @@ interface TermsOffersState {
 const termsOffersInitialState: TermsOffersState = {
     loading: false,
     data: [],
+    loadedForApplicationId: null,
     pagination: null,
     error: null,
 };
@@ -35,19 +37,29 @@ export const termsOffersSlice = createSlice({
     reducers: {
         clearTermsOffers: (state) => {
             state.data = [];
+            state.loadedForApplicationId = null;
             state.pagination = null;
             state.error = null;
         },
     },
     extraReducers: (builder) => {
         builder
-            .addCase(getTermsOffers.pending, (state) => {
-                state.loading = true;
+            .addCase(getTermsOffers.pending, (state, action) => {
+                const requested = String(action.meta.arg?.application ?? "");
                 state.error = null;
+                if (
+                    state.data.length > 0 &&
+                    requested &&
+                    state.loadedForApplicationId === requested
+                ) {
+                    return;
+                }
+                state.loading = true;
             })
             .addCase(getTermsOffers.fulfilled, (state, action) => {
                 state.loading = false;
                 state.data = action.payload.data || action.payload;
+                state.loadedForApplicationId = String(action.meta.arg?.application ?? "");
                 state.pagination = action.payload.pagination || null;
             })
             .addCase(getTermsOffers.rejected, (state, action) => {

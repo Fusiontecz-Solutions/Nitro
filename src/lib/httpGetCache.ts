@@ -1,6 +1,6 @@
 import type { AxiosRequestConfig, AxiosResponse } from "axios";
 
-const GET_CACHE_TTL_MS = 45_000;
+const GET_CACHE_TTL_MS = 90_000;
 const MAX_ENTRIES = 80;
 
 /** Endpoints that must always hit the network (OAuth, binary, live signing). */
@@ -113,7 +113,26 @@ export function clearInFlightGet(key: string): void {
   inFlight.delete(key);
 }
 
-/** Drop all GET responses — call after successful mutations and on logout. */
+/** Drop all GET responses — call on logout. */
 export function clearHttpGetCache(): void {
   memory.clear();
+}
+
+/** Drop cached GETs for the mutated resource family only. */
+export function invalidateHttpGetCacheByUrl(url: string): void {
+  const path = String(url || "").split("?")[0].replace(/^\//, "");
+  if (!path) return;
+  const family = path.split("/").slice(0, 2).join("/");
+  const related = new Set<string>([path, family].filter(Boolean));
+  if (family.startsWith("clients") || path.includes("/clients")) {
+    related.add("applications");
+  }
+  if (family.startsWith("applications") || path.includes("/applications")) {
+    related.add("clients");
+  }
+  for (const key of [...memory.keys()]) {
+    if ([...related].some((part) => key.includes(part))) {
+      memory.delete(key);
+    }
+  }
 }

@@ -41,6 +41,7 @@ export const getClients = createAsyncThunk(
         status?: string
         sortBy?: string
         sortOrder?: 'asc' | 'desc'
+        lite?: number | boolean
     } = {}, { rejectWithValue }) => {
         try {
             const cacheKey = clientsListParamsCacheKey(params);

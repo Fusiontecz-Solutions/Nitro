@@ -342,10 +342,13 @@ const CreateApplication = () => {
         setSelectedRefinanceDeal(null)
     }, [watchedClient])
 
-    // Fetch clients on mount
+    // Fetch clients only when the dropdown is needed (existing client / refinance).
+    const [clientsRequested, setClientsRequested] = useState(false)
     useEffect(() => {
-        dispatch(getClients({ limit: 100 }))
-    }, [dispatch])
+        if (isEditMode || isRefinanceType || (!isCreatingNewClient && clientsRequested)) {
+            dispatch(getClients({ limit: 100, lite: 1 }))
+        }
+    }, [dispatch, isEditMode, isRefinanceType, isCreatingNewClient, clientsRequested])
 
     // Fetch application data when in edit mode
     useEffect(() => {
@@ -897,6 +900,8 @@ const CreateApplication = () => {
                                                                 setValue('client', '', { shouldValidate: true })
                                                                 setSelectedRefinanceDeal(null)
                                                                 setRefinanceDealModalOpen(false)
+                                                            } else {
+                                                                setClientsRequested(true)
                                                             }
                                                         }}
                                                     />
@@ -1069,6 +1074,9 @@ const CreateApplication = () => {
                                             render={({ field }) => (
                                                 <Select
                                                     value={field.value}
+                                                    onOpenChange={(open) => {
+                                                        if (open) setClientsRequested(true)
+                                                    }}
                                                     onValueChange={(value: string) => {
                                                         field.onChange(value)
                                                         setSelectedRefinanceDeal(null)

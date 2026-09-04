@@ -14,12 +14,14 @@ interface BankDetailsState {
     loading: boolean;
     data: BankDetail[];
     error: string | null;
+    loadedForApplicationId: string | null;
 }
 
 const bankDetailsInitialState: BankDetailsState = {
     loading: false,
     data: [],
     error: null,
+    loadedForApplicationId: null,
 };
 
 export const bankDetailsSlice = createSlice({
@@ -29,6 +31,7 @@ export const bankDetailsSlice = createSlice({
         clearBankDetails: (state) => {
             state.data = [];
             state.error = null;
+            state.loadedForApplicationId = null;
         },
     },
     extraReducers: (builder) => {
@@ -40,6 +43,9 @@ export const bankDetailsSlice = createSlice({
             .addCase(getBankDetails.fulfilled, (state, action) => {
                 state.loading = false;
                 state.data = action.payload.data || action.payload;
+                state.loadedForApplicationId = String(
+                    action.meta.arg?.application ?? "",
+                );
             })
             .addCase(getBankDetails.rejected, (state, action) => {
                 state.loading = false;

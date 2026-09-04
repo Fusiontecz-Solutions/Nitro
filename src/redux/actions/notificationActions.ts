@@ -109,7 +109,9 @@ export const getNotifications = createAsyncThunk(
             const response = await axiosGet(url);
             return response.data;
         } catch (error: any) {
-            console.error('Get notifications error:', error);
+            if (error?.response?.status === 404) {
+                return { success: true, data: [], pagination: { currentPage: 1, totalItems: 0, itemsPerPage: 50, totalPages: 1 } };
+            }
             return rejectWithValue(
                 error.response?.data?.message || 'Failed to fetch notifications'
             );

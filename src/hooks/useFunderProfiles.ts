@@ -388,12 +388,18 @@ export function funderAssignsDealId(
   return profile?.assignsDealId === true;
 }
 
-export function useFunderProfiles(contractState?: string | null) {
+export function useFunderProfiles(
+  contractState?: string | null,
+  options?: { enabled?: boolean },
+) {
   const query = useQuery({
     queryKey: ["funder-profiles"],
     queryFn: () => fetchFunderProfiles(null),
-    staleTime: 5 * 60_000,
+    staleTime: 30 * 60_000,
+    gcTime: 60 * 60_000,
     refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    enabled: options?.enabled !== false,
   });
 
   const funders =

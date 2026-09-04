@@ -143,9 +143,7 @@ export async function fetchSignNowAgreementPdf(options?: {
     const signnowTemplateId = String(options?.signnowTemplateId ?? "").trim();
     const previewName = String(options?.previewName ?? "").trim();
     if (!funderProfileId && !signnowTemplateId) {
-        lastSignNowAgreementError =
-            "Select a funder with a SignNow contract template in Settings → Funders.";
-        return null;
+        lastSignNowAgreementError = "";
     }
     const cacheKey = `${funderProfileId || "_"}:${signnowTemplateId || "_"}`;
     const now = Date.now();
@@ -294,28 +292,18 @@ export async function fetchMainContractTemplatePreview(options: {
         isSignNowContractUiEnabled() &&
         !isTexasFundingGroupFunderProfile(profile ?? { name: funderName });
 
-    // Live SignNow agreement comes from the selected funder's Settings → Funders link.
+    // Live SignNow agreement: use the selected funder's link when present,
+    // otherwise the platform document-group template (Create Contract pick is enough).
     if (useSignNowAgreement) {
         const funderContractTemplateId = String(
             profile?.signnowContractTemplateLink ?? "",
         ).trim();
-        if (!persistedProfileId && !funderContractTemplateId) {
-            lastSignNowAgreementError =
-                "Select a funder with a SignNow contract template in Settings → Funders.";
-            return null;
-        }
-        if (persistedProfileId && !funderContractTemplateId) {
-            lastSignNowAgreementError = funderName
-                ? `No SignNow contract template is configured for ${funderName}.`
-                : "No SignNow contract template is configured for this funder.";
-            return null;
-        }
         const previewName = funderName
             ? `Agreement - ${funderName}.pdf`
             : options.previewName || NITRO_ADVANCE_CONTRACT_PREVIEW_NAME;
         const signNow = await fetchSignNowAgreementPdf({
-            funderProfileId: persistedProfileId,
-            signnowTemplateId: funderContractTemplateId,
+            funderProfileId: persistedProfileId || undefined,
+            signnowTemplateId: funderContractTemplateId || undefined,
             previewName,
         });
         if (signNow?.url) {
@@ -325,6 +313,11 @@ export async function fetchMainContractTemplatePreview(options: {
                 layoutKey,
                 source: "signnow",
             };
+        }
+        if (!lastSignNowAgreementError) {
+            lastSignNowAgreementError = funderName
+                ? `Could not load the agreement PDF for ${funderName}.`
+                : "Could not load the agreement PDF.";
         }
         // SignNow is the live contract source — do not fall through to DocuSign REST.
         return null;

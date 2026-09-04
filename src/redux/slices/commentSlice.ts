@@ -13,6 +13,7 @@ import {
 interface CommentsState {
     loading: boolean;
     data: Comment[];
+    loadedForApplicationId: string | null;
     pagination: {
         total: number;
         page: number;
@@ -25,6 +26,7 @@ interface CommentsState {
 const commentsInitialState: CommentsState = {
     loading: false,
     data: [],
+    loadedForApplicationId: null,
     pagination: null,
     error: null,
 };
@@ -36,19 +38,25 @@ export const commentsSlice = createSlice({
         resetComments: (state) => {
             state.loading = false;
             state.data = [];
+            state.loadedForApplicationId = null;
             state.pagination = null;
             state.error = null;
         },
     },
     extraReducers: (builder) => {
         builder
-            .addCase(getCommentsByApplication.pending, (state) => {
-                state.loading = true;
+            .addCase(getCommentsByApplication.pending, (state, action) => {
+                const requested = String(action.meta.arg?.applicationId ?? "");
                 state.error = null;
+                if (state.data.length > 0 && state.loadedForApplicationId === requested) {
+                    return;
+                }
+                state.loading = true;
             })
             .addCase(getCommentsByApplication.fulfilled, (state, action) => {
                 state.loading = false;
                 state.data = action.payload.data;
+                state.loadedForApplicationId = String(action.meta.arg?.applicationId ?? "");
                 state.pagination = action.payload.pagination || null;
                 state.error = null;
             })

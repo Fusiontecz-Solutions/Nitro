@@ -7,20 +7,29 @@ import {
     roundMoney,
 } from "@/lib/offerRepaymentCalculations";
 import { resolveAppendixUnderwritingFeesDollars, getApplicationClientPrefillArgs } from "./Contract";
-import { DISCLOSURE_PLATFORM_FEE_USD } from "./platformDocumentConfig";
+import {
+    DISCLOSURE_PLATFORM_FEE_USD,
+    resolveDisclosureWireFeeUsd,
+    resolveIncludeWireFee,
+} from "./platformDocumentConfig";
 
 export { DISCLOSURE_PLATFORM_FEE_USD };
 
 export type DisclosureCalculatorFrequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly";
 
-/** Origination fee shown on disclosures = applicable fee + $50. */
-export function applyDisclosurePlatformFee(applicableFee: number): number {
-    return roundMoney(Math.max(0, applicableFee) + DISCLOSURE_PLATFORM_FEE_USD);
+/** Origination fee shown on disclosures = applicable fee + optional $25 wire fee. */
+export function applyDisclosurePlatformFee(
+    applicableFee: number,
+    includeWireFee = true,
+): number {
+    return roundMoney(
+        Math.max(0, applicableFee) + resolveDisclosureWireFeeUsd(includeWireFee),
+    );
 }
 
 /**
- * Disclosure payment frequency labels: DAY / WEEK (not DAILY / WEEKLY).
- * Main contract / template keys still use Daily / Weekly elsewhere.
+ * Disclosure payment frequency labels: Daily / Weekly / Monthly.
+ * Written long-form so PDF placeholders like "Weekly" are fully covered.
  */
 export function formatDisclosurePaymentFrequencyLabel(raw: unknown): string {
     const text = String(raw ?? "")
@@ -29,10 +38,10 @@ export function formatDisclosurePaymentFrequencyLabel(raw: unknown): string {
         .replace(/[_-]+/g, " ")
         .replace(/\s+/g, " ");
     if (!text) return "";
-    if (text === "day" || text === "daily") return "DAY";
-    if (text === "week" || text === "weekly") return "WEEK";
-    if (text === "bi weekly" || text === "biweekly") return "BI-WEEK";
-    if (text === "month" || text === "monthly") return "MONTH";
+    if (text === "day" || text === "daily") return "Daily";
+    if (text === "week" || text === "weekly") return "Weekly";
+    if (text === "bi weekly" || text === "biweekly") return "Bi-Weekly";
+    if (text === "month" || text === "monthly") return "Monthly";
     return text.toUpperCase();
 }
 
@@ -56,6 +65,10 @@ export interface DisclosureCalculatorInputs {
     firstPaymentDate: string;
     /** Monthly net-credit / revenue figures from bank analysis (historical method). */
     monthlyRevenues: number[];
+    /** Daily / weekly remittance. When set, estimated payment uses this instead of payback ÷ days. */
+    paymentAmount?: number;
+    /** When false, skip the $25 wire fee on origination / net. Default true. */
+    includeWireFee?: boolean;
 }
 
 export interface DisclosureCalculatorResult {
@@ -240,9 +253,12 @@ export function calculateDisclosureMetrics(
     /** Calculator input `purchasePrice` = funding / contract amount (not payback). */
     const purchasePrice = Math.max(0, input.purchasePrice);
     const factorRate = input.factorRate > 0 ? input.factorRate : 1;
-    /** Applicable fee from offer/CRM; disclosures always add the $50 platform fee. */
+    /** Applicable fee from offer/CRM; disclosures add the optional $25 wire fee. */
     const applicableOriginationFee = Math.max(0, input.originationFee);
-    const originationFee = applyDisclosurePlatformFee(applicableOriginationFee);
+    const originationFee = applyDisclosurePlatformFee(
+        applicableOriginationFee,
+        input.includeWireFee,
+    );
     const brokerMerchant = Math.max(0, input.brokerFeePaidByMerchant ?? 0);
     const brokerFunder = Math.max(0, input.brokerFeePaidByFunder ?? 0);
     const isRefinance = Boolean(input.isRefinance);
@@ -251,8 +267,8 @@ export function calculateDisclosureMetrics(
     /** Receivables / repayment amount the merchant must repay. */
     const revenuePurchased = roundMoney(purchasePrice * factorRate);
     /**
-     * Net Funds Provided = Funding − (applicable fee + $50) − broker-by-merchant.
-     * Same stack as displayed Origination Fee (applicable + $50).
+     * Net Funds Provided = Funding − (applicable fee + optional wire) − broker-by-merchant.
+     * Same stack as displayed Origination Fee (applicable + wire).
      */
     const amountFinanced = roundMoney(
         Math.max(0, purchasePrice - originationFee - brokerMerchant),
@@ -280,7 +296,12 @@ export function calculateDisclosureMetrics(
     const estimatedTotalPayment = revenuePurchased;
 
     const { numberOfWeeks, actualPaymentCount } = resolveDisclosurePaymentSchedule(input);
-    const estimatedPayment = roundMoney(estimatedTotalPayment / actualPaymentCount);
+    const remittancePayment = Math.max(0, input.paymentAmount ?? 0);
+    const estimatedPayment = roundMoney(
+        remittancePayment > 0
+            ? remittancePayment
+            : estimatedTotalPayment / actualPaymentCount,
+    );
     const paymentTotal = estimatedTotalPayment;
 
     /** PDF: Daily × 20, Weekly × 4 (do not use 4.3 conversion for disclosure monthly cost). */
@@ -538,10 +559,8 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         );
         if (payback > 0 && perPeriod > 0) {
             const impliedCount = Math.max(1, Math.round(payback / perPeriod));
-            if (impliedCount >= 20 && impliedCount !== weeks) {
-                days = impliedCount;
-                weeks = Math.max(1, Math.round(days / BUSINESS_DAYS_PER_WEEK));
-            }
+            days = impliedCount;
+            weeks = Math.max(1, Math.round(days / BUSINESS_DAYS_PER_WEEK));
         }
 
         numberOfPayments = Math.max(1, weeks || 1);
@@ -589,7 +608,13 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         ).trim() || undefined;
 
     const bankRevenues = extractMonthlyRevenuesFromBankAnalyses(args.bankAnalyses);
-    const fallbackRevenue = parseMoney(business?.monthlyRevenue);
+    const fallbackRevenue =
+        parseMoney(business?.monthlyRevenue) ||
+        parseMoney(app.averageMonthlyIncome) ||
+        parseMoney(app.averageMonthlyDeposit) ||
+        parseMoney(app.avgMonthlyDeposit) ||
+        parseMoney((client as Record<string, unknown> | null)?.monthlyRevenue) ||
+        parseMoney((business as Record<string, unknown> | null)?.avgMonthlyRevenue);
     const monthlyRevenues =
         bankRevenues.length > 0
             ? bankRevenues
@@ -626,6 +651,15 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
             "",
     );
 
+    const overrides =
+        (contract.contractPrefillOverrides as Record<string, unknown> | null) ?? {};
+    const includeWireFee = resolveIncludeWireFee(
+        overrides.includeWireFee ?? args.contract?.includeWireFee,
+    );
+    const paymentAmount =
+        parseMoney(offer?.paymentAmount ?? offer?.repayPerPeriod ?? offer?.daysWeeks) ||
+        parseMoney(contract.remittance);
+
     return {
         state: String(args.state ?? contract.state ?? "").trim(),
         frequency,
@@ -643,6 +677,8 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         disbursementDate: args.disbursementDate || defaultDate,
         firstPaymentDate: args.firstPaymentDate || args.disbursementDate || defaultDate,
         monthlyRevenues,
+        paymentAmount: paymentAmount > 0 ? paymentAmount : undefined,
+        includeWireFee,
     };
 }
 
@@ -664,11 +700,10 @@ export function mapDisclosureMetricsToFieldOverrides(
     const actualDisbursement =
         metrics.actualDisbursement ?? metrics.recipientFunds;
     /**
-     * CA/NY funding boxes: Net Amount (Contract − Fee).
-     * REFI CA right box / direct: Actual Disbursement.
-     * FL/GA/KS/LA/MO provided = contract; disbursed = net (never CA refi cash-out).
+     * Funding Provided (main box) = contract / purchase price.
+     * "Provided to you directly" = net after fees (REFI: actual disbursement).
      */
-    const fundingProvidedPrimary = netContracted;
+    const fundingProvidedPrimary = metrics.purchasePrice;
     const fundingProvidedDirect = isRefinance ? actualDisbursement : netContracted;
 
     const overrides: Record<string, string> = {
@@ -729,8 +764,10 @@ export function mapDisclosureMetricsToFieldOverrides(
     }
 
     if (includeApr) {
+        // PDF already prints "%"; do not append another suffix.
         overrides.estimated_annual_percentage_rate = formatDisclosurePercent(
             metrics.estimatedAnnualPercentageRate,
+            "",
         );
     }
 

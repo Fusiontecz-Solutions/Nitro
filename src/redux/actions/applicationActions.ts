@@ -8,7 +8,13 @@ import {
     setCachedApplicationsList,
     coalesceApplicationsListFetch,
 } from '@/lib/applicationsListCache';
-import { recordApplicationDetailResponse, invalidateApplicationDetailCache } from '@/lib/applicationDetailCache';
+import {
+    recordApplicationDetailResponse,
+    invalidateApplicationDetailCache,
+    getCachedApplicationDetail,
+    buildDetailHydrationPayload,
+    isApplicationDetailFetchFresh,
+} from '@/lib/applicationDetailCache';
 import type {
     CreateApplicationPayload,
     UpdateApplicationPayload,
@@ -415,6 +421,11 @@ export const getApplicationById = createAsyncThunk(
     'application/getById',
     async (id: string, { rejectWithValue }) => {
         try {
+            if (isApplicationDetailFetchFresh(id)) {
+                const cached = getCachedApplicationDetail(id);
+                const hydrated = buildDetailHydrationPayload(cached);
+                if (hydrated) return hydrated;
+            }
             const response = await axiosGet(`/applications/${id}`);
             recordApplicationDetailResponse(response.data);
             return response.data;
@@ -432,6 +443,12 @@ export const getApplicationByApplicationId = createAsyncThunk(
     'application/getByApplicationId',
     async (applicationId: string | number, { rejectWithValue }) => {
         try {
+            const key = String(applicationId);
+            if (isApplicationDetailFetchFresh(key)) {
+                const cached = getCachedApplicationDetail(key);
+                const hydrated = buildDetailHydrationPayload(cached);
+                if (hydrated) return hydrated;
+            }
             const response = await axiosGet(`/applications/applicationId/${applicationId}`);
             recordApplicationDetailResponse(response.data);
             return response.data;
@@ -643,7 +660,7 @@ export const updateApplication = createAsyncThunk(
     async ({ id, data }: { id: string; data: UpdateApplicationPayload }, { rejectWithValue }) => {
         try {
             const response = await axiosPut(`/applications/${id}`, data);
-            await invalidateApplicationsListCache();
+            void invalidateApplicationsListCache();
             invalidateApplicationDetailCache(id);
             return response.data;
         } catch (error: any) {
@@ -1016,8 +1033,8 @@ export const parseApplicationPdfForClientPrefill = createAsyncThunk(
                 formData,
                 { timeout: 180000 },
             );
-            await invalidateApplicationsListCache();
-            return response.data; // { success, message, data: { client, application, existingClient } }
+            void invalidateApplicationsListCache();
+            return response.data;
         } catch (error: any) {
             console.error('Parse application PDF error:', error);
             return rejectWithValue(

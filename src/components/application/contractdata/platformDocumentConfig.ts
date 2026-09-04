@@ -17,11 +17,26 @@ export type PlatformLayoutKey =
 export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Nitro Advance";
 
 /**
- * Flat platform fee on every deal:
- * - Origination fee on disclosures = applicable fee + this amount
+ * Optional $25 wire fee on every deal (on by default; can be turned off per contract):
+ * - Origination / total fees on the agreement + disclosures = applicable fee + this amount
  * - Net / recipient funds = funding − (applicable fee + this amount) − refinance
  */
-export const DISCLOSURE_PLATFORM_FEE_USD = 50;
+export const DISCLOSURE_WIRE_FEE_USD = 25;
+/** @deprecated Use DISCLOSURE_WIRE_FEE_USD — kept so existing imports keep working. */
+export const DISCLOSURE_PLATFORM_FEE_USD = DISCLOSURE_WIRE_FEE_USD;
+
+export function resolveIncludeWireFee(value: unknown): boolean {
+    if (value === false || value === 0) return false;
+    const s = String(value ?? "")
+        .trim()
+        .toLowerCase();
+    if (s === "false" || s === "0" || s === "no" || s === "off") return false;
+    return true;
+}
+
+export function resolveDisclosureWireFeeUsd(includeWireFee?: boolean): number {
+    return includeWireFee === false ? 0 : DISCLOSURE_WIRE_FEE_USD;
+}
 
 /** DocuSign envelope role names — must match template / backend DOCUSIGN_DEFAULT_ROLE_NAME. */
 export const PLATFORM_PRIMARY_SIGNER_ROLE = DOCUSIGN_PRIMARY_SIGNER_ROLE;

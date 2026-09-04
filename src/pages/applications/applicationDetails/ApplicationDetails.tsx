@@ -521,6 +521,11 @@ const ApplicationDetails = () => {
         ) {
             return;
         }
+        const current = applicationDetailRef.current;
+        if (current && routeParamMatchesApplication(requestKey, current)) {
+            initialDetailRequestRef.current = requestKey;
+            if (isApplicationDetailFetchFresh(requestKey)) return;
+        }
         initialDetailRequestRef.current = requestKey;
 
         if (isNumericApplicationRouteParam(requestKey)) {

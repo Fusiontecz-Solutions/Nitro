@@ -1,16 +1,17 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
 import {
-    clearHttpGetCache,
     clearInFlightGet,
     getInFlightGet,
     httpGetCacheKey,
+    invalidateHttpGetCacheByUrl,
     readCachedGetResponse,
     setInFlightGet,
     shouldUseGetResponseCache,
     toCachedAxiosResponse,
     writeCachedGetResponse,
 } from '@/lib/httpGetCache';
+import { invalidateRequestFreshness } from '@/lib/requestOnce';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api/v1';
 
@@ -124,9 +125,25 @@ function cachedGet(url: string, config?: AxiosRequestConfig) {
     return request;
 }
 
-function afterSuccessfulMutation<T>(promise: Promise<T>): Promise<T> {
+function mutationUrl(config?: { url?: string }): string {
+    return String(config?.url || "");
+}
+
+function afterSuccessfulMutation<T extends { config?: { url?: string } }>(
+    promise: Promise<T>,
+): Promise<T> {
     return promise.then((result) => {
-        clearHttpGetCache();
+        const url = mutationUrl(result.config);
+        invalidateHttpGetCacheByUrl(url);
+        if (url.includes("/comments")) {
+            invalidateRequestFreshness("comments:");
+        } else if (url.includes("/offer-decisions")) {
+            invalidateRequestFreshness("offer:");
+        } else if (url.includes("/terms-offers")) {
+            invalidateRequestFreshness("terms:");
+        } else if (url.includes("/applications")) {
+            invalidateRequestFreshness("application:");
+        }
         return result;
     });
 }

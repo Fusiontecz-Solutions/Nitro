@@ -190,6 +190,7 @@ const BankAnalysis = ({
     // const { loading: createMonthLoading } = useSelector((state: RootState) => state.createMonth);
     // const { loading: createTransactionLoading } = useSelector((state: RootState) => state.createTransaction);
     // const { loading: deleteTransactionLoading } = useSelector((state: RootState) => state.deleteTransaction);
+    const { data: offerDecision } = useSelector((state: RootState) => state.offerDecision);
     const positionsState = useSelector((state: RootState) => state.positions);
 
     // Automated bank statement upload state
@@ -283,28 +284,9 @@ const BankAnalysis = ({
         }
     }, [applicationData, dispatch, requestedLoanAmountInput]);
 
-    /** Save requested amount, bank rows, and positions — Offer "Approve & Save". */
+    /** Persist requested amount if it changed. Banks/positions auto-save separately — don't block offer save. */
     const handleApproveSaveAll = useCallback(async (): Promise<boolean> => {
-        const loanOk = await persistRequestedLoanAmount();
-        if (!loanOk) return false;
-
-        try {
-            const banksOk = (await saveAllBanksRef.current?.()) ?? true;
-            if (!banksOk) return false;
-        } catch (err) {
-            console.error("Failed to save bank analysis on approve:", err);
-            return false;
-        }
-
-        try {
-            const positionsOk = (await saveAllPositionsRef.current?.()) ?? true;
-            if (!positionsOk) return false;
-        } catch (err) {
-            console.error("Failed to save positions on approve:", err);
-            return false;
-        }
-
-        return true;
+        return persistRequestedLoanAmount();
     }, [persistRequestedLoanAmount]);
 
     // Local state for bank details (for optimistic updates)
@@ -446,6 +428,11 @@ const BankAnalysis = ({
 
     // Load persisted offer decision so holdings visibility survives refresh/reopen.
     useEffect(() => {
+        const fromStore = (offerDecision as { decision?: string } | null)?.decision;
+        if (fromStore === "approved" || fromStore === "declined") {
+            setOfferDecisionState(fromStore);
+            return;
+        }
         const loadOfferDecision = async () => {
             if (!resolvedApplicationId) {
                 setOfferDecisionState(null);
@@ -472,7 +459,7 @@ const BankAnalysis = ({
             }
         };
         void loadOfferDecision();
-    }, [resolvedApplicationId]);
+    }, [resolvedApplicationId, offerDecision]);
     
     // Update local state when Redux state changes
     useEffect(() => {

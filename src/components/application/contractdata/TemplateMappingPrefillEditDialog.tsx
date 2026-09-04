@@ -12,8 +12,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { AppDispatch } from "@/redux/store";
 import {
-    getByApplicationIdContract,
-    getAllACH,
     updateACH,
     updateContract,
 } from "@/redux/actions/contractActions";
@@ -21,6 +19,7 @@ import { toast } from "react-toastify";
 import type {
     BuildContractPrefillFieldsArgs,
     ContractPrefillContractRecords,
+    ContractPrefillField,
 } from "./Contract";
 import { CONTRACT_PREFILL_COLUMN_SYNC_KEYS } from "./Contract";
 import {
@@ -87,9 +86,36 @@ type TemplateMappingPrefillEditDialogProps = {
      * When set, replaces the template name in the dialog title.
      */
     titleSuffix?: string | null;
-    /** After a successful save, parent refreshes contract + mapping list. */
-    onSaved: (savedTabValues?: Record<string, string>) => void;
+    /** After a successful save, parent refreshes local prefill (no extra GET). */
+    onSaved: (saved?: {
+        tabValues?: Record<string, string>;
+        contractPrefillOverrides?: unknown;
+    }) => void;
 };
+
+type PrefillEditorGroup = {
+    key: string;
+    label: string | null;
+    rows: ContractPrefillField[];
+};
+
+function groupPrefillEditorRows(rows: ContractPrefillField[]): PrefillEditorGroup[] {
+    const groups: PrefillEditorGroup[] = [];
+    for (const row of rows) {
+        const key = row.group?.trim() || "";
+        const last = groups[groups.length - 1];
+        if (last && last.key === key) {
+            last.rows.push(row);
+            continue;
+        }
+        groups.push({
+            key,
+            label: key || null,
+            rows: [row],
+        });
+    }
+    return groups;
+}
 
 export function TemplateMappingPrefillEditDialog({
     open,
@@ -153,6 +179,8 @@ export function TemplateMappingPrefillEditDialog({
         agreementDate,
         mainPrefillOverrides,
     ]);
+
+    const groupedEditorRows = useMemo(() => groupPrefillEditorRows(editorRows), [editorRows]);
 
     useEffect(() => {
         if (!open || !row) {
@@ -261,7 +289,7 @@ export function TemplateMappingPrefillEditDialog({
                 columnSync[key] = String(columnSource[key] ?? "");
             }
 
-            await dispatch(
+            const result = await dispatch(
                 updateContract({
                     id: cid,
                     data: {
@@ -270,8 +298,15 @@ export function TemplateMappingPrefillEditDialog({
                     },
                 }),
             ).unwrap();
+            const savedPayload = (result as { data?: Record<string, unknown> })?.data ?? result;
+            const savedOverrides =
+                savedPayload &&
+                typeof savedPayload === "object" &&
+                "contractPrefillOverrides" in savedPayload
+                    ? (savedPayload as { contractPrefillOverrides?: unknown }).contractPrefillOverrides
+                    : contractPrefillOverrides;
 
-            const achPatchSource = achCamel ?? bankCamel;
+            const achPatchSource = coordinateLayout ? achCamel : null;
             if (achPatchSource) {
                 const achId = Number(
                     (contractRecords?.ach as { id?: unknown } | null | undefined)?.id,
@@ -279,12 +314,18 @@ export function TemplateMappingPrefillEditDialog({
                 if (Number.isFinite(achId) && achId > 0) {
                     const achPatch = achCamelPartialToAchRecordPatch(achPatchSource);
                     const hasAchData = Object.values(achPatch).some(Boolean);
-                    if (hasAchData) {
+                    const achRow =
+                        (contractRecords?.ach as Record<string, unknown> | null | undefined) ??
+                        null;
+                    const achChanged = Object.entries(achPatch).some(([key, value]) => {
+                        if (!value) return false;
+                        return String(achRow?.[key] ?? "").trim() !== String(value).trim();
+                    });
+                    if (hasAchData && achChanged) {
                         try {
                             await dispatch(
                                 updateACH({ id: achId, data: achPatch }),
                             ).unwrap();
-                            await dispatch(getAllACH({ contractId: cid })).unwrap();
                         } catch (achErr) {
                             console.warn("[ACH] Failed to sync Info Required ACH row:", achErr);
                         }
@@ -292,7 +333,19 @@ export function TemplateMappingPrefillEditDialog({
                 }
             }
 
-            if (bankCamel) {
+            const existingBank = mergeSharedBankDetails(
+                extractSharedBankDetailsFromRecord(contractRecords?.bankDetail ?? null),
+                extractSharedBankDetailsFromRecord(
+                    (contractRecords?.ach as Record<string, unknown> | null) ?? null,
+                ),
+            );
+            const bankChanged =
+                Boolean(bankCamel) &&
+                hasSharedBankDetails(sharedBank) &&
+                (sharedBank.bankName !== existingBank.bankName ||
+                    sharedBank.routingNumber !== existingBank.routingNumber ||
+                    sharedBank.accountNumber !== existingBank.accountNumber);
+            if (bankChanged && bankCamel) {
                 try {
                     await upsertApplicationBankDetailFromPrefill({
                         dispatch,
@@ -306,23 +359,15 @@ export function TemplateMappingPrefillEditDialog({
                 }
             }
 
-            const appKey = String(applicationUuid ?? "").trim();
-            if (appKey) {
-                try {
-                    await dispatch(getByApplicationIdContract(appKey)).unwrap();
-                } catch {
-                    /* ignore */
-                }
-            }
-
             toast.success(
                 coordinateLayout
                     ? "ACH form field values saved."
-                    : bankCamel
-                      ? "Template mapping saved. Bank details stored for every document."
-                      : "Template mapping and DocuSign field overrides saved.",
+                    : "Template mapping saved.",
             );
-            onSaved(coordinateLayout ? tabValues : undefined);
+            onSaved({
+                tabValues: coordinateLayout ? tabValues : undefined,
+                contractPrefillOverrides: savedOverrides ?? contractPrefillOverrides,
+            });
             onOpenChange(false);
         } catch (e: unknown) {
             console.error(e);
@@ -394,22 +439,39 @@ export function TemplateMappingPrefillEditDialog({
                                 <span className="font-mono text-xs">ach_authorization</span>.
                             </p>
                         ) : (
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                {editorRows.map((r) => (
-                                    <div key={r.id} className="space-y-1.5">
-                                        <Label htmlFor={`tmpl-field-${r.id}`} className="text-xs font-medium">
-                                            {r.label}
-                                        </Label>
-                                        <Input
-                                            id={`tmpl-field-${r.id}`}
-                                            value={fieldValues[r.id] ?? ""}
-                                            onChange={(e) => {
-                                                const next = e.target.value;
-                                                setFieldValues((prev) =>
-                                                    syncSiblingBankFields(prev, r.id, next),
-                                                );
-                                            }}
-                                        />
+                            <div className="space-y-5">
+                                {groupedEditorRows.map((group, groupIndex) => (
+                                    <div
+                                        key={`${groupIndex}-${group.key || "ungrouped"}`}
+                                        className="space-y-3"
+                                    >
+                                        {group.label ? (
+                                            <p className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
+                                                {group.label}
+                                            </p>
+                                        ) : null}
+                                        <div className="grid gap-3 sm:grid-cols-2">
+                                            {group.rows.map((r) => (
+                                                <div key={r.id} className="space-y-1.5">
+                                                    <Label
+                                                        htmlFor={`tmpl-field-${r.id}`}
+                                                        className="text-xs font-medium"
+                                                    >
+                                                        {r.label}
+                                                    </Label>
+                                                    <Input
+                                                        id={`tmpl-field-${r.id}`}
+                                                        value={fieldValues[r.id] ?? ""}
+                                                        onChange={(e) => {
+                                                            const next = e.target.value;
+                                                            setFieldValues((prev) =>
+                                                                syncSiblingBankFields(prev, r.id, next),
+                                                            );
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
                                 ))}
                             </div>

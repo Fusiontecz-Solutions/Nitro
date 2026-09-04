@@ -289,6 +289,10 @@ const Applications = () => {
     hasLoadedSummaryOnce,
     lastSummaryFetchedAt,
   } = useSelector((state: RootState) => state.operationsDashboard);
+  const statsLastFetchedAt = useSelector(
+    (state: RootState) => state.applicationStats.lastFetchedAt,
+  );
+  const statsData = useSelector((state: RootState) => state.applicationStats.data);
 
   const summaryPrefetchFresh =
     hasLoadedSummaryOnce && isShellPrefetchFresh(lastSummaryFetchedAt);
@@ -539,6 +543,7 @@ const Applications = () => {
     const id =
       app.applicationId != null ? String(app.applicationId) : String(app._id ?? "");
     if (id) prefetchApplicationDetail(id);
+    void import("@/pages/applications/applicationDetails/ApplicationDetails");
   }, []);
 
   const handleToggleApplicationProgress = useCallback((rowId: string) => {
@@ -1204,7 +1209,6 @@ const Applications = () => {
   const listFetchParams = useMemo(
     (): GetApplicationsParams => ({
       ...listRequestParamsForKey,
-      clearListOnFetch: true,
     }),
     [listRequestParamsForKey],
   );
@@ -1410,10 +1414,11 @@ const Applications = () => {
     sessionRoleKey,
   ]);
 
-  // Fetch stats for dashboard
+  // Fetch stats only when the shell snapshot is stale.
   useEffect(() => {
+    if (statsData && isShellPrefetchFresh(statsLastFetchedAt)) return;
     dispatch(getApplicationStats());
-  }, [dispatch]);
+  }, [dispatch, statsData, statsLastFetchedAt]);
 
   // Handle delete success/error (single delete only; bulk delete shows one toast in handleBulkDelete)
   useEffect(() => {
@@ -1446,6 +1451,7 @@ const Applications = () => {
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+    setRowSelection({});
   }, [dashboardStateFilter, statusFilter, underwriterPoolTab]);
 
   useEffect(() => {

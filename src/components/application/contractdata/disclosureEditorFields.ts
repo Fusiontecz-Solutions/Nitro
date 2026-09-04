@@ -162,14 +162,25 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     ],
     disclosure_term_days: ["disclosure_term_days", "estimated_term", "estimated_number_of_payement", "estimated_time_periodic_paymement"],
     disclosure_broker_fee: ["disclosure_broker_fee", "appendix_underwriting_fees"],
-    disclosure_page3_line_1: ["disclosure_page3_line_1"],
-    disclosure_page3_line_2: ["disclosure_page3_line_2"],
+    disclosure_page3_line_1: [
+        "disclosure_page3_line_1",
+        "disclosure_fees_deducted",
+        "disclosure_origination_fee",
+    ],
+    disclosure_page3_line_2: [
+        "disclosure_page3_line_2",
+        "disclosure_page3_line_2_p3",
+        "refinance_amount",
+    ],
     disclosure_page3_subtotal: ["disclosure_page3_subtotal"],
     disclosure_page3_net: ["disclosure_page3_net"],
-    disclosure_page3_third_parties: ["disclosure_page3_third_parties"],
-    disclosure_page3_3a: ["disclosure_page3_3a"],
-    disclosure_page3_3b: ["disclosure_page3_3b"],
-    disclosure_page3_3c: ["disclosure_page3_3c"],
+    disclosure_page3_third_parties: [
+        "disclosure_page3_third_parties",
+        "disclosure_page3_third_parties_p3",
+    ],
+    disclosure_page3_3a: ["disclosure_page3_3a", "disclosure_page3_3a_p3"],
+    disclosure_page3_3b: ["disclosure_page3_3b", "disclosure_page3_3b_p3"],
+    disclosure_page3_3c: ["disclosure_page3_3c", "disclosure_page3_3c_p3"],
     previous_lender_name: ["previous_lender_name"],
     disclosure_payment_frequency: [
         "disclosure_payment_frequency",
@@ -223,6 +234,74 @@ function parseDisclosurePrefillMoney(value: unknown): number | undefined {
     return Number.isFinite(n) ? n : undefined;
 }
 
+const DISCLOSURE_PAGE3_SIGNNOW_P3_IDS = [
+    "disclosure_page3_line_2",
+    "disclosure_page3_third_parties",
+    "disclosure_page3_3a",
+    "disclosure_page3_3b",
+    "disclosure_page3_3c",
+] as const;
+
+function stripSignNowPageSuffix(key: string): string {
+    return String(key || "")
+        .trim()
+        .replace(/_p\d+$/i, "");
+}
+
+function disclosureEditorIdFromSavedKey(key: string): string {
+    const k = String(key || "").trim();
+    if (!k) return k;
+    const mapped = PDF_TO_EDITOR_FIELD_ID.get(k);
+    if (mapped) return mapped;
+    const stripped = stripSignNowPageSuffix(k);
+    if (stripped !== k) {
+        const mappedStripped = PDF_TO_EDITOR_FIELD_ID.get(stripped);
+        if (mappedStripped) return mappedStripped;
+        if (DISCLOSURE_EDITOR_FIELD_CATALOG.some((field) => field.id === stripped)) {
+            return stripped;
+        }
+    }
+    return k;
+}
+
+/** Calculator defaults that must not overwrite a value typed in Verify Prefill. */
+export function isWeakDisclosurePage3PrefillValue(fieldId: string, value: string): boolean {
+    const v = String(value ?? "").trim();
+    if (!v) return true;
+    const canon = stripSignNowPageSuffix(fieldId).toLowerCase();
+    if (/^n\/a$/i.test(v)) {
+        return (
+            /^disclosure_page3_3[abc]$/.test(canon) ||
+            canon === "disclosure_page3_third_parties" ||
+            canon === "disclosure_page3_line_2"
+        );
+    }
+    if (canon === "disclosure_page3_third_parties" || canon === "disclosure_page3_line_2") {
+        return parseDisclosurePrefillMoney(v) === 0;
+    }
+    return false;
+}
+
+function pickStrongerDisclosurePrefillValue(
+    fieldId: string,
+    current: string,
+    incoming: string,
+): string {
+    const cur = String(current ?? "").trim();
+    const next = String(incoming ?? "").trim();
+    if (!cur) return next;
+    if (!next) return cur;
+    if (isWeakDisclosurePage3PrefillValue(fieldId, cur) && !isWeakDisclosurePage3PrefillValue(fieldId, next)) {
+        return next;
+    }
+    const existingNum = parseDisclosurePrefillMoney(cur);
+    const incomingNum = parseDisclosurePrefillMoney(next);
+    if (existingNum === 0 && incomingNum !== undefined && incomingNum > 0) {
+        return next;
+    }
+    return cur;
+}
+
 /** Collapse legacy PDF-key blobs into canonical editor keys for the form UI. */
 export function collapsePdfFieldsToDisclosureEditorValues(
     saved: Record<string, string> | null | undefined,
@@ -232,14 +311,16 @@ export function collapsePdfFieldsToDisclosureEditorValues(
 
     // Canonical calculator / editor keys always win over legacy PDF tab ids.
     for (const field of DISCLOSURE_EDITOR_FIELD_CATALOG) {
-        const v = String(raw[field.id] ?? "").trim();
+        const catalogV = String(raw[field.id] ?? "").trim();
+        const p3V = String(raw[`${field.id}_p3`] ?? "").trim();
+        const v = pickStrongerDisclosurePrefillValue(field.id, catalogV, p3V);
         if (v) out[field.id] = v;
     }
 
     for (const [key, value] of Object.entries(raw)) {
         const v = String(value ?? "").trim();
         if (!v) continue;
-        const editorId = PDF_TO_EDITOR_FIELD_ID.get(key) ?? key;
+        const editorId = disclosureEditorIdFromSavedKey(key);
         // Utah broker fee: never let legacy `appendix_underwriting_fees` (origination) clobber explicit broker fee.
         if (
             editorId === "disclosure_broker_fee" &&
@@ -253,16 +334,7 @@ export function collapsePdfFieldsToDisclosureEditorValues(
             out[editorId] = v;
             continue;
         }
-        // Prefer a non-zero amount over a stale "0.00" on a duplicate PDF alias key.
-        const existingNum = parseDisclosurePrefillMoney(existing);
-        const incomingNum = parseDisclosurePrefillMoney(v);
-        if (
-            existingNum === 0 &&
-            incomingNum !== undefined &&
-            incomingNum > 0
-        ) {
-            out[editorId] = v;
-        }
+        out[editorId] = pickStrongerDisclosurePrefillValue(editorId, existing, v);
     }
 
     if (!out.funder_name) {
@@ -399,6 +471,11 @@ export function expandDisclosureEditorValuesToPdfFields(
     if (!String(out.disclosure_page3_3a ?? "").trim()) out.disclosure_page3_3a = "N/A";
     if (!String(out.disclosure_page3_3b ?? "").trim()) out.disclosure_page3_3b = "N/A";
     if (!String(out.disclosure_page3_3c ?? "").trim()) out.disclosure_page3_3c = "N/A";
+    // SignNow unique names are `*_p3` on the Florida disclosure PDF.
+    for (const editorId of DISCLOSURE_PAGE3_SIGNNOW_P3_IDS) {
+        const v = String(out[editorId] ?? "").trim();
+        if (v) out[`${editorId}_p3`] = v;
+    }
     if (!String(out.previous_lender_name ?? "").trim()) {
         const refiLine = parseDisclosurePrefillMoney(
             editorValues.disclosure_page3_line_2 ?? out.disclosure_page3_line_2,
@@ -563,6 +640,7 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
             | "brokerFeePaidByFunder"
             | "brokerFeePaidByMerchant"
             | "state"
+            | "includeWireFee"
         >;
     },
 ): Record<string, string> {
@@ -574,12 +652,6 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
         .trim()
         .toLowerCase();
     const isUtah = isUtahDisclosureState(stateKey);
-    const isCaOrNy =
-        stateKey === "california" ||
-        stateKey === "ca" ||
-        stateKey === "new york" ||
-        stateKey === "ny" ||
-        stateKey === "new_york";
 
     const purchasePrice =
         options?.inputs?.purchasePrice != null && options.inputs.purchasePrice > 0
@@ -594,30 +666,32 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
         metrics.actualDisbursement ?? metrics.recipientFunds,
     );
     const isRefinance = Boolean(metrics.isRefinance);
+    const includeWireFee = options?.inputs?.includeWireFee !== false;
     /**
-     * Origination on PDF = applicable fee + $50.
-     * Prefer calculator inputs (applicable); else back-solve from funding − net (already includes $50).
+     * Origination on PDF = applicable fee + optional $25 wire fee.
+     * Prefer calculator inputs (applicable); else back-solve from funding − net.
      */
     const originationFee =
         options?.inputs?.originationFee != null && options.inputs.originationFee >= 0
-            ? applyDisclosurePlatformFee(options.inputs.originationFee)
+            ? applyDisclosurePlatformFee(options.inputs.originationFee, includeWireFee)
             : purchasePrice > 0
               ? Math.max(
-                    DISCLOSURE_PLATFORM_FEE_USD,
+                    includeWireFee ? DISCLOSURE_PLATFORM_FEE_USD : 0,
                     Math.round((purchasePrice - netFunding) * 100) / 100,
                 )
-              : DISCLOSURE_PLATFORM_FEE_USD;
+              : includeWireFee
+                ? DISCLOSURE_PLATFORM_FEE_USD
+                : 0;
     const brokerFeeTotal =
         (options?.inputs?.brokerFeePaidByFunder ?? 0) +
         (options?.inputs?.brokerFeePaidByMerchant ?? 0);
 
     /**
-     * Purchase Price / Funding Amount = contract funding.
-     * CA/NY “funding provided” boxes stay net (Guide); FL-group provided = funding.
-     * Net Funds / recipient = funding − (fee + $50).
+     * Funding Provided (main box) = contract / purchase price.
+     * "Provided to you directly" = net after fees (REFI: actual disbursement).
      */
-    const fundingProvidedPrimary = isCaOrNy ? netFunding : purchasePrice;
-    const fundingProvidedDirect = isRefinance ? actualDisbursement : fundingProvidedPrimary;
+    const fundingProvidedPrimary = purchasePrice;
+    const fundingProvidedDirect = isRefinance ? actualDisbursement : netFunding;
     const page3AmountGiven = isRefinance ? actualDisbursement : netFunding;
     const frequencyLabel = formatDisclosurePaymentFrequencyLabel(
         options?.inputs?.frequency ?? "",
@@ -669,7 +743,7 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
         funding_provided_direct: formatDisclosureUsd(fundingProvidedDirect),
         disclosure_fees_deducted: formatDisclosureUsd(originationFee),
         disclosure_origination_fee: formatDisclosureUsd(originationFee),
-        disclosure_apr: formatDisclosurePercent(metrics.estimatedAnnualPercentageRate),
+        disclosure_apr: formatDisclosurePercent(metrics.estimatedAnnualPercentageRate, ""),
         disclosure_finance_charge: formatDisclosureUsd(metrics.financeCharge),
         /** Receivables = repayment amount. */
         disclosure_total_payment: formatDisclosureUsd(metrics.estimatedTotalPayment),

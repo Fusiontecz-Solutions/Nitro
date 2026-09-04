@@ -123,6 +123,20 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('react-dom') || id.includes('/react/') || id.includes('react-router') || id.includes('react-redux')) {
+            return 'vendor-react';
+          }
+          if (id.includes('@tanstack')) return 'vendor-query';
+          if (id.includes('@mui')) return 'vendor-mui';
+          if (id.includes('recharts') || id.includes('framer-motion')) return 'vendor-charts';
+          if (id.includes('pdfjs') || id.includes('react-pdf')) return 'vendor-pdf';
+        },
+      },
+    },
   },
   resolve: {
     alias: {

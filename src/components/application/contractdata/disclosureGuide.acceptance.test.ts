@@ -57,8 +57,8 @@ test("TEST 1 No Refi + Daily core money", () => {
         businessAddress: "1 Main St",
     });
     assert.equal(m.dealType, "NO_REFI");
-    assert.equal(m.originationFee, 10_050);
-    assert.equal(m.netContractedFunding, 89_950);
+    assert.equal(m.originationFee, 10_025);
+    assert.equal(m.netContractedFunding, 89_975);
     assert.equal(m.totalPayback, 150_000);
     assert.equal(m.financeCharge, 50_000);
     assert.equal(m.estimatedMonthlyCost, 30_000);
@@ -81,7 +81,7 @@ test("TEST 2 No Refi + Weekly monthly cost", () => {
         businessName: "Biz LLC",
         businessAddress: "1 Main St",
     });
-    assert.equal(m.netContractedFunding, 89_950);
+    assert.equal(m.netContractedFunding, 89_975);
     assert.equal(m.totalPayback, 150_000);
     assert.equal(m.financeCharge, 50_000);
     assert.equal(m.estimatedMonthlyCost, 30_000);
@@ -108,8 +108,8 @@ test("TEST 3 California REFI Daily funding L/R", () => {
         averageMonthlyRevenue: 80_000,
     });
     assert.equal(m.dealType, "REFI");
-    assert.equal(m.netContractedFunding, 89_950);
-    assert.equal(m.actualDisbursement, 64_950);
+    assert.equal(m.netContractedFunding, 89_975);
+    assert.equal(m.actualDisbursement, 64_975);
     assert.equal(m.totalPayback, 150_000);
     assert.equal(m.financeCharge, 50_000);
     assert.equal(m.estimatedMonthlyCost, 30_000);
@@ -136,7 +136,7 @@ test("TEST 3 California REFI Daily funding L/R", () => {
         signatureDate: "08/11/2026",
     });
     const map = fieldMap(fields);
-    assert.equal(map.funding_provided, "90000.00");
+    assert.equal(map.funding_provided, "100000.00");
     assert.equal(map.funding_provided_direct, "65000.00");
 });
 
@@ -158,8 +158,8 @@ test("TEST 4 Connecticut REFI disbursement", () => {
         businessName: "Biz LLC",
         businessAddress: "1 Main St",
     });
-    assert.equal(m.netContractedFunding, 89_950);
-    assert.equal(m.actualDisbursement, 39_950);
+    assert.equal(m.netContractedFunding, 89_975);
+    assert.equal(m.actualDisbursement, 39_975);
     assert.equal(m.totalPayback, 150_000);
     assert.equal(m.financeCharge, 50_000);
 
@@ -355,8 +355,8 @@ test("Disclosure metrics finance charge = payback - contract", () => {
     assert.equal(m.financeCharge, 50_000);
     assert.equal(m.estimatedPayment, 1_500);
     assert.equal(m.estimatedMonthlyCost, 30_000);
-    assert.equal(m.netContractedFunding, 89_950);
-    assert.equal(m.recipientFunds, 89_950);
+    assert.equal(m.netContractedFunding, 89_975);
+    assert.equal(m.recipientFunds, 89_975);
 });
 
 test("CA REFI page-3 itemization", () => {
@@ -365,11 +365,11 @@ test("CA REFI page-3 itemization", () => {
         originationFee: 10_000,
         previousRefiBalance: 25_000,
     });
-    assert.equal(p3.recipientFunds, "65000.00");
-    assert.equal(p3.page3Line1, "10000.00");
-    assert.equal(p3.page3Line2, "25000.00");
-    assert.equal(p3.page3Subtotal, "100000.00");
-    assert.equal(p3.page3Net, "90000.00");
+    assert.equal(p3.recipientFunds, "65,000.00");
+    assert.equal(p3.page3Line1, "10,000.00");
+    assert.equal(p3.page3Line2, "25,000.00");
+    assert.equal(p3.page3Subtotal, "100,000.00");
+    assert.equal(p3.page3Net, "90,000.00");
 });
 
 // --- Guide: CA/NY daily estimated term = calendar days (weeks × 7) ---

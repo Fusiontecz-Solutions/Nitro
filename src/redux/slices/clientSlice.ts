@@ -171,10 +171,16 @@ export const clientDetailSlice = createSlice({
     },
     extraReducers: (builder) => {
         builder
-            .addCase(getClientByClientId.pending, (state) => {
-                state.loading = true;
-                state.currentClientId = null;
+            .addCase(getClientByClientId.pending, (state, action) => {
+                const requested = String(action.meta.arg ?? "");
                 state.error = null;
+                if (state.data && state.currentClientId && state.currentClientId === requested) {
+                    return;
+                }
+                state.loading = true;
+                if (state.currentClientId !== requested) {
+                    state.currentClientId = null;
+                }
             })
             .addCase(getClientByClientId.fulfilled, (state, action) => {
                 state.loading = false;
@@ -189,10 +195,16 @@ export const clientDetailSlice = createSlice({
                 state.error = action.payload as string;
                 state.success = false;
             })
-            .addCase(getClientById.pending, (state) => {
-                state.loading = true;
-                state.currentClientId = null;
+            .addCase(getClientById.pending, (state, action) => {
+                const requested = String(action.meta.arg ?? "");
                 state.error = null;
+                if (state.data && state.currentClientId && state.currentClientId === requested) {
+                    return;
+                }
+                state.loading = true;
+                if (state.currentClientId !== requested) {
+                    state.currentClientId = null;
+                }
             })
             .addCase(getClientById.fulfilled, (state, action) => {
                 state.loading = false;

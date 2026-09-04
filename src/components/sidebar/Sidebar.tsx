@@ -38,6 +38,7 @@ import { clearHttpGetCache } from "@/lib/httpGetCache";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
+import { prefetchCrmPage } from "@/lib/prefetchCrmPage";
 import {
   getPipelineCountBadgeClass,
   resolveApplicationsPipelineCount,
@@ -409,6 +410,7 @@ const Sidebar = () => {
                           >
                             <Link
                               to={to}
+                              onMouseEnter={() => prefetchCrmPage(to)}
                               className="flex w-full min-w-0 items-center gap-2 group-data-[collapsible=icon]:w-auto group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0"
                             >
                               <span className="relative shrink-0">
@@ -525,6 +527,7 @@ const Sidebar = () => {
                         >
                           <Link
                             to={to}
+                            onMouseEnter={() => prefetchCrmPage(to)}
                             className="flex w-full min-w-0 items-center gap-2 group-data-[collapsible=icon]:w-auto group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0"
                           >
                             <span className="relative shrink-0">

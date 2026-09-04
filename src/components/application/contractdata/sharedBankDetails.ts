@@ -207,6 +207,23 @@ export function extractSharedBankDetailsFromPrefill(
  * Prefer the application BankDetail (and contract / ACH copies) over per-document
  * saved overrides so one stored bank fills Monthly Fee, ACH, Exhibit C, etc.
  */
+export function bankSlotFromRecords(
+    records: Array<Record<string, unknown> | null | undefined>,
+    index: number,
+): SharedBankDetails {
+    const seen = new Set<string>();
+    const banks: SharedBankDetails[] = [];
+    for (const row of records) {
+        const bank = extractSharedBankDetailsFromRecord(row ?? null);
+        if (!hasSharedBankDetails(bank)) continue;
+        const key = `${bank.bankName}|${bank.routingNumber}|${bank.accountNumber}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        banks.push(bank);
+    }
+    return banks[index] ?? emptySharedBankDetails();
+}
+
 export function overlayCanonicalBankOnPrefillRows(
     rows: ContractPrefillField[],
     sources: {
@@ -216,10 +233,15 @@ export function overlayCanonicalBankOnPrefillRows(
         mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     },
 ): ContractPrefillField[] {
+    const paymentBank =
+        sources.contract?.paymentBank && typeof sources.contract.paymentBank === "object"
+            ? (sources.contract.paymentBank as Record<string, unknown>)
+            : null;
     const bank = mergeSharedBankDetails(
         extractSharedBankDetailsFromRecord(sources.ach ?? null),
         extractSharedBankDetailsFromPrefill(sources.mainPrefillOverrides ?? null),
         extractSharedBankDetailsFromRecord(sources.contract ?? null),
+        extractSharedBankDetailsFromRecord(paymentBank),
         extractSharedBankDetailsFromRecord(sources.bankDetail ?? null),
     );
     if (!hasSharedBankDetails(bank) || rows.length === 0) return rows;

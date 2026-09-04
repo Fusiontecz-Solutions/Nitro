@@ -30,13 +30,16 @@ const DialogOverlay = React.forwardRef<
 ))
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
+const isToastEventTarget = (target: EventTarget | null) =>
+  target instanceof Element && Boolean(target.closest(".Toastify"));
+
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
     showCloseButton?: boolean;
     overlayClassName?: string;
   }
->(({ className, children, showCloseButton = true, overlayClassName, ...props }, ref) => (
+>(({ className, children, showCloseButton = true, overlayClassName, onPointerDownOutside, onInteractOutside, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay className={overlayClassName} />
     <DialogPrimitive.Content
@@ -45,6 +48,20 @@ const DialogContent = React.forwardRef<
         "fixed left-[50%] top-[50%] z-[10001] grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-border dark:border-gray-700 bg-background dark:bg-card px-6 py-3 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
         className
       )}
+      onPointerDownOutside={(event) => {
+        if (isToastEventTarget(event.target)) {
+          event.preventDefault();
+          return;
+        }
+        onPointerDownOutside?.(event);
+      }}
+      onInteractOutside={(event) => {
+        if (isToastEventTarget(event.target)) {
+          event.preventDefault();
+          return;
+        }
+        onInteractOutside?.(event);
+      }}
       {...props}
     >
       {children}

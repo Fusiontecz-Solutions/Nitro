@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { RouterProvider, createBrowserRouter } from 'react-router';
 import { Provider } from 'react-redux';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -24,13 +24,24 @@ function AppContent() {
 
   return (
     <>
-      <RouterProvider router={router} />
+      <Suspense
+        fallback={
+          <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
+            Loading...
+          </div>
+        }
+      >
+        <RouterProvider router={router} />
+      </Suspense>
       <ToastContainer
         position="top-right"
         autoClose={4000}
+        closeOnClick
+        pauseOnHover
+        pauseOnFocusLoss={false}
         draggable
         theme={resolvedTheme === 'dark' ? 'dark' : 'light'}
-        style={{ zIndex: 10050 }}
+        style={{ zIndex: 10050, pointerEvents: 'auto' }}
       />
     </>
   );

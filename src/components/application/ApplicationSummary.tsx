@@ -62,10 +62,10 @@ const ApplicationSummary = ({
     const applicationsListRows = useSelector(
         (state: RootState) => state.applications.data,
     );
-    const { data: offerDecisionData, loading: offerDecisionLoading } = useSelector(
+    const { data: offerDecisionData, loading: offerDecisionLoading, loadedForApplicationId: offerLoadedFor } = useSelector(
         (state: RootState) => state.offerDecision,
     );
-    const { data: termsOffers, loading: termsOffersLoading } = useSelector(
+    const { data: termsOffers, loading: termsOffersLoading, loadedForApplicationId: termsLoadedFor } = useSelector(
         (state: RootState) => state.termsOffers,
     );
     const { resolvedTheme } = useTheme();
@@ -104,14 +104,18 @@ const ApplicationSummary = ({
 
     useEffect(() => {
         if (!apiApplicationKey) return;
-        void dispatch(getOfferDecisionByApplication(apiApplicationKey));
-        void dispatch(getTermsOffers({ application: apiApplicationKey }));
-    }, [apiApplicationKey, dispatch]);
+        if (offerLoadedFor !== apiApplicationKey) {
+            void dispatch(getOfferDecisionByApplication(apiApplicationKey));
+        }
+        if (termsLoadedFor !== apiApplicationKey) {
+            void dispatch(getTermsOffers({ application: apiApplicationKey }));
+        }
+    }, [apiApplicationKey, dispatch, offerLoadedFor, termsLoadedFor]);
 
     useEffect(() => {
         if (!apiApplicationKey) return;
         const onOfferDecisionUpdated = (event: Event) => {
-            const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+            const detail = (event as CustomEvent<{ applicationId?: string; skipRefetch?: boolean }>).detail;
             if (
                 !offerDecisionUpdateMatchesApplication(
                     detail?.applicationId,
@@ -120,6 +124,7 @@ const ApplicationSummary = ({
             ) {
                 return;
             }
+            if (detail?.skipRefetch) return;
             void dispatch(getOfferDecisionByApplication(apiApplicationKey));
             void dispatch(getTermsOffers({ application: apiApplicationKey }));
         };

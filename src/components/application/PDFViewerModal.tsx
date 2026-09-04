@@ -128,6 +128,7 @@ import {
     resolveEffectiveDocuSignSignerEmail,
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
+    coercePaymentFrequencyLabel,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
     type ContractPrefillField,
@@ -147,6 +148,10 @@ import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
 import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
+import {
+    filterBankDetailsForApplication,
+    hasCompleteBankDetailRow,
+} from "@/lib/bankDetailUtils";
 import RequestedDocumentUploadRows, {
     getRequestedDocumentLabel,
 } from "./RequestedDocumentUploadRows";
@@ -280,6 +285,8 @@ import {
     isSignNowLoginWebappUrl,
     signNowEmbeddedReturnUrl,
 } from "./contractdata/contractTemplatePreview";
+
+const SIGNNOW_REVIEW_TOAST_ID = "signnow-review-hint";
 import {
     getTemplateRoleEmailFromRow,
     getTemplateRoleLabel,
@@ -307,7 +314,7 @@ import {
     getBoldSignTemplateMappingRef,
     loadBoldSignTemplatePdfBlob,
 } from "./contractdata/boldSignTemplateDocument";
-import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
+import { axiosDelete, axiosGet, axiosPost, axiosPut } from "@/redux/axios";
 
 /** Fingerprint of saved prefill + live offer money — patch open DocuSign draft when either changes. */
 function docuSignPrefillDraftFingerprint(input: {
@@ -1296,6 +1303,15 @@ function formatDisplayValueForUs(fieldKey: string, value: unknown): string {
         return toUsDateDisplay(s);
     }
 
+    if (
+        key === "frequency" ||
+        key.includes("paymentterm") ||
+        key.includes("payment_term") ||
+        key.includes("paymentfrequency")
+    ) {
+        return coercePaymentFrequencyLabel(s) || s;
+    }
+
     const moneyLike =
         key.includes("amount") ||
         key.includes("price") ||
@@ -1698,6 +1714,8 @@ const PDFViewerModal = ({
     const signNowIframeBaselineLoadRef = useRef(0);
     const signNowIframeDetectReadyRef = useRef(false);
     const signNowCompleteToastShownRef = useRef(false);
+    /** Skip "send existing draft" so Review can remint after Owner finish. */
+    const signNowForceFreshReviewRef = useRef(false);
     type ContractWizardStep = "documents" | "info" | "summary" | "sent";
     const [activeStep, setActiveStep] = useState<ContractWizardStep>("documents");
     const [sentAt, setSentAt] = useState<Date | null>(null);
@@ -1713,6 +1731,17 @@ const PDFViewerModal = ({
     /** After user explicitly opens Documents during this modal session, stop auto-switching Documents → Sent. */
     const didSuggestSentTabThisOpenRef = useRef(false);
     const awaitingDocuSignSendRef = useRef(false);
+    const resetSignNowReviewUi = useCallback(() => {
+        setSignNowEmbedUrl(null);
+        setSignNowReviewComplete(false);
+        setSignNowEmbedBlocked(false);
+        signNowIframeLoadCountRef.current = 0;
+        signNowIframeBaselineLoadRef.current = 0;
+        signNowIframeDetectReadyRef.current = false;
+        signNowCompleteToastShownRef.current = false;
+        awaitingDocuSignSendRef.current = false;
+        toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
+    }, []);
     const refreshContractSigningStateRef = useRef<
         (
             silent?: boolean,
@@ -1728,6 +1757,10 @@ const PDFViewerModal = ({
         if (!canGoPreviousStep) return;
         const prev = stepSequence[activeStepIndex - 1];
         if (prev === "documents") didSuggestSentTabThisOpenRef.current = true;
+        if (prev === "documents" || prev === "info") {
+            signNowForceFreshReviewRef.current = false;
+            resetSignNowReviewUi();
+        }
         setActiveStep(prev);
     };
     const goToNextStep = () => {
@@ -2783,15 +2816,30 @@ const PDFViewerModal = ({
     const contractPrefillRecords: ContractPrefillContractRecords = useMemo(() => {
         const firstRow = (data: unknown): Record<string, unknown> | null =>
             Array.isArray(data) && data.length ? (data[0] as Record<string, unknown>) : null;
-        const rows = Array.isArray(bankDetailsList) ? bankDetailsList : [];
-        const latestBank =
-            rows.length > 0
-                ? [...rows].sort((a, b) => {
-                      const ta = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime();
-                      const tb = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime();
-                      return ta - tb;
-                  })[0]
-                : null;
+        const bankDetailApplicationKeys = [
+            applicationIdForLookup,
+            applicationMongoId,
+            numericApplicationId,
+            (applicationData as { applicationId?: number } | null)?.applicationId,
+        ];
+        const filteredBanks = filterBankDetailsForApplication(
+            Array.isArray(bankDetailsList) ? bankDetailsList : [],
+            bankDetailApplicationKeys,
+        );
+        const banksOldestFirst = [...filteredBanks].sort((a, b) => {
+            const ta = new Date(a.createdAt ?? a.updatedAt ?? 0).getTime();
+            const tb = new Date(b.createdAt ?? b.updatedAt ?? 0).getTime();
+            return ta - tb;
+        });
+        const mainBank =
+            banksOldestFirst.find(hasCompleteBankDetailRow) ?? banksOldestFirst[0] ?? null;
+        const mapBank = (bank: (typeof banksOldestFirst)[number]) => ({
+            _id: bank._id,
+            id: bank._id ?? (bank as { id?: string }).id,
+            bankName: bank.bankName,
+            accountNumber: bank.accountNumber,
+            routingNumber: bank.routingNumber,
+        });
         const contractRow = resolvedContract as Record<string, unknown> | null;
         const mergedContract =
             contractRow && typeof contractRow === "object"
@@ -2804,22 +2852,29 @@ const PDFViewerModal = ({
                           ),
                           contractPrefillFromDb,
                       );
-                      return Object.keys(o).length > 0 ? { ...contractRow, ...o } : contractRow;
+                      const next =
+                          Object.keys(o).length > 0 ? { ...contractRow, ...o } : { ...contractRow };
+                      if (
+                          mainBank &&
+                          (next.paymentBank == null || typeof next.paymentBank !== "object")
+                      ) {
+                          next.paymentBank = mapBank(mainBank);
+                      }
+                      return Object.keys(next).length > 0 ? next : contractRow;
                   })()
                 : null;
         return {
             contract: mergedContract,
             ach: firstRow(achListState.data),
-            bankDetail: latestBank
-                ? {
-                      _id: latestBank._id,
-                      id: latestBank._id ?? (latestBank as { id?: string }).id,
-                      bankName: latestBank.bankName,
-                      accountNumber: latestBank.accountNumber,
-                      routingNumber: latestBank.routingNumber,
-                  }
-                : null,
+            achs: Array.isArray(achListState.data)
+                ? (achListState.data as Record<string, unknown>[])
+                : [],
+            bankDetail: mainBank ? mapBank(mainBank) : null,
+            bankDetails: banksOldestFirst.map(mapBank),
             addendum: firstRow(addendumListState.data),
+            addendums: Array.isArray(addendumListState.data)
+                ? (addendumListState.data as Record<string, unknown>[])
+                : [],
             epo: firstRow(epoListState.data),
             owners: Array.isArray(ownerListState.data) ? ownerListState.data : [],
             guarantors: Array.isArray(guarantorListState.data) ? guarantorListState.data : [],
@@ -2833,6 +2888,10 @@ const PDFViewerModal = ({
         guarantorListState.data,
         resolvedContract,
         contractPrefillFromDb,
+        applicationIdForLookup,
+        applicationMongoId,
+        numericApplicationId,
+        applicationData,
     ]);
 
     const activeOwnerCountForPrefill = useMemo(
@@ -3024,6 +3083,7 @@ const PDFViewerModal = ({
         const liveMoneyIds = new Set(
             [
                 "purchase_amount",
+                "purchased_amount",
                 "purchase_price",
                 "remittance",
                 "refinance_amount",
@@ -3137,7 +3197,7 @@ const PDFViewerModal = ({
     useEffect(() => {
         if (!isOpen || !applicationIdForLookup) return;
         const onOfferDecisionUpdated = (event: Event) => {
-            const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+            const detail = (event as CustomEvent<{ applicationId?: string; skipRefetch?: boolean }>).detail;
             if (
                 !offerDecisionUpdateMatchesApplication(
                     detail?.applicationId,
@@ -3146,6 +3206,7 @@ const PDFViewerModal = ({
             ) {
                 return;
             }
+            if (detail?.skipRefetch) return;
             void dispatch(getOfferDecisionByApplication(applicationIdForLookup));
             void dispatch(getTermsOffers({ application: applicationIdForLookup }));
         };
@@ -3192,6 +3253,16 @@ const PDFViewerModal = ({
             uploadedPreviewUrlRef.current = null;
             setUploadedPreviewUrl(null);
             setPreviewingMainContract(false);
+            signNowForceFreshReviewRef.current = false;
+            setSignNowEmbedUrl(null);
+            setSignNowReviewComplete(false);
+            setSignNowEmbedBlocked(false);
+            signNowIframeLoadCountRef.current = 0;
+            signNowIframeBaselineLoadRef.current = 0;
+            signNowIframeDetectReadyRef.current = false;
+            signNowCompleteToastShownRef.current = false;
+            awaitingDocuSignSendRef.current = false;
+            toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
             return;
         }
         const propId = Number(contractId);
@@ -3503,6 +3574,8 @@ const PDFViewerModal = ({
     const addendumMappingsWriteInFlightRef = useRef(0);
     /** Latest user-intended addendum refs while writes are queued/in flight. */
     const addendumOptimisticRefsRef = useRef<string[] | null>(null);
+    const addendumPersistTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+    const flushAddendumMappingsRef = useRef<() => Promise<void>>(async () => {});
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
     effectiveContractIdRef.current = effectiveContractId;
@@ -4471,7 +4544,6 @@ const PDFViewerModal = ({
         const funderProfileId = String(
             persistedFunderProfileIdForApi(selectedFunderProfile) || selectedFunderProfileId || "",
         ).trim();
-        const state = String(pickUsStateForSelect(selectedState) || selectedState || "").trim();
         const contractIdNum = Number(resolvedContractId ?? contractId);
         const contractIdParam =
             Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : null;
@@ -4490,11 +4562,18 @@ const PDFViewerModal = ({
             setTenantContractCcDefaults(null);
         }
 
+        // Skip the slow contract-cc-defaults round trip when the funder profile
+        // already has CC emails — selecting a state used to refetch this (~5s).
+        if (profileCcEmails.length) {
+            return () => {
+                cancelled = true;
+            };
+        }
+
         void (async () => {
             try {
                 const data = await fetchContractCcDefaults({
                     funderName: funderName || null,
-                    state: state || null,
                     funderProfileId: funderProfileId || null,
                     contractId: contractIdParam,
                 });
@@ -4525,7 +4604,6 @@ const PDFViewerModal = ({
         selectedFunderProfile,
         selectedFunderProfileId,
         selectedFunderDefaultCcEmail,
-        selectedState,
         resolvedContractId,
         contractId,
     ]);
@@ -4642,6 +4720,7 @@ const PDFViewerModal = ({
     const handleSend = async () => {
         if (sendingLockRef.current || isSending) return;
         sendingLockRef.current = true;
+        await flushAddendumMappingsRef.current();
         if (!fileUrl) {
             sendingLockRef.current = false;
             return;
@@ -4664,9 +4743,14 @@ const PDFViewerModal = ({
             resolvedContract,
             sentAt,
         ).isOutForSignature;
+        const forceFreshSignNowReview = signNowForceFreshReviewRef.current;
+        if (forceFreshSignNowReview) {
+            signNowForceFreshReviewRef.current = false;
+        }
         const sendingOpenSignNowDraft =
             sendViaSignNowApi &&
             Boolean(signNowEmbedUrl || signNowReviewComplete) &&
+            !forceFreshSignNowReview &&
             Boolean(String(sessionEnvelopeId || linkedEnvelopeIdRef.current || "").trim());
         if (!canReviewAndSendCurrentPackage && !sendingOpenSignNowDraft) {
             sendingLockRef.current = false;
@@ -4785,7 +4869,11 @@ const PDFViewerModal = ({
                 const sessionEnv = outForSignatureBeforeSend
                     ? null
                     : String(sessionEnvelopeId || "").trim() || null;
-                if (sendViaSignNowApi && (signNowReviewComplete || signNowEmbedUrl)) {
+                if (
+                    sendViaSignNowApi &&
+                    (signNowReviewComplete || signNowEmbedUrl) &&
+                    !forceFreshSignNowReview
+                ) {
                     const envelopeId =
                         String(sessionEnvelopeId || linkedEnvelopeIdRef.current || "").trim();
                     if (!envelopeId) {
@@ -4794,6 +4882,11 @@ const PDFViewerModal = ({
                         );
                         return;
                     }
+                    // Drop the SignNow iframe before send so its polling XHRs
+                    // do not compete with the invite bake.
+                    flushSync(() => {
+                        setSignNowEmbedUrl(null);
+                    });
                     await axiosPost(
                         "/docusign/send-envelope",
                         {
@@ -4815,11 +4908,9 @@ const PDFViewerModal = ({
                     setSentAt(new Date());
                     setActiveStep("sent");
                     setPdfRightPaneTab("docusign");
-                    setSignNowEmbedUrl(null);
                     setSignNowReviewComplete(false);
                     onContractDocumentsChanged?.();
                     invalidateDocuSignPdfCache();
-                    void loadPrefilledPdfFromDocuSign(envelopeId);
                     void refreshContractSigningStateRef.current(true, {
                         syncDocuSign: false,
                         forceDocuSignSync: false,
@@ -4944,7 +5035,9 @@ const PDFViewerModal = ({
                         draftPreparedSignerRolesRef.current = signerFingerprintForSend;
                         draftPreparedOwnerCountRef.current = currentOwnerCount;
                         draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
-                        void persistContractEnvelopeHistory(envelopeId, "draft");
+                        if (!sendViaSignNowApi) {
+                            void persistContractEnvelopeHistory(envelopeId, "draft");
+                        }
                     }
                 }
 
@@ -4988,7 +5081,13 @@ const PDFViewerModal = ({
                     setSignNowReviewComplete(false);
                     toast.info(
                         "Review the contract in SignNow, then click Finish. You will stay in the CRM.",
-                        { autoClose: 10000 },
+                        {
+                            toastId: SIGNNOW_REVIEW_TOAST_ID,
+                            autoClose: 8000,
+                            closeOnClick: true,
+                            pauseOnHover: false,
+                            pauseOnFocusLoss: false,
+                        },
                     );
                     return;
                 }
@@ -5087,9 +5186,24 @@ const PDFViewerModal = ({
         }
     };
 
+    const handleBackToSignNow = () => {
+        if (sendingLockRef.current || isSending) return;
+        signNowForceFreshReviewRef.current = true;
+        resetSignNowReviewUi();
+        void handleSend();
+    };
+
+    const handleChangeDetailsBeforeSend = () => {
+        signNowForceFreshReviewRef.current = false;
+        resetSignNowReviewUi();
+        setActiveStep("info");
+        toast.info("Update the contract details, then click Review in SignNow before sending.");
+    };
+
     const markSignNowReviewComplete = useCallback(() => {
         setSignNowReviewComplete(true);
         awaitingDocuSignSendRef.current = false;
+        toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
         if (signNowCompleteToastShownRef.current) return;
         signNowCompleteToastShownRef.current = true;
         toast.success(
@@ -6206,8 +6320,18 @@ const PDFViewerModal = ({
         });
 
         const mappingId = linkedDisclosureMapping?.id;
-        const savedOverrides =
+        const fromState =
             mappingId != null ? documentTemplatePrefillByMappingId[mappingId] ?? null : null;
+        const fromContract =
+            mappingId != null
+                ? parseDocumentTemplatePrefillByMappingId(
+                      resolvedContract?.contractPrefillOverrides,
+                  )[mappingId] ?? null
+                : null;
+        const savedOverrides =
+            fromState && Object.keys(fromState).some((k) => String(fromState[k] ?? "").trim())
+                ? fromState
+                : fromContract;
 
         const disclosureFields = buildExpandedDisclosurePrefillFieldsForMapping({
             mappingRow: linkedDisclosureMapping,
@@ -6639,8 +6763,8 @@ const PDFViewerModal = ({
         didSuggestSentTabThisOpenRef.current = true;
     }, [isOpen, activeStep, resolvedContract, sentAt, sentStepUnlocked]);
 
-    /** Replace addendum mappings with the given template refs (multi-select, incremental). */
-    const setAddendumTemplateMappings = useCallback(
+    /** Replace addendum mappings with the given template refs (multi-select). */
+    const persistAddendumTemplateMappingsNow = useCallback(
         async (templateRefs: string[]) => {
             if (effectiveContractId == null) return;
             const nextRefs = [
@@ -6648,12 +6772,6 @@ const PDFViewerModal = ({
                     templateRefs.map((r) => String(r || "").trim()).filter(Boolean),
                 ),
             ];
-
-            // Optimistic UI — update checkboxes / badge / trigger label immediately.
-            const nextOpts = nextRefs.map((ref) => `bs:${ref}`);
-            addendumOptimisticRefsRef.current = nextRefs;
-            selectedAddendumOptionsRef.current = nextOpts;
-            setSelectedAddendumOptions(nextOpts);
 
             const applyLatestSelection = () => {
                 const latestRefs = addendumOptimisticRefsRef.current ?? nextRefs;
@@ -6665,70 +6783,51 @@ const PDFViewerModal = ({
             const run = async () => {
                 addendumMappingsWriteInFlightRef.current += 1;
                 try {
-                    const res = await axiosGet(
-                        `/contract/${effectiveContractId}/document-template-mappings`,
-                    );
-                    const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
+                    const latestRefs = [
+                        ...new Set(
+                            (addendumOptimisticRefsRef.current ?? nextRefs)
+                                .map((r) => String(r || "").trim())
+                                .filter(Boolean),
+                        ),
+                    ];
+                    const rows = linkedAddendumMappingsRef.current;
                     const addendumRows = rows.filter(
                         (row) => String(row.documentType || "").toLowerCase() === "addendum",
                     );
-
-                    const rowsByRef = new Map<string, ContractDocumentTemplateMappingRow[]>();
-                    for (const row of addendumRows) {
-                        const ref =
-                            getAddendumDropdownRef(row?.template) ||
-                            getBoldSignTemplateMappingRef(row?.template) ||
-                            "";
-                        if (!ref) continue;
-                        const list = rowsByRef.get(ref) ?? [];
-                        list.push(row);
-                        rowsByRef.set(ref, list);
-                    }
-
-                    const currentRefs = [...rowsByRef.keys()];
+                    const currentRefs = [
+                        ...new Set(
+                            addendumRows
+                                .map(
+                                    (row) =>
+                                        getAddendumDropdownRef(row?.template) ||
+                                        getBoldSignTemplateMappingRef(row?.template) ||
+                                        "",
+                                )
+                                .filter(Boolean),
+                        ),
+                    ];
                     const same =
-                        currentRefs.length === nextRefs.length &&
-                        nextRefs.every((ref) => currentRefs.includes(ref)) &&
-                        [...rowsByRef.values()].every((list) => list.length === 1);
+                        currentRefs.length === latestRefs.length &&
+                        latestRefs.every((ref) => currentRefs.includes(ref));
                     if (same) {
                         applyLatestSelection();
                         return;
                     }
 
-                    const deleteIds: string[] = [];
-                    for (const [ref, list] of rowsByRef) {
-                        if (!nextRefs.includes(ref)) {
-                            for (const row of list) deleteIds.push(row.id);
-                            continue;
-                        }
-                        // Keep one mapping per ref; drop duplicates.
-                        for (const row of list.slice(1)) deleteIds.push(row.id);
+                    const res = await axiosPut(
+                        `/contract/${effectiveContractId}/document-template-mappings`,
+                        {
+                            documentType: "addendum",
+                            templateRefs: latestRefs,
+                        },
+                    );
+                    const saved = (res?.data?.data ?? res?.data ?? []) as ContractDocumentTemplateMappingRow[];
+                    if (Array.isArray(saved) && saved.length >= 0) {
+                        setTemplateMappings(saved);
+                    } else {
+                        await fetchTemplateMappings();
                     }
-
-                    if (deleteIds.length) {
-                        await Promise.all(
-                            deleteIds.map((id) =>
-                                axiosDelete(
-                                    `/contract/${effectiveContractId}/document-template-mappings/${id}`,
-                                ),
-                            ),
-                        );
-                    }
-
-                    for (const ref of nextRefs) {
-                        const existing = rowsByRef.get(ref) ?? [];
-                        if (existing.length > 0) continue;
-                        await axiosPost(
-                            `/contract/${effectiveContractId}/document-template-mappings`,
-                            {
-                                documentType: "addendum",
-                                templateRef: ref,
-                            },
-                        );
-                    }
-
                     applyLatestSelection();
-                    await fetchTemplateMappings();
                 } catch (error: any) {
                     setDocumentUploadMessage(
                         error?.message || "Failed to update addendum template.",
@@ -6738,7 +6837,6 @@ const PDFViewerModal = ({
                     } catch {
                         /* ignore refetch errors */
                     }
-                    // Reconcile UI from server when this was the latest intent and no writes remain.
                     if (
                         addendumMappingsWriteInFlightRef.current <= 1 &&
                         addendumOptimisticRefsRef.current &&
@@ -6770,7 +6868,6 @@ const PDFViewerModal = ({
                         addendumMappingsWriteInFlightRef.current - 1,
                     );
                     if (addendumMappingsWriteInFlightRef.current === 0) {
-                        // Keep a newer queued intent; only clear when this write is still latest.
                         const latest = addendumOptimisticRefsRef.current;
                         const isLatestIntent =
                             latest != null &&
@@ -6791,6 +6888,53 @@ const PDFViewerModal = ({
             await queued;
         },
         [effectiveContractId, fetchTemplateMappings],
+    );
+
+    const flushPendingAddendumMappings = useCallback(async () => {
+        if (addendumPersistTimerRef.current != null) {
+            window.clearTimeout(addendumPersistTimerRef.current);
+            addendumPersistTimerRef.current = null;
+        }
+        const refs = addendumOptimisticRefsRef.current;
+        if (!refs || effectiveContractId == null) return;
+        await persistAddendumTemplateMappingsNow(refs);
+    }, [effectiveContractId, persistAddendumTemplateMappingsNow]);
+    flushAddendumMappingsRef.current = flushPendingAddendumMappings;
+
+    /** Replace addendum mappings with the given template refs (multi-select, incremental). */
+    const setAddendumTemplateMappings = useCallback(
+        async (templateRefs: string[], options?: { immediate?: boolean }) => {
+            if (effectiveContractId == null) return;
+            const nextRefs = [
+                ...new Set(
+                    templateRefs.map((r) => String(r || "").trim()).filter(Boolean),
+                ),
+            ];
+
+            const nextOpts = nextRefs.map((ref) => `bs:${ref}`);
+            addendumOptimisticRefsRef.current = nextRefs;
+            selectedAddendumOptionsRef.current = nextOpts;
+            setSelectedAddendumOptions(nextOpts);
+
+            if (options?.immediate) {
+                if (addendumPersistTimerRef.current != null) {
+                    window.clearTimeout(addendumPersistTimerRef.current);
+                    addendumPersistTimerRef.current = null;
+                }
+                await persistAddendumTemplateMappingsNow(nextRefs);
+                return;
+            }
+
+            if (addendumPersistTimerRef.current != null) {
+                window.clearTimeout(addendumPersistTimerRef.current);
+            }
+            addendumPersistTimerRef.current = window.setTimeout(() => {
+                addendumPersistTimerRef.current = null;
+                const latest = addendumOptimisticRefsRef.current ?? nextRefs;
+                void persistAddendumTemplateMappingsNow(latest);
+            }, 450);
+        },
+        [effectiveContractId, persistAddendumTemplateMappingsNow],
     );
 
     const toggleAddendumTemplateSelection = useCallback(
@@ -6865,9 +7009,7 @@ const PDFViewerModal = ({
                 });
                 if (includeState) params.set("state", normalizedState);
                 if (includeFrequency) params.set("frequency", normalizedFrequency);
-                const res = await axiosGet(`/contract/templates?${params.toString()}`, {
-                    skipCache: true,
-                });
+                const res = await axiosGet(`/contract/templates?${params.toString()}`);
                 return (res?.data?.data ?? res?.data ?? []) as DisclosureCatalogRow[];
             };
             const layoutFunderId =
@@ -6883,6 +7025,8 @@ const PDFViewerModal = ({
                     isRefinance,
                     platformDisclosureFunderIdRef.current,
                 );
+            const fromCatalog = pickFrom([]);
+            if (fromCatalog) return fromCatalog;
             try {
                 const withFreq = await fetchRows(true);
                 const fromFreq = pickFrom(Array.isArray(withFreq) ? withFreq : []);
@@ -7297,7 +7441,7 @@ const PDFViewerModal = ({
                         if (!selectedSame) setSelectedAddendumOptions(nextOpts);
                         return;
                     }
-                    await setAddendumTemplateMappings(preserveRefs);
+                    await setAddendumTemplateMappings(preserveRefs, { immediate: true });
                     return;
                 }
                 if (!options?.silent) {
@@ -7309,11 +7453,11 @@ const PDFViewerModal = ({
             }
 
             if (!wantedKinds.length && !keptExtraRefs.length) {
-                if (currentRefs.length) await setAddendumTemplateMappings([]);
+                if (currentRefs.length) await setAddendumTemplateMappings([], { immediate: true });
                 return;
             }
 
-            await setAddendumTemplateMappings(nextRefs);
+            await setAddendumTemplateMappings(nextRefs, { immediate: true });
         },
         [
             addendumTemplateOptions,
@@ -7868,6 +8012,7 @@ const PDFViewerModal = ({
         if (prev === activeStep) return;
 
         if (activeStep === "info" || activeStep === "summary") {
+            void flushAddendumMappingsRef.current();
             setActivePreview(null);
             lastAutoPreviewKeyRef.current = "";
             if (selectedFunderRef.current.trim() || selectedFunderProfileIdRef.current.trim()) {
@@ -7888,6 +8033,14 @@ const PDFViewerModal = ({
         if (!isOpen || effectiveContractId == null) return;
         dispatch(getUploadedContractDocuments(effectiveContractId));
     }, [effectiveContractId, dispatch, isOpen]);
+
+    useEffect(() => {
+        if (isOpen) return;
+        if (addendumPersistTimerRef.current != null) {
+            window.clearTimeout(addendumPersistTimerRef.current);
+            addendumPersistTimerRef.current = null;
+        }
+    }, [isOpen]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -8911,6 +9064,8 @@ const PDFViewerModal = ({
                                             type="button"
                                             onClick={() => {
                                                 didSuggestSentTabThisOpenRef.current = true;
+                                                signNowForceFreshReviewRef.current = false;
+                                                resetSignNowReviewUi();
                                                 setActiveStep("documents");
                                             }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${docGreenActive
@@ -8936,7 +9091,11 @@ const PDFViewerModal = ({
 
                                         <button
                                             type="button"
-                                            onClick={() => setActiveStep("info")}
+                                            onClick={() => {
+                                                signNowForceFreshReviewRef.current = false;
+                                                resetSignNowReviewUi();
+                                                setActiveStep("info");
+                                            }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${infoGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
                                                 }`}
                                         >
@@ -11678,6 +11837,12 @@ const PDFViewerModal = ({
                                                 persistedPrefillOverrides={
                                                     contractPrefillLoaded ? contractPrefillFromDb : undefined
                                                 }
+                                                applicationData={applicationData}
+                                                addendum={
+                                                    contractPrefillRecords.addendums?.length
+                                                        ? contractPrefillRecords.addendums
+                                                        : contractPrefillRecords.addendum ?? null
+                                                }
                                                 documentTemplatePrefillByMappingId={
                                                     documentTemplatePrefillByMappingId
                                                 }
@@ -12388,7 +12553,7 @@ const PDFViewerModal = ({
                                         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
                                             <p className="text-[11px] font-medium text-slate-700">
                                                 {signNowReviewComplete
-                                                    ? "Owner review is done. Send via SignNow to email the merchant — they will only need to sign."
+                                                    ? "Owner review is done. Send to the merchant, go back into SignNow, or change details first."
                                                     : "Review as Owner. Deal fields are already filled. Click Finish in SignNow, then Send via SignNow so the merchant only has to sign."}
                                             </p>
                                             <div className="flex shrink-0 items-center gap-1.5">
@@ -12406,7 +12571,10 @@ const PDFViewerModal = ({
                                                     type="button"
                                                     variant="outline"
                                                     className="h-7 px-2 text-[11px]"
-                                                    onClick={() => setSignNowEmbedUrl(null)}
+                                                    onClick={() => {
+                                                        signNowForceFreshReviewRef.current = false;
+                                                        resetSignNowReviewUi();
+                                                    }}
                                                 >
                                                     Close review
                                                 </Button>
@@ -12479,8 +12647,8 @@ const PDFViewerModal = ({
                                                             Owner review complete
                                                         </h3>
                                                         <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                                                            SignNow is ready. Send the contract so the
-                                                            merchant only has to sign.
+                                                            Send now, or go back to change details and
+                                                            review again before the merchant is emailed.
                                                         </p>
                                                         <Button
                                                             type="button"
@@ -12501,12 +12669,22 @@ const PDFViewerModal = ({
                                                                 ? "Sending via SignNow…"
                                                                 : "Send via SignNow"}
                                                         </Button>
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            className="mt-3 h-10 w-full cursor-pointer text-sm font-medium"
+                                                            onClick={handleBackToSignNow}
+                                                            disabled={isSending || isCancellingContract}
+                                                        >
+                                                            Back to SignNow
+                                                        </Button>
                                                         <button
                                                             type="button"
                                                             className="mt-3 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline"
-                                                            onClick={() => setSignNowReviewComplete(false)}
+                                                            onClick={handleChangeDetailsBeforeSend}
+                                                            disabled={isSending || isCancellingContract}
                                                         >
-                                                            Back to SignNow
+                                                            Change details first
                                                         </button>
                                                     </div>
                                                 </div>
@@ -12573,7 +12751,7 @@ const PDFViewerModal = ({
                         <div className="min-w-0 flex-1 space-y-2">
                             {signNowEmbedUrl && signNowReviewComplete ? (
                                 <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                                    Owner review is complete. Send via SignNow in the document panel.
+                                    Owner review is complete. Send via SignNow, or use Back to SignNow / Change details first if you still need to edit.
                                 </p>
                             ) : signNowEmbedUrl ? (
                                 <p className="text-xs text-slate-600 dark:text-slate-300">
@@ -12938,9 +13116,21 @@ const PDFViewerModal = ({
                 agreementDate={formatDate(new Date())}
                 documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
                 mainPrefillOverrides={mainPrefillOverridesForTemplateDialog}
-                onSaved={() => {
-                    void fetchTemplateMappings();
-                    void reloadContractPrefillSnapshots();
+                onSaved={(saved) => {
+                    const full = saved?.contractPrefillOverrides;
+                    if (full != null) {
+                        setDocumentTemplatePrefillByMappingId(
+                            parseDocumentTemplatePrefillByMappingId(full),
+                        );
+                        setResolvedContract((prev) =>
+                            prev ? { ...prev, contractPrefillOverrides: full } : prev,
+                        );
+                        setContractPrefillFromDb(
+                            stripDocumentTemplateBlobFromPrefillOverrides(
+                                normalizeContractPrefillOverrides(full),
+                            ),
+                        );
+                    }
                 }}
             />
             <DisclosureCalculationModal

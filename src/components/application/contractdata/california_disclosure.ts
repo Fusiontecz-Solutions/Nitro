@@ -248,7 +248,10 @@ function parseMoney(value: string | undefined): number {
 }
 
 function formatUsdAmount(amount: number): string {
-    return amount.toFixed(2);
+    return new Intl.NumberFormat("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(Math.round(amount * 100) / 100);
 }
 
 /** Guide CA/NY: estimated term is always calendar days (weekly or daily weeks × 7). */

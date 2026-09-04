@@ -7,8 +7,12 @@ import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { toast } from "react-toastify";
-import { EXHIBIT_A_VALUE_COUNT, type BuildContractPrefillFieldsArgs } from "./Contract";
-import { companiesFromPrefill, companiesToPrefillPayload } from "./exhibitCompanyPrefill";
+import {
+    EXHIBIT_A_VALUE_COUNT,
+    getApplicationClientPrefillArgs,
+    type BuildContractPrefillFieldsArgs,
+} from "./Contract";
+import { companiesFromPrefill, companiesToPrefillPayload, type AddendumCompanySource } from "./exhibitCompanyPrefill";
 import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     stripDocumentTemplateBlobFromPrefillOverrides,
@@ -27,6 +31,8 @@ export type ExhibitACompaniesSummarySectionProps = {
     canEdit: boolean;
     prefillOverridesReady: boolean;
     persistedPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    applicationData?: unknown;
+    addendum?: AddendumCompanySource;
     documentTemplatePrefillByMappingId?: Record<string, Record<string, string>>;
     onPersistedPrefillChange?: (next: Partial<BuildContractPrefillFieldsArgs> | null) => void;
     onPersistedPrefillFullChange?: (full: Record<string, unknown> | null) => void;
@@ -39,6 +45,8 @@ export function ExhibitACompaniesSummarySection({
     canEdit,
     prefillOverridesReady,
     persistedPrefillOverrides,
+    applicationData,
+    addendum,
     documentTemplatePrefillByMappingId = {},
     onPersistedPrefillChange,
     onPersistedPrefillFullChange,
@@ -48,10 +56,20 @@ export function ExhibitACompaniesSummarySection({
     const [companies, setCompanies] = useState<string[]>([""]);
     const [saving, setSaving] = useState(false);
 
+    const resolveCompanies = useCallback(
+        (prefill: Partial<BuildContractPrefillFieldsArgs> | null | undefined) =>
+            companiesFromPrefill(prefill, {
+                legalName: getApplicationClientPrefillArgs(applicationData).legalName ?? null,
+                addendum,
+                mappingBlob: documentTemplatePrefillByMappingId,
+            }),
+        [applicationData, addendum, documentTemplatePrefillByMappingId],
+    );
+
     useEffect(() => {
         if (!prefillOverridesReady) return;
-        setCompanies(companiesFromPrefill(persistedPrefillOverrides));
-    }, [prefillOverridesReady, persistedPrefillOverrides]);
+        setCompanies(resolveCompanies(persistedPrefillOverrides));
+    }, [prefillOverridesReady, persistedPrefillOverrides, resolveCompanies]);
 
     const updateRow = useCallback((index: number, value: string) => {
         setCompanies((prev) => prev.map((c, i) => (i === index ? value : c)));
@@ -107,7 +125,7 @@ export function ExhibitACompaniesSummarySection({
             onPersistedPrefillChange?.(mainSaved);
             onPersistedPrefillFullChange?.(fullSaved);
             onDraftInvalidate?.();
-            setCompanies(companiesFromPrefill(mainSaved));
+            setCompanies(resolveCompanies(mainSaved));
             const appKey = String(applicationUuid ?? "").trim();
             if (appKey) {
                 try {
@@ -145,7 +163,9 @@ export function ExhibitACompaniesSummarySection({
                     Exhibit A — company names
                 </span>
                 <p className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
-                    Add up to {EXHIBIT_A_VALUE_COUNT} companies.
+                    Names are filled from the application and addendum. Add extra
+                    companies only if they are not already listed (up to{" "}
+                    {EXHIBIT_A_VALUE_COUNT}).
                 </p>
             </div>
 

@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { formatDate as formatDateUtil } from "@/lib/utils";
@@ -86,6 +87,7 @@ export default function Clients() {
 
   // Local state
   const [searchTerm, setSearchTerm] = useState("");
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 400);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -576,8 +578,8 @@ export default function Clients() {
       page: pagination.pageIndex + 1, // API uses 1-based index
       limit: pagination.pageSize,
     };
-    if (searchTerm) {
-      params.search = searchTerm;
+    if (debouncedSearchTerm) {
+      params.search = debouncedSearchTerm;
     }
     if (statusFilter !== "all") {
       params.status = statusFilter;
@@ -587,7 +589,7 @@ export default function Clients() {
     dispatch,
     pagination.pageIndex,
     pagination.pageSize,
-    searchTerm,
+    debouncedSearchTerm,
     statusFilter,
   ]);
 
@@ -846,14 +848,9 @@ export default function Clients() {
     }
   }, [deleteSuccess, deleteError, dispatch, fetchClients]);
 
-  // Handle search with debounce - reset to first page
   useEffect(() => {
-    const delayDebounceFn = setTimeout(() => {
-      setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-    }, 500);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [searchTerm]);
+    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+  }, [debouncedSearchTerm]);
 
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
