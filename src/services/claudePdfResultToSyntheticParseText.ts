@@ -1,4 +1,5 @@
 import type { PdfClaudeExtractResultDTO } from '../nestjs-claude-pdf/claude-pdf-extraction.service';
+import { resolveEin } from './einSanitizer';
 
 /** Lowercase snake_case lookup for heterogeneous Claude key_data keys. */
 function normalizedLookup(kd: Record<string, string>): Record<string, string> {
@@ -87,10 +88,9 @@ export function claudePdfResultToSyntheticParseText(result: PdfClaudeExtractResu
     'primary_email_address',
     'principal_business_email',
   );
-  const ein = gv(kd, 'ein', 'federal_tax_id', 'tax_id', 'business_ein_number');
-  const einDigits = ein.replace(/\D/g, '');
-  /** IRS EIN: xx-xxxxxxx */
-  const einDisp = einDigits.length === 9 ? `${einDigits.slice(0, 2)}-${einDigits.slice(2)}` : ein;
+  const ein = gv(kd, 'ein', 'federal_tax_id', 'tax_id', 'business_ein_number', 'fein');
+  const einDisp =
+    resolveEin(ein, [ein, result.summary, Object.values(kd).join('\n')].join('\n')) || '';
   const dateStarted = gv(
     kd,
     'date_business_started',

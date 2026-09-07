@@ -94,17 +94,21 @@ function buildStreetAddress(line1: string, line2: string): string {
 export function mapDriverLicenseKeyDataToPrefill(
   keyData: Record<string, string>,
 ): KycExtractionMapped {
-  const firstName = str(keyData.first_name) || str(keyData.given_name);
-  const lastName = str(keyData.last_name) || str(keyData.family_name);
+  const firstName =
+    str(keyData.first_name) || str(keyData.given_name) || str(keyData.owner_first_name);
+  const lastName =
+    str(keyData.last_name) || str(keyData.family_name) || str(keyData.owner_last_name);
   const fullName =
     str(keyData.full_name) ||
+    str(keyData.applicant_name) ||
     [firstName, lastName].filter(Boolean).join(' ').trim();
   const dlNumber = str(keyData.driver_license_number) || str(keyData.license_number);
-  const addressLine1 = str(keyData.address_line1) || str(keyData.street_address);
+  const addressLine1 =
+    str(keyData.address_line1) || str(keyData.street_address) || str(keyData.home_address);
   const addressLine2 = str(keyData.address_line2);
-  const city = str(keyData.city);
-  const state = str(keyData.state).toUpperCase().slice(0, 2);
-  const zip = digitsOnly(str(keyData.zip)).slice(0, 10);
+  const city = str(keyData.owner_city) || str(keyData.city);
+  const state = (str(keyData.owner_state) || str(keyData.state)).toUpperCase().slice(0, 2);
+  const zip = digitsOnly(str(keyData.owner_zip) || str(keyData.zip)).slice(0, 10);
   const street = buildStreetAddress(addressLine1, addressLine2);
 
   const displayName = fullName || [firstName, lastName].filter(Boolean).join(' ');
@@ -198,9 +202,14 @@ export function mapVoidedCheckKeyDataToPrefill(
   const addressLine1 =
     str(keyData.account_holder_address_line1) || str(keyData.address_line1);
   const addressLine2 = str(keyData.account_holder_address_line2) || str(keyData.address_line2);
-  const city = str(keyData.city);
-  const state = str(keyData.state).toUpperCase().slice(0, 2);
-  const zip = digitsOnly(str(keyData.zip)).slice(0, 10);
+  const city = str(keyData.city) || str(keyData.owner_city) || str(keyData.bank_city);
+  const state = (str(keyData.state) || str(keyData.owner_state) || str(keyData.bank_state))
+    .toUpperCase()
+    .slice(0, 2);
+  const zip = digitsOnly(str(keyData.zip) || str(keyData.owner_zip) || str(keyData.bank_zip)).slice(
+    0,
+    10,
+  );
   const street = buildStreetAddress(addressLine1, addressLine2);
 
   const contractPrefill: Record<string, string> = {};

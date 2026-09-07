@@ -2,6 +2,7 @@ import { normalizeOcrTextForParsing, parseOcrMappedFields } from "./ocrFieldExtr
 import { parseOCRLines } from "./ocrLineParser";
 import { enrichAndSanitizeParsedOcr } from "./ocrSemanticMapping";
 import { parseRobustSections } from "./robustSectionParser";
+import { resolveEin } from "./einSanitizer";
 
 const LABELS = [
   "Legal/Corporate Name",
@@ -313,7 +314,7 @@ function isValidOwnerName(v: string | null | undefined): boolean {
   if (/(ownership|percent|ssn|dob|fico|credit score)/i.test(t)) return false;
   const low = t.toLowerCase();
   if (
-    /^(extracted|summary|unknown|document|none|not\s+provided)$/i.test(t) ||
+    /^(extracted|summary|unknown|document|none|not\s+provided|and|including|the|of)$/i.test(t) ||
     low === "claude"
   ) {
     return false;
@@ -725,6 +726,8 @@ export const parseBusinessData = (text: string) => {
 
   reconcileOwnerBusinessContactConsistency(text, parsed);
   reconcileBusinessOwnerPhoneConsistency(text, parsed);
+
+  parsed.business.business_ein_number = resolveEin(parsed.business.business_ein_number, text) ?? null;
 
   /** Label bleed: “Requested Amount” / funding labels sometimes land in start-date field. */
   const incRaw = String(parsed.business.business_incorporation_date ?? "").trim();

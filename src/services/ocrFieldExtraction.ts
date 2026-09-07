@@ -2,6 +2,7 @@
  * Label-driven extraction for noisy OCR text.
  * Stops at the next known field label or blank line — avoids assigning whole paragraphs to one field.
  */
+import { extractEinFromText, resolveEin } from './einSanitizer';
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -404,13 +405,8 @@ function supplementCompressedApplicationPatterns(
     }
 
     if (!business.business_ein_number?.trim()) {
-        const em = flat.match(/(?:Tax ID|Federal Tax ID|EIN)\s*[#:]?\s*(\d{2}[-\s]?\d{7})/i);
-        if (em?.[1]) {
-            const digits = em[1].replace(/\s/g, '');
-            business.business_ein_number = digits.includes('-')
-                ? digits
-                : `${digits.slice(0, 2)}-${digits.slice(2)}`;
-        }
+        const recovered = resolveEin(undefined, flat);
+        if (recovered) business.business_ein_number = recovered;
     }
 
     if (!business.phone_number?.trim()) {
@@ -648,10 +644,9 @@ export function parseOcrMappedFields(rawText: string): { business: BusinessParti
         ['Tax ID Number', 'Tax ID', 'Federal Tax ID', 'Employer Identification Number', 'EIN', 'FEIN'],
         { maxLen: 24, stopLabels: stops },
     );
-    if (ein?.trim()) {
-        const v = ein.trim();
-        const m = v.match(/\b\d{2}[-\s]?\d{7}\b/);
-        business.business_ein_number = m ? m[0].replace(/\s/g, '') : v.replace(/\s/g, '').slice(0, 12);
+    const recoveredEin = resolveEin(ein, rawText) || extractEinFromText(rawText);
+    if (recoveredEin) {
+        business.business_ein_number = recoveredEin;
     }
 
     const ssnRaw = extractFieldAfterLabel(

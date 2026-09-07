@@ -5,6 +5,65 @@ import { preferBetterEin, resolveEin } from '../einSanitizer';
 type Document = google.cloud.documentai.v1.IDocument;
 type TextAnchor = google.cloud.documentai.v1.Document.ITextAnchor;
 
+/**
+ * Custom Document AI extractor field IDs — application auto-create, driver license, void check.
+ * These names must stay distinct; never alias one schema field onto another.
+ */
+export const DOCUMENT_AI_SCHEMA_FIELDS = [
+  'account_holder_address_line1',
+  'account_holder_address_line2',
+  'account_holder_name',
+  'account_number',
+  'account_type',
+  'address_line1',
+  'address_line2',
+  'applicant_name',
+  'bank_address',
+  'bank_city',
+  'bank_name',
+  'bank_state',
+  'bank_zip',
+  'business_name',
+  'check_number',
+  'city',
+  'credit_score',
+  'date_business_started',
+  'date_of_birth',
+  'dba_name',
+  'driver_license_number',
+  'ein',
+  'email',
+  'expiration_date',
+  'eye_color',
+  'first_name',
+  'full_name',
+  'gross_annual_sales',
+  'height',
+  'home_address',
+  'issue_date',
+  'last_name',
+  'legal_business_name',
+  'license_class',
+  'owner_city',
+  'owner_email',
+  'owner_first_name',
+  'owner_last_name',
+  'owner_mobile',
+  'owner_state',
+  'owner_zip',
+  'ownership_percent',
+  'phone',
+  'physical_address',
+  'requested_amount',
+  'routing_number',
+  'sex',
+  'ssn',
+  'state',
+  'type_of_entity',
+  'website',
+  'zip',
+] as const;
+
 function normalizeFieldKey(raw: string): string {
   return String(raw || '')
     .toLowerCase()
@@ -28,33 +87,49 @@ function textFromAnchor(document: Document, anchor?: TextAnchor | null): string 
     .trim();
 }
 
+function pick(kd: Record<string, string>, key: string): string {
+  return String(kd[key] || '').trim();
+}
+
+function setIfEmpty(kd: Record<string, string>, key: string, value: string): void {
+  const v = String(value || '').trim();
+  if (!v || pick(kd, key)) return;
+  kd[key] = v;
+}
+
+function splitPersonName(full: string): { first: string; last: string } | null {
+  const parts = String(full || '')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+  return {
+    first: parts.slice(0, -1).join(' '),
+    last: parts[parts.length - 1]!,
+  };
+}
+
+/**
+ * Non-schema labels → schema field IDs.
+ * Schema IDs listed above always map to themselves.
+ */
 const FIELD_ALIASES: Record<string, string> = {
-  legal_corporate_name: 'business_name',
-  legal_business_name: 'business_name',
-  legal_name: 'business_name',
+  legal_corporate_name: 'legal_business_name',
+  legal_name: 'legal_business_name',
   company_name: 'business_name',
   corporate_name: 'business_name',
   merchant_name: 'business_name',
-  business_name: 'business_name',
   dba: 'dba_name',
-  dba_name: 'dba_name',
   doing_business_as: 'dba_name',
-  physical_address: 'physical_address',
   business_address: 'physical_address',
   street_address: 'physical_address',
   address: 'physical_address',
-  city: 'city',
   business_city: 'city',
-  state: 'state',
   business_state: 'state',
-  zip: 'zip',
   zip_code: 'zip',
   business_zip: 'zip',
   telephone: 'phone',
-  phone: 'phone',
   business_phone: 'phone',
   phone_number: 'phone',
-  email: 'email',
   business_email: 'email',
   email_address: 'email',
   federal_tax_id: 'ein',
@@ -63,77 +138,45 @@ const FIELD_ALIASES: Record<string, string> = {
   tax_id_number: 'ein',
   fein: 'ein',
   employer_identification_number: 'ein',
-  ein: 'ein',
   business_ein_number: 'ein',
-  requested_amount: 'requested_amount',
   loan_amount: 'requested_amount',
   amount_requested: 'requested_amount',
   funding_requested: 'requested_amount',
-  gross_annual_sales: 'gross_annual_sales',
   annual_sales: 'gross_annual_sales',
-  owner_first_name: 'owner_first_name',
-  first_name: 'owner_first_name',
   principal_first_name: 'owner_first_name',
-  owner_last_name: 'owner_last_name',
-  last_name: 'owner_last_name',
   principal_last_name: 'owner_last_name',
-  applicant_name: 'applicant_name',
+  given_name: 'first_name',
+  family_name: 'last_name',
   applicant: 'applicant_name',
   owner_name: 'applicant_name',
   principal_name: 'applicant_name',
-  ssn: 'ssn',
   social_security_number: 'ssn',
   owner_ssn: 'ssn',
-  date_of_birth: 'date_of_birth',
   dob: 'date_of_birth',
-  owner_mobile: 'owner_mobile',
   mobile_phone: 'owner_mobile',
   cell_phone: 'owner_mobile',
   owner_phone: 'owner_mobile',
-  home_address: 'home_address',
+  personal_email: 'owner_email',
+  principal_email: 'owner_email',
   owner_address: 'home_address',
   residential_address: 'home_address',
-  owner_city: 'owner_city',
-  owner_state: 'owner_state',
-  owner_zip: 'owner_zip',
-  ownership_percent: 'ownership_percent',
   ownership_percentage: 'ownership_percent',
-  credit_score: 'credit_score',
   fico: 'credit_score',
-  date_business_started: 'date_business_started',
   business_start_date: 'date_business_started',
   incorporation_date: 'date_business_started',
-  type_of_entity: 'type_of_entity',
   entity_type: 'type_of_entity',
-  website: 'website',
   url: 'website',
-  driver_license_number: 'driver_license_number',
   license_number: 'driver_license_number',
   dl_number: 'driver_license_number',
-  full_name: 'full_name',
-  sex: 'sex',
-  height: 'height',
-  eye_color: 'eye_color',
-  license_class: 'license_class',
-  address_line1: 'address_line1',
-  address_line2: 'address_line2',
-  issue_date: 'issue_date',
-  expiration_date: 'expiration_date',
   exp_date: 'expiration_date',
-  account_holder_name: 'account_holder_name',
   member_name: 'account_holder_name',
-  bank_name: 'bank_name',
-  routing_number: 'routing_number',
   aba_routing_number: 'routing_number',
-  account_number: 'account_number',
   checking_account_number: 'account_number',
-  account_type: 'account_type',
-  check_number: 'check_number',
-  bank_address: 'bank_address',
-  bank_city: 'bank_city',
-  bank_state: 'bank_state',
-  bank_zip: 'bank_zip',
 };
+
+for (const field of DOCUMENT_AI_SCHEMA_FIELDS) {
+  FIELD_ALIASES[field] = field;
+}
 
 function canonicalKey(rawLabel: string): string {
   const nk = normalizeFieldKey(rawLabel);
@@ -182,10 +225,52 @@ function collectEntities(document: Document, keyData: Record<string, string>): v
   }
 }
 
+/** Fill empty application / KYC keys from sibling schema fields without collapsing them. */
+export function applyDocumentAiSchemaFallbacks(kd: Record<string, string>): Record<string, string> {
+  setIfEmpty(kd, 'business_name', pick(kd, 'legal_business_name'));
+  setIfEmpty(kd, 'legal_business_name', pick(kd, 'business_name'));
+
+  const applicantSplit = splitPersonName(pick(kd, 'applicant_name'));
+  const fullSplit = splitPersonName(pick(kd, 'full_name'));
+
+  setIfEmpty(kd, 'owner_first_name', pick(kd, 'first_name'));
+  setIfEmpty(kd, 'owner_last_name', pick(kd, 'last_name'));
+  setIfEmpty(kd, 'first_name', pick(kd, 'owner_first_name'));
+  setIfEmpty(kd, 'last_name', pick(kd, 'owner_last_name'));
+
+  if (applicantSplit) {
+    setIfEmpty(kd, 'owner_first_name', applicantSplit.first);
+    setIfEmpty(kd, 'owner_last_name', applicantSplit.last);
+    setIfEmpty(kd, 'first_name', applicantSplit.first);
+    setIfEmpty(kd, 'last_name', applicantSplit.last);
+  }
+  if (fullSplit) {
+    setIfEmpty(kd, 'first_name', fullSplit.first);
+    setIfEmpty(kd, 'last_name', fullSplit.last);
+    setIfEmpty(kd, 'owner_first_name', fullSplit.first);
+    setIfEmpty(kd, 'owner_last_name', fullSplit.last);
+  }
+
+  setIfEmpty(kd, 'full_name', [pick(kd, 'first_name'), pick(kd, 'last_name')].filter(Boolean).join(' '));
+  setIfEmpty(
+    kd,
+    'applicant_name',
+    [pick(kd, 'owner_first_name'), pick(kd, 'owner_last_name')].filter(Boolean).join(' '),
+  );
+  setIfEmpty(
+    kd,
+    'home_address',
+    [pick(kd, 'address_line1'), pick(kd, 'address_line2')].filter(Boolean).join(', '),
+  );
+
+  return kd;
+}
+
 export function mapDocumentAiToExtractResult(document: Document): PdfClaudeExtractResultDTO {
   const key_data: Record<string, string> = {};
   collectFormFields(document, key_data);
   collectEntities(document, key_data);
+  applyDocumentAiSchemaFallbacks(key_data);
 
   const pages = (document.pages || []).map((page, idx) => ({
     page_number: Number(page.pageNumber ?? idx + 1),
@@ -225,21 +310,21 @@ export function mapDocumentAiToKycKeyData(
   const kd = { ...(result.key_data || {}) };
 
   if (documentType === 'driverLicense') {
-    if (!kd.first_name && !kd.owner_first_name && kd.full_name) {
-      const parts = kd.full_name.split(/\s+/).filter(Boolean);
-      if (parts.length >= 2) {
-        kd.first_name = parts.slice(0, -1).join(' ');
-        kd.last_name = parts[parts.length - 1]!;
-      }
-    }
-    if (!kd.first_name && kd.owner_first_name) kd.first_name = kd.owner_first_name;
-    if (!kd.last_name && kd.owner_last_name) kd.last_name = kd.owner_last_name;
+    setIfEmpty(kd, 'first_name', pick(kd, 'owner_first_name'));
+    setIfEmpty(kd, 'last_name', pick(kd, 'owner_last_name'));
+    setIfEmpty(kd, 'address_line1', pick(kd, 'home_address'));
+    setIfEmpty(kd, 'city', pick(kd, 'owner_city'));
+    setIfEmpty(kd, 'state', pick(kd, 'owner_state'));
+    setIfEmpty(kd, 'zip', pick(kd, 'owner_zip'));
   }
 
   if (documentType === 'voidedCheck') {
-    if (!kd.account_holder_name && kd.member_name) kd.account_holder_name = kd.member_name;
-    if (!kd.routing_number && kd.aba_routing_number) kd.routing_number = kd.aba_routing_number;
-    if (!kd.account_number && kd.checking_account_number) kd.account_number = kd.checking_account_number;
+    setIfEmpty(kd, 'account_holder_name', pick(kd, 'member_name'));
+    setIfEmpty(kd, 'account_holder_address_line1', pick(kd, 'address_line1'));
+    setIfEmpty(kd, 'account_holder_address_line2', pick(kd, 'address_line2'));
+    setIfEmpty(kd, 'routing_number', pick(kd, 'aba_routing_number'));
+    setIfEmpty(kd, 'account_number', pick(kd, 'checking_account_number'));
+    setIfEmpty(kd, 'legal_business_name', pick(kd, 'business_name'));
   }
 
   return kd;

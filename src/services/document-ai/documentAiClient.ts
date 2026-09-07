@@ -49,17 +49,10 @@ export function resolveDocumentAiProcessorName(processorId: string): string {
   return `projects/${projectId}/locations/${location}/processors/${id}`;
 }
 
-function readMaxPdfPages(): number {
-  const raw = Number(process.env.DOCUMENT_AI_MAX_PAGES || 4);
-  if (!Number.isFinite(raw) || raw <= 0) return 4;
-  return Math.min(10, Math.floor(raw));
-}
-
 export async function processDocumentWithProcessor(
   buffer: Buffer,
   processorId: string,
   mimeType = 'application/pdf',
-  options?: { maxPages?: number },
 ): Promise<Document> {
   if (!buffer.length) {
     throw new Error('processDocumentWithProcessor: empty buffer');
@@ -67,45 +60,18 @@ export async function processDocumentWithProcessor(
 
   const client = getDocumentAiClient();
   const name = resolveDocumentAiProcessorName(processorId);
-  const isPdf = String(mimeType || '').toLowerCase().includes('pdf');
-  const maxPages = options?.maxPages ?? (isPdf ? readMaxPdfPages() : 0);
   const request: ProcessRequest = {
     name,
-    skipHumanReview: true,
     rawDocument: {
-      // gRPC accepts raw bytes; avoid a large base64 copy of every upload.
-      content: buffer,
+      content: buffer.toString('base64'),
       mimeType,
-    },
-    processOptions: {
-      ...(isPdf && maxPages > 0 ? { fromStart: maxPages } : {}),
-      ocrConfig: {
-        enableNativePdfParsing: true,
-      },
     },
   };
 
   const startedAt = Date.now();
-  let result: google.cloud.documentai.v1.IProcessResponse;
-  try {
-    [result] = await client.processDocument(request);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!/processOptions|fromStart|ocrConfig|INVALID_ARGUMENT/i.test(msg)) {
-      throw err;
-    }
-    console.warn('[documentAi] retrying without processOptions:', msg);
-    [result] = await client.processDocument({
-      name,
-      skipHumanReview: true,
-      rawDocument: {
-        content: buffer,
-        mimeType,
-      },
-    });
-  }
+  const [result] = await client.processDocument(request);
   console.log(
-    `[documentAi] processDocument ${buffer.length}b mime=${mimeType} pages<=${maxPages || 'all'} in ${Date.now() - startedAt}ms`,
+    `[documentAi] processDocument ${buffer.length}b mime=${mimeType} in ${Date.now() - startedAt}ms`,
   );
   if (!result.document) {
     throw new Error('Document AI returned no document payload');

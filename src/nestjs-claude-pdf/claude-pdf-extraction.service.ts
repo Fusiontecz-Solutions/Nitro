@@ -14,6 +14,7 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Anthropic from "@anthropic-ai/sdk";
+import { resolveEin } from "../services/einSanitizer";
 
 export interface PdfClaudeExtractResultDTO {
   document_type: string;
@@ -604,6 +605,14 @@ export class PdfClaudeExtractionUtils {
         .trim();
     for (const [k, v] of Object.entries(keyData)) {
       keyData[k] = cleaned(String(v ?? ""));
+    }
+
+    const ein = resolveEin(keyData.ein || keyData.federal_tax_id || keyData.tax_id, fullText);
+    if (ein) keyData.ein = ein;
+    else {
+      delete keyData.ein;
+      delete keyData.federal_tax_id;
+      delete keyData.tax_id;
     }
 
     const isGarbageBusinessName = (value: string): boolean =>
