@@ -154,7 +154,7 @@ export default function KycExtractionReviewCard({
     return (
         <div
             className={cn(
-                "rounded-xl border p-3 shadow-sm",
+                "min-w-0 rounded-xl border p-3 shadow-sm",
                 synced
                     ? "border-emerald-200 bg-emerald-50/60"
                     : "border-[var(--brand)]/25 bg-gradient-to-br from-white to-slate-50/90",

@@ -9231,7 +9231,7 @@ const PDFViewerModal = ({
 
                         {/* Steps: overview, documents, prefill, sent — 40% left */}
                         <div className="relative flex h-full min-h-0 w-[40%] min-w-0 shrink-0 flex-col overflow-hidden border-r bg-white dark:border-slate-700 dark:bg-slate-900">
-                            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+                            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden p-4">
 
                                 {/* Dynamic Section Heading */}
                                 <section>
@@ -9272,9 +9272,9 @@ const PDFViewerModal = ({
                                 </section>
 
                                 {activeStep === "documents" && (
-                                    <section className="relative space-y-3 overflow-hidden rounded-lg border bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
+                                    <section className="relative shrink-0 space-y-3 overflow-visible rounded-lg border bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
                                         {waitingForSourceApplicationPdf && (
-                                            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-white/80 px-4 text-center backdrop-blur-[2px] dark:bg-slate-900/80">
+                                            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 rounded-lg bg-white/80 px-4 text-center backdrop-blur-[2px] dark:bg-slate-900/80">
                                                 <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" />
                                                 <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                                                     Uploading application PDF…
@@ -12575,7 +12575,7 @@ const PDFViewerModal = ({
                                     </section>
                                 )}
                                 <div
-                                    className="mt-2 flex items-center"
+                                    className="mt-2 flex shrink-0 items-center"
                                     role="toolbar"
                                     aria-label="Contract wizard steps"
                                 >
