@@ -678,10 +678,11 @@ const ApplicationDetails = () => {
                                 </Button>
                             </div>
                         ) : (
-                            <div className="mt-6 flex items-center justify-center rounded-lg border border-border bg-card p-10 shadow-[0px_4px_20px_0px_rgba(0,0,0,0.06)] dark:shadow-[0px_4px_24px_0px_rgba(0,0,0,0.35)]">
-                                <div className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
-                                    <span className="inline-block h-4 w-4 border-2 border-slate-300 border-t-slate-700 rounded-full animate-spin" />
-                                    Loading application details...
+                            <div className="mt-6 flex min-h-[420px] items-center justify-center rounded-lg border border-border bg-card p-10 shadow-[0px_4px_20px_0px_rgba(0,0,0,0.06)] dark:shadow-[0px_4px_24px_0px_rgba(0,0,0,0.35)]">
+                                <div className="flex flex-col items-center gap-3 text-center">
+                                    <span className="inline-block h-8 w-8 border-2 border-slate-300 border-t-[var(--brand)] rounded-full animate-spin" />
+                                    <p className="text-sm font-semibold text-foreground">Loading application details…</p>
+                                    <p className="text-xs text-muted-foreground">Please wait while business and owner information loads.</p>
                                 </div>
                             </div>
                         )}
@@ -841,10 +842,11 @@ const ApplicationDetails = () => {
                                 </Button>
                             </div>
                         ) : (
-                            <div className="mt-6 flex items-center justify-center rounded-lg border border-border bg-card p-10 shadow-[0px_4px_20px_0px_rgba(0,0,0,0.06)] dark:shadow-[0px_4px_24px_0px_rgba(0,0,0,0.35)]">
-                                <div className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
-                                    <span className="inline-block h-4 w-4 border-2 border-slate-300 border-t-slate-700 rounded-full animate-spin" />
-                                    Loading application details...
+                            <div className="mt-6 flex min-h-[420px] items-center justify-center rounded-lg border border-border bg-card p-10 shadow-[0px_4px_20px_0px_rgba(0,0,0,0.06)] dark:shadow-[0px_4px_24px_0px_rgba(0,0,0,0.35)]">
+                                <div className="flex flex-col items-center gap-3 text-center">
+                                    <span className="inline-block h-8 w-8 border-2 border-slate-300 border-t-[var(--brand)] rounded-full animate-spin" />
+                                    <p className="text-sm font-semibold text-foreground">Loading application details…</p>
+                                    <p className="text-xs text-muted-foreground">Please wait while business and owner information loads.</p>
                                 </div>
                             </div>
                         )}

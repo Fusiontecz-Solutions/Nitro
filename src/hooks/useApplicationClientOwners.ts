@@ -28,12 +28,15 @@ export function useApplicationClientOwners(applicationClient: unknown) {
     useEffect(() => {
         if (!fetchArg || !fetchKey) return;
         if (currentClientId === fetchArg && clientDetail) return;
+        // Application GET already includes client.owners — do not wait on a second client API.
+        const embedded = applicationClient as { owners?: unknown } | null;
+        if (Array.isArray(embedded?.owners)) return;
         if (fetchKey.startsWith("clientId:")) {
             void dispatch(getClientByClientId(fetchArg));
             return;
         }
         void dispatch(getClientById(fetchArg));
-    }, [dispatch, fetchArg, fetchKey, currentClientId, clientDetail]);
+    }, [dispatch, fetchArg, fetchKey, currentClientId, clientDetail, applicationClient]);
 
     const hasFullClientDetail = Boolean(
         clientDetail && fetchArg && currentClientId === fetchArg,

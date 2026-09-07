@@ -1034,6 +1034,10 @@ export const parseApplicationPdfForClientPrefill = createAsyncThunk(
                 { timeout: 180000 },
             );
             await invalidateApplicationsListCache();
+            const created = (response.data as { data?: { application?: { _id?: string; id?: string; applicationId?: number } } })?.data?.application;
+            if (created?._id) invalidateApplicationDetailCache(String(created._id));
+            if (created?.id) invalidateApplicationDetailCache(String(created.id));
+            if (created?.applicationId != null) invalidateApplicationDetailCache(String(created.applicationId));
             return response.data;
         } catch (error: any) {
             console.error('Parse application PDF error:', error);

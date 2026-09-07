@@ -158,7 +158,9 @@ import RequestedDocumentUploadRows, {
 import {
     uploadApplicationDocuments,
     getApplicationById,
+    getApplicationByApplicationId,
 } from "@/redux/actions/applicationActions";
+import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
 import { resolveOfferDecisionFeesDisplayDollars } from "@/lib/offerDecisionFees";
 import {
     resolveApplicationUuidForUpdate,
@@ -1739,6 +1741,10 @@ const PDFViewerModal = ({
     };
     const goToNextStep = () => {
         if (!canGoNextStep) return;
+        if (activeStep === "documents" && waitingForSourceApplicationPdf) {
+            toast.info("Wait until the application PDF finishes uploading.");
+            return;
+        }
         setActiveStep(stepSequence[activeStepIndex + 1]);
     };
     const [selectedState, setSelectedState] = useState<string>("");
@@ -2311,8 +2317,12 @@ const PDFViewerModal = ({
         (state: RootState) => state.uploadedContractDocuments,
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
+    const applicationFilesLoading = useSelector((state: RootState) =>
+        Boolean(state.applicationDetail.loading || state.applicationDetail.isRefreshing),
+    );
     const applicationDataRef = useRef(applicationData);
     applicationDataRef.current = applicationData;
+    const [sourcePdfWaitTimedOut, setSourcePdfWaitTimedOut] = useState(false);
 
     const offerDecisionState = useSelector((state: RootState) => state.offerDecision);
     const offerDecisionData = offerDecisionState?.data ?? null;
@@ -2497,19 +2507,24 @@ const PDFViewerModal = ({
             ? (applicationData as any).files
             : [];
         if (!files.length) return null;
-        const preferred = files.find((f: any) => {
+        const isPdfRow = (f: any) => {
             const name = String(f?.originalName || f?.fileName || "").toLowerCase();
             const type = String(f?.mimeType || f?.documentType || f?.type || "").toLowerCase();
-            return (
-                (type.includes("pdf") || name.includes(".pdf")) &&
-                (name.includes("application") || name.includes("business"))
-            );
-        });
-        const fallbackPdf = files.find((f: any) => {
+            return type.includes("pdf") || name.endsWith(".pdf");
+        };
+        const isApplicationPdfRow = (f: any) => {
             const name = String(f?.originalName || f?.fileName || "").toLowerCase();
-            const type = String(f?.mimeType || "").toLowerCase();
-            return type.includes("pdf") || name.includes(".pdf");
-        });
+            const slug = String(f?.requestedDocumentSlug || f?.documentType || "").toLowerCase();
+            return (
+                slug === "application-pdf" ||
+                slug.includes("application") ||
+                name.includes("application") ||
+                name.includes("business") ||
+                name.includes("app.pdf")
+            );
+        };
+        const preferred = files.find((f: any) => isPdfRow(f) && isApplicationPdfRow(f));
+        const fallbackPdf = files.find((f: any) => isPdfRow(f));
         const row = preferred || fallbackPdf;
         if (!row) return null;
         const url = String(row?.url || row?.fileUrl || row?.downloadUrl || "").trim();
@@ -2519,6 +2534,11 @@ const PDFViewerModal = ({
             url,
         };
     }, [applicationData]);
+    const waitingForSourceApplicationPdf =
+        isOpen &&
+        activeStep === "documents" &&
+        !sourceApplicationPdf &&
+        (!sourcePdfWaitTimedOut || applicationFilesLoading);
     const normalizeDocumentTypeKey = (value: unknown): string =>
         String(value ?? "")
             .toLowerCase()
@@ -2758,6 +2778,52 @@ const PDFViewerModal = ({
         const n = (applicationData as { applicationId?: number } | null)?.applicationId;
         return n != null ? String(n) : null;
     }, [applicationData]);
+
+    const refreshApplicationDocumentsTab = useCallback(() => {
+        if (numericApplicationId) {
+            invalidateApplicationDetailCache(numericApplicationId);
+            void dispatch(getApplicationByApplicationId(numericApplicationId));
+            return;
+        }
+        const uuid = applicationMongoId || applicationIdForLookup;
+        if (uuid) {
+            invalidateApplicationDetailCache(String(uuid));
+            void dispatch(getApplicationById(String(uuid)));
+        }
+    }, [dispatch, numericApplicationId, applicationMongoId, applicationIdForLookup]);
+
+    useEffect(() => {
+        if (!isOpen) {
+            setSourcePdfWaitTimedOut(false);
+        }
+    }, [isOpen, applicationIdForLookup]);
+
+    useEffect(() => {
+        if (!isOpen || activeStep !== "documents") return;
+        if (sourceApplicationPdf) {
+            setSourcePdfWaitTimedOut(false);
+            return;
+        }
+        if (sourcePdfWaitTimedOut) return;
+        let attempts = 0;
+        const maxAttempts = 8;
+        refreshApplicationDocumentsTab();
+        const interval = window.setInterval(() => {
+            attempts += 1;
+            refreshApplicationDocumentsTab();
+            if (attempts >= maxAttempts) {
+                setSourcePdfWaitTimedOut(true);
+                window.clearInterval(interval);
+            }
+        }, 2000);
+        return () => window.clearInterval(interval);
+    }, [
+        isOpen,
+        activeStep,
+        sourceApplicationPdf,
+        sourcePdfWaitTimedOut,
+        refreshApplicationDocumentsTab,
+    ]);
 
     const documentRequestLookupId = numericApplicationId || applicationIdForLookup;
 
@@ -5469,6 +5535,11 @@ const PDFViewerModal = ({
         async (key: RequiredDocumentKey, file: File) => {
             if (!file) return;
 
+            if (waitingForSourceApplicationPdf) {
+                toast.info("Wait until the application PDF finishes uploading.");
+                return;
+            }
+
             if (effectiveContractId == null) {
                 const msg = "Please select or generate a contract first.";
                 setDocumentUploadMessage(msg);
@@ -5547,6 +5618,7 @@ const PDFViewerModal = ({
 
                 setUploadProgressByKey((prev) => ({ ...prev, [key]: 100 }));
                 await dispatch(getUploadedContractDocuments(effectiveContractId));
+                refreshApplicationDocumentsTab();
 
                 setDocumentUrls((u) => {
                     const next = { ...u };
@@ -5588,7 +5660,7 @@ const PDFViewerModal = ({
                 toast.error(msg);
             }
         },
-        [dispatch, effectiveContractId],
+        [dispatch, effectiveContractId, refreshApplicationDocumentsTab, waitingForSourceApplicationPdf],
     );
 
     const autoUploadRequestedDocument = useCallback(
@@ -5752,6 +5824,7 @@ const PDFViewerModal = ({
                 ).unwrap();
                 setDocumentUploadMessage("Uploaded document updated successfully.");
                 dispatch(getUploadedContractDocuments(effectiveContractId));
+                refreshApplicationDocumentsTab();
             } catch (error: any) {
                 setDocumentUploadMessage(
                     error?.message || "Failed to update uploaded document.",
@@ -5775,6 +5848,7 @@ const PDFViewerModal = ({
             }
             setDocumentUploadMessage("Uploaded document deleted successfully.");
             dispatch(getUploadedContractDocuments(effectiveContractId));
+            refreshApplicationDocumentsTab();
         } catch (error: any) {
             setDocumentUploadMessage(
                 error?.message || "Failed to delete uploaded document.",
@@ -9198,13 +9272,26 @@ const PDFViewerModal = ({
                                 </section>
 
                                 {activeStep === "documents" && (
-                                    <section className="space-y-3 border rounded-lg p-4 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/40">
+                                    <section className="relative space-y-3 overflow-hidden rounded-lg border bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
+                                        {waitingForSourceApplicationPdf && (
+                                            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-white/80 px-4 text-center backdrop-blur-[2px] dark:bg-slate-900/80">
+                                                <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" />
+                                                <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                                                    Uploading application PDF…
+                                                </p>
+                                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                                    Driver’s license and voided check unlock when the application file is ready.
+                                                </p>
+                                            </div>
+                                        )}
                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                                                 Upload Documents
                                             </h3>
                                             <p className="text-[11px] text-slate-500">
-                                                Drag &amp; drop or click — uploads start automatically.
+                                                {waitingForSourceApplicationPdf
+                                                    ? "Waiting for the application PDF to finish uploading."
+                                                    : "Drag & drop or click — uploads start automatically."}
                                             </p>
                                         </div>
 
@@ -9220,7 +9307,15 @@ const PDFViewerModal = ({
                                                 embedded
                                                 pending={pendingDocumentRequests}
                                                 completed={completedDocumentRequests}
-                                                onUpload={autoUploadRequestedDocument}
+                                                onUpload={
+                                                    waitingForSourceApplicationPdf
+                                                        ? async () => {
+                                                              toast.info(
+                                                                  "Wait until the application PDF finishes uploading.",
+                                                              );
+                                                          }
+                                                        : autoUploadRequestedDocument
+                                                }
                                                 onView={handleViewRequestedDocument}
                                                 canView={canViewRequestedDocument}
                                                 onRemove={handleRemoveDocumentRequest}
@@ -9237,7 +9332,7 @@ const PDFViewerModal = ({
                                                 const isUploading = typeof progress === "number";
                                                 const isDragOver = dragOverDocKey === key;
                                                 const pendingName = pendingFileNameByKey[key];
-                                                const disabled = effectiveContractId == null;
+                                                const disabled = effectiveContractId == null || waitingForSourceApplicationPdf;
 
                                                 const onPickFiles = (files: FileList | null) => {
                                                     const file = files?.[0];
@@ -9329,7 +9424,9 @@ const PDFViewerModal = ({
                                                                     </p>
                                                                 ) : (
                                                                     <p className="truncate text-[11px] text-slate-500">
-                                                                        {disabled
+                                                                        {waitingForSourceApplicationPdf
+                                                                            ? "Waiting for application PDF…"
+                                                                            : disabled
                                                                             ? "Generate or select a contract first."
                                                                             : isDragOver
                                                                                 ? "Drop file to upload"
@@ -9500,7 +9597,9 @@ const PDFViewerModal = ({
                                                         Application PDF
                                                     </p>
                                                     <p className="truncate text-[11px] text-slate-500">
-                                                        {sourceApplicationPdf?.name || "Not found"}
+                                                        {waitingForSourceApplicationPdf
+                                                            ? "Uploading…"
+                                                            : sourceApplicationPdf?.name || "Not found"}
                                                     </p>
                                                 </div>
                                                 <Button
@@ -12495,10 +12594,18 @@ const PDFViewerModal = ({
                                         <Button
                                             type="button"
                                             size="sm"
-                                            className="ml-auto h-9 rounded-sm bg-[image:var(--brand-gradient)] px-4 text-sm text-white hover:opacity-90"
+                                            className="ml-auto h-9 rounded-sm bg-[image:var(--brand-gradient)] px-4 text-sm text-white hover:opacity-90 disabled:opacity-60"
                                             onClick={goToNextStep}
+                                            disabled={activeStep === "documents" && waitingForSourceApplicationPdf}
                                         >
-                                            Next
+                                            {activeStep === "documents" && waitingForSourceApplicationPdf ? (
+                                                <span className="inline-flex items-center gap-1.5">
+                                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                    Waiting…
+                                                </span>
+                                            ) : (
+                                                "Next"
+                                            )}
                                         </Button>
                                     )}
                                 </div>

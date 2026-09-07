@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { useTheme } from "@/context/ThemeContext";
+import { isApplicationDetailFetchFresh } from "@/lib/applicationDetailCache";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import {
@@ -11,7 +12,7 @@ import {
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { updateApplication } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
-import { Pencil, ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
+import { Pencil, ChevronDown, ChevronUp, Plus, Trash2, Loader2 } from "lucide-react";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 
@@ -129,7 +130,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
 
-    const { loading: fetchLoading, data: applicationData } = useSelector(
+    const { loading: fetchLoading, isRefreshing, data: applicationData, error: detailError } = useSelector(
         (state: RootState) => state.applicationDetail
     );
     const loginUser = useSelector((state: RootState) => state.login.data?.user);
@@ -392,6 +393,32 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         setIsEditMode(false);
         syncFormFromSource({ collapseOwners: owners.length > 1 });
     };
+
+    const detailRouteKey = String(applicationId || data?.applicationId || data?._id || "").trim();
+    const showDetailsLoading =
+        !isEditMode &&
+        !detailError &&
+        (fetchLoading ||
+            isRefreshing ||
+            (Boolean(detailRouteKey) && !isApplicationDetailFetchFresh(detailRouteKey)));
+
+    if (showDetailsLoading) {
+        return (
+            <div
+                className={`mt-6 flex min-h-[420px] flex-col items-center justify-center gap-3 rounded-lg border p-10 ${
+                    isDark ? "border-[#374151] bg-[#141517]" : "border-[#ECEFF5] bg-white"
+                }`}
+            >
+                <Loader2 className="h-8 w-8 animate-spin text-[var(--brand)]" />
+                <p className={`text-sm font-semibold ${isDark ? "text-white" : "text-[#374151]"}`}>
+                    Loading application details…
+                </p>
+                <p className={`text-xs ${isDark ? "text-gray-400" : "text-[#6B7280]"}`}>
+                    Please wait while business and owner information loads.
+                </p>
+            </div>
+        );
+    }
 
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">

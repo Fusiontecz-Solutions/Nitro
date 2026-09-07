@@ -10,7 +10,7 @@ import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import type { ApplicationFiles } from "@/types/applicationTypes"
 import { deleteApplicationFile, fillApplicationFromPdfFile, getApplicationByApplicationId, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
-import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch"
+import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache"
 import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
@@ -55,22 +55,24 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
 
     const effectiveApplicationId = applicationId ?? routeApplicationId
 
-    const lastFetchedApplicationIdRef = useRef<string | null>(null)
+    const filesRef = useRef(applicationData?.files)
+    filesRef.current = applicationData?.files
+
     useEffect(() => {
         if (!effectiveApplicationId) return
         const requestedKey = String(effectiveApplicationId)
-        if (lastFetchedApplicationIdRef.current === requestedKey) return
-        lastFetchedApplicationIdRef.current = requestedKey
-
-        const alreadyHasFiles =
-            !!applicationData &&
-            routeParamMatchesApplication(requestedKey, applicationData) &&
-            Array.isArray(applicationData.files)
-        if (!alreadyHasFiles) {
-            dispatch(getApplicationByApplicationId(requestedKey))
-        }
         void dispatch(getDocumentRequestsByApplication(requestedKey))
-    }, [effectiveApplicationId, dispatch, applicationData])
+        const files = filesRef.current
+        if (Array.isArray(files) && files.length > 0) return
+
+        invalidateApplicationDetailCache(requestedKey)
+        void dispatch(getApplicationByApplicationId(requestedKey))
+        const retry = window.setTimeout(() => {
+            invalidateApplicationDetailCache(requestedKey)
+            void dispatch(getApplicationByApplicationId(requestedKey))
+        }, 2500)
+        return () => window.clearTimeout(retry)
+    }, [effectiveApplicationId, dispatch])
 
     useEffect(() => {
         if (applicationData?.files) {
