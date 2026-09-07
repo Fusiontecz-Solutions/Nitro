@@ -88,6 +88,52 @@ function countNonEmptyKeys(kd: Record<string, string>): number {
   return Object.values(kd).filter((v) => String(v ?? '').trim().length > 0).length;
 }
 
+function readMaxPdfPages(): number {
+  const raw = Number(process.env.DOCUMENT_AI_MAX_PAGES || 4);
+  if (!Number.isFinite(raw) || raw <= 0) return 4;
+  return Math.min(10, Math.floor(raw));
+}
+
+/**
+ * Application data lives on the first pages. Bank-statement packets (10–20 pages)
+ * are the usual reason Document AI takes 15–25s — only send the first N pages.
+ */
+async function limitPdfPagesForDocumentAi(
+  buffer: Buffer,
+): Promise<{ buffer: Buffer; pageCount: number; sentPages: number }> {
+  const maxPages = readMaxPdfPages();
+  try {
+    const { PDFDocument } = await import('pdf-lib');
+    const src = await PDFDocument.load(buffer, {
+      ignoreEncryption: true,
+      updateMetadata: false,
+    });
+    const pageCount = src.getPageCount();
+    if (pageCount <= maxPages) {
+      return { buffer, pageCount, sentPages: pageCount };
+    }
+    const out = await PDFDocument.create();
+    const copied = await out.copyPages(
+      src,
+      Array.from({ length: maxPages }, (_, i) => i),
+    );
+    for (const page of copied) {
+      out.addPage(page);
+    }
+    const trimmed = Buffer.from(await out.save({ useObjectStreams: false }));
+    console.log(
+      `[documentAi] trimmed PDF ${pageCount} → ${maxPages} pages (${buffer.length} → ${trimmed.length} bytes)`,
+    );
+    return { buffer: trimmed, pageCount, sentPages: maxPages };
+  } catch (err) {
+    console.warn(
+      '[documentAi] page trim skipped:',
+      err instanceof Error ? err.message : err,
+    );
+    return { buffer, pageCount: 0, sentPages: maxPages };
+  }
+}
+
 export class DocumentAiPdfExtractionService {
   getRuntimeDebugConfig(): Record<string, string> {
     return {
@@ -106,13 +152,14 @@ export class DocumentAiPdfExtractionService {
       throw new Error('DOCUMENT_AI_PROCESSOR_ID (or DOCAI_PROCESSOR_ID) is required for Document AI PDF extraction');
     }
 
-    let document = await processDocumentWithProcessor(pdf, processorId, 'application/pdf');
+    const limited = await limitPdfPagesForDocumentAi(pdf);
+    let document = await processDocumentWithProcessor(limited.buffer, processorId, 'application/pdf');
     let result = mapDocumentAiToExtractResult(document);
     let fullText = String(document.text || '').trim();
 
     const ocrProcessorId = resolveProcessorId('DOCUMENT_AI_OCR_PROCESSOR_ID');
     if (ocrProcessorId && countNonEmptyKeys(result.key_data) < 3) {
-      document = await processDocumentWithProcessor(pdf, ocrProcessorId, 'application/pdf');
+      document = await processDocumentWithProcessor(limited.buffer, ocrProcessorId, 'application/pdf');
       const ocrResult = mapDocumentAiToExtractResult(document);
       result.key_data = { ...ocrResult.key_data, ...result.key_data };
       fullText = String(document.text || fullText).trim();

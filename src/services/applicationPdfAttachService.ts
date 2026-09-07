@@ -44,6 +44,7 @@ export async function attachBufferAsApplicationFile(
                 mimeType: (data.format as string) || 'application/pdf',
                 size: typeof data.bytes === 'number' ? data.bytes : buffer.length,
                 uploadedAt: new Date(),
+                requestedDocumentSlug: 'application-pdf',
             },
         });
     } catch (err: any) {

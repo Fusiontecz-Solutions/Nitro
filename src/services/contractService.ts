@@ -28,6 +28,11 @@ import {
   normalizeReverseDisbursementScheduleData,
   renderReverseDisbursementSchedulePdf,
 } from './pdf/reverseDisbursementSchedule.service';
+import {
+  mirrorUploadToApplicationFile,
+  removeMirroredApplicationFile,
+  slugFromContractDocumentType,
+} from './applicationDocumentMirrorService';
 import { mergePreservingDocuSignEnvelopeMeta } from './docusign/utils/preserve-docusign-prefill-meta';
 import { resolveApplicationWhere } from './applicationService';
 import { resolveFunderProfile } from './funderProfileService';
@@ -714,7 +719,7 @@ class ContractService {
   ) {
     const contract = await (prisma as any).contract.findUnique({
       where: { id: contractId },
-      select: { id: true, contractNumber: true },
+      select: { id: true, contractNumber: true, applicationId: true },
     });
 
     if (!contract) {
@@ -761,6 +766,18 @@ class ContractService {
           contractId,
         },
       });
+
+      if (contract.applicationId) {
+        await mirrorUploadToApplicationFile({
+          applicationId: String(contract.applicationId),
+          url: secureUrl,
+          publicId,
+          originalName: file?.name || uploadResult.fileName || `${normalizedType}`,
+          mimeType: file?.mimetype || 'application/octet-stream',
+          size: Number(file?.size || uploadResult.data.bytes || 0),
+          requestedDocumentSlug: slugFromContractDocumentType(normalizedType),
+        });
+      }
 
       savedDocuments.push({
         documentType: normalizedType,
@@ -923,7 +940,7 @@ class ContractService {
   ) {
     const contract = await (prisma as any).contract.findUnique({
       where: { id: contractId },
-      select: { id: true, contractNumber: true },
+      select: { id: true, contractNumber: true, applicationId: true },
     });
 
     if (!contract) {
@@ -983,13 +1000,29 @@ class ContractService {
       where: { id: fileId },
       data: updateData,
     });
+    if (contract.applicationId && (updateData.fileUrl || updateData.filePath)) {
+      await removeMirroredApplicationFile({
+        applicationId: String(contract.applicationId),
+        url: existing.fileUrl,
+        publicId: existing.filePath,
+      });
+      await mirrorUploadToApplicationFile({
+        applicationId: String(contract.applicationId),
+        url: String(updated.fileUrl || ''),
+        publicId: String(updated.filePath || ''),
+        originalName: decodeTypedFileName(updated.fileName).displayFileName,
+        mimeType: updated.contentType,
+        size: Number(updated.size || 0),
+        requestedDocumentSlug: slugFromContractDocumentType(updated.documentType),
+      });
+    }
     return mapUploadedDocumentForResponse(updated as Record<string, unknown>);
   }
 
   async deleteUploadedContractDocument(contractId: number, fileId: string) {
     const contract = await (prisma as any).contract.findUnique({
       where: { id: contractId },
-      select: { id: true },
+      select: { id: true, applicationId: true },
     });
 
     if (!contract) {
@@ -1006,6 +1039,14 @@ class ContractService {
 
     if (existing.filePath) {
       await uploadService.deleteFile(existing.filePath, 'raw');
+    }
+
+    if (contract.applicationId) {
+      await removeMirroredApplicationFile({
+        applicationId: String(contract.applicationId),
+        url: existing.fileUrl,
+        publicId: existing.filePath,
+      });
     }
 
     await (prisma as any).fileMetadata.delete({

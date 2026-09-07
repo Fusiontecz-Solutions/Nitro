@@ -148,6 +148,7 @@ import {
     notifyApplicationRejected,
     notifyAdminAssignedApplicationToUnderwriter,
 } from '../services/applicationStageNotificationService';
+import { syncContractDocumentsOntoApplication } from '../services/applicationDocumentMirrorService';
 
 type ApplicationState =
     | 'DRAFT'
@@ -1035,6 +1036,23 @@ export const mapApplicationToApi = (app: any) => {
         files: mappedFiles,
     };
 };
+
+/**
+ * Map detail for the Business Profile page immediately.
+ * Contract-file mirroring stays off this request so overview is not blocked on extra Neon writes.
+ */
+async function mapApplicationDetailToApi(applicationRecord: any) {
+    const applicationUuid = String(applicationRecord?.id || '').trim();
+    if (applicationUuid) {
+        void syncContractDocumentsOntoApplication(applicationUuid).catch((err) => {
+            console.warn(
+                '[mapApplicationDetailToApi] background document sync skipped:',
+                err instanceof Error ? err.message : err,
+            );
+        });
+    }
+    return mapApplicationToApi(applicationRecord);
+}
 
 const getAuthenticatedUser = (req: Request): AuthenticatedUser | null => {
     const user = req.user;
@@ -3190,7 +3208,7 @@ class ApplicationController {
                     applicationRecord,
                     'application.getById.operations',
                 );
-                const application = mapApplicationToApi(applicationRecord);
+                const application = await mapApplicationDetailToApi(applicationRecord);
 
                 return res.status(200).json({
                     success: true,
@@ -3223,7 +3241,7 @@ class ApplicationController {
                 applicationRecord,
                 'application.getById',
             );
-            const application = mapApplicationToApi(applicationRecord);
+            const application = await mapApplicationDetailToApi(applicationRecord);
 
             return res.status(200).json({
                 success: true,
@@ -3271,7 +3289,7 @@ class ApplicationController {
                     applicationRecord,
                     'application.getByApplicationId.operations',
                 );
-                const application = mapApplicationToApi(applicationRecord);
+                const application = await mapApplicationDetailToApi(applicationRecord);
 
                 return res.status(200).json({
                     success: true,
@@ -3304,7 +3322,7 @@ class ApplicationController {
                 applicationRecord,
                 'application.getByApplicationId',
             );
-            const application = mapApplicationToApi(applicationRecord);
+            const application = await mapApplicationDetailToApi(applicationRecord);
 
             return res.status(200).json({
                 success: true,
@@ -5936,6 +5954,7 @@ class ApplicationController {
             const pdfOriginalName = String(pdfFile.name || 'application.pdf').trim() || 'application.pdf';
 
             let parsedData: any;
+            const extractStartedAt = Date.now();
             try {
                 parsedData = await processPDF(tempFilePath);
             } finally {
@@ -5947,6 +5966,7 @@ class ApplicationController {
                     // ignore cleanup errors
                 }
             }
+            const extractMs = Date.now() - extractStartedAt;
 
             if (!parsedData || typeof parsedData !== 'object') {
                 return res.status(400).json({
@@ -5988,17 +6008,19 @@ class ApplicationController {
                     ? 'Bypass'
                     : 'New';
 
+            const persistStartedAt = Date.now();
             const result = await createClientAndApplicationFromPDFBuffer(pdfBuffer, currentUserId, {
                 preParsedData: parsedData,
                 originalFileName: pdfOriginalName,
                 isoId: validatedIsoId,
                 applicationType: applicationTypeForCreate,
             });
+            const persistMs = Date.now() - persistStartedAt;
 
             const populatedApplication = mapApplicationToApi(result.application);
             const mappedClient = mapClientToApi(result.client);
             console.log(
-                `[autoCreateFromPDF] done in ${Date.now() - startedAt}ms existingClient=${result.existingClient} applicationId=${result.application?.id}`,
+                `[autoCreateFromPDF] done in ${Date.now() - startedAt}ms extract=${extractMs}ms persist=${persistMs}ms existingClient=${result.existingClient} applicationId=${result.application?.id}`,
             );
 
             return res.status(200).json({

@@ -82,12 +82,49 @@ async function parsePdfBufferForHybrid(buffer: Buffer): Promise<{
   };
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Embedded PDF text with line breaks — used by Claude hybrid and Document AI fallback. */
 export async function extractEmbeddedPdfText(buffer: Buffer): Promise<string> {
   try {
-    const parsed = await parsePdfBufferForHybrid(buffer);
+    // pdf-parse v1 default extract is faster and more reliable than a custom pagerender.
+    const pdfModule = require("pdf-parse") as
+      | ((buf: Buffer) => Promise<{ text?: string }>)
+      | { default?: (buf: Buffer) => Promise<{ text?: string }> };
+    const parse =
+      typeof pdfModule === "function"
+        ? pdfModule
+        : typeof pdfModule?.default === "function"
+          ? pdfModule.default
+          : null;
+    if (parse) {
+      const parsed = await withTimeout(parse(buffer), 2500, "pdf-parse");
+      return String(parsed?.text || "").trim();
+    }
+  } catch (err) {
+    console.warn(
+      "[pdfIngestion] pdf-parse default extract failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+  try {
+    const parsed = await withTimeout(parsePdfBufferForHybrid(buffer), 2500, "pdf-parse-hybrid");
     return String(parsed.combined || "").trim();
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[pdfIngestion] embedded PDF text extract failed:",
+      err instanceof Error ? err.message : err,
+    );
     return "";
   }
 }
