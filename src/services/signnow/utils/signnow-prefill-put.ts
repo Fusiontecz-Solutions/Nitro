@@ -1,3 +1,5 @@
+import { isMerchantRequiredPage20AchField } from './signnow-field-map';
+
 /**
  * SignNow rejects a whole PUT /document/{id} with
  * "Empty prefilled text for lock to sign prefill" if ANY field has
@@ -51,8 +53,11 @@ export function parseSignNowPrefillValidationField(detail: string): string {
   return match?.[1] ? String(match[1]).trim() : '';
 }
 
-/** Fixed size for baked / prefilled contract text in SignNow PDFs. */
-const DEFAULT_FONT_SIZE = 12.5;
+/** Fixed style for baked / prefilled mapping text (contract, addenda, disclosures). */
+const DEFAULT_FONT = 'Times New Roman';
+const DEFAULT_FONT_SIZE = 10;
+/** Thin template underlines shrink typed text; 16pt box fits 10pt Times New Roman. */
+export const CONTRACT_FILLABLE_MIN_HEIGHT = 16;
 
 export function applySignNowFieldStyle(
   target: Record<string, unknown>,
@@ -64,14 +69,33 @@ export function applySignNowFieldStyle(
       target[key] = source[key];
     }
   }
-  if (!target.font) target.font = 'Arial';
+  target.font = DEFAULT_FONT;
   const maxSize = Number(options?.maxSize);
   const next =
     Number.isFinite(maxSize) && maxSize > 0 ? maxSize : DEFAULT_FONT_SIZE;
   target.size = next;
   target.font_size = next;
   if (!target.color) target.color = '000000';
+  if (!target.valign) target.valign = 'middle';
   return target;
+}
+
+/** Merchant-typed fillable fields: same 10pt face as contract mapping, tall enough to render it. */
+export function applyContractFillableFont(
+  field: Record<string, unknown>,
+  options?: { maxSize?: number },
+): Record<string, unknown> {
+  applySignNowFieldStyle(field, field, options);
+  const height = Number(field.height) || 0;
+  if (height < CONTRACT_FILLABLE_MIN_HEIGHT) {
+    field.height = CONTRACT_FILLABLE_MIN_HEIGHT;
+  }
+  delete field.stretch_mode;
+  const lineHeight = Number(field.line_height);
+  if (Number.isFinite(lineHeight) && lineHeight > 0 && lineHeight < Number(field.size)) {
+    delete field.line_height;
+  }
+  return field;
 }
 
 export function sanitizeSignNowPutFields(
@@ -155,6 +179,16 @@ export function splitPrefillPutPayload(
   for (const field of fields) {
     const type = String(field.type || 'text').toLowerCase();
     if (NON_TEXT_TYPES.has(type)) {
+      fillable.push(field);
+      continue;
+    }
+    if (
+      isMerchantRequiredPage20AchField(
+        String(field.name || ''),
+        Number(field.page_number),
+      )
+    ) {
+      applyContractFillableFont(field, options);
       fillable.push(field);
       continue;
     }

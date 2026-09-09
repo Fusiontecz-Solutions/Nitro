@@ -1,5 +1,7 @@
 import {
+  applyContractFillableFont,
   applySignNowFieldStyle,
+  CONTRACT_FILLABLE_MIN_HEIGHT,
   canLockSignNowPrefill,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
@@ -125,18 +127,89 @@ describe('signnow-prefill-put', () => {
         x: 72,
         y: 664,
         page_number: 0,
-        font: 'Arial',
+        font: 'Times New Roman',
         color: '000000',
       }),
     ]);
     expect(toSignNowCompletedText({ type: 'signature', prefilled_text: 'x' })).toBeNull();
   });
 
-  it('uses 12.5pt for contract prefill fonts', () => {
-    expect(applySignNowFieldStyle({ height: 16 }).size).toBe(12.5);
-    expect(applySignNowFieldStyle({ height: 12 }).size).toBe(12.5);
-    expect(applySignNowFieldStyle({ size: 12, height: 20 }).size).toBe(12.5);
-    expect(applySignNowFieldStyle({ size: 14, height: 20 }).size).toBe(12.5);
+  it('keeps page 20 ACH bank fields fillable so the merchant must complete them', () => {
+    const split = splitPrefillPutPayload(
+      [
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_bank_account_p20',
+          prefilled_text: '01714856400',
+          page_number: 19,
+          required: true,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_username_p20',
+          page_number: 19,
+          required: true,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'Text Field 13',
+          page_number: 19,
+          required: true,
+        },
+        {
+          type: 'signature',
+          role: 'Recipient 1',
+          name: 'signature_seller1_p2',
+          page_number: 1,
+        },
+      ],
+      true,
+    );
+    expect(split.texts).toEqual([]);
+    expect(split.fields.map((field) => field.name)).toEqual([
+      'ach_bank_account_p20',
+      'ach_username_p20',
+      'Text Field 13',
+      'signature_seller1_p2',
+    ]);
+    expect(split.fields.filter((field) => field.required === true)).toHaveLength(3);
+  });
+
+  it('uses Times New Roman 10pt for contract prefill fonts', () => {
+    expect(applySignNowFieldStyle({ height: 16 }).size).toBe(10);
+    expect(applySignNowFieldStyle({ height: 12 }).size).toBe(10);
+    expect(applySignNowFieldStyle({ size: 12, height: 20 }).size).toBe(10);
+    expect(applySignNowFieldStyle({ size: 14, height: 20 }).size).toBe(10);
+    expect(applySignNowFieldStyle({ font: 'Arial', size: 14 }).font).toBe(
+      'Times New Roman',
+    );
     expect(applySignNowFieldStyle({ size: 12, height: 20 }, {}, { maxSize: 9 }).size).toBe(9);
+  });
+
+  it('uses Times New Roman 10pt for addenda and disclosures like the contract', () => {
+    expect(applySignNowFieldStyle({ height: 20 }).size).toBe(10);
+    expect(applySignNowFieldStyle({ height: 20 }).font_size).toBe(10);
+    expect(applySignNowFieldStyle({ height: 20 }).font).toBe('Times New Roman');
+    expect(applySignNowFieldStyle({ height: 20 }).valign).toBe('middle');
+  });
+
+  it('sizes merchant fillable fields to contract 10pt so typed text is not tiny', () => {
+    const field = applyContractFillableFont({
+      type: 'text',
+      name: 'ach_username_p20',
+      height: 8,
+      size: 6,
+      stretch_mode: 'fit',
+      line_height: 4,
+    });
+    expect(field.font).toBe('Times New Roman');
+    expect(field.size).toBe(10);
+    expect(field.font_size).toBe(10);
+    expect(field.height).toBe(CONTRACT_FILLABLE_MIN_HEIGHT);
+    expect(field.stretch_mode).toBeUndefined();
+    expect(field.line_height).toBeUndefined();
   });
 });

@@ -44,12 +44,16 @@ import {
   canonicalizeSignNowFieldName,
   expandSignNowPrefillForUnguidedPut,
   formatSignNowPrefillValue,
+  isMerchantRequiredPage20AchField,
   isMonthlyFeeDocumentName,
+  isMonthlyFeeForcedBlankField,
+  isSupplementalSignNowDocumentName,
   resolveSignNowPrefillValue,
   shouldSkipSignNowPrefill,
   signNowPrefillOptionsForDocument,
 } from './utils/signnow-field-map';
 import {
+  applyContractFillableFont,
   applySignNowFieldStyle,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
@@ -241,7 +245,9 @@ function toSignNowPutField(
   const height = Number(attrs.height ?? field?.height ?? (SIGN_FIELD_TYPES.has(type) ? 34 : 12));
   if (!Number.isFinite(page_number) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
   const name = String(attrs.name || field?.name || field?.field_name || '').trim();
-  const required = Boolean(attrs.required ?? field?.required ?? SIGN_FIELD_TYPES.has(type));
+  const required = isMerchantRequiredPage20AchField(name, page_number)
+    ? true
+    : Boolean(attrs.required ?? field?.required ?? SIGN_FIELD_TYPES.has(type));
   const id = String(field?.id || field?.unique_id || attrs.id || '').trim();
   const row: Record<string, unknown> = {
     type,
@@ -261,6 +267,12 @@ function toSignNowPutField(
       { ...attrs, ...field },
       options?.maxSize ? { maxSize: options.maxSize } : undefined,
     );
+    if (isMerchantRequiredPage20AchField(name, page_number)) {
+      applyContractFillableFont(
+        row,
+        options?.maxSize ? { maxSize: options.maxSize } : undefined,
+      );
+    }
     const value = String(
       field?.data || attrs.data || attrs.prefilled_text || field?.prefilled_text || '',
     ).trim();
@@ -2754,6 +2766,10 @@ export class SignNowService {
     const prefillOpts = signNowPrefillOptionsForDocument(documentName);
     const pageCount = signNowDocumentPageCount(remote);
     const shortDoc = pageCount > 0 && pageCount <= 2;
+    const supplementalDoc =
+      monthlyFee ||
+      isSupplementalSignNowDocumentName(documentName) ||
+      (shortDoc && !/agreement|pcm[_ ]?contract/i.test(documentName));
     let sourceFields = collectSignNowPutFields(remote, {
       ...(monthlyFee || shortDoc ? { defaultRole: 'Recipient 1' } : {}),
     });
@@ -2816,6 +2832,13 @@ export class SignNowService {
       if (!SIGN_FIELD_TYPES.has(type) && crmValue) {
         next.prefilled_text = crmValue;
         applied += 1;
+      } else if (
+        !SIGN_FIELD_TYPES.has(type) &&
+        prefillOpts?.documentKind === 'monthly_fee' &&
+        isMonthlyFeeForcedBlankField(String(next.name || ''))
+      ) {
+        delete next.prefilled_text;
+        delete next.data;
       }
       if (!SIGN_FIELD_TYPES.has(type)) {
         applySignNowFieldStyle(next, next);
@@ -2836,6 +2859,21 @@ export class SignNowService {
         // SignNow rejects the entire PUT if lock_to_sign_prefill is set without text.
         delete next.lock_to_sign_prefill;
         if (ownerData) next.required = false;
+      }
+      if (
+        !SIGN_FIELD_TYPES.has(type) &&
+        isMerchantRequiredPage20AchField(String(next.name || ''), Number(next.page_number))
+      ) {
+        next.required = true;
+        next.role = merchantRole;
+        delete next.lock_to_sign_prefill;
+        applyContractFillableFont(next);
+      } else if (
+        !SIGN_FIELD_TYPES.has(type) &&
+        next.required === true &&
+        !next.lock_to_sign_prefill
+      ) {
+        applyContractFillableFont(next);
       }
       fields.push(next);
     }
@@ -2926,7 +2964,7 @@ export class SignNowService {
       }
     }
 
-    if (signFields === 0 && !monthlyFee) {
+    if (signFields === 0 && !supplementalDoc) {
       console.warn(
         '[SignNow] skipping field PUT without signature fields — keeping prefill-texts only',
         { documentId, textsApplied, applied },
@@ -2934,9 +2972,9 @@ export class SignNowService {
       return textsApplied || applied;
     }
 
-    // Owner review: prefill-texts is enough for SignNow to show CRM values.
-    // Skipping PUT avoids a 45s+ timeout on the agreement that can wipe those values.
-    if (!exposeToMerchant && textsApplied > 0) {
+    // Owner review: skip field PUT on the main agreement (can take 45s+ and wipe values).
+    // Addenda / disclosures still PUT so their field face matches the contract.
+    if (!exposeToMerchant && textsApplied > 0 && !supplementalDoc) {
       console.info('[SignNow] review prefill complete via prefill-texts (skipped field PUT)', {
         documentId,
         textsApplied,
@@ -2981,7 +3019,11 @@ export class SignNowService {
     };
     if (exposeToMerchant && baked.texts.length) {
       const signWidgets = putFields.filter((field) =>
-        SIGN_FIELD_TYPES.has(String(field.type || '')),
+        SIGN_FIELD_TYPES.has(String(field.type || '')) ||
+        isMerchantRequiredPage20AchField(
+          String(field.name || ''),
+          Number(field.page_number),
+        ),
       );
       pushPut(signWidgets, true);
     }

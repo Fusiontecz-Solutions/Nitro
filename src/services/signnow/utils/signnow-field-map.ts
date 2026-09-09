@@ -206,7 +206,6 @@ const ALIASES: Record<string, string[]> = {
     'ach_program_fee_amount',
     'program_fee_amount',
     'ach_program_fee_p1',
-    'ach_program_fee_p13',
   ],
   monthly_fee: ['ach_program_fee', 'program_fee', 'ach_monthly_fee', 'monthly_program_fee'],
   program_fee: ['ach_program_fee', 'monthly_fee', 'ach_monthly_fee'],
@@ -252,7 +251,7 @@ const ALIASES: Record<string, string[]> = {
     'total_amount_business_fund',
   ],
   funding_provided_direct: ['net_to_merchant', 'disbursement_amount', 'funding_provided'],
-  frequency: ['frequency'],
+  frequency: ['frequency', 'paymentterms', 'payment_terms'],
   // ACH Weekly addendum — same CRM ids as PCM_CONTRACT, unique names use `_p1_ach`.
   billing_name: ['client_name', 'ach_account_holder_name', 'merchant_contact_name'],
   billing_address: [
@@ -506,17 +505,40 @@ export const MONTHLY_FEE_TEXT_FIELD_CRM_IDS = [
   'authorization_client_bank_routing',
   'authorization_client_bank_account',
   'ach_program_fee',
-  'remittance_start_date',
+  // Text Field 11 is the "or Amount" / Variable Amount box — not a date.
+  '',
   'remittance_start_date',
   'estimated_number_of_payments',
   'authorization_client_name_print',
 ];
+
+export function isMonthlyFeeForcedBlankField(fieldName: string): boolean {
+  const numbered = String(fieldName || '')
+    .trim()
+    .match(/^text field\s*(\d+)$/i);
+  if (!numbered) return false;
+  return MONTHLY_FEE_TEXT_FIELD_CRM_IDS[Number(numbered[1]) - 1] === '';
+}
 
 export function isMonthlyFeeDocumentName(value: unknown): boolean {
   const n = String(value || '')
     .trim()
     .toLowerCase();
   return n.includes('monthly') && n.includes('fee');
+}
+
+/** Addenda, disclosures, ACH, and similar extras — not the main agreement. */
+export function isSupplementalSignNowDocumentName(value: unknown): boolean {
+  const n = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!n) return false;
+  if (/agreement|pcm[_ ]?contract|^contract$/.test(n) && !/addendum|disclosure/.test(n)) {
+    return false;
+  }
+  return /addendum|disclosure|exhibit|\bach\b|authorization|epa|payoff|flex|weekly|monthly/.test(
+    n,
+  );
 }
 
 export function isObsidianDocumentName(value: unknown): boolean {
@@ -580,6 +602,42 @@ export function signNowPrefillOptionsForDocument(
 ): SignNowPrefillOptions | undefined {
   const documentKind = signNowPrefillDocumentKind(documentName, fieldNames);
   return documentKind ? { documentKind } : undefined;
+}
+
+/** Page-20 ACH bank slots the merchant signer must complete. */
+const MERCHANT_REQUIRED_P20_ACH = new Set([
+  'ach_bank_name',
+  'ach_bank_portal',
+  'ach_bank_account',
+  'ach_bank_routing',
+  'ach_username',
+  'ach_password',
+  'ach_security_q1',
+  'ach_security_q2',
+  'ach_security_q3',
+]);
+
+/**
+ * Agreement page 20 bank fields (and Text Field 13 = security Q/A 3).
+ * SignNow page_number is 0-based, so the viewer "page 20" is often 19.
+ */
+export function isMerchantRequiredPage20AchField(
+  fieldName: string,
+  pageNumber?: number,
+): boolean {
+  const raw = String(fieldName || '').trim();
+  if (!raw) return false;
+  const n = raw.toLowerCase();
+  const canon = canonicalizeSignNowFieldName(raw);
+  const namedP20 = /_p20\b/i.test(n);
+  const onPage20 = pageNumber === 19 || pageNumber === 20;
+  if (MERCHANT_REQUIRED_P20_ACH.has(canon)) {
+    return namedP20 || onPage20;
+  }
+  if (canon === 'text field 13' || /^text[\s_]*field[\s_]*13$/i.test(n)) {
+    return namedP20 || onPage20;
+  }
+  return false;
 }
 
 export function shouldSkipSignNowPrefill(
@@ -660,7 +718,8 @@ function isWeakSignNowPrefillHit(canon: string, value: string): boolean {
     return (
       /^disclosure_page3_3[abc]$/.test(canon) ||
       canon === 'disclosure_page3_third_parties' ||
-      canon === 'disclosure_page3_line_2'
+      canon === 'disclosure_page3_line_2' ||
+      canon === 'previous_lender_name'
     );
   }
   if (canon === 'disclosure_page3_third_parties' || canon === 'disclosure_page3_line_2') {
@@ -809,7 +868,6 @@ function resolveForcedContractMoneyField(
       'ach_program_fee_amount',
       'program_fee_amount',
       'ach_program_fee_p1',
-      'ach_program_fee_p13',
     );
   }
 
@@ -960,6 +1018,8 @@ export function resolveSignNowPrefillValue(
   options?: SignNowPrefillOptions,
 ): string {
   if (shouldSkipSignNowPrefill(fieldName, options)) return '';
+  /** Main contract page 14 ACH Program Fee blank — always 0.00, not the monthly addendum fee. */
+  if (/ach_program_fee_p13/i.test(String(fieldName || ''))) return '0.00';
   if (
     isSignNowParty2Field(fieldName) &&
     !hasDistinctParty2Prefill(prefill) &&
@@ -976,6 +1036,7 @@ export function resolveSignNowPrefillValue(
     const numbered = raw.match(/^text field\s*(\d+)$/i);
     if (numbered) {
       const crmId = MONTHLY_FEE_TEXT_FIELD_CRM_IDS[Number(numbered[1]) - 1];
+      if (crmId === '') return '';
       if (crmId) {
         const fromMonthly = resolveSignNowPrefillValue(crmId, prefill);
         if (fromMonthly) return fromMonthly;
@@ -1024,10 +1085,10 @@ export function resolveSignNowPrefillValue(
       return (
         mapGet(map, 'funder_name') ||
         mapGet(map, 'disclosure_funder_name') ||
-        'N/A'
+        ''
       );
     }
-    return 'N/A';
+    return '';
   }
 
   const tryKeys = [
@@ -1047,7 +1108,7 @@ export function resolveSignNowPrefillValue(
   const forcedMoney = resolveForcedContractMoneyField(canon, map);
   if (forcedMoney && !isWeakSignNowPrefillHit(canon, forcedMoney)) return forcedMoney;
   if (forcedMoney) return forcedMoney;
-  if (/^disclosure_page3_3[abc]$/.test(canon)) return 'N/A';
+  if (/^disclosure_page3_3[abc]$/.test(canon)) return '';
   if (canon === 'disclosure_page3_third_parties') return '0.00';
   return '';
 }

@@ -2,6 +2,9 @@ import {
   buildSignNowDocumentPrefillTexts,
   canonicalizeSignNowFieldName,
   formatSignNowPrefillValue,
+  isMerchantRequiredPage20AchField,
+  isMonthlyFeeForcedBlankField,
+  isSupplementalSignNowDocumentName,
   resolveSignNowPrefillValue,
   shouldSkipSignNowPrefill,
   signNowPrefillDocumentKind,
@@ -153,6 +156,23 @@ describe('signnow-field-map', () => {
     );
   });
 
+  it('marks page 20 ACH bank fields as required for the merchant signer', () => {
+    expect(isMerchantRequiredPage20AchField('ach_bank_name_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_bank_portal_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_bank_account_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_bank_routing_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_username_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_password_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_security_q1_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_security_q2_p20')).toBe(true);
+    expect(isMerchantRequiredPage20AchField('Text Field 13', 19)).toBe(true);
+    expect(isMerchantRequiredPage20AchField('Text Field 13', 20)).toBe(true);
+    expect(isMerchantRequiredPage20AchField('ach_bank_name', 19)).toBe(true);
+    expect(isMerchantRequiredPage20AchField('Text Field 13', 0)).toBe(false);
+    expect(isMerchantRequiredPage20AchField('ach_bank_name_p1')).toBe(false);
+    expect(isMerchantRequiredPage20AchField('merchant_contact_name_p1')).toBe(false);
+  });
+
   it('maps ACH Weekly unique names back to contract prefill ids', () => {
     const prefill = {
       client_name: 'Test User',
@@ -295,6 +315,25 @@ describe('signnow-field-map', () => {
     expect(byName['Text Field 7']).toBe('CHASE');
   });
 
+  it('does not put a date into Monthly Fee Text Field 11 (variable amount)', () => {
+    const opts = { documentKind: 'monthly_fee' as const };
+    const prefill = {
+      remittance_start_date: '09/08/2026',
+      agreement_date: '09/08/2026',
+      ach_program_fee: '499.99',
+      estimated_number_of_payments: '12',
+    };
+    expect(isMonthlyFeeForcedBlankField('Text Field 11')).toBe(true);
+    expect(resolveSignNowPrefillValue('Text Field 11', prefill, opts)).toBe('');
+    expect(resolveSignNowPrefillValue('Text Field 10', prefill, opts)).toBe('499.99');
+    expect(resolveSignNowPrefillValue('remittance_start_date_p1', prefill, opts)).toBe(
+      '09/08/2026',
+    );
+    expect(resolveSignNowPrefillValue('remittance_start_date_p1_s1', prefill, opts)).toBe(
+      '09/08/2026',
+    );
+  });
+
   it('always fills purchase_price / purchased_amount / total_fees / ach_program_fee', () => {
     const prefill = {
       purchase_price: '10000.00',
@@ -309,7 +348,7 @@ describe('signnow-field-map', () => {
     expect(resolveSignNowPrefillValue('Purchased Amount', prefill)).toBe('14900.00');
     // No explicit total_fees → derive offer − net
     expect(resolveSignNowPrefillValue('total_fees_p1', prefill)).toBe('1,025.00');
-    expect(resolveSignNowPrefillValue('ach_program_fee_p13', prefill)).toBe('49.00');
+    expect(resolveSignNowPrefillValue('ach_program_fee_p13', prefill)).toBe('0.00');
     expect(resolveSignNowPrefillValue('disclosure_page3_line_1_p3', {
       appendix_underwriting_fees: '1,025.00',
       net_to_merchant: '8975.00',
@@ -323,6 +362,9 @@ describe('signnow-field-map', () => {
     })).toBe('NITRO ADVANCE');
     expect(
       resolveSignNowPrefillValue('ach_program_fee_p13', { ach_program_fee_p1: '49.00' }),
+    ).toBe('0.00');
+    expect(
+      resolveSignNowPrefillValue('ach_program_fee_p1', { monthly_fee: '49.00' }),
     ).toBe('49.00');
     // Agreement widgets use default SignNow names on this template.
     expect(resolveSignNowPrefillValue('Text Field 36', prefill)).toBe('10000.00');
@@ -376,7 +418,7 @@ describe('signnow-field-map', () => {
     expect(byName['Text Field 1']).toBe('10000.00');
     expect(byName['Text Field 2']).toBe('8950.00');
     expect(byName['Text Field 3']).toBe('64.46');
-    expect(byName.disclosure_page3_3a_p3).toBe('N/A');
+    expect(byName.disclosure_page3_3a_p3).toBeUndefined();
     expect(byName.disclosure_page3_third_parties_p3).toBe('0.00');
     expect(byName.previous_lender_name_p3).toBe('NITRO ADVANCE');
     expect(byName.addendum_p_funder_and_business_namefull_p1).toBe('FUSIONTECZ');
@@ -539,5 +581,18 @@ describe('signnow-field-map', () => {
     expect(
       signNowPrefillDocumentKind('Obsidian Capital Group - Agreement 1'),
     ).toBe('obsidian_agreement');
+  });
+
+  it('treats addenda and disclosures as supplemental SignNow documents', () => {
+    expect(isSupplementalSignNowDocumentName('NY State Disclosure')).toBe(true);
+    expect(isSupplementalSignNowDocumentName('Addendum P')).toBe(true);
+    expect(isSupplementalSignNowDocumentName('ACH Authorization')).toBe(true);
+    expect(isSupplementalSignNowDocumentName('Monthly Fee Addendum')).toBe(true);
+    expect(isSupplementalSignNowDocumentName('Nitro Advance Agreement')).toBe(
+      false,
+    );
+    expect(
+      isSupplementalSignNowDocumentName('Obsidian Capital Group - Agreement 1'),
+    ).toBe(false);
   });
 });
