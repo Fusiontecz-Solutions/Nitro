@@ -7,6 +7,7 @@ export type DocumentRequestSlug =
     | "financial-statement"
     | "voided-check"
     | "driver-license"
+    | "driver-license-owner-2"
     | "tax-returns"
     | "articles-of-incorporation";
 
@@ -32,6 +33,7 @@ export const DOCUMENT_REQUEST_LABELS: Record<string, string> = {
     "financial-statement": "Financial Statement",
     "voided-check": "Voided Check",
     "driver-license": "Driver's License",
+    "driver-license-owner-2": "Owner 2 Driver's License",
     "tax-returns": "Tax Returns - Last 2 Years",
     "articles-of-incorporation": "Articles of Incorporations",
     "additional-documents": "Additional documents (as discussed)",
@@ -59,7 +61,7 @@ export const DOCUMENT_REQUEST_OPTIONS: { id: DocumentRequestSlug; label: string 
  * approval. Files tagged with these are pinned + highlighted in the CRM
  * uploaded-documents table.
  */
-export const PINNED_DOCUMENT_SLUGS = ["voided-check", "driver-license"] as const;
+export const PINNED_DOCUMENT_SLUGS = ["voided-check", "driver-license", "driver-license-owner-2"] as const;
 
 /**
  * Normalize legacy / variant slugs (e.g. the older ISO portal `driving_license`
@@ -75,6 +77,8 @@ export function normalizeDocumentSlug(raw?: string | null): string {
         "drivers-license": "driver-license",
         "driver-licence": "driver-license",
         "driving-licence": "driver-license",
+        "driver-license-2": "driver-license-owner-2",
+        "owner-2-driver-license": "driver-license-owner-2",
         "void-check": "voided-check",
         "voided-cheque": "voided-check",
     };

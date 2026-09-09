@@ -107,7 +107,6 @@ import {
     updateContract,
     getByApplicationIdContract,
     getByIdContract,
-    syncKycPrefillToContract,
     type UpdateContractData,
 } from "@/redux/actions/contractActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
@@ -134,16 +133,9 @@ import {
     type ContractPrefillField,
 } from "./contractdata/Contract";
 import {
-    applyKycPanelsToAchEntries,
-    applyKycPanelsToGuarantorEntries,
-    applyKycPanelsToOwnerEntries,
-    mergeKycExtractionIntoPrefill,
     parseKycExtractionsFromUploadResponse,
-    finalizeKycExtractionForSync,
     kycExtractionHasReadableFields,
-    type KycExtractionResult,
 } from "./contractdata/kycDocumentPrefill";
-import KycExtractionReviewCard from "./contractdata/KycExtractionReviewCard";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
@@ -310,7 +302,14 @@ import {
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
 import { resolveActiveOwnerCount, clearParty2PrefillFieldPayload, collapseDocuSignRolesToSignerSlots, applyPrimaryGuarantorNamesToPrefillFields, applySecondOwnerNameToPrefillFields, resolveOwnerRowFullName, resolveSecondOwnerSignerName } from "./contractdata/contractPartyCounts";
-import { syncContractSignerRowsToCrm } from "./contractdata/contractSignerOwnersSync";
+import { resolveOwnerRowsForContractPrefill } from "./contractdata/contractOwnerPrefillRows";
+import {
+    applicationWithClientOwners,
+    ensureSignerRowsFromCrmOwners,
+    resolveOwnerPartiesForContractSigners,
+    syncContractSignerRowsToCrm,
+} from "./contractdata/contractSignerOwnersSync";
+import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 import {
     boldSignTemplateIsPreviewable,
     getAddendumDropdownRef,
@@ -1941,19 +1940,17 @@ const PDFViewerModal = ({
     type RequiredDocumentKey =
         | "voidedCheck"
         | "driverLicense"
+        | "driverLicenseOwner2"
     // | "bankStatement"
     // | "utilityBill";
     const [documentUrls, setDocumentUrls] = useState<{
         voidedCheck?: string;
         driverLicense?: string;
+        driverLicenseOwner2?: string;
         bankStatement?: string;
         utilityBill?: string;
     }>({});
-    const [activePreview, setActivePreview] = useState<null | "voidedCheck" | "driverLicense" | "bankStatement" | "utilityBill">(null);
-    const voidedCheckRef = useRef<HTMLInputElement>(null);
-    const driverLicenseRef = useRef<HTMLInputElement>(null);
-    // const bankStatementRef = useRef<HTMLInputElement>(null);
-    // const utilityBillRef = useRef<HTMLInputElement>(null);
+    const [activePreview, setActivePreview] = useState<null | "voidedCheck" | "driverLicense" | "driverLicenseOwner2" | "bankStatement" | "utilityBill">(null);
     const [documentUploadMessage, setDocumentUploadMessage] = useState("");
     /** Per-row upload progress (0–100) for auto-upload UX. Absent key means not uploading. */
     const [uploadProgressByKey, setUploadProgressByKey] = useState<
@@ -1965,16 +1962,6 @@ const PDFViewerModal = ({
     >({});
     /** Currently dragged-over row, for drop-zone visual feedback. */
     const [dragOverDocKey, setDragOverDocKey] = useState<RequiredDocumentKey | null>(null);
-    /** Claude KYC extraction awaiting user review before syncing to contract prefill. */
-    const [pendingKycByDocKey, setPendingKycByDocKey] = useState<
-        Partial<
-            Record<
-                RequiredDocumentKey,
-                { extraction: KycExtractionResult; synced: boolean }
-            >
-        >
-    >({});
-    const [syncingKycKey, setSyncingKycKey] = useState<RequiredDocumentKey | null>(null);
     const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
     const [updatingUploadedFileId, setUpdatingUploadedFileId] = useState<string | null>(null);
     const [deletingUploadedFileId, setDeletingUploadedFileId] = useState<string | null>(null);
@@ -2324,6 +2311,13 @@ const PDFViewerModal = ({
         (state: RootState) => state.uploadedContractDocuments,
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
+    const { owners: applicationClientOwners } = useApplicationClientOwners(
+        applicationData?.client ?? null,
+    );
+    const applicationForPrefill = useMemo(
+        () => applicationWithClientOwners(applicationData, applicationClientOwners),
+        [applicationData, applicationClientOwners],
+    );
     const applicationFilesLoading = useSelector((state: RootState) =>
         Boolean(state.applicationDetail.loading || state.applicationDetail.isRefreshing),
     );
@@ -2379,6 +2373,26 @@ const PDFViewerModal = ({
     const epoListState = useSelector((state: RootState) => state.epoList);
     const addendumListState = useSelector((state: RootState) => state.addendumList);
     const ownerListState = useSelector((state: RootState) => state.contractOwnerList);
+    const crmOwnerPartiesForSigners = useMemo(
+        () =>
+            resolveOwnerPartiesForContractSigners(
+                applicationForPrefill,
+                Array.isArray(ownerListState.data) ? ownerListState.data : [],
+                null,
+            ),
+        [applicationForPrefill, ownerListState.data],
+    );
+    const signerSlotOwnerCount = useMemo(
+        () =>
+            resolveActiveOwnerCount({
+                owners: applicationClientOwners as unknown as Record<string, unknown>[],
+                signerRoles: contractSignerOverrides?.map((r) => ({
+                    signerRole: r.role,
+                    signerEmail: r.email,
+                })),
+            }),
+        [applicationClientOwners, contractSignerOverrides],
+    );
     const guarantorListState = useSelector((state: RootState) => state.contractGuarantorList);
     const boldSignTemplatesState = useSelector(
         (state: RootState) => state.boldSignTemplates,
@@ -2398,8 +2412,8 @@ const PDFViewerModal = ({
 
     /** Platform layout slots from code — never DocuSign Admin template recipients. */
     const platformSignerRoleRows = useMemo(
-        () => getPlatformSignerRoleRows(Math.max(1, ownerEntries.length || 1)),
-        [ownerEntries.length],
+        () => getPlatformSignerRoleRows(Math.max(1, signerSlotOwnerCount || 1)),
+        [signerSlotOwnerCount],
     );
 
     const templateRoleRowsForSigner = useMemo(
@@ -2432,26 +2446,47 @@ const PDFViewerModal = ({
 
     /** CRM client / owner / guarantor rows mapped to numbered DocuSign signer roles. */
     const applicationSignerRowsForMerge = useMemo((): ContractSignerOverrideRow[] => {
+        const ownersFromCrm = crmOwnerPartiesForSigners.map((party) => ({
+            firstName: String(party.ownerFirstName || "").trim(),
+            lastName: String(party.ownerLastName || "").trim(),
+            email: String(party.ownerEmail || "").trim(),
+        }));
+        const ownersFromEntries = ownerEntries.map((entry) => ({
+            firstName: String(entry.ownerFirstName || "").trim(),
+            lastName: String(entry.ownerLastName || "").trim(),
+            email: String(entry.ownerEmail || "").trim(),
+        }));
+        const owners =
+            ownersFromCrm.filter((o) => o.email || o.firstName || o.lastName).length >=
+            ownersFromEntries.filter((o) => o.email || o.firstName || o.lastName).length
+                ? ownersFromCrm
+                : ownersFromEntries;
         return buildContractPartySignerRows({
             clientEmail: docuSignSignerEmail.email.trim(),
             clientName: getApplicationPrimaryRecipientName(applicationData),
-            owners: ownerEntries.map((entry) => ({
-                firstName: String(entry.ownerFirstName || "").trim(),
-                lastName: String(entry.ownerLastName || "").trim(),
-                email: String(entry.ownerEmail || "").trim(),
-            })),
+            owners,
             guarantors: guarantorEntries.map((entry) => ({
                 firstName: String(entry.guarantorFirstName || "").trim(),
                 lastName: String(entry.guarantorLastName || "").trim(),
                 email: String(entry.guarantorEmail || "").trim(),
             })),
         });
-    }, [applicationData, docuSignSignerEmail.email, ownerEntries, guarantorEntries]);
+    }, [
+        applicationData,
+        crmOwnerPartiesForSigners,
+        docuSignSignerEmail.email,
+        ownerEntries,
+        guarantorEntries,
+    ]);
 
     /** DocuSign/BoldSign template roles for Summary (top-level `roles`, not `raw.roles`). */
     const summaryTemplateRoles = useMemo(() => {
-        if (contractSignerOverrides?.length) {
-            return contractSignerOverrides.map((r, idx) => ({
+        const ensuredSignerRows = ensureSignerRowsFromCrmOwners(
+            contractSignerOverrides,
+            crmOwnerPartiesForSigners,
+        );
+        if (ensuredSignerRows.length) {
+            return ensuredSignerRows.map((r, idx) => ({
                 roleName: r.role,
                 signerEmail: r.email,
                 signerName: r.name,
@@ -2498,6 +2533,7 @@ const PDFViewerModal = ({
         ];
     }, [
         contractSignerOverrides,
+        crmOwnerPartiesForSigners,
         templateRecipients,
         platformSignerRoleRows,
         docuSignSignerEmail.email,
@@ -2553,15 +2589,12 @@ const PDFViewerModal = ({
     const documentTypeByKey: Record<RequiredDocumentKey, string> = {
         voidedCheck: "Voided Check",
         driverLicense: "Driver License",
+        driverLicenseOwner2: "Driver License Owner 2",
         // bankStatement: "Bank Statement",
         // utilityBill: "Utility Bill",
     };
-    const requiredDocumentRows: { key: RequiredDocumentKey; label: string; inputRef: React.RefObject<HTMLInputElement | null> }[] = [
-        { key: "driverLicense", label: "Driver's License", inputRef: driverLicenseRef },
-        { key: "voidedCheck", label: "Voided Check", inputRef: voidedCheckRef },
-        // { key: "bankStatement", label: "Bank Statement", inputRef: bankStatementRef },
-        // { key: "utilityBill", label: "Utility Bill", inputRef: utilityBillRef },
-    ];
+    /** KYC DL / voided-check upload lives on the application Documents tab, not Create Contract. */
+    const requiredDocumentRows: { key: RequiredDocumentKey; label: string; inputRef: React.RefObject<HTMLInputElement | null> }[] = [];
     const uploadedDocumentByTypeKey = useMemo(() => {
         const map = new Map<string, any>();
         for (const file of uploadedDocs) {
@@ -2923,7 +2956,10 @@ const PDFViewerModal = ({
                 ? (addendumListState.data as Record<string, unknown>[])
                 : [],
             epo: firstRow(epoListState.data),
-            owners: Array.isArray(ownerListState.data) ? ownerListState.data : [],
+            owners: resolveOwnerRowsForContractPrefill(
+                applicationForPrefill,
+                Array.isArray(ownerListState.data) ? ownerListState.data : [],
+            ),
             guarantors: Array.isArray(guarantorListState.data) ? guarantorListState.data : [],
         };
     }, [
@@ -2939,6 +2975,7 @@ const PDFViewerModal = ({
         applicationMongoId,
         numericApplicationId,
         applicationData,
+        applicationForPrefill,
     ]);
 
     const activeOwnerCountForPrefill = useMemo(
@@ -3066,7 +3103,7 @@ const PDFViewerModal = ({
             contractPrefillOverrides,
             contractPrefillLoaded ? contractPrefillFromDb : null,
         );
-        const fromApp = buildContractPrefillFieldsFromApplication(applicationData, {
+        const fromApp = buildContractPrefillFieldsFromApplication(applicationForPrefill, {
             agreementDate: formatDate(new Date()),
             contractRecords: contractPrefillRecords,
             overrides:
@@ -3105,6 +3142,7 @@ const PDFViewerModal = ({
         );
     }, [
         applicationData,
+        applicationForPrefill,
         prefillFieldsPreview,
         contractPrefillRecords,
         contractPrefillOverrides,
@@ -3291,6 +3329,7 @@ const PDFViewerModal = ({
             setDocuSignOpenUrl(null);
             setContractSignerOverrides(null);
             setShowRecipientEditor(false);
+            autoSeededSignersKeyRef.current = "";
             draftPreparedAddendumIdRef.current = undefined;
             draftPreparedCcRef.current = null;
             draftPreparedPrefillFingerprintRef.current = null;
@@ -3546,6 +3585,7 @@ const PDFViewerModal = ({
     const draftPreparedSignerRolesRef = useRef<string | null>(null);
     const draftPreparedOwnerCountRef = useRef<number | null>(null);
     const draftPreparedPackageFingerprintRef = useRef<string | null>(null);
+    const autoSeededSignersKeyRef = useRef<string>("");
     const includeMainContractInSendRef = useRef(includeMainContractInSend);
     includeMainContractInSendRef.current = includeMainContractInSend;
     const includeDisclosureInSendRef = useRef(includeDisclosureInSend);
@@ -3562,21 +3602,27 @@ const PDFViewerModal = ({
                 }));
             if (fromEditor.length) return fromEditor;
         }
-        if (contractSignerOverrides?.length) return contractSignerOverrides;
-        return buildBoldSignRolesFromTemplateRecipients(
-            templateRoleRowsForSigner,
-            String(docuSignSignerEmail.email || "").trim(),
-            getApplicationPrimaryRecipientName(applicationData),
-            { singleSignerOnly: false },
-        ).map((r) => ({
-            role: r.signerRole,
-            name: r.signerName,
-            email: r.signerEmail,
-        }));
+        const fromSavedOrTemplate = contractSignerOverrides?.length
+            ? contractSignerOverrides
+            : buildBoldSignRolesFromTemplateRecipients(
+                  templateRoleRowsForSigner,
+                  String(docuSignSignerEmail.email || "").trim(),
+                  getApplicationPrimaryRecipientName(applicationData),
+                  { singleSignerOnly: false },
+              ).map((r) => ({
+                  role: r.signerRole,
+                  name: r.signerName,
+                  email: r.signerEmail,
+              }));
+        return ensureSignerRowsFromCrmOwners(
+            fromSavedOrTemplate,
+            crmOwnerPartiesForSigners,
+        );
     }, [
         showRecipientEditor,
         recipientEditorRows,
         contractSignerOverrides,
+        crmOwnerPartiesForSigners,
         templateRoleRowsForSigner,
         docuSignSignerEmail.email,
         applicationData,
@@ -3953,17 +3999,23 @@ const PDFViewerModal = ({
             );
         }
         const ownerCount = resolveActiveOwnerCount({
+            owners: contractPrefillRecords.owners ?? null,
             signerRoles: roles.map((r) => ({
                 signerRole: r.signerRole,
                 signerEmail: r.signerEmail,
             })),
         });
-        return collapseDocuSignRolesToSignerSlots(roles, ownerCount);
+        return collapseDocuSignRolesToSignerSlots(
+            roles,
+            ownerCount,
+            contractPrefillRecords.owners ?? null,
+        );
     }, [
         resolveSignerOverrideRowsForSend,
         applicationData,
         templateRoleRowsForSigner,
         applicationSignerRowsForMerge,
+        contractPrefillRecords.owners,
     ]);
 
     const docuSignSignerRolesForSend = useMemo(
@@ -3972,22 +4024,127 @@ const PDFViewerModal = ({
     );
 
     const openSignerEditor = useCallback(() => {
+        const baseRows = buildSignerEditorRows({
+            savedOverrides: contractSignerOverrides,
+            templateRoles: templateRoleRowsForSigner,
+            applicationSignerEmail: String(docuSignSignerEmail.email || "").trim(),
+            applicationSignerName: getApplicationPrimaryRecipientName(applicationData),
+            partyRows: applicationSignerRowsForMerge,
+        });
+        const ensured = ensureSignerRowsFromCrmOwners(
+            baseRows.map((row) => ({
+                role: row.role,
+                name: row.name,
+                email: row.email,
+            })),
+            crmOwnerPartiesForSigners,
+        );
         setRecipientEditorRows(
-            buildSignerEditorRows({
-                savedOverrides: contractSignerOverrides,
-                templateRoles: templateRoleRowsForSigner,
-                applicationSignerEmail: String(docuSignSignerEmail.email || "").trim(),
-                applicationSignerName: getApplicationPrimaryRecipientName(applicationData),
-                partyRows: applicationSignerRowsForMerge,
-            }),
+            (ensured.length ? ensured : baseRows).map((row, idx) => ({
+                id: String(idx + 1),
+                role: row.role,
+                name: row.name,
+                email: row.email,
+            })),
         );
         setShowRecipientEditor(true);
     }, [
         applicationData,
         applicationSignerRowsForMerge,
         contractSignerOverrides,
+        crmOwnerPartiesForSigners,
         docuSignSignerEmail.email,
         templateRoleRowsForSigner,
+    ]);
+
+    useEffect(() => {
+        if (!isOpen || !contractPrefillLoaded || showRecipientEditor) return;
+        const cid = effectiveContractId;
+        if (cid == null || !Number.isFinite(Number(cid))) return;
+        if (crmOwnerPartiesForSigners.length < 2) return;
+        const secondEmail = String(crmOwnerPartiesForSigners[1]?.ownerEmail || "").trim();
+        if (!secondEmail) return;
+
+        const ensured = ensureSignerRowsFromCrmOwners(
+            contractSignerOverrides,
+            crmOwnerPartiesForSigners,
+        );
+        if (ensured.length < 2 || !String(ensured[1]?.email || "").trim()) return;
+
+        const nextFp = contractSignerOverridesFingerprint(ensured);
+        const currentFp = contractSignerOverridesFingerprint(contractSignerOverrides ?? []);
+        if (nextFp === currentFp) return;
+
+        const seedKey = `${cid}:${nextFp}`;
+        if (autoSeededSignersKeyRef.current === seedKey) return;
+        autoSeededSignersKeyRef.current = seedKey;
+
+        void (async () => {
+            try {
+                setContractSignerOverrides(ensured);
+                const prefillBase =
+                    stripDocumentTemplateBlobFromPrefillOverrides(
+                        normalizeContractPrefillOverrides(
+                            contractPrefillFromDb ??
+                                (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                                    ?.contractPrefillOverrides,
+                        ) ?? null,
+                    ) ??
+                    contractPrefillFromDb ??
+                    (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides;
+                const nextPrefill = mergeContractPrefillWithSignerOverrides(
+                    prefillBase,
+                    ensured,
+                );
+                const updated = await dispatch(
+                    updateContract({
+                        id: Number(cid),
+                        data: { contractPrefillOverrides: nextPrefill },
+                    }),
+                ).unwrap();
+                const payload = (updated as { data?: unknown })?.data ?? updated;
+                setResolvedContract((prev) =>
+                    prev && typeof prev === "object"
+                        ? {
+                              ...prev,
+                              ...(payload as Record<string, unknown>),
+                              contractPrefillOverrides: nextPrefill,
+                          }
+                        : (payload as Record<string, unknown>),
+                );
+                setContractPrefillFromDb(
+                    stripDocumentTemplateBlobFromPrefillOverrides(
+                        normalizeContractPrefillOverrides(nextPrefill) ?? null,
+                    ),
+                );
+                const ownersRes = await dispatch(
+                    getAllContractOwners({ contractId: Number(cid) }),
+                ).unwrap();
+                const dbOwners = Array.isArray((ownersRes as { data?: unknown })?.data)
+                    ? ((ownersRes as { data: unknown[] }).data as Record<string, unknown>[])
+                    : [];
+                await syncContractSignerRowsToCrm({
+                    dispatch,
+                    contractId: Number(cid),
+                    applicationData: applicationDataRef.current,
+                    signerRows: ensured.slice(0, 2),
+                    existingContractOwners: dbOwners,
+                });
+            } catch {
+                autoSeededSignersKeyRef.current = "";
+            }
+        })();
+    }, [
+        isOpen,
+        contractPrefillLoaded,
+        showRecipientEditor,
+        effectiveContractId,
+        crmOwnerPartiesForSigners,
+        contractSignerOverrides,
+        contractPrefillFromDb,
+        resolvedContract,
+        dispatch,
     ]);
 
     const fetchDocuSignSenderViewUrl = useCallback(
@@ -5387,168 +5544,6 @@ const PDFViewerModal = ({
         };
     }, [signNowEmbedUrl, markSignNowReviewComplete, onContractDocumentsChanged]);
 
-    const applyKycExtractionToModalState = useCallback(
-        (extraction: KycExtractionResult, options?: { announce?: boolean }) => {
-            if (!extraction || extraction.error) {
-                if (extraction?.error) {
-                    toast.warn(`Document scan: ${extraction.error}`);
-                }
-                return;
-            }
-
-            setContractPrefillFromDb((prev) =>
-                mergeKycExtractionIntoPrefill(prev, extraction),
-            );
-
-            if (extraction.mergedContractPrefillOverrides) {
-                setResolvedContract((prev) =>
-                    prev
-                        ? {
-                              ...prev,
-                              contractPrefillOverrides: extraction.mergedContractPrefillOverrides,
-                          }
-                        : prev,
-                );
-            } else if (extraction.contractPrefill) {
-                setResolvedContract((prev) => {
-                    if (!prev) return prev;
-                    const existing =
-                        typeof prev.contractPrefillOverrides === "object" &&
-                        prev.contractPrefillOverrides != null &&
-                        !Array.isArray(prev.contractPrefillOverrides)
-                            ? { ...(prev.contractPrefillOverrides as Record<string, unknown>) }
-                            : {};
-                    return {
-                        ...prev,
-                        contractPrefillOverrides: {
-                            ...existing,
-                            ...extraction.contractPrefill,
-                        },
-                    };
-                });
-            }
-
-            if (extraction.panels?.owner) {
-                setOwnerEntries((entries) =>
-                    applyKycPanelsToOwnerEntries(entries, extraction.panels?.owner),
-                );
-            }
-            if (extraction.panels?.guarantor) {
-                setGuarantorEntries((entries) =>
-                    applyKycPanelsToGuarantorEntries(entries, extraction.panels?.guarantor),
-                );
-            }
-            if (extraction.panels?.ach) {
-                setAchEntries((entries) =>
-                    applyKycPanelsToAchEntries(entries, extraction.panels?.ach),
-                );
-            }
-
-            invalidateDocuSignDraftSession();
-
-            if (options?.announce === false) return;
-
-            const label =
-                extraction.documentType === "driverLicense"
-                    ? "Driver's license"
-                    : extraction.documentType === "voidedCheck"
-                      ? "Voided check"
-                      : "Document";
-            toast.success(`${label} synced — contract prefill updated.`);
-        },
-        [invalidateDocuSignDraftSession],
-    );
-
-    const refreshContractAfterKycSync = useCallback(
-        async (contractId: number, documentType: KycExtractionResult["documentType"]) => {
-            const refreshTasks: Promise<unknown>[] = [];
-            if (documentType === "voidedCheck") {
-                refreshTasks.push(dispatch(getAllACH({ contractId })).unwrap());
-            }
-            if (documentType === "driverLicense") {
-                refreshTasks.push(
-                    dispatch(getAllContractOwners({ contractId })).unwrap(),
-                    dispatch(getAllContractGuarantors({ contractId })).unwrap(),
-                );
-            }
-            const refreshed = await dispatch(getByIdContract(contractId)).unwrap();
-            await Promise.all(refreshTasks);
-            const contractData = (refreshed as { data?: unknown })?.data ?? refreshed;
-            if (contractData) {
-                setResolvedContract(contractData as Record<string, unknown>);
-                setContractPrefillFromDb(
-                    stripDocumentTemplateBlobFromPrefillOverrides(
-                        (contractData as { contractPrefillOverrides?: Record<string, unknown> | null })
-                            .contractPrefillOverrides ?? null,
-                    ) ?? null,
-                );
-            }
-        },
-        [dispatch],
-    );
-
-    const handleSyncKycExtraction = useCallback(
-        async (key: RequiredDocumentKey) => {
-            const pending = pendingKycByDocKey[key];
-            if (!pending || pending.synced || effectiveContractId == null) return;
-
-            const finalized = finalizeKycExtractionForSync(pending.extraction);
-            if (!finalized.documentType || finalized.error) return;
-            if (!kycExtractionHasReadableFields(finalized)) {
-                toast.warn("No readable fields to sync. Edit the card or re-upload the document.");
-                return;
-            }
-
-            setSyncingKycKey(key);
-            try {
-                const response = await dispatch(
-                    syncKycPrefillToContract({
-                        contractId: effectiveContractId,
-                        extraction: {
-                            documentType: finalized.documentType,
-                            contractPrefill: finalized.contractPrefill,
-                            panels: finalized.panels as Record<string, unknown>,
-                            keyData: finalized.keyData,
-                        },
-                    }),
-                ).unwrap();
-
-                const syncPayload =
-                    (response as { data?: KycExtractionResult & { mergedContractPrefillOverrides?: Record<string, unknown> } })
-                        ?.data ?? response;
-                const mergedExtraction: KycExtractionResult = {
-                    ...finalized,
-                    mergedContractPrefillOverrides:
-                        (syncPayload as { mergedContractPrefillOverrides?: Record<string, unknown> })
-                            .mergedContractPrefillOverrides,
-                };
-
-                applyKycExtractionToModalState(mergedExtraction);
-                await refreshContractAfterKycSync(effectiveContractId, finalized.documentType);
-
-                setPendingKycByDocKey((prev) => ({
-                    ...prev,
-                    [key]: { extraction: finalized, synced: true },
-                }));
-            } catch (error: unknown) {
-                const msg =
-                    error instanceof Error
-                        ? error.message
-                        : "Failed to sync extracted data to contract prefill.";
-                toast.error(msg);
-            } finally {
-                setSyncingKycKey(null);
-            }
-        },
-        [
-            pendingKycByDocKey,
-            effectiveContractId,
-            dispatch,
-            applyKycExtractionToModalState,
-            refreshContractAfterKycSync,
-        ],
-    );
-
     /**
      * Auto-upload a single required document as soon as the user picks/drops it.
      * Mirrors Drive/Dropbox/DocuSign UX: selection triggers upload, progress
@@ -5617,24 +5612,25 @@ const PDFViewerModal = ({
                 const kycExtractions = parseKycExtractionsFromUploadResponse(uploadResult);
                 const extractionForKey = kycExtractions.find(
                     (e) =>
+                        e.slot === key ||
                         e.documentType === key ||
                         (key === "voidedCheck" && e.documentType === "voidedCheck") ||
-                        (key === "driverLicense" && e.documentType === "driverLicense"),
+                        (key === "driverLicenseOwner2" &&
+                            (e.slot === "driverLicenseOwner2" || e.ownerIndex === 2)) ||
+                        (key === "driverLicense" &&
+                            e.documentType === "driverLicense" &&
+                            e.ownerIndex !== 2),
                 );
                 if (extractionForKey) {
-                    setPendingKycByDocKey((prev) => ({
-                        ...prev,
-                        [key]: { extraction: { ...extractionForKey }, synced: false },
-                    }));
                     if (extractionForKey.error) {
                         toast.warn(`Document scan: ${extractionForKey.error}`);
                     } else if (kycExtractionHasReadableFields(extractionForKey)) {
                         toast.info(
-                            `${key === "driverLicense" ? "Driver's license" : "Voided check"} scanned — review extracted data and click Sync to prefill.`,
+                            `${key === "voidedCheck" ? "Voided check" : "Driver's license"} scanned. Review extracted data on the application Documents tab.`,
                         );
                     } else {
                         toast.warn(
-                            `${key === "driverLicense" ? "Driver's license" : "Voided check"} uploaded, but no readable fields were found.`,
+                            `${key === "voidedCheck" ? "Voided check" : "Driver's license"} uploaded, but no readable fields were found.`,
                         );
                     }
                 }
@@ -6560,6 +6556,17 @@ const PDFViewerModal = ({
                 secondOwnerDriverLicense: String(
                     secondOwner?.driverLicenseNumber ?? secondOwner?.driverLicense ?? "",
                 ).trim(),
+                secondOwnerEmail: String(secondOwner?.email ?? secondOwner?.ownerEmail ?? "").trim(),
+                secondOwnerPhone: String(
+                    secondOwner?.mobileNumber ?? secondOwner?.phone ?? secondOwner?.mobile ?? "",
+                ).trim(),
+                secondOwnerAddress: [
+                    String(secondOwner?.address1 ?? (typeof secondOwner?.address === "string" ? secondOwner.address : "")).trim(),
+                    String(secondOwner?.city ?? "").trim(),
+                    String(secondOwner?.state ?? "").trim(),
+                    String(secondOwner?.zip ?? secondOwner?.zipCode ?? "").trim(),
+                ].filter(Boolean).join(", "),
+                secondOwnerTitle: "OWNER",
             });
         }
 
@@ -7659,10 +7666,12 @@ const PDFViewerModal = ({
             const main = stripDocumentTemplateBlobFromPrefillOverrides(
                 rawOverrides,
             ) as Record<string, unknown>;
-            const signerRows =
+            const signerRows = ensureSignerRowsFromCrmOwners(
                 contractSignerOverrides?.length
                     ? contractSignerOverrides
-                    : parseContractSignerOverridesFromPrefill(rawOverrides);
+                    : parseContractSignerOverridesFromPrefill(rawOverrides),
+                crmOwnerPartiesForSigners,
+            );
             const sendHistory = upsertDocumentSendHistory(parseDocumentSendHistory(rawOverrides), {
                 envelopeId,
                 documentKind: "contract",
@@ -7702,6 +7711,7 @@ const PDFViewerModal = ({
             effectiveContractId,
             resolvedContract,
             contractSignerOverrides,
+            crmOwnerPartiesForSigners,
             documentTemplatePrefillByMappingId,
             documentTemplateEnvelopeByMappingId,
             dispatch,
@@ -8417,6 +8427,41 @@ const PDFViewerModal = ({
             })),
         );
     }, [activeInfoPanel, ownerListState.data]);
+
+    useEffect(() => {
+        if (!isOpen || activeInfoPanel === "owner") return;
+        if (crmOwnerPartiesForSigners.length < 2) return;
+        setOwnerEntries((prev) => {
+            const filled = prev.filter(
+                (entry) =>
+                    String(entry.ownerFirstName || "").trim() ||
+                    String(entry.ownerLastName || "").trim() ||
+                    String(entry.ownerEmail || "").trim(),
+            );
+            if (filled.length >= crmOwnerPartiesForSigners.length) return prev;
+            return crmOwnerPartiesForSigners.map((party, idx) => {
+                const existing = prev[idx];
+                return {
+                    id: existing?.id ?? `owner-${idx + 1}`,
+                    ownerFirstName:
+                        String(party.ownerFirstName || "").trim() ||
+                        String(existing?.ownerFirstName || ""),
+                    ownerLastName:
+                        String(party.ownerLastName || "").trim() ||
+                        String(existing?.ownerLastName || ""),
+                    ownerEmail:
+                        String(party.ownerEmail || "").trim() ||
+                        String(existing?.ownerEmail || ""),
+                    ownerPhone: String(existing?.ownerPhone || ""),
+                    ownerAddress: String(existing?.ownerAddress || ""),
+                    state: String(existing?.state || ""),
+                    city: String(existing?.city || ""),
+                    zipCode: String(existing?.zipCode || ""),
+                    ownershipPercentage: String(existing?.ownershipPercentage || ""),
+                };
+            });
+        });
+    }, [isOpen, activeInfoPanel, crmOwnerPartiesForSigners]);
 
     useEffect(() => {
         if (activeInfoPanel !== "guarantor") return;
@@ -9296,28 +9341,6 @@ const PDFViewerModal = ({
 
                                 {activeStep === "documents" && (
                                     <section className="relative shrink-0 space-y-3 overflow-visible rounded-lg border bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
-                                        {waitingForSourceApplicationPdf && (
-                                            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 rounded-lg bg-white/80 px-4 text-center backdrop-blur-[2px] dark:bg-slate-900/80">
-                                                <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" />
-                                                <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                                                    Uploading application PDF…
-                                                </p>
-                                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                                                    Driver’s license and voided check unlock when the application file is ready.
-                                                </p>
-                                            </div>
-                                        )}
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-                                                Upload Documents
-                                            </h3>
-                                            <p className="text-[11px] text-slate-500">
-                                                {waitingForSourceApplicationPdf
-                                                    ? "Waiting for the application PDF to finish uploading."
-                                                    : "Drag & drop or click — uploads start automatically."}
-                                            </p>
-                                        </div>
-
                                         {documentRequestsLoading ? (
                                             <p className="text-[11px] text-slate-500">Loading document requests…</p>
                                         ) : null}
@@ -9345,6 +9368,7 @@ const PDFViewerModal = ({
                                             />
                                         ) : null}
 
+                                        {requiredDocumentRows.length > 0 && (
                                         <div className="space-y-2">
                                             {requiredDocumentRows.map(({ key, label, inputRef }) => {
                                                 const uploadedFile = uploadedDocumentByTypeKey.get(
@@ -9567,42 +9591,6 @@ const PDFViewerModal = ({
                                                 );
                                             })}
                                         </div>
-
-                                        {(Object.keys(pendingKycByDocKey) as RequiredDocumentKey[]).map(
-                                            (docKey) => {
-                                                const pending = pendingKycByDocKey[docKey];
-                                                if (!pending) return null;
-                                                return (
-                                                    <KycExtractionReviewCard
-                                                        key={`kyc-review-${docKey}`}
-                                                        documentKey={docKey}
-                                                        extraction={pending.extraction}
-                                                        synced={pending.synced}
-                                                        syncing={syncingKycKey === docKey}
-                                                        onChange={(next) =>
-                                                            setPendingKycByDocKey((prev) => ({
-                                                                ...prev,
-                                                                [docKey]: {
-                                                                    ...prev[docKey]!,
-                                                                    extraction: next,
-                                                                    synced: false,
-                                                                },
-                                                            }))
-                                                        }
-                                                        onSync={() => void handleSyncKycExtraction(docKey)}
-                                                        onDismiss={
-                                                            pending.synced
-                                                                ? () =>
-                                                                      setPendingKycByDocKey((prev) => {
-                                                                          const next = { ...prev };
-                                                                          delete next[docKey];
-                                                                          return next;
-                                                                      })
-                                                                : undefined
-                                                        }
-                                                    />
-                                                );
-                                            },
                                         )}
 
                                         {documentUploadMessage && (

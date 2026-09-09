@@ -14,6 +14,7 @@ import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache"
 import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
+import ApplicationKycUploadPanel from "./ApplicationKycUploadPanel"
 import { formatDateTimeUS, cn } from "@/lib/utils"
 import { isPinnedDocumentSlug } from "@/constants/documentRequestTypes"
 
@@ -236,6 +237,15 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
         >
             <CardContent className="p-0">
                 <div className="px-6 pt-4">
+                    {applicationData?._id ? (
+                        <div className="mb-4">
+                            <ApplicationKycUploadPanel
+                                application={applicationData}
+                                files={uploadedFiles}
+                                readOnly={readOnly}
+                            />
+                        </div>
+                    ) : null}
                     <RequestedDocumentsPanel
                         applicationLookupId={applicationData?.applicationId ?? effectiveApplicationId ?? null}
                         applicationUuid={applicationData?._id ? String(applicationData._id) : null}

@@ -3,7 +3,7 @@ import { useForm, useFieldArray, type SubmitHandler } from 'react-hook-form'
 import { yupResolver } from '@hookform/resolvers/yup'
 import * as yup from 'yup'
 import { Button } from '@/components/ui/button'
-import { useMemo, useEffect, useRef, useState } from 'react'
+import { useMemo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams, useLocation } from 'react-router'
 import { Card, CardContent } from '@/components/ui/card'
 import { useDispatch, useSelector } from 'react-redux'
@@ -190,9 +190,11 @@ const CreateClient = () => {
 	const { resolvedTheme } = useTheme()
 	const isDark = resolvedTheme === 'dark'
 	const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0)
+	const [ownersSyncTick, setOwnersSyncTick] = useState(0)
 	const submittedCreateRef = useRef(false)
 	const submittedUpdateRef = useRef(false)
 	const ownersHydratedClientIdRef = useRef<string | null>(null)
+	const pendingOwnersReplaceRef = useRef<OwnerDetail[] | null>(null)
 
 	const isViewMode = !!clientId && searchParams.get('mode') === 'view'
 	const isEditMode = !!clientId && !isViewMode
@@ -260,6 +262,19 @@ const CreateClient = () => {
 
 	const watchedOwners = watch('owners')
 
+	const applyFormValues = (formData: FormValues) => {
+		reset(formData, { keepDefaultValues: false })
+		pendingOwnersReplaceRef.current = formData.owners.map((owner) => ({ ...owner }))
+		setOwnersSyncTick((tick) => tick + 1)
+	}
+
+	useLayoutEffect(() => {
+		const nextOwners = pendingOwnersReplaceRef.current
+		if (!nextOwners) return
+		pendingOwnersReplaceRef.current = null
+		replace(nextOwners)
+	}, [ownersSyncTick, replace])
+
 	const prefilledClientData = (location.state as any)?.prefilledClientData as
 		| Partial<FormValues & { owner?: Partial<OwnerDetail> }>
 		| undefined
@@ -283,7 +298,7 @@ const CreateClient = () => {
 				},
 				owners: prefilledOwners,
 			}
-			reset(merged)
+			applyFormValues(merged)
 			setExpandedOwnerIndex(0)
 		}
 	}, [isEditMode, prefilledClientData, reset])
@@ -326,13 +341,12 @@ const CreateClient = () => {
 			owners,
 		}
 
-		reset(formData)
-		replace(owners)
+		applyFormValues(formData)
 		const hydrateKey = String(clientId ?? '')
 		const isFirstHydrateForClient = ownersHydratedClientIdRef.current !== hydrateKey
 		if (isFirstHydrateForClient) {
 			ownersHydratedClientIdRef.current = hydrateKey
-			setExpandedOwnerIndex(isViewMode && owners.length > 1 ? -1 : 0)
+			setExpandedOwnerIndex(0)
 		} else {
 			setExpandedOwnerIndex((current) => {
 				if (owners.length <= 1) return 0
@@ -341,7 +355,16 @@ const CreateClient = () => {
 				return current
 			})
 		}
-	}, [clientData, clientId, isEditMode, isViewMode, reset, replace])
+	}, [clientData, clientId, isEditMode, isViewMode, reset])
+
+	useEffect(() => {
+		if (!clientData || !(isEditMode || isViewMode)) return
+		if (String(clientData.clientId ?? '') !== String(clientId ?? '')) return
+		const expected = resolveOwnersFromClient(clientData)
+		if (expected.length > 0 && fields.length !== expected.length) {
+			replace(expected.map((owner) => ({ ...owner })))
+		}
+	}, [clientData, clientId, isEditMode, isViewMode, fields.length, replace])
 
 	useEffect(() => {
 		if (isViewMode) return
@@ -589,14 +612,18 @@ const CreateClient = () => {
 								<TextField control={control} name="business.address.zipCode" label="Zip Code" required placeholder="XXXXX" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />
 							</Section>
 
-							<Card className={`rounded-sm box-border shadow-[0px_4px_20px_0px_#00000005] p-0 border pb-5 ${
+							<Card className={`rounded-sm box-border shadow-[0px_4px_20px_0px_#00000005] p-0 border pb-5 lg:self-start ${
 								isDark ? 'bg-[#141517] border-[#374151]' : 'border-[#FDFDFD]'
 							}`}>
 								<CardContent className="space-y-3 p-0">
 									<div className={`flex items-center justify-between px-6 py-3 ${
 										isDark ? 'text-white bg-[#2A2B2F]' : 'text-[#374151] bg-[#F9FAFD]'
 									}`}>
-										<h2 className="text-base font-[600] font-roboto">Business Owner Detail</h2>
+										<h2 className="text-base font-[600] font-roboto">
+											{fields.length > 1
+												? `Business Owner Detail (${fields.length})`
+												: 'Business Owner Detail'}
+										</h2>
 										{!isViewMode && (
 											<Button
 												type="button"
@@ -623,7 +650,10 @@ const CreateClient = () => {
 												>
 													<button
 														type="button"
-														onClick={() => setExpandedOwnerIndex(isExpanded ? -1 : index)}
+														onClick={(event) => {
+															event.preventDefault()
+															setExpandedOwnerIndex(isExpanded ? -1 : index)
+														}}
 														className={`w-full flex items-center justify-between px-4 py-3 text-left cursor-pointer ${
 															isDark ? 'bg-[#1E1F23] hover:bg-[#25262B]' : 'bg-[#F9FAFD] hover:bg-[#F3F4F6]'
 														}`}

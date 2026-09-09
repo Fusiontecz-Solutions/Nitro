@@ -38,6 +38,6 @@
     "src"
   ],
   "exclude": [
-    "src/**/*.acceptance.test.ts"
+    "src/**/*.test.ts"
   ]
 }

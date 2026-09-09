@@ -60,7 +60,23 @@ export interface Application {
             email?: string;
             address?: import("./clientTypes").Address;
         };
+        owners?: import("./clientTypes").OwnerDetail[];
     };
+    /** Reviewed DL / voided-check extractions used to auto-fill later fields. */
+    kycPrefill?: {
+        slots?: Record<string, {
+            documentType?: "driverLicense" | "voidedCheck";
+            ownerIndex?: 1 | 2;
+            slot?: "voidedCheck" | "driverLicense" | "driverLicenseOwner2";
+            keyData?: Record<string, string>;
+            contractPrefill?: Record<string, string>;
+            panels?: Record<string, unknown>;
+            fileId?: string;
+            fileName?: string;
+            fileUrl?: string;
+            syncedAt?: string;
+        }>;
+    } | null;
     loanAmount?: number | null;
     /** Latest terms offer (list/detail when backend includes relations). */
     termsOffers?: { approvedAmount?: number | string | null }[];

@@ -10,10 +10,16 @@ import {
     updateContractOwner,
 } from "@/redux/actions/contractActions";
 import { ownerRowHasIdentity } from "./contractPartyCounts";
-import {
-    resolveDocuSignSignerRole,
-    type ContractSignerOverrideRow,
-} from "./templateRecipients";
+import { resolveOwnerRowsForContractPrefill } from "./contractOwnerPrefillRows";
+import { resolveDocuSignSignerRole, type ContractSignerOverrideRow } from "./templateRecipients";
+import { type OwnerPartyForSigner } from "./contractSignerRows";
+
+export {
+    buildContractSignerRowsFromOwnerParties,
+    ensureSignerRowsFromCrmOwners,
+    reconcileSignerRowsWithFreshOwners,
+    type OwnerPartyForSigner,
+} from "./contractSignerRows";
 import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
 import {
     getClientFetchArg,
@@ -24,12 +30,6 @@ import {
     resolveApplicationUuidForUpdate,
     resolveClientIdFromApplication,
 } from "./contractPrefillSourceSync";
-
-export type OwnerPartyForSigner = {
-    ownerFirstName?: string;
-    ownerLastName?: string;
-    ownerEmail?: string;
-};
 
 function str(v: unknown): string {
     return String(v ?? "").trim();
@@ -136,145 +136,6 @@ export function mergeOwnerPartyAtIndex(
     return partyHasIdentity(merged) ? merged : null;
 }
 
-function mergeOwnerRowAtIndex(
-    contractRow: Record<string, unknown> | undefined,
-    clientRow: Record<string, unknown> | undefined,
-): Record<string, unknown> | null {
-    const clientAddr =
-        clientRow?.address && typeof clientRow.address === "object"
-            ? (clientRow.address as Record<string, unknown>)
-            : null;
-    const address1 = str(
-        clientRow?.address1 ??
-            clientAddr?.address1 ??
-            (typeof clientRow?.address === "string" ? clientRow.address : undefined) ??
-            contractRow?.address1 ??
-            (typeof contractRow?.address === "string" ? contractRow.address : undefined),
-    );
-    const address2 = str(
-        clientRow?.address2 ?? clientAddr?.address2 ?? contractRow?.address2,
-    );
-    const city = str(clientRow?.city ?? clientAddr?.city ?? contractRow?.city);
-    const state = str(clientRow?.state ?? clientAddr?.state ?? contractRow?.state);
-    const zip = str(
-        clientRow?.zip ??
-            clientRow?.zipCode ??
-            clientAddr?.zipCode ??
-            contractRow?.zip ??
-            contractRow?.zipCode,
-    );
-    const merged: Record<string, unknown> = {
-        firstName: str(
-            clientRow?.firstName ??
-                clientRow?.ownerFirstName ??
-                contractRow?.firstName ??
-                contractRow?.ownerFirstName,
-        ),
-        lastName: str(
-            clientRow?.lastName ??
-                clientRow?.ownerLastName ??
-                contractRow?.lastName ??
-                contractRow?.ownerLastName,
-        ),
-        email: str(
-            clientRow?.email ??
-                clientRow?.ownerEmail ??
-                contractRow?.email ??
-                contractRow?.ownerEmail,
-        ),
-        ssn: str(
-            clientRow?.ssn ??
-                clientRow?.ssnNumber ??
-                contractRow?.ssn ??
-                contractRow?.ssnNumber,
-        ),
-        ssnNumber: str(
-            clientRow?.ssnNumber ??
-                clientRow?.ssn ??
-                contractRow?.ssnNumber ??
-                contractRow?.ssn,
-        ),
-        driverLicense: str(
-            clientRow?.driverLicense ??
-                clientRow?.driverLicenseNumber ??
-                contractRow?.driverLicense ??
-                contractRow?.driverLicenseNumber,
-        ),
-        driverLicenseNumber: str(
-            clientRow?.driverLicenseNumber ??
-                clientRow?.driverLicense ??
-                contractRow?.driverLicenseNumber ??
-                contractRow?.driverLicense,
-        ),
-        address1,
-        address2,
-        city,
-        state,
-        zip,
-        zipCode: zip,
-        address: address1,
-    };
-    return ownerRowHasIdentity(merged) ? merged : null;
-}
-
-/**
- * Full owner rows (name, email, SSN, driver license) for contract prefill.
- * Application `client.owners[]` is source of truth; contract-owner API rows fill gaps.
- */
-export function resolveOwnerRowsForContractPrefill(
-    application: unknown,
-    contractOwners: Record<string, unknown>[] | null | undefined,
-): Record<string, unknown>[] {
-    const app = application as Record<string, unknown> | null | undefined;
-    const client = app?.client as Record<string, unknown> | undefined;
-    const fromContract = Array.isArray(contractOwners) ? contractOwners : [];
-
-    if (client) {
-        const related = client.owners;
-        if (Array.isArray(related) && related.length) {
-            const rows = related
-                .map((row, i) =>
-                    mergeOwnerRowAtIndex(
-                        fromContract[i] as Record<string, unknown> | undefined,
-                        row as Record<string, unknown>,
-                    ),
-                )
-                .filter((row): row is Record<string, unknown> => row != null);
-            for (let i = related.length; i < fromContract.length; i++) {
-                const row = fromContract[i];
-                if (row && ownerRowHasIdentity(row)) rows.push(row);
-            }
-            return rows;
-        }
-
-        const own = (client.owner ?? {}) as Record<string, unknown>;
-        const ownAddr =
-            own.address && typeof own.address === "object"
-                ? (own.address as Record<string, unknown>)
-                : {};
-        const flat = mergeOwnerRowAtIndex(fromContract[0], {
-            firstName: client.ownerFirstName ?? own.firstName,
-            lastName: client.ownerLastName ?? own.lastName,
-            email: client.ownerEmail ?? own.email ?? client.businessEmail,
-            ssn: client.ownerSsn ?? own.ssn,
-            driverLicense: client.driverLicense ?? own.driverLicense,
-            address1: client.ownerAddress1 ?? own.address1 ?? ownAddr.address1,
-            address2: client.ownerAddress2 ?? own.address2 ?? ownAddr.address2,
-            city: client.ownerCity ?? own.city ?? ownAddr.city,
-            state: client.ownerState ?? own.state ?? ownAddr.state,
-            zipCode: client.ownerZipCode ?? own.zipCode ?? ownAddr.zipCode,
-        });
-        const rows: Record<string, unknown>[] = flat ? [flat] : [];
-        for (let i = 1; i < fromContract.length; i++) {
-            const row = fromContract[i];
-            if (row && ownerRowHasIdentity(row)) rows.push(row);
-        }
-        if (rows.length) return rows;
-    }
-
-    return fromContract.filter((row) => ownerRowHasIdentity(row));
-}
-
 export function ownerPartiesFingerprint(parties: OwnerPartyForSigner[]): string {
     return JSON.stringify(
         parties.map((p) => ({
@@ -301,55 +162,6 @@ export function resolveOwnerPartiesForContractSigners(
         .slice(0, 2)
         .map((row) => mapContractOwnerRowToParty(row))
         .filter(partyHasIdentity);
-}
-
-/** One signer row per CRM owner slot (up to 2); do not collapse by shared email. */
-export function buildContractSignerRowsFromOwnerParties(
-    owners: OwnerPartyForSigner[],
-): ContractSignerOverrideRow[] {
-    return owners
-        .slice(0, 2)
-        .map((o, index) => {
-            const name = `${str(o.ownerFirstName)} ${str(o.ownerLastName)}`.trim();
-            const email = str(o.ownerEmail);
-            return {
-                role: resolveDocuSignSignerRole(index === 0 ? undefined : "Owner 2"),
-                name: name || (email ? email.split("@")[0] : ""),
-                email,
-            };
-        })
-        .filter((row) => row.name || row.email);
-}
-
-/**
- * Prefer live CRM owner rows over saved contract signer overrides (stale prefill).
- * Owner slots are positional (up to 2) — never collapse two owners because they share an email.
- */
-export function reconcileSignerRowsWithFreshOwners(
-    saved: ContractSignerOverrideRow[] | null | undefined,
-    fresh: ContractSignerOverrideRow[],
-): ContractSignerOverrideRow[] {
-    const freshRows = fresh.slice(0, 2);
-    if (!saved?.length) {
-        return freshRows;
-    }
-    if (!freshRows.length) {
-        return saved.slice(0, 2);
-    }
-
-    const savedRows = saved.slice(0, 2);
-    const slotCount = Math.max(freshRows.length, savedRows.length);
-    const out: ContractSignerOverrideRow[] = [];
-    for (let i = 0; i < slotCount; i++) {
-        const live = freshRows[i];
-        const persisted = savedRows[i];
-        out.push({
-            role: resolveDocuSignSignerRole(persisted?.role || live?.role),
-            name: str(live?.name) || str(persisted?.name),
-            email: str(live?.email) || str(persisted?.email),
-        });
-    }
-    return out;
 }
 
 /** Refetch application + contract owners; returns latest owner parties for signers. */

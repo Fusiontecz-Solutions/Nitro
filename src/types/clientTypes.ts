@@ -34,6 +34,7 @@ export interface OwnerDetail {
     ficoScore: number | string;
     ownershipStartDate: string;
     ownershipPercentage: number | string;
+    driverLicense?: string;
     address: Address;
 }
 

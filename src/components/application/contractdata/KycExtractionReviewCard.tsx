@@ -14,6 +14,7 @@ type KycDocKey = "driverLicense" | "voidedCheck";
 type KycExtractionReviewCardProps = {
     documentKey: KycDocKey;
     extraction: KycExtractionResult;
+    title?: string;
     synced?: boolean;
     syncing?: boolean;
     onChange: (next: KycExtractionResult) => void;
@@ -59,6 +60,7 @@ function voidedCheckFields(extraction: KycExtractionResult): FieldDef[] {
 export default function KycExtractionReviewCard({
     documentKey,
     extraction,
+    title,
     synced = false,
     syncing = false,
     onChange,
@@ -163,12 +165,12 @@ export default function KycExtractionReviewCard({
             <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
                 <div>
                     <p className="text-sm font-semibold text-slate-900">
-                        Extracted — {labelForKey(documentKey)}
+                        Extracted — {title || labelForKey(documentKey)}
                     </p>
                     <p className="text-[11px] text-slate-500">
                         {synced
                             ? "Synced to contract prefill."
-                            : "Review extracted fields, edit if needed, then sync to prefill."}
+                            : "Review extracted fields, edit if needed, then sync. Saved values auto-fill later."}
                     </p>
                 </div>
                 <div className="flex items-center gap-1.5">

@@ -60,6 +60,7 @@ const toDateInput = (raw: unknown) => {
 };
 
 type OwnerForm = {
+    formKey: string;
     firstName: string;
     lastName: string;
     email: string;
@@ -74,7 +75,13 @@ type OwnerForm = {
     zipCode: string;
 };
 
+const newOwnerFormKey = () =>
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `owner-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
 const mapOwnerToForm = (owner: any): OwnerForm => ({
+    formKey: String(owner?.formKey || owner?.id || owner?._id || newOwnerFormKey()),
     firstName: String(owner?.firstName ?? ""),
     lastName: String(owner?.lastName ?? ""),
     email: String(owner?.email ?? ""),
@@ -89,7 +96,7 @@ const mapOwnerToForm = (owner: any): OwnerForm => ({
     zipCode: String(owner?.address?.zipCode ?? ""),
 });
 
-const emptyOwnerForm: OwnerForm = mapOwnerToForm({});
+const createEmptyOwnerForm = (): OwnerForm => mapOwnerToForm({});
 
 /** Build the API owner payload from an editable owner form. */
 const ownerFormToPayload = (owner: OwnerForm) => ({
@@ -110,7 +117,7 @@ const ownerFormToPayload = (owner: OwnerForm) => ({
     },
 });
 
-const OWNER_FIELD_DEFS: ReadonlyArray<readonly [string, keyof OwnerForm]> = [
+const OWNER_FIELD_DEFS: ReadonlyArray<readonly [string, keyof Omit<OwnerForm, "formKey">]> = [
     ["First Name", "firstName"],
     ["Last Name", "lastName"],
     ["Email", "email"],
@@ -171,7 +178,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         loanAmount: "",
         note: "",
     });
-    const [owners, setOwners] = useState<OwnerForm[]>([{ ...emptyOwnerForm }]);
+    const [owners, setOwners] = useState<OwnerForm[]>(() => [createEmptyOwnerForm()]);
     const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0);
     const ownersHydratedForClientRef = useRef<string>("");
 
@@ -213,10 +220,10 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         setForm(buildBusinessForm(app, ownerSourceClient));
         const nextOwners = resolvedOwnerRecords.length
             ? resolvedOwnerRecords.map(mapOwnerToForm)
-            : [{ ...emptyOwnerForm }];
+            : [createEmptyOwnerForm()];
         setOwners(nextOwners);
         if (options?.collapseOwners) {
-            setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+            setExpandedOwnerIndex(0);
             return;
         }
         // Keep the open accordion open across client/owner refetches.
@@ -253,7 +260,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
 
     const addOwner = () => {
         setOwners((prev) => {
-            const next = [...prev, { ...emptyOwnerForm }];
+            const next = [...prev, createEmptyOwnerForm()];
             setExpandedOwnerIndex(next.length - 1);
             return next;
         });
@@ -516,11 +523,9 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                     <div className="space-y-3 pt-3">
                         {owners.map((owner, ownerIndex) => {
                             const isExpanded = expandedOwnerIndex === ownerIndex;
-                            const ownerKey =
-                                `${owner.email || owner.firstName || "owner"}-${ownerIndex}`;
                             return (
                                 <div
-                                    key={ownerKey}
+                                    key={owner.formKey}
                                     className={`rounded-md border overflow-hidden ${isDark ? "border-[#374151]" : "border-[#E5E7EB]"}`}
                                 >
                                     <button

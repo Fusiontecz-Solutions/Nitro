@@ -172,6 +172,7 @@ import { formatFunderNameWithDealIdPrefix } from "./contractdata/BALANCE_TRANSFE
 import { applyFunderDisclosureContactPrefill } from "./contractdata/funderDisclosureContact";
 import {
     CONTRACT_SIGNER_OVERRIDES_KEY,
+    buildDocuSignRolesFromEditorRows,
     parseContractSignerOverridesFromPrefill,
     parseBoldSignTemplateRolesFromRecipientsPayload,
     resolveDocuSignRolesForEnvelopeSend,
@@ -186,6 +187,13 @@ import {
     resolveOwnerRowFullName,
     resolveSecondOwnerSignerName,
 } from "./contractdata/contractPartyCounts";
+import { resolveOwnerRowsForContractPrefill } from "./contractdata/contractOwnerPrefillRows";
+import {
+    applicationWithClientOwners,
+    ensureSignerRowsFromCrmOwners,
+    resolveOwnerPartiesForContractSigners,
+} from "./contractdata/contractSignerOwnersSync";
+import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 import {
     formatCurrency,
     formatCurrencyFull,
@@ -379,6 +387,13 @@ export default function ContractTab({
     const dispatch = useDispatch<AppDispatch>();
     const { data: applicationData } = useSelector(
         (state: RootState) => state.applicationDetail,
+    );
+    const { owners: applicationClientOwners } = useApplicationClientOwners(
+        (applicationData as { client?: unknown } | null)?.client ?? null,
+    );
+    const applicationForPrefill = useMemo(
+        () => applicationWithClientOwners(applicationData, applicationClientOwners),
+        [applicationData, applicationClientOwners],
     );
     const { data: termsOffers, loading: termsOffersLoading, loadedForApplicationId: termsLoadedFor } = useSelector(
         (state: RootState) => state.termsOffers,
@@ -927,9 +942,12 @@ export default function ContractTab({
                 : null,
             addendum: firstRow(addendumListState.data),
             epo: firstRow(epoListState.data),
-            owners: Array.isArray(contractOwnerListState.data)
-                ? contractOwnerListState.data
-                : [],
+            owners: resolveOwnerRowsForContractPrefill(
+                applicationForPrefill,
+                Array.isArray(contractOwnerListState.data)
+                    ? contractOwnerListState.data
+                    : [],
+            ),
             guarantors: Array.isArray(contractGuarantorListState.data)
                 ? contractGuarantorListState.data
                 : [],
@@ -943,6 +961,7 @@ export default function ContractTab({
         contractGuarantorListState.data,
         fetchedContract,
         bankDetailsForApplication,
+        applicationForPrefill,
     ]);
 
     useEffect(() => {
@@ -2269,7 +2288,7 @@ export default function ContractTab({
                   contract: source,
               }
             : undefined;
-        return buildContractPrefillFieldsFromApplication(applicationData, {
+        return buildContractPrefillFieldsFromApplication(applicationForPrefill, {
             agreementDate: formatDate(new Date()),
             contractRecords: recordsForBuild,
             overrides,
@@ -2420,9 +2439,12 @@ export default function ContractTab({
                 recipientsPayload = cachedRecipients;
             } else {
                 // Platform layouts: roles from code — no DocuSign /templates/.../recipients.
-                const ownerRowsForSlots = Array.isArray(contractOwnerListState.data)
-                    ? contractOwnerListState.data
-                    : [];
+                const ownerRowsForSlots = resolveOwnerRowsForContractPrefill(
+                    applicationForPrefill,
+                    Array.isArray(contractOwnerListState.data)
+                        ? contractOwnerListState.data
+                        : [],
+                );
                 recipientsPayload = {
                     success: true,
                     source: "platform-layout",
@@ -2502,12 +2524,33 @@ export default function ContractTab({
                 applicationSignerName,
             });
 
-            const ownerRows = Array.isArray(contractOwnerListState.data)
-                ? contractOwnerListState.data
-                : [];
-            /** Manage Signers / send payload roles win — do not bump Owner 2 from stale Info Required owners. */
+            const ownerRows = resolveOwnerRowsForContractPrefill(
+                applicationForPrefill,
+                Array.isArray(contractOwnerListState.data)
+                    ? contractOwnerListState.data
+                    : [],
+            );
+            const ownerParties = resolveOwnerPartiesForContractSigners(
+                applicationForPrefill,
+                Array.isArray(contractOwnerListState.data)
+                    ? contractOwnerListState.data
+                    : [],
+                null,
+            );
+            const ensuredSignerRows = ensureSignerRowsFromCrmOwners(
+                roles.map((r) => ({
+                    role: r.signerRole,
+                    name: r.signerName,
+                    email: r.signerEmail,
+                })),
+                ownerParties,
+            );
+            if (ensuredSignerRows.length) {
+                roles = buildDocuSignRolesFromEditorRows(ensuredSignerRows);
+            }
+            /** Application owners keep Seller #2 / Guarantor #2 when a second owner exists. */
             const ownerCount = resolveActiveOwnerCount({
-                owners: roles.length > 0 ? null : ownerRows,
+                owners: ownerRows,
                 signerRoles: roles,
             });
             const secondOwnerNameBeforeCollapse = resolveSecondOwnerSignerName(
@@ -2515,7 +2558,7 @@ export default function ContractTab({
                 ownerCount,
                 ownerRows,
             );
-            roles = collapseDocuSignRolesToSignerSlots(roles, ownerCount);
+            roles = collapseDocuSignRolesToSignerSlots(roles, ownerCount, ownerRows);
 
             if (roles.length === 0) {
                 failDocuSignEnvelope(
@@ -2644,11 +2687,57 @@ export default function ContractTab({
             const secondOwnerFromDb = ownerRows[1] as {
                 firstName?: string;
                 lastName?: string;
+                email?: string;
+                ownerEmail?: string;
+                mobileNumber?: string;
+                phone?: string;
+                mobile?: string;
+                address1?: string;
+                address?: string | { address1?: string; city?: string; state?: string; zipCode?: string };
+                city?: string;
+                state?: string;
+                zip?: string;
+                zipCode?: string;
                 ssnNumber?: string;
                 ssn?: string;
                 driverLicenseNumber?: string;
                 driverLicense?: string;
             } | undefined;
+            const secondOwnerAddr =
+                secondOwnerFromDb?.address && typeof secondOwnerFromDb.address === "object"
+                    ? secondOwnerFromDb.address
+                    : null;
+            const secondOwnerContact = {
+                secondOwnerEmail: String(
+                    secondOwnerFromDb?.email || secondOwnerFromDb?.ownerEmail || "",
+                ).trim(),
+                secondOwnerPhone: String(
+                    secondOwnerFromDb?.mobileNumber ||
+                        secondOwnerFromDb?.phone ||
+                        secondOwnerFromDb?.mobile ||
+                        "",
+                ).trim(),
+                secondOwnerAddress: [
+                    String(
+                        secondOwnerFromDb?.address1 ||
+                            secondOwnerAddr?.address1 ||
+                            (typeof secondOwnerFromDb?.address === "string"
+                                ? secondOwnerFromDb.address
+                                : ""),
+                    ).trim(),
+                    String(secondOwnerFromDb?.city || secondOwnerAddr?.city || "").trim(),
+                    String(secondOwnerFromDb?.state || secondOwnerAddr?.state || "").trim(),
+                    String(
+                        secondOwnerFromDb?.zip ||
+                            secondOwnerFromDb?.zipCode ||
+                            secondOwnerAddr?.zipCode ||
+                            "",
+                    ).trim(),
+                ]
+                    .filter(Boolean)
+                    .join(", "),
+                secondOwnerTitle: "OWNER" as const,
+            };
             const primaryOwnerName =
                 `${String(firstOwnerFromDb?.firstName || "").trim()} ${String(firstOwnerFromDb?.lastName || "").trim()}`.trim() ||
                 docuSignClientName;
@@ -2685,6 +2774,7 @@ export default function ContractTab({
                         secondOwnerFromDb?.driverLicense ||
                         "",
                 ).trim(),
+                ...secondOwnerContact,
             });
             prefillFieldsPayload = clearParty2PrefillFieldPayload(
                 prefillFieldsPayload,
@@ -2840,6 +2930,7 @@ export default function ContractTab({
                             secondOwnerFromDb?.driverLicense ||
                             "",
                     ).trim(),
+                    ...secondOwnerContact,
                 });
                 prefillFieldsPayload = clearParty2PrefillFieldPayload(
                     prefillFieldsPayload,

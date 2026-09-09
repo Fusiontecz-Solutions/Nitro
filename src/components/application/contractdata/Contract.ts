@@ -14,6 +14,7 @@ import {
     resolveSecondOwnerSignerName,
     syncOwner2NameToPrefillPartial,
 } from "./contractPartyCounts";
+import { resolveOwnerRowsForContractPrefill } from "./contractOwnerPrefillRows";
 import {
     buildDocuSignRolesFromEditorRows,
     parseContractSignerOverridesFromPrefill,
@@ -80,6 +81,14 @@ export interface BuildContractPrefillFieldsArgs {
     clientName?: string;
     owner1GuarantorName?: string;
     owner2GuarantorName?: string;
+    owner2PrintTitle?: string;
+    owner2Email?: string;
+    owner2Phone?: string;
+    owner2Address?: string;
+    clientEmail2?: string;
+    clientPhone2?: string;
+    guarantor2Phone?: string;
+    guarantor2Address?: string;
     merchant2Name?: string;
     appendixMerchant2Name?: string;
     businessName2?: string;
@@ -250,7 +259,7 @@ const FIELD_IDS = {
     purchasePercent: ["purchase_percent", "specified_percentage"],
     remittance: ["remittance"],
     refinanceAmount: ["refinance_amount"],
-    frequency: ["frequency", "paymentTerms"],
+    frequency: ["frequency", "paymentTerms", "page1_installmentBlock_frequency"],
     /** Contract page 14 “ACH Program Fee” + Monthly Fee addendum amount. */
     achProgramFee: [
         "ach_program_fee",
@@ -267,6 +276,14 @@ const FIELD_IDS = {
     clientName: ["client_name", "addendum_client_name"],
     owner1GuarantorName: ["owner1_guarantor_name"],
     owner2GuarantorName: ["owner2_guarantor_name"],
+    owner2PrintTitle: ["owner2_print_title", "owner_print_title_s2"],
+    owner2Email: ["owner2_email", "client_email_s2"],
+    owner2Phone: ["owner2_phone", "client_phone_s2", "client_phone2_s2"],
+    owner2Address: ["owner2_address"],
+    clientEmail2: ["client_email2"],
+    clientPhone2: ["client_phone2"],
+    guarantor2Phone: ["guarantor2_phone"],
+    guarantor2Address: ["guarantor2_address"],
     merchant2Name: ["merchant2_name"],
     appendixMerchant2Name: ["appendix_merchant2_name"],
     businessName2: ["business_name_2"],
@@ -432,8 +449,10 @@ export function uppercaseContractDocumentPrefillFields<
     T extends { id?: string; value?: string; label?: string },
 >(fields: T[]): T[] {
     return (fields || []).map((field) => {
+        const id = String(field?.id ?? "").trim().toLowerCase();
         const value = String(field?.value ?? "").trim();
         if (!value) return field;
+        if (/installment[_]?block[_]?frequency/.test(id)) return field;
         return { ...field, value: toContractDocumentUppercase(value) };
     });
 }
@@ -515,6 +534,9 @@ function normalizePrefillValueForUsFormat(
         formatted = formatUsNumberString(value);
     } else if (k === "purchase_percent" || k === "specified_percentage") {
         formatted = formatRateUS(value) || value;
+    } else if (k === "page1_installmentblock_frequency" || /installment[_]?block[_]?frequency/.test(k)) {
+        /** INITIAL INSTALLMENT cadence next to the amount: Weekly / Daily (not ALL CAPS). */
+        return formatInitialInstallmentFrequencyLabel(value) || value;
     } else if (
         k === "frequency" ||
         k === "paymentterms" ||
@@ -645,6 +667,14 @@ export const buildContractPrefillFields = ({
     clientName = "",
     owner1GuarantorName = "",
     owner2GuarantorName = "",
+    owner2PrintTitle = "",
+    owner2Email = "",
+    owner2Phone = "",
+    owner2Address = "",
+    clientEmail2 = "",
+    clientPhone2 = "",
+    guarantor2Phone = "",
+    guarantor2Address = "",
     merchant2Name = "",
     appendixMerchant2Name = "",
     businessName2 = "",
@@ -816,6 +846,14 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.clientName, "Client Name", clientName),
         ...mapIds(FIELD_IDS.owner1GuarantorName, "Owner1 Guarantor Name", owner1GuarantorName),
         ...mapIds(FIELD_IDS.owner2GuarantorName, "Owner2 Guarantor Name", owner2GuarantorName),
+        ...mapIds(FIELD_IDS.owner2PrintTitle, "Owner2 Title", String(owner2PrintTitle || "").trim() || (owner2GuarantorName ? "OWNER" : "")),
+        ...mapIds(FIELD_IDS.owner2Email, "Owner2 Email", owner2Email || clientEmail2),
+        ...mapIds(FIELD_IDS.owner2Phone, "Owner2 Phone", owner2Phone || clientPhone2 || guarantor2Phone),
+        ...mapIds(FIELD_IDS.owner2Address, "Owner2 Address", owner2Address || guarantor2Address),
+        ...mapIds(FIELD_IDS.clientEmail2, "Client Email 2", clientEmail2 || owner2Email),
+        ...mapIds(FIELD_IDS.clientPhone2, "Client Phone 2", clientPhone2 || owner2Phone),
+        ...mapIds(FIELD_IDS.guarantor2Phone, "Guarantor2 Phone", guarantor2Phone || owner2Phone),
+        ...mapIds(FIELD_IDS.guarantor2Address, "Guarantor2 Address", guarantor2Address || owner2Address),
         ...mapIds(FIELD_IDS.merchant2Name, "Merchant2 Name", merchant2Name),
         ...mapIds(FIELD_IDS.appendixMerchant2Name, "Appendix Merchant2 Name", appendixMerchant2Name),
         ...mapIds(FIELD_IDS.businessName2, "Business Name 2", businessName2),
@@ -2520,6 +2558,14 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     client_name: "Name",
     owner1_guarantor_name: "Owner 1 — Guarantor",
     owner2_guarantor_name: "Owner 2 — Guarantor",
+    owner2_print_title: "Owner 2 — Title",
+    owner2_email: "Owner 2 — Email",
+    owner2_phone: "Owner 2 — Phone",
+    owner2_address: "Owner 2 — Address",
+    guarantor2_phone: "Guarantor 2 — Phone",
+    guarantor2_address: "Guarantor 2 — Address",
+    client_email2: "Owner 2 — Email",
+    client_phone2: "Owner 2 — Phone",
     business_address: "Street",
     business_address_city: "City",
     business_address_state: "State",
@@ -3368,6 +3414,9 @@ export function applyOwnerRowsToPrefillMerge(
     if (hasSecondOwner) {
         const ssn2 = str(o2?.ssnNumber ?? o2?.ssn);
         const dl2 = str(o2?.driverLicenseNumber ?? o2?.driverLicense);
+        const email2 = partyEmail(o2);
+        const phone2 = str(o2?.mobileNumber ?? o2?.phone ?? o2?.mobile);
+        const address2 = formatOwnerRowAddressLine(o2);
         if (n2) {
             syncOwner2NameToPrefillPartial(partial as Record<string, unknown>, n2);
         }
@@ -3379,6 +3428,20 @@ export function applyOwnerRowsToPrefillMerge(
             partial.guarantyOwner2DriverLicense = dl2;
             partial.guarantyGuarantor2DriverLicense = dl2;
         }
+        if (email2) {
+            if (!str(partial.owner2Email)) partial.owner2Email = email2;
+            if (!str(partial.clientEmail2)) partial.clientEmail2 = email2;
+        }
+        if (phone2) {
+            if (!str(partial.owner2Phone)) partial.owner2Phone = phone2;
+            if (!str(partial.guarantor2Phone)) partial.guarantor2Phone = phone2;
+            if (!str(partial.clientPhone2)) partial.clientPhone2 = phone2;
+        }
+        if (address2) {
+            if (!str(partial.owner2Address)) partial.owner2Address = address2;
+            if (!str(partial.guarantor2Address)) partial.guarantor2Address = address2;
+        }
+        if (!str(partial.owner2PrintTitle)) partial.owner2PrintTitle = "OWNER";
         const n1 = ownerFullName(rows[0]?.firstName, rows[0]?.lastName);
         partial.exhibitOwnerName = n1 || n2;
     }
@@ -3391,7 +3454,12 @@ function ownersToPrefillPartial(rows: Record<string, unknown>[] | null | undefin
 }
 
 function partyEmail(row: Record<string, unknown> | undefined): string {
-    return str(row?.email);
+    return str(row?.email ?? row?.ownerEmail ?? row?.guarantorEmail);
+}
+
+function formatOwnerRowAddressLine(row: Record<string, unknown> | null | undefined): string {
+    const { street, city, state, zip } = ownerRowAddressParts(row);
+    return [street, city, state, zip].filter(Boolean).join(", ");
 }
 
 function guarantorsToPrefillPartial(rows: Record<string, unknown>[] | null | undefined): Partial<BuildContractPrefillFieldsArgs> {
@@ -3425,6 +3493,18 @@ function guarantorsToPrefillPartial(rows: Record<string, unknown>[] | null | und
         if (dl2) {
             out.guarantyOwner2DriverLicense = dl2;
             out.guarantyGuarantor2DriverLicense = dl2;
+        }
+        const email2 = partyEmail(g2);
+        const phone2 = str(g2?.phone ?? g2?.mobileNumber ?? g2?.mobile);
+        const address2 = formatOwnerRowAddressLine(g2);
+        if (email2 && !str(out.owner2Email)) out.owner2Email = email2;
+        if (phone2) {
+            if (!str(out.guarantor2Phone)) out.guarantor2Phone = phone2;
+            if (!str(out.owner2Phone)) out.owner2Phone = phone2;
+        }
+        if (address2) {
+            if (!str(out.guarantor2Address)) out.guarantor2Address = address2;
+            if (!str(out.owner2Address)) out.owner2Address = address2;
         }
     }
     return out;
@@ -4259,12 +4339,13 @@ export function getContractPrefillEditDefaultsFromApplication(
         { ...clientArgs, ...contractPartial },
         anyApp,
     );
+    const mergedOwners = resolveOwnerRowsForContractPrefill(anyApp, rec?.owners ?? null);
     const recordPartial: Partial<BuildContractPrefillFieldsArgs> = {
         ...contractPartial,
         ...exhibitValuesToPrefillPartial(rec?.contract ?? null),
         ...achRowToPrefillPartial(rec?.ach ?? null, businessNameForAch),
         ...addendumRowToPrefillPartial(rec?.addendum ?? null),
-        ...ownersToPrefillPartial(rec?.owners ?? null),
+        ...ownersToPrefillPartial(mergedOwners),
         ...guarantorsToPrefillPartial(rec?.guarantors ?? null),
         ...bankDetailRowToPrefillPartial(rec?.bankDetail ?? null),
     };
@@ -4369,16 +4450,18 @@ export function getContractPrefillEditDefaultsFromApplication(
         agreementDate: string;
     },
         rec,
+        anyApp,
     );
 }
 
 function resolveOwnerCountForPrefillRecords(
     rec?: ContractPrefillContractRecords,
     overridesRaw?: unknown,
+    application?: unknown,
 ): number {
     const signerRows = parseContractSignerOverridesFromPrefill(overridesRaw);
     return resolveActiveOwnerCount({
-        owners: rec?.owners ?? null,
+        owners: resolveOwnerRowsForContractPrefill(application, rec?.owners ?? null),
         signerRoles:
             signerRows?.map((r) => ({
                 signerRole: r.role,
@@ -4391,17 +4474,19 @@ function resolveCanonicalOwner2Name(
     partial: Partial<BuildContractPrefillFieldsArgs>,
     rec?: ContractPrefillContractRecords,
     overridesRaw?: unknown,
+    application?: unknown,
 ): string {
-    const ownerCount = resolveOwnerCountForPrefillRecords(rec, overridesRaw);
+    const ownerCount = resolveOwnerCountForPrefillRecords(rec, overridesRaw, application);
     if (ownerCount < 2) return "";
     const signerRows = parseContractSignerOverridesFromPrefill(overridesRaw);
     const signerRoles = signerRows?.length
         ? buildDocuSignRolesFromEditorRows(signerRows)
         : [];
+    const mergedOwners = resolveOwnerRowsForContractPrefill(application, rec?.owners ?? null);
     /** Manage Signers Owner 2 / 2nd email wins over stale CRM `owners[1]` (e.g. wrong prior client). */
     return (
-        resolveSecondOwnerSignerName(signerRoles, ownerCount, rec?.owners ?? null) ||
-        ownerFullName(rec?.owners?.[1]?.firstName, rec?.owners?.[1]?.lastName) ||
+        resolveSecondOwnerSignerName(signerRoles, ownerCount, mergedOwners) ||
+        ownerFullName(mergedOwners[1]?.firstName, mergedOwners[1]?.lastName) ||
         str(partial.owner2GuarantorName) ||
         str(partial.guarantyOwner2Name) ||
         str(partial.merchant2Name) ||
@@ -4415,15 +4500,16 @@ function resolveCanonicalOwner2Name(
 function finalizePrefillDefaultsForOwnerCount(
     partial: Partial<BuildContractPrefillFieldsArgs> & { customerName: string; agreementDate: string },
     rec?: ContractPrefillContractRecords,
+    application?: unknown,
 ): Partial<BuildContractPrefillFieldsArgs> & { customerName: string; agreementDate: string } {
     const out = { ...partial };
     const overridesRaw =
         rec?.contract != null && typeof rec.contract === "object"
             ? (rec.contract as Record<string, unknown>).contractPrefillOverrides
             : null;
-    const ownerCount = resolveOwnerCountForPrefillRecords(rec, overridesRaw);
+    const ownerCount = resolveOwnerCountForPrefillRecords(rec, overridesRaw, application);
     if (ownerCount >= 2) {
-        const canonicalOwner2Name = resolveCanonicalOwner2Name(out, rec, overridesRaw);
+        const canonicalOwner2Name = resolveCanonicalOwner2Name(out, rec, overridesRaw, application);
         if (canonicalOwner2Name) {
             syncOwner2NameToPrefillPartial(out as Record<string, unknown>, canonicalOwner2Name);
         }
@@ -4589,12 +4675,13 @@ export function buildContractPrefillFieldsFromApplication(
         applyAuthorizationBusinessNamePrefillFields(moneyMerged, anyApp),
         anyApp,
     );
-    const ownerCount = resolveOwnerCountForPrefillRecords(rec, options?.overrides);
+    const ownerCount = resolveOwnerCountForPrefillRecords(rec, options?.overrides, anyApp);
     if (ownerCount >= 2) {
         const canonicalOwner2Name = resolveCanonicalOwner2Name(
             mergedForFields,
             rec,
             options?.overrides,
+            anyApp,
         );
         if (canonicalOwner2Name) {
             syncOwner2NameToPrefillPartial(
@@ -4625,7 +4712,7 @@ export function buildContractPrefillFieldsFromApplication(
             addendumSlotExtraFields(rec?.addendum ?? null),
             epoExtraFields(rec?.epo ?? null),
         ),
-        resolveOwnerCountForPrefillRecords(rec, options?.overrides),
+        resolveOwnerCountForPrefillRecords(rec, options?.overrides, anyApp),
     );
 }
 

@@ -29,6 +29,13 @@ export function countOwnersWithEmail(
     return owners.filter((o) => partyEmail(o)).length;
 }
 
+export function countOwnersWithIdentity(
+    owners?: Record<string, unknown>[] | null,
+): number {
+    if (!Array.isArray(owners)) return 0;
+    return owners.filter((o) => ownerRowHasIdentity(o)).length;
+}
+
 export function countGuarantorsWithEmail(
     guarantors?: Record<string, unknown>[] | null,
 ): number {
@@ -80,7 +87,10 @@ export function resolveActiveOwnerCount(options: {
     signerRoles?: Array<{ signerRole?: string; roleName?: string; signerEmail?: string }>;
 }): number {
     const roles = options.signerRoles || [];
-    const fromDb = countOwnersWithEmail(options.owners);
+    const fromDb = Math.max(
+        countOwnersWithIdentity(options.owners),
+        countOwnersWithEmail(options.owners),
+    );
 
     const hasExplicitSecondSlot = roles.some((r) => {
         const label = signerRoleLabel(r);
@@ -91,13 +101,14 @@ export function resolveActiveOwnerCount(options: {
     });
     const distinctSignerEmails = countDistinctContractSignersWithEmail(roles);
 
-    // Saved Manage Signers list wins over stale CRM owners[1] after remove/replace.
+    // Two CRM owners (Application Basic Details) must keep Seller #2 / Guarantor #2
+    // slots even when Manage Signers still has only one invite.
+    if (fromDb >= 2) return 2;
+    if (hasExplicitSecondSlot || distinctSignerEmails >= 2) return 2;
+
     // Count only roles that carry an email so blank Owner 2 template slots never inflate to 2.
     const rolesWithEmail = roles.filter((r) => String(r.signerEmail || "").trim());
-    if (rolesWithEmail.length > 0) {
-        if (hasExplicitSecondSlot || distinctSignerEmails >= 2) return 2;
-        return 1;
-    }
+    if (rolesWithEmail.length > 0) return 1;
 
     return Math.min(2, Math.max(1, fromDb));
 }
@@ -119,6 +130,7 @@ export function resolveActiveGuarantorCount(options: {
 export function collapseDocuSignRolesToSignerSlots(
     roles: DocuSignTemplateRolePayload[],
     ownerCount: number,
+    ownerRows?: Record<string, unknown>[] | null,
 ): DocuSignTemplateRolePayload[] {
     const withEmail = roles.filter((r) => String(r.signerEmail || "").trim());
     const roleLabel = (r: DocuSignTemplateRolePayload) =>
@@ -149,6 +161,28 @@ export function collapseDocuSignRolesToSignerSlots(
                 const email = String(r.signerEmail || "").trim().toLowerCase();
                 return Boolean(email && email !== primaryEmail);
             });
+    }
+
+    if (!secondary && ownerCount >= 2) {
+        const secondOwner = ownerRows?.[1];
+        const email = partyEmail(secondOwner);
+        const name = resolveOwnerRowFullName(secondOwner);
+        const primaryEmail = String(primary?.signerEmail || "").trim().toLowerCase();
+        if (email && email.toLowerCase() !== primaryEmail) {
+            secondary = {
+                roleIndex: 2,
+                signerOrder: 2,
+                signerRole: "Owner 2",
+                signerName: name || email.split("@")[0] || "",
+                signerEmail: email,
+                privateMessage: "Kindly sign this article",
+                authenticationCode: "1234",
+                authenticationType: "AccessCode",
+                deliveryMode: "Email",
+                signerType: "signer",
+                locale: "EN",
+            };
+        }
     }
 
     const out: DocuSignTemplateRolePayload[] = [];
@@ -188,6 +222,14 @@ const SECOND_OWNER_PREFILL_IDS = [
     "guaranty_guarantor2_name",
     "merchant2_name",
     "appendix_merchant2_name",
+    "owner2_email",
+    "owner2_phone",
+    "owner2_address",
+    "owner2_print_title",
+    "guarantor2_phone",
+    "guarantor2_address",
+    "client_email2",
+    "client_phone2",
 ] as const;
 
 const PRIMARY_GUARANTOR_PREFILL_IDS = [
@@ -325,9 +367,6 @@ export function resolveSecondOwnerSignerName(
     const fromRole = String(fromExplicit?.signerName || "").trim();
     if (fromRole) return fromRole;
 
-    // Prefer Manage Signers only when roles were provided; do not revive a removed signer from DB.
-    if (roles.length > 0) return "";
-
     return resolveOwnerRowFullName(ownerRows?.[1] as Record<string, unknown> | undefined);
 }
 
@@ -339,6 +378,10 @@ export function applySecondOwnerNameToPrefillFields<T extends { id: string; valu
         secondOwnerName?: string;
         secondOwnerSs?: string;
         secondOwnerDriverLicense?: string;
+        secondOwnerEmail?: string;
+        secondOwnerPhone?: string;
+        secondOwnerAddress?: string;
+        secondOwnerTitle?: string;
     },
 ): T[] {
     if (options.ownerCount < 2) return fields;
@@ -347,6 +390,18 @@ export function applySecondOwnerNameToPrefillFields<T extends { id: string; valu
     forcePrefillIds(byId, nameIds, options.secondOwnerName || "");
     forcePrefillIds(byId, SECOND_PARTY_SS_IDS, options.secondOwnerSs || "");
     forcePrefillIds(byId, SECOND_PARTY_DL_IDS, options.secondOwnerDriverLicense || "");
+    forcePrefillIds(byId, ["owner2_email", "client_email2", "client_email_s2"], options.secondOwnerEmail || "");
+    forcePrefillIds(
+        byId,
+        ["owner2_phone", "guarantor2_phone", "client_phone2", "client_phone_s2"],
+        options.secondOwnerPhone || "",
+    );
+    forcePrefillIds(byId, ["owner2_address", "guarantor2_address"], options.secondOwnerAddress || "");
+    forcePrefillIds(
+        byId,
+        ["owner2_print_title", "owner_print_title_s2"],
+        options.secondOwnerTitle || (options.secondOwnerName ? "OWNER" : ""),
+    );
     return Array.from(byId.values());
 }
 
@@ -381,6 +436,12 @@ export const OWNER2_PREFILL_FORM_KEYS = [
     "guarantyOwner2DriverLicense",
     "addendumDatedPrincipalOwner2Name",
     "addendumDatedPrincipalOwner2Date",
+    "owner2Email",
+    "owner2Phone",
+    "owner2Address",
+    "owner2PrintTitle",
+    "clientEmail2",
+    "clientPhone2",
 ] as const;
 
 /** Clear camelCase party-2 keys on the prefill partial object. */
@@ -403,6 +464,8 @@ export const GUARANTOR2_PREFILL_FORM_KEYS = [
     "guarantyGuarantor2Name",
     "guarantyGuarantor2Ss",
     "guarantyGuarantor2DriverLicense",
+    "guarantor2Phone",
+    "guarantor2Address",
 ] as const;
 
 export const GUARANTOR1_PREFILL_FORM_KEYS = [

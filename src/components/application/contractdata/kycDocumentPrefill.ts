@@ -2,6 +2,8 @@ import type { BuildContractPrefillFieldsArgs } from "./Contract";
 import { mergeContractPrefillOverrideLayers } from "./Contract";
 
 export type KycDocumentType = "driverLicense" | "voidedCheck";
+export type KycUploadSlot = "voidedCheck" | "driverLicense" | "driverLicenseOwner2";
+export type KycOwnerIndex = 1 | 2;
 
 export interface KycPanelOwnerPatch {
     firstName: string;
@@ -36,6 +38,11 @@ export interface KycPanelAchPatch {
 
 export interface KycExtractionResult {
     documentType?: KycDocumentType;
+    ownerIndex?: KycOwnerIndex;
+    slot?: KycUploadSlot;
+    fileId?: string;
+    fileName?: string;
+    fileUrl?: string;
     keyData?: Record<string, string>;
     contractPrefill?: Record<string, string>;
     panels?: {
@@ -87,10 +94,26 @@ export function applyKycPanelsToOwnerEntries<
         state: string;
         zipCode: string;
     },
->(entries: T[], patch?: KycPanelOwnerPatch): T[] {
-    if (!patch || !entries.length) return entries;
-    const [first, ...rest] = entries;
-    return [patchIfEmpty(first, patch as unknown as Record<string, unknown>), ...rest];
+>(entries: T[], patch?: KycPanelOwnerPatch, ownerIndex: KycOwnerIndex = 1): T[] {
+    if (!patch) return entries;
+    const mapped = {
+        ownerFirstName: patch.firstName,
+        ownerLastName: patch.lastName,
+        ownerAddress: patch.address,
+        city: patch.city,
+        state: patch.state,
+        zipCode: patch.zipCode,
+    };
+    const index = Math.max(0, ownerIndex - 1);
+    const next = [...entries];
+    const blank = entries[0];
+    if (!blank && next.length === 0) return entries;
+    while (next.length <= index && blank) {
+        next.push({ ...blank });
+    }
+    if (!next[index]) return next;
+    next[index] = patchIfEmpty(next[index]!, mapped as unknown as Record<string, unknown>);
+    return next;
 }
 
 export function applyKycPanelsToGuarantorEntries<
@@ -103,10 +126,27 @@ export function applyKycPanelsToGuarantorEntries<
         zipCode: string;
         driverLicenseNumber: string;
     },
->(entries: T[], patch?: KycPanelGuarantorPatch): T[] {
-    if (!patch || !entries.length) return entries;
-    const [first, ...rest] = entries;
-    return [patchIfEmpty(first, patch as unknown as Record<string, unknown>), ...rest];
+>(entries: T[], patch?: KycPanelGuarantorPatch, ownerIndex: KycOwnerIndex = 1): T[] {
+    if (!patch) return entries;
+    const mapped = {
+        guarantorFirstName: patch.firstName,
+        guarantorLastName: patch.lastName,
+        guarantorAddress: patch.address,
+        city: patch.city,
+        state: patch.state,
+        zipCode: patch.zipCode,
+        driverLicenseNumber: patch.driverLicenseNumber,
+    };
+    const index = Math.max(0, ownerIndex - 1);
+    const next = [...entries];
+    const blank = entries[0];
+    if (!blank && next.length === 0) return entries;
+    while (next.length <= index && blank) {
+        next.push({ ...blank });
+    }
+    if (!next[index]) return next;
+    next[index] = patchIfEmpty(next[index]!, mapped as unknown as Record<string, unknown>);
+    return next;
 }
 
 export function applyKycPanelsToAchEntries<
@@ -148,6 +188,7 @@ export function parseKycExtractionsFromUploadResponse(
 
 function rebuildDriverLicenseContractPrefill(
     panels: KycExtractionResult["panels"],
+    ownerIndex: KycOwnerIndex = 1,
 ): Record<string, string> {
     const guarantor = panels?.guarantor;
     const owner = panels?.owner;
@@ -164,6 +205,19 @@ function rebuildDriverLicenseContractPrefill(
     const set = (key: string, val: string) => {
         if (str(val)) contractPrefill[key] = val;
     };
+
+    if (ownerIndex === 2) {
+        if (displayName) {
+            set("owner2GuarantorName", displayName);
+            set("guarantyOwner2Name", displayName);
+            set("guarantyGuarantor2Name", displayName);
+        }
+        if (dlNumber) {
+            set("guarantyOwner2DriverLicense", dlNumber);
+            set("guarantyGuarantor2DriverLicense", dlNumber);
+        }
+        return contractPrefill;
+    }
 
     if (displayName) {
         set("customerName", displayName);
@@ -270,7 +324,10 @@ export function finalizeKycExtractionForSync(
 ): KycExtractionResult {
     if (!extraction?.documentType || extraction.error) return extraction;
     if (extraction.documentType === "driverLicense") {
-        const contractPrefill = rebuildDriverLicenseContractPrefill(extraction.panels);
+        const contractPrefill = rebuildDriverLicenseContractPrefill(
+            extraction.panels,
+            extraction.ownerIndex === 2 ? 2 : 1,
+        );
         return { ...extraction, contractPrefill };
     }
     if (extraction.documentType === "voidedCheck") {

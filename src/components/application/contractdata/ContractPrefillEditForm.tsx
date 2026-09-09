@@ -63,6 +63,7 @@ import {
     resolveSecondOwnerSignerName,
     syncOwner2NameToPrefillPartial,
 } from "./contractPartyCounts";
+import { resolveOwnerRowsForContractPrefill } from "./contractOwnerPrefillRows";
 import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
@@ -146,6 +147,14 @@ const FIELD_LABELS = {
     guarantorPrintTitle: "Print title",
     owner1GuarantorName: "Name",
     owner2GuarantorName: "Name",
+    owner2PrintTitle: "Title",
+    owner2Email: "Email",
+    owner2Phone: "Phone",
+    owner2Address: "Address",
+    clientEmail2: "Email",
+    clientPhone2: "Phone",
+    guarantor2Phone: "Phone",
+    guarantor2Address: "Address",
     merchant2Name: "Name",
     appendixMerchant2Name: "Name",
     businessName2: "Name",
@@ -155,7 +164,7 @@ const FIELD_LABELS = {
     securityBusinessAddress: "Street",
     securityBusinessAddressCity: "City",
     securityBusinessAddressState: "State",
-    securityBusinessAddressZip: "Security ZIP",
+    securityBusinessAddressZip: "ZIP",
     securityGuarantor: "Guarantor",
     guarantyClientName: "Name",
     guarantySs: "SSN",
@@ -382,31 +391,36 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
     {
         id: "owners",
         title: "Owners & guarantors",
-        description: "Owner names, Exhibit A company line, and guaranty SSN / driver license fields.",
+        description: "Owner 1 and Owner 2 each have the same name, ID, contact, and address fields.",
         Icon: Users,
         groups: [
-            { heading: "Owners", keys: ["owner1GuarantorName", "owner2GuarantorName", "exhibitAValue1"] },
             {
-                heading: "Owner 1 ID",
-                keys: ["guarantyOwner1Ss", "guarantyOwner1DriverLicense"],
-            },
-            {
-                heading: "Guarantor 2",
+                heading: "Owner 1",
                 keys: [
-                    "guarantyGuarantor2Name",
-                    "guarantyGuarantor2Ss",
-                    "guarantyGuarantor2DriverLicense",
-                ],
-            },
-            {
-                heading: "Security address",
-                keys: [
+                    "owner1GuarantorName",
+                    "guarantyOwner1Ss",
+                    "guarantyOwner1DriverLicense",
+                    "guarantorPhone",
+                    "guarantorEmail",
                     "securityBusinessAddress",
                     "securityBusinessAddressCity",
                     "securityBusinessAddressState",
                     "securityBusinessAddressZip",
                 ],
             },
+            {
+                heading: "Owner 2",
+                keys: [
+                    "owner2GuarantorName",
+                    "guarantyGuarantor2Ss",
+                    "guarantyGuarantor2DriverLicense",
+                    "guarantor2Phone",
+                    "owner2Email",
+                    "guarantor2Address",
+                    "owner2PrintTitle",
+                ],
+            },
+            { heading: "Exhibit A", keys: ["exhibitAValue1"] },
         ],
     },
     {
@@ -622,13 +636,28 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
     },
     {
         id: "owner2Ssn",
-        label: "Owner 2 / Guarantor 2 SSN",
-        keys: ["guarantyGuarantor2Ss"],
+        label: "Owner 2 SSN",
+        keys: ["guarantyGuarantor2Ss", "guarantyOwner2Ss"],
     },
     {
         id: "owner2DriverLicense",
-        label: "Owner 2 / Guarantor 2 driver license",
-        keys: ["guarantyGuarantor2DriverLicense"],
+        label: "Owner 2 driver license",
+        keys: ["guarantyGuarantor2DriverLicense", "guarantyOwner2DriverLicense"],
+    },
+    {
+        id: "owner2Phone",
+        label: "Owner 2 phone",
+        keys: ["guarantor2Phone", "owner2Phone", "clientPhone2"],
+    },
+    {
+        id: "owner2Email",
+        label: "Owner 2 email",
+        keys: ["owner2Email", "clientEmail2"],
+    },
+    {
+        id: "owner2Address",
+        label: "Owner 2 address",
+        keys: ["guarantor2Address", "owner2Address"],
     },
     {
         id: "date",
@@ -1001,12 +1030,20 @@ function parsePositiveContractId(id: number | string | null | undefined): number
 
 type FieldErrors = Partial<Record<keyof BuildContractPrefillFieldsArgs, string>>;
 
-const EMAIL_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = ["clientEmail", "guarantorEmail"];
+const EMAIL_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
+    "clientEmail",
+    "guarantorEmail",
+    "owner2Email",
+    "clientEmail2",
+];
 const PHONE_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "clientPhone",
     "guarantorPhone",
     "authorizedBusinessPhone",
     "achAuthorizationAccountHolderPhone",
+    "owner2Phone",
+    "guarantor2Phone",
+    "clientPhone2",
 ];
 const EIN_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "federalTaxIdEin",
@@ -1643,20 +1680,23 @@ export function ContractPrefillEditForm({
         liveContractSignerOverrides,
     ]);
 
+    const resolvedOwnerRows = useMemo(
+        () =>
+            resolveOwnerRowsForContractPrefill(
+                applicationData,
+                Array.isArray(contractRecords?.owners)
+                    ? (contractRecords.owners as Record<string, unknown>[])
+                    : [],
+            ),
+        [applicationData, contractRecords?.owners],
+    );
     const activeOwnerCount = useMemo(
         () =>
             resolveActiveOwnerCount({
-                owners: contractRecords?.owners ?? null,
+                owners: resolvedOwnerRows,
                 signerRoles: contractSignerRolesForCounts,
             }),
-        [contractRecords?.owners, contractSignerRolesForCounts],
-    );
-    const resolvedOwnerRows = useMemo(
-        () =>
-            Array.isArray(contractRecords?.owners)
-                ? (contractRecords.owners as Record<string, unknown>[])
-                : [],
-        [contractRecords?.owners],
+        [resolvedOwnerRows, contractSignerRolesForCounts],
     );
     const showSecondPartyFields = activeOwnerCount >= 2;
     const activeGuarantorCount = useMemo(

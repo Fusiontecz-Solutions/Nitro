@@ -901,6 +901,75 @@ export const assignApplicationFileDocumentType = createAsyncThunk(
     },
 );
 
+export const uploadApplicationKycDocuments = createAsyncThunk(
+    'application/uploadKycDocuments',
+    async (
+        {
+            id,
+            filesByType,
+            onUploadProgress,
+        }: {
+            id: string;
+            filesByType: Record<string, File | File[] | null | undefined>;
+            onUploadProgress?: (event: import('axios').AxiosProgressEvent) => void;
+        },
+        { rejectWithValue },
+    ) => {
+        try {
+            const formData = new FormData();
+            Object.entries(filesByType || {}).forEach(([documentType, input]) => {
+                const files = Array.isArray(input) ? input : [input];
+                files
+                    .filter(Boolean)
+                    .forEach((file) => formData.append(documentType, file as File));
+            });
+            const response = await axiosPostFormData(
+                `/applications/${id}/kyc-documents/upload`,
+                formData,
+                onUploadProgress ? { onUploadProgress } : undefined,
+            );
+            return response.data;
+        } catch (error: any) {
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to upload identity documents',
+            );
+        }
+    },
+);
+
+export const syncApplicationKycPrefill = createAsyncThunk(
+    'application/syncKycPrefill',
+    async (
+        {
+            id,
+            extraction,
+        }: {
+            id: string;
+            extraction: {
+                documentType: 'driverLicense' | 'voidedCheck';
+                slot?: 'voidedCheck' | 'driverLicense' | 'driverLicenseOwner2';
+                ownerIndex?: 1 | 2;
+                contractPrefill?: Record<string, string>;
+                panels?: Record<string, unknown>;
+                keyData?: Record<string, string>;
+                fileId?: string;
+                fileName?: string;
+                fileUrl?: string;
+            };
+        },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(`/applications/${id}/kyc-documents/sync`, extraction);
+            return response.data;
+        } catch (error: any) {
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to sync extracted document data',
+            );
+        }
+    },
+);
+
 /** Run Claude/Document AI extraction on a stored application PDF and merge into client fields. */
 export const fillApplicationFromPdfFile = createAsyncThunk(
     'application/fillApplicationFromPdfFile',

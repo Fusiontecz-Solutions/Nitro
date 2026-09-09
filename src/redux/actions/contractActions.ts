@@ -602,7 +602,9 @@ export const syncKycPrefillToContract = createAsyncThunk(
         }: {
             contractId: number | string;
             extraction: {
-                documentType: "driverLicense" | "voidedCheck";
+                documentType: "driverLicense" | "voidedCheck" | "driverLicenseOwner2";
+                slot?: "voidedCheck" | "driverLicense" | "driverLicenseOwner2";
+                ownerIndex?: 1 | 2;
                 contractPrefill?: Record<string, string>;
                 panels?: Record<string, unknown>;
                 keyData?: Record<string, string>;

@@ -186,6 +186,11 @@ export function applyOwner2PrefillKeysFromSignerRows(
     for (const key of OWNER2_NAME_SYNC_CAMEL_KEYS) {
         out[key] = secondName;
     }
+    const secondEmail = String(secondRow?.email || "").trim();
+    if (secondEmail) {
+        out.owner2Email = secondEmail;
+        out.clientEmail2 = secondEmail;
+    }
     return out;
 }
 

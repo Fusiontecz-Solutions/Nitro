@@ -112,7 +112,7 @@ export const updateClient = createAsyncThunk(
         try {
             const response = await axiosPut(`/clients/${id}`, data);
             invalidateClientsListCache();
-            invalidateClientDetailCache(id);
+            invalidateClientDetailCache();
             return response.data;
         } catch (error: any) {
             console.error('Update client error:', error);
@@ -130,7 +130,7 @@ export const deleteClient = createAsyncThunk(
         try {
             const response = await axiosDelete(`/clients/${id}`);
             invalidateClientsListCache();
-            invalidateClientDetailCache(id);
+            invalidateClientDetailCache();
             return { ...response.data, deletedId: id };
         } catch (error: any) {
             console.error('Delete client error:', error);
