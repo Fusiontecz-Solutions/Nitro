@@ -67,6 +67,13 @@ const ALIASES: Record<string, string[]> = {
     'owner1_guarantor_name',
     'merchant_contact_name',
   ],
+  /** Personal Guarantor (#2) print-name widgets (e.g. page 22/23 `client_name_p23_g2`). */
+  client_name_g2: [
+    ...OWNER2_NAME_KEYS,
+    'client_name',
+    'owner1_guarantor_name',
+    'merchant_contact_name',
+  ],
   ach_account_holder_name: [
     'ach_authorization_account_holder_name',
     'authorization_client_name',
@@ -140,6 +147,8 @@ const ALIASES: Record<string, string[]> = {
   emergency_phone: ['emergency_phone'],
   emergency_email: ['emergency_email'],
   signature_date_s2: ['signature_date', 'agreement_date', 'disclosure_date'],
+  /** Personal Guarantor (#2) date widgets (e.g. page 22/23 `signature_date_p23_g2`). */
+  signature_date_g2: ['signature_date', 'agreement_date', 'disclosure_date'],
   email_address: ['client_email', 'merchant_contact_email', 'guarantor_email'],
   primary_phone: ['client_phone', 'guarantor_phone', 'merchant_contact_phone'],
   primary_phone_number: ['client_phone', 'guarantor_phone'],
@@ -177,19 +186,6 @@ const ALIASES: Record<string, string[]> = {
     'ach_account_holder_address',
     'ach_authorization_account_holder_address',
   ],
-  assignment_merchant_line1: ['client_legal_name', 'client_name'],
-  assignment_merchant_line2: ['doing_business_as', 'exhibit_a_value_1'],
-  assignment_merchant_line3: ['exhibit_a_value_1', 'exhibit_a_value_2'],
-  assignment_merchant_line4: ['exhibit_a_value_2', 'exhibit_a_value_3'],
-  assignment_merchant_line5: ['exhibit_a_value_3', 'exhibit_a_value_4'],
-  assignment_merchant_line6: ['exhibit_a_value_4', 'exhibit_a_value_5'],
-  assignment_merchant_line7: ['exhibit_a_value_5', 'exhibit_a_value_6'],
-  assignment_merchant_line8: ['exhibit_a_value_6', 'exhibit_a_value_7'],
-  assignment_merchant_line9: ['exhibit_a_value_7', 'exhibit_a_value_8'],
-  assignment_merchant_line10: ['exhibit_a_value_8', 'exhibit_a_value_9'],
-  assignment_merchant_line11: ['exhibit_a_value_9', 'exhibit_a_value_10'],
-  assignment_merchant_line12: ['exhibit_a_value_10'],
-  assignment_merchant_line13: ['exhibit_a_value_10'],
   case_id: ['application_id', 'case_id'],
   appendix_underwriting_fees: [
     'total_fees',
@@ -252,6 +248,10 @@ const ALIASES: Record<string, string[]> = {
   ],
   funding_provided_direct: ['net_to_merchant', 'disbursement_amount', 'funding_provided'],
   frequency: ['frequency', 'paymentterms', 'payment_terms'],
+  /** Page-1 INITIAL INSTALLMENT cadence next to the dollar amount. */
+  page1_installmentblock_frequency: ['frequency', 'paymentterms', 'payment_terms'],
+  page1_installment_block_frequency: ['frequency', 'paymentterms', 'payment_terms'],
+  installmentblock_frequency: ['frequency', 'paymentterms', 'payment_terms'],
   // ACH Weekly addendum — same CRM ids as PCM_CONTRACT, unique names use `_p1_ach`.
   billing_name: ['client_name', 'ach_account_holder_name', 'merchant_contact_name'],
   billing_address: [
@@ -527,6 +527,14 @@ export function isMonthlyFeeDocumentName(value: unknown): boolean {
   return n.includes('monthly') && n.includes('fee');
 }
 
+export function isExhibitCDocumentName(value: unknown): boolean {
+  const n = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!n || isMonthlyFeeDocumentName(n)) return false;
+  return /exhibit[\s_-]*c\b/.test(n) || n.includes('exhibitc');
+}
+
 /** Addenda, disclosures, ACH, and similar extras — not the main agreement. */
 export function isSupplementalSignNowDocumentName(value: unknown): boolean {
   const n = String(value || '')
@@ -548,7 +556,10 @@ export function isObsidianDocumentName(value: unknown): boolean {
     .includes('obsidian');
 }
 
-export type SignNowPrefillDocumentKind = 'monthly_fee' | 'obsidian_agreement';
+export type SignNowPrefillDocumentKind =
+  | 'monthly_fee'
+  | 'obsidian_agreement'
+  | 'exhibit_c';
 
 export type SignNowPrefillOptions = { documentKind?: SignNowPrefillDocumentKind };
 
@@ -584,6 +595,7 @@ export function signNowPrefillDocumentKind(
   fieldNames?: string[],
 ): SignNowPrefillDocumentKind | undefined {
   if (isMonthlyFeeDocumentName(documentName)) return 'monthly_fee';
+  if (isExhibitCDocumentName(documentName)) return 'exhibit_c';
   if (isObsidianDocumentName(documentName)) return 'obsidian_agreement';
   const names = (fieldNames || []).map((n) => String(n || '').trim().toLowerCase());
   if (
@@ -592,6 +604,14 @@ export function signNowPrefillDocumentKind(
     names.some((n) => n.startsWith('authorization_client_name'))
   ) {
     return 'obsidian_agreement';
+  }
+  if (
+    names.some((n) => n === 'ach_account_holder_name_p1') &&
+    names.some((n) => n === 'ach_bank_portal_p1') &&
+    names.some((n) => n === 'ach_username_p1') &&
+    names.length <= 40
+  ) {
+    return 'exhibit_c';
   }
   return undefined;
 }
@@ -640,6 +660,68 @@ export function isMerchantRequiredPage20AchField(
   return false;
 }
 
+/** Exhibit C orange slots the merchant signer must complete. Blue owner fields stay prefilled. */
+const MERCHANT_REQUIRED_EXHIBIT_C = new Set([
+  'ach_account_holder_name',
+  'ach_bank_portal',
+  'ach_username',
+  'ach_password',
+  'ach_security_q1',
+  'ach_security_q2',
+]);
+
+/** Exact SignNow unique names Signer 1 must fill on Exhibit C (same flow as page 20). */
+export const EXHIBIT_C_REQUIRED_UNIQUE_NAMES = [
+  'ach_account_holder_name_p1',
+  'ach_bank_portal_p1',
+  'ach_username_p1',
+  'ach_password_p1',
+  'ach_security_q1_p1',
+  'ach_security_q2_p1',
+] as const;
+
+export function isDedicatedExhibitCRequiredField(fieldName: string): boolean {
+  const n = String(fieldName || '').trim().toLowerCase();
+  return (EXHIBIT_C_REQUIRED_UNIQUE_NAMES as readonly string[]).includes(n);
+}
+
+/**
+ * Exhibit C merchant-required unique names (`*_p1`). Scoped so Monthly Fee /
+ * ACH Weekly (`*_p1_ach`) are not treated as signer-required.
+ */
+export function isMerchantRequiredExhibitCField(
+  fieldName: string,
+  pageNumber?: number,
+  options?: SignNowPrefillOptions,
+): boolean {
+  const raw = String(fieldName || '').trim();
+  if (!raw) return false;
+  if (options?.documentKind && options.documentKind !== 'exhibit_c') return false;
+  if (isDedicatedExhibitCRequiredField(raw)) return true;
+  const n = raw.toLowerCase();
+  if (/_p20\b/i.test(n) || pageNumber === 19 || pageNumber === 20) return false;
+  if (/_p1_ach\b|_p\d+_ach\b/i.test(n)) return false;
+  const canon = canonicalizeSignNowFieldName(raw);
+  if (!MERCHANT_REQUIRED_EXHIBIT_C.has(canon)) return false;
+  const namedP1 = /_p1(?:_|$)/i.test(n);
+  const onFirstPages = pageNumber === 0 || pageNumber === 1;
+  const onExhibitCPage =
+    options?.documentKind === 'exhibit_c' && onFirstPages;
+  return namedP1 || onExhibitCPage || onFirstPages;
+}
+
+/** Page-20 ACH or Exhibit C orange fields the merchant signer must complete. */
+export function isMerchantRequiredSignerField(
+  fieldName: string,
+  pageNumber?: number,
+  options?: SignNowPrefillOptions,
+): boolean {
+  return (
+    isMerchantRequiredPage20AchField(fieldName, pageNumber) ||
+    isMerchantRequiredExhibitCField(fieldName, pageNumber, options)
+  );
+}
+
 export function shouldSkipSignNowPrefill(
   fieldName: string,
   options?: SignNowPrefillOptions,
@@ -665,6 +747,16 @@ export function shouldSkipSignNowPrefill(
     return !ALIASES[aliasKey];
   }
   const lower = n.toLowerCase();
+  const canon = canonicalizeSignNowFieldName(n);
+  // Exhibit C orange slots stay empty so the merchant can fill them.
+  if (isMerchantRequiredExhibitCField(n, undefined, options)) return true;
+  // Notification of Assignment merchant list stays blank — no business names.
+  if (
+    /^assignment_merchant_line\d+$/.test(canon) ||
+    /assignment_merchant_line/i.test(lower)
+  ) {
+    return true;
+  }
   // Signature/initial widgets — keep `signature_date` (disclosure text tab).
   if (lower.startsWith('signature_') && !lower.includes('date')) return true;
   if (lower.startsWith('initial_') && !lower.includes('date')) return true;
@@ -686,7 +778,9 @@ export function canonicalizeSignNowFieldName(fieldName: string): string {
       .replace(/[\s-]+/g, '_')
       .replace(/((?:[a-z0-9]+_)+[a-z0-9]+)\1$/i, '$1')
       .replace(/_p\d+_s2$/i, '_s2')
+      // Guarantor #2 widgets share the same CRM values as seller/signer #2.
       .replace(/_p\d+_g2$/i, '_g2')
+      .replace(/_g2$/i, '_s2')
       .replace(STRIP_PAGE_OWNER1, '')
       .replace(/_s1$/i, '')
       .replace(/_g1$/i, '')
@@ -1091,6 +1185,11 @@ export function resolveSignNowPrefillValue(
     return '';
   }
 
+  if (isInstallmentFrequencyWidget(raw, canon)) {
+    const freq = installmentFrequencyFromMap(map);
+    if (freq) return freq;
+  }
+
   const tryKeys = [
     raw,
     lower,
@@ -1101,16 +1200,30 @@ export function resolveSignNowPrefillValue(
       ? []
       : ALIASES[canon] || []),
   ];
+  let hit = '';
   for (const key of tryKeys) {
-    const hit = mapGet(map, key);
-    if (hit && !isWeakSignNowPrefillHit(canon, hit)) return hit;
+    const value = mapGet(map, key);
+    if (value && !isWeakSignNowPrefillHit(canon, value)) {
+      hit = value;
+      break;
+    }
   }
-  const forcedMoney = resolveForcedContractMoneyField(canon, map);
-  if (forcedMoney && !isWeakSignNowPrefillHit(canon, forcedMoney)) return forcedMoney;
-  if (forcedMoney) return forcedMoney;
-  if (/^disclosure_page3_3[abc]$/.test(canon)) return '';
-  if (canon === 'disclosure_page3_third_parties') return '0.00';
-  return '';
+  if (!hit) {
+    const forcedMoney = resolveForcedContractMoneyField(canon, map);
+    if (forcedMoney && !isWeakSignNowPrefillHit(canon, forcedMoney)) hit = forcedMoney;
+    else if (forcedMoney) hit = forcedMoney;
+  }
+  if (!hit) {
+    if (/^disclosure_page3_3[abc]$/.test(canon)) return '';
+    if (canon === 'disclosure_page3_third_parties') return '0.00';
+    return '';
+  }
+  // Page-1 INITIAL INSTALLMENT is a single `remittance` widget — cadence must
+  // sit next to the amount (the dedicated frequency unique name is not on the template).
+  if (isPage1InitialInstallmentAmountField(raw)) {
+    return appendInstallmentFrequencyToAmount(hit, map);
+  }
+  return hit;
 }
 
 /** Match CRM values onto the unique names that actually exist on a SignNow document. */
@@ -1189,9 +1302,64 @@ export function expandSignNowPrefillForUnguidedPut(
   }));
 }
 
+function formatInstallmentBlockFrequencyLabel(value: string): string {
+  const text = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  if (!text) return '';
+  if (text === 'day' || text === 'daily') return 'Daily';
+  if (text === 'week' || text === 'weekly') return 'Weekly';
+  if (text === 'bi week' || text === 'biweekly') return 'Bi-Weekly';
+  if (text === 'month' || text === 'monthly') return 'Monthly';
+  return String(value || '').trim();
+}
+
+function isInstallmentBlockFrequencyField(fieldName: string): boolean {
+  const n = String(fieldName || '').toLowerCase();
+  return /installment[_]?block[_]?frequency/.test(n) || /page1.*frequen/.test(n);
+}
+
+function isInstallmentFrequencyWidget(fieldName: string, canon: string): boolean {
+  if (isInstallmentBlockFrequencyField(fieldName)) return true;
+  return canon === 'frequency' || canon === 'paymentterms' || canon === 'payment_terms';
+}
+
+function isPage1InitialInstallmentAmountField(fieldName: string): boolean {
+  return /^remittance$/i.test(String(fieldName || '').trim());
+}
+
+function installmentFrequencyFromMap(map: Map<string, string>): string {
+  return formatInstallmentBlockFrequencyLabel(
+    mapGet(map, 'frequency') ||
+      mapGet(map, 'paymentterms') ||
+      mapGet(map, 'payment_terms') ||
+      mapGet(map, 'paymentfrequency') ||
+      mapGet(map, 'page1_installmentblock_frequency'),
+  );
+}
+
+function appendInstallmentFrequencyToAmount(
+  amount: string,
+  map: Map<string, string>,
+): string {
+  const money = String(amount || '')
+    .replace(/\s+(Daily|Weekly|Monthly|Bi-Weekly|Day|Week|Month|Bi-Week)\s*$/i, '')
+    .trim();
+  const freq = installmentFrequencyFromMap(map);
+  if (!money) return String(amount || '').trim();
+  if (!freq) return money;
+  if (new RegExp(`\\b${freq}\\b`, 'i').test(money)) return money;
+  return `${money} ${freq}`;
+}
+
 export function formatSignNowPrefillValue(value: string, fieldName?: string): string {
   const v = String(value || '').trim();
   if (!v) return '';
+  if (isInstallmentBlockFrequencyField(fieldName || '')) {
+    return formatInstallmentBlockFrequencyLabel(v);
+  }
   if (/^\d{4}-\d{2}-\d{2}/.test(v)) {
     const d = new Date(v);
     if (!Number.isNaN(d.getTime())) {

@@ -46,6 +46,7 @@ import {
 } from '../services/applicationStatsCache';
 import { DashboardCacheKind, withDashboardCache } from '../services/dashboardCache';
 import { executePermanentApplicationDelete } from '../services/applicationDeletionService';
+import applicationKycDocumentService from '../services/applicationKycDocumentService';
 import {
     aggregateOperationsDashboardSummary,
     aggregateOperationsPaymentPerformanceTrend,
@@ -1952,6 +1953,136 @@ class ApplicationController {
                 success: false,
                 message,
             });
+        }
+    }
+
+    async uploadKycDocuments(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const { application, forbidden } = await getApplicationForUser(
+                /^\d+$/.test(id) ? { applicationId: Number(id) } : { id },
+                authUser,
+                { files: true },
+            );
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+            if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
+                return;
+            }
+
+            const reqFiles = (req as any).files;
+            if (!reqFiles || Object.keys(reqFiles).length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'No files uploaded. Send driverLicense, driverLicenseOwner2, or voidedCheck.',
+                });
+            }
+
+            const data = await applicationKycDocumentService.uploadAndExtract(
+                application.id,
+                reqFiles,
+            );
+
+            return res.status(201).json({
+                success: true,
+                message: 'Identity documents uploaded successfully',
+                data: data.documents,
+                kycExtractions: data.kycExtractions,
+            });
+        } catch (error: unknown) {
+            const message =
+                error instanceof Error && error.message
+                    ? error.message
+                    : 'Failed to upload identity documents';
+            console.error('[uploadKycDocuments] Error:', error);
+            const statusCode = message === 'Application not found' ? 404 : 500;
+            return res.status(statusCode).json({ success: false, message });
+        }
+    }
+
+    async syncKycPrefill(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const { application, forbidden } = await getApplicationForUser(
+                /^\d+$/.test(id) ? { applicationId: Number(id) } : { id },
+                authUser,
+            );
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+            if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
+                return;
+            }
+
+            const data = await applicationKycDocumentService.syncKycPrefill(
+                application.id,
+                {
+                    documentType: req.body?.documentType,
+                    slot: req.body?.slot,
+                    ownerIndex: req.body?.ownerIndex,
+                    contractPrefill:
+                        req.body?.contractPrefill && typeof req.body.contractPrefill === 'object'
+                            ? req.body.contractPrefill
+                            : {},
+                    panels:
+                        req.body?.panels && typeof req.body.panels === 'object'
+                            ? req.body.panels
+                            : {},
+                    keyData:
+                        req.body?.keyData && typeof req.body.keyData === 'object'
+                            ? req.body.keyData
+                            : {},
+                    fileId: req.body?.fileId,
+                    fileName: req.body?.fileName,
+                    fileUrl: req.body?.fileUrl,
+                },
+                authUser?.id,
+            );
+
+            const refreshed = await prisma.application.findUnique({
+                where: { id: application.id },
+                include: APPLICATION_DETAIL_INCLUDE,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: 'Extracted values saved and will auto-fill later fields',
+                data: {
+                    ...data,
+                    application: refreshed ? mapApplicationToApi(refreshed) : undefined,
+                },
+            });
+        } catch (error: unknown) {
+            const message =
+                error instanceof Error && error.message
+                    ? error.message
+                    : 'Failed to sync extracted document data';
+            console.error('[syncKycPrefill] Error:', error);
+            const statusCode = message === 'Application not found' ? 404 : 400;
+            return res.status(statusCode).json({ success: false, message });
         }
     }
 

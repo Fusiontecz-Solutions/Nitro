@@ -2,7 +2,11 @@ import {
   buildSignNowDocumentPrefillTexts,
   canonicalizeSignNowFieldName,
   formatSignNowPrefillValue,
+  EXHIBIT_C_REQUIRED_UNIQUE_NAMES,
+  isDedicatedExhibitCRequiredField,
+  isMerchantRequiredExhibitCField,
   isMerchantRequiredPage20AchField,
+  isMerchantRequiredSignerField,
   isMonthlyFeeForcedBlankField,
   isSupplementalSignNowDocumentName,
   resolveSignNowPrefillValue,
@@ -22,6 +26,15 @@ describe('signnow-field-map', () => {
     expect(formatSignNowPrefillValue('FUSIONTECZ', 'client_legal_name')).toBe('FUSIONTECZ');
     expect(formatSignNowPrefillValue('$ 1,025.00', 'origination_fee')).toBe('1,025.00');
     expect(formatSignNowPrefillValue('$49.00', 'ach_program_fee_p13')).toBe('49.00');
+    expect(
+      formatSignNowPrefillValue('WEEKLY', 'page1_installmentBlock_frequency'),
+    ).toBe('Weekly');
+    expect(formatSignNowPrefillValue('daily', 'page1_installmentBlock_frequency')).toBe(
+      'Daily',
+    );
+    expect(formatSignNowPrefillValue('DAY', 'page1_installmentBlock_frequency')).toBe(
+      'Daily',
+    );
   });
 
   it('strips page suffixes from SignNow unique names', () => {
@@ -62,6 +75,8 @@ describe('signnow-field-map', () => {
     expect(resolveSignNowPrefillValue('client_email_p13_s1', oneSigner)).toBe(
       'puneet04@fusiontecz.com',
     );
+    expect(resolveSignNowPrefillValue('client_name_p23_g2', oneSigner)).toBe('');
+    expect(resolveSignNowPrefillValue('signature_date_p23_g2', oneSigner)).toBe('');
   });
 
   it('maps owner 2 name from CRM owner2 / guarantor2 keys', () => {
@@ -70,6 +85,122 @@ describe('signnow-field-map', () => {
         owner2_guarantor_name: 'Jane Owner',
       }),
     ).toBe('Jane Owner');
+  });
+
+  it('fills seller 2 / guarantor 2 contact slots from owner 2 CRM keys', () => {
+    const twoOwners = {
+      client_name: 'Alex Primary',
+      client_email: 'alex@example.com',
+      owner2_guarantor_name: 'Jordan Second',
+      owner2_email: 'jordan@example.com',
+      owner2_phone: '5551112222',
+      owner2_address: '9 Oak St, Austin, TX, 78701',
+      owner2_print_title: 'OWNER',
+      guaranty_owner2_ss: '987-65-4321',
+      guarantor2_phone: '5551112222',
+      guarantor2_address: '9 Oak St, Austin, TX, 78701',
+    };
+    expect(resolveSignNowPrefillValue('guaranty_guarantor2_name_p12', twoOwners)).toBe(
+      'Jordan Second',
+    );
+    expect(resolveSignNowPrefillValue('client_email_p13_s2', twoOwners)).toBe(
+      'jordan@example.com',
+    );
+    expect(resolveSignNowPrefillValue('owner_print_title_p13_s2', twoOwners)).toBe('OWNER');
+    expect(resolveSignNowPrefillValue('owner2_email', twoOwners)).toBe('jordan@example.com');
+    expect(resolveSignNowPrefillValue('owner2_phone', twoOwners)).toBe('5551112222');
+    expect(resolveSignNowPrefillValue('guarantor2_address_p13', twoOwners)).toBe(
+      '9 Oak St, Austin, TX, 78701',
+    );
+    expect(resolveSignNowPrefillValue('guaranty_owner2_ss', twoOwners)).toBe('987-65-4321');
+    expect(canonicalizeSignNowFieldName('client_name_p23_g2')).toBe('client_name_s2');
+    expect(canonicalizeSignNowFieldName('signature_date_p23_g2')).toBe(
+      'signature_date_s2',
+    );
+    expect(resolveSignNowPrefillValue('client_name_p23_g2', twoOwners)).toBe(
+      'Jordan Second',
+    );
+    expect(
+      resolveSignNowPrefillValue('signature_date_p23_g2', {
+        ...twoOwners,
+        agreement_date: '09/08/2026',
+      }),
+    ).toBe('09/08/2026');
+  });
+
+  it('fills page-1 INITIAL INSTALLMENT frequency next to the amount', () => {
+    expect(canonicalizeSignNowFieldName('page1_installmentBlock_frequency')).toBe(
+      'page1_installmentblock_frequency',
+    );
+    expect(
+      resolveSignNowPrefillValue('page1_installmentBlock_frequency', {
+        frequency: 'Weekly',
+      }),
+    ).toBe('Weekly');
+    expect(
+      resolveSignNowPrefillValue('page1_installmentBlock_frequency', {
+        frequency: 'daily',
+      }),
+    ).toBe('Daily');
+    expect(
+      buildSignNowDocumentPrefillTexts(['page1_installmentBlock_frequency'], {
+        frequency: 'WEEKLY',
+      }),
+    ).toEqual([
+      {
+        field_name: 'page1_installmentBlock_frequency',
+        prefilled_text: 'Weekly',
+      },
+    ]);
+    expect(
+      buildSignNowDocumentPrefillTexts(['page1_installmentBlock_frequency'], {
+        paymentterms: 'DAY',
+      }),
+    ).toEqual([
+      {
+        field_name: 'page1_installmentBlock_frequency',
+        prefilled_text: 'Daily',
+      },
+    ]);
+    expect(
+      resolveSignNowPrefillValue('remittance', {
+        remittance: '14.99',
+        frequency: 'Weekly',
+      }),
+    ).toBe('14.99 Weekly');
+    expect(
+      buildSignNowDocumentPrefillTexts(['remittance'], {
+        remittance: '14.99',
+        frequency: 'daily',
+      }),
+    ).toEqual([{ field_name: 'remittance', prefilled_text: '14.99 Daily' }]);
+    expect(
+      resolveSignNowPrefillValue('remittance_p21', {
+        remittance: '14.99',
+        frequency: 'Weekly',
+      }),
+    ).toBe('14.99');
+  });
+
+  it('leaves Notification of Assignment merchant lines blank', () => {
+    const prefill = {
+      client_legal_name: 'SUBWAY OF SHIV LLC',
+      client_name: 'CRAIG LINDERR',
+      doing_business_as: 'SUBWAY OF SHIV LLC',
+      exhibit_a_value_1: 'SUBWAY OF SHIV LLC',
+      exhibit_a_value_2: 'VANGUARD RESTAURANT GROUP LLC',
+      case_id: '1b32bbde-931f-40f0-af09-f6d5114986a2',
+      agreement_date: '09/09/2026',
+    };
+    expect(shouldSkipSignNowPrefill('assignment_merchant_line1_p24')).toBe(true);
+    expect(shouldSkipSignNowPrefill('assignment_merchant_line2_p24')).toBe(true);
+    expect(resolveSignNowPrefillValue('assignment_merchant_line1_p24', prefill)).toBe('');
+    expect(resolveSignNowPrefillValue('assignment_merchant_line2_p24', prefill)).toBe('');
+    expect(resolveSignNowPrefillValue('assignment_merchant_line13_p24', prefill)).toBe('');
+    expect(resolveSignNowPrefillValue('case_id_p24', prefill)).toBe(
+      '1b32bbde-931f-40f0-af09-f6d5114986a2',
+    );
+    expect(resolveSignNowPrefillValue('agreement_date_p24', prefill)).toBe('09/09/2026');
   });
 
   it('maps DBA from security_doing_business_as', () => {
@@ -171,6 +302,88 @@ describe('signnow-field-map', () => {
     expect(isMerchantRequiredPage20AchField('Text Field 13', 0)).toBe(false);
     expect(isMerchantRequiredPage20AchField('ach_bank_name_p1')).toBe(false);
     expect(isMerchantRequiredPage20AchField('merchant_contact_name_p1')).toBe(false);
+  });
+
+  it('marks Exhibit C orange fields as required for the merchant signer', () => {
+    const exhibitC = { documentKind: 'exhibit_c' as const };
+    expect(isMerchantRequiredExhibitCField('ach_account_holder_name_p1', 0, exhibitC)).toBe(
+      true,
+    );
+    expect(isMerchantRequiredExhibitCField('ach_bank_portal_p1')).toBe(true);
+    expect(isMerchantRequiredExhibitCField('ach_username_p1')).toBe(true);
+    expect(isMerchantRequiredExhibitCField('ach_password_p1')).toBe(true);
+    expect(isMerchantRequiredExhibitCField('ach_security_q1_p1')).toBe(true);
+    expect(isMerchantRequiredExhibitCField('ach_security_q2_p1')).toBe(true);
+    expect(isMerchantRequiredSignerField('ach_username_p1', 0, exhibitC)).toBe(true);
+    expect(isMerchantRequiredExhibitCField('ach_account_holder_dba_p1')).toBe(false);
+    expect(isMerchantRequiredExhibitCField('ach_account_holder_address_p1')).toBe(false);
+    expect(isMerchantRequiredExhibitCField('ach_bank_name_p1')).toBe(false);
+    expect(isMerchantRequiredExhibitCField('ach_bank_account_p1')).toBe(false);
+    expect(isMerchantRequiredExhibitCField('ach_bank_routing_p1')).toBe(false);
+    expect(
+      isMerchantRequiredExhibitCField('ach_username_p1', 0, { documentKind: 'monthly_fee' }),
+    ).toBe(false);
+    expect(isMerchantRequiredExhibitCField('ach_username_p1_ach')).toBe(false);
+    expect(isMerchantRequiredExhibitCField('ach_username_p20')).toBe(false);
+    for (const name of EXHIBIT_C_REQUIRED_UNIQUE_NAMES) {
+      expect(isDedicatedExhibitCRequiredField(name)).toBe(true);
+      expect(isMerchantRequiredExhibitCField(name)).toBe(true);
+      expect(isMerchantRequiredSignerField(name, 0)).toBe(true);
+    }
+    expect(isMerchantRequiredExhibitCField('ach_username', 0)).toBe(true);
+    expect(isMerchantRequiredExhibitCField('ach_bank_portal', 0)).toBe(true);
+    expect(isMerchantRequiredExhibitCField('ach_account_holder_name', 1)).toBe(true);
+    expect(signNowPrefillDocumentKind('Exhibit C')).toBe('exhibit_c');
+    expect(
+      signNowPrefillDocumentKind('ACH Authorization', [
+        'ach_account_holder_name_p1',
+        'ach_bank_portal_p1',
+        'ach_username_p1',
+      ]),
+    ).toBe('exhibit_c');
+    expect(
+      signNowPrefillDocumentKind(
+        'PCM Agreement',
+        [
+          'ach_account_holder_name_p1',
+          'ach_bank_portal_p1',
+          'ach_username_p1',
+          ...Array.from({ length: 50 }, (_, i) => `merchant_contact_name_p${i + 2}`),
+        ],
+      ),
+    ).toBeUndefined();
+  });
+
+  it('does not prefill Exhibit C orange merchant fields', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    const prefill = {
+      ach_authorization_username: 'portaluser',
+      ach_authorization_password: 'secret123',
+      ach_authorization_account_holder_name: 'Jane Holder',
+      doing_business_as: 'Acme DBA',
+      ach_authorization_account_holder_bank_name: 'Chase',
+      ach_authorization_account_holder_bank_account_number: '01714856400',
+      ach_authorization_account_holder_bank_routing_number: '021000021',
+    };
+    expect(shouldSkipSignNowPrefill('ach_username_p1', opts)).toBe(true);
+    expect(shouldSkipSignNowPrefill('ach_password_p1', opts)).toBe(true);
+    expect(shouldSkipSignNowPrefill('ach_account_holder_name_p1', opts)).toBe(true);
+    expect(shouldSkipSignNowPrefill('ach_bank_portal_p1', opts)).toBe(true);
+    expect(shouldSkipSignNowPrefill('ach_security_q1_p1', opts)).toBe(true);
+    expect(shouldSkipSignNowPrefill('ach_account_holder_dba_p1', opts)).toBe(false);
+    expect(shouldSkipSignNowPrefill('ach_bank_name_p1', opts)).toBe(false);
+    expect(resolveSignNowPrefillValue('ach_username_p1', prefill, opts)).toBe('');
+    expect(resolveSignNowPrefillValue('ach_account_holder_name_p1', prefill, opts)).toBe('');
+    expect(resolveSignNowPrefillValue('ach_account_holder_dba_p1', prefill, opts)).toBe(
+      'Acme DBA',
+    );
+    expect(resolveSignNowPrefillValue('ach_bank_name_p1', prefill, opts)).toBe('Chase');
+    expect(resolveSignNowPrefillValue('ach_bank_account_p1', prefill, opts)).toBe(
+      '01714856400',
+    );
+    expect(resolveSignNowPrefillValue('ach_bank_routing_p1', prefill, opts)).toBe(
+      '021000021',
+    );
   });
 
   it('maps ACH Weekly unique names back to contract prefill ids', () => {

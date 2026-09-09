@@ -20,8 +20,10 @@ import {
   isKycDocumentType,
   mergeContractPrefillPatch,
   normalizeKycDocumentType,
+  resolveKycUploadSlot,
   type KycDocumentType,
   type KycExtractionMapped,
+  type KycOwnerIndex,
 } from './contractKycPrefillMapper';
 import {
   loadContractReverseDisbursementConfig,
@@ -281,6 +283,72 @@ function firstNonEmptyString(...values: unknown[]): string {
   return '';
 }
 
+type ContractOwnerSeed = {
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  state: string | null;
+  city: string | null;
+  zip: string | null;
+  ownershipPercentage: number | null;
+};
+
+function ownerSeedHasIdentity(owner: ContractOwnerSeed): boolean {
+  return Boolean(owner.firstName || owner.lastName || owner.email);
+}
+
+function mapRelatedClientOwnerToSeed(owner: Record<string, unknown>): ContractOwnerSeed {
+  const nestedAddress =
+    owner.address && typeof owner.address === 'object'
+      ? (owner.address as Record<string, unknown>)
+      : null;
+  return {
+    firstName: firstNonEmptyString(owner.firstName),
+    lastName: firstNonEmptyString(owner.lastName),
+    email: firstNonEmptyString(owner.email) || null,
+    phone: firstNonEmptyString(owner.mobileNumber, owner.phone) || null,
+    address:
+      firstNonEmptyString(
+        owner.address1,
+        owner.address2,
+        nestedAddress?.address1,
+        typeof owner.address === 'string' ? owner.address : '',
+      ) || null,
+    state: firstNonEmptyString(owner.state, nestedAddress?.state) || null,
+    city: firstNonEmptyString(owner.city, nestedAddress?.city) || null,
+    zip: firstNonEmptyString(owner.zipCode, owner.zip, nestedAddress?.zipCode) || null,
+    ownershipPercentage:
+      owner.ownershipPercentage != null && owner.ownershipPercentage !== ''
+        ? Number(owner.ownershipPercentage)
+        : null,
+  };
+}
+
+/** Up to two CRM owners — ClientOwner[] first, then legacy flat owner fields. */
+function resolveClientOwnersForContractSeed(client: Record<string, unknown> | null | undefined): ContractOwnerSeed[] {
+  const related = Array.isArray(client?.owners) ? client.owners : [];
+  const fromRelated = related
+    .map((row) => mapRelatedClientOwnerToSeed((row ?? {}) as Record<string, unknown>))
+    .filter(ownerSeedHasIdentity)
+    .slice(0, 2);
+  if (fromRelated.length) return fromRelated;
+  const flat: ContractOwnerSeed = {
+    firstName: firstNonEmptyString(client?.ownerFirstName),
+    lastName: firstNonEmptyString(client?.ownerLastName),
+    email: firstNonEmptyString(client?.ownerEmail, client?.businessEmail) || null,
+    phone: firstNonEmptyString(client?.ownerMobileNumber, client?.businessNumber) || null,
+    address: firstNonEmptyString(client?.ownerAddress1, client?.ownerAddress2) || null,
+    state: firstNonEmptyString(client?.ownerState) || null,
+    city: firstNonEmptyString(client?.ownerCity) || null,
+    zip: firstNonEmptyString(client?.ownerZipCode) || null,
+    ownershipPercentage:
+      client?.ownerOwnershipPercentage != null ? Number(client.ownerOwnershipPercentage) : null,
+  };
+  return ownerSeedHasIdentity(flat) ? [flat] : [];
+}
+
 const DOCUMENT_TYPE_FILENAME_SEPARATOR = '::';
 
 function normalizeUploadedDocumentType(raw: unknown): string {
@@ -290,6 +358,7 @@ function normalizeUploadedDocumentType(raw: unknown): string {
   const byKey: Record<string, string> = {
     voidedcheck: 'Voided Check',
     driverlicense: 'Driver License',
+    driverlicenseowner2: 'Driver License Owner 2',
     bankstatement: 'Bank Statement',
     utilitybill: 'Utility Bill',
   };
@@ -618,7 +687,7 @@ class ContractService {
    * Persist KYC extraction into contract prefill JSON, contract scalar columns, and ACH row.
    * Voided-check scans must update bank fields everywhere they are read (not only JSON overrides).
    */
-  private async persistKycExtractionToContract(
+  async persistKycExtractionToContract(
     contractId: number,
     mapped: KycExtractionMapped,
   ): Promise<Record<string, unknown>> {
@@ -681,6 +750,7 @@ class ContractService {
     }
 
     if (mapped.documentType === 'driverLicense') {
+      const ownerIndex: KycOwnerIndex = mapped.ownerIndex === 2 ? 2 : 1;
       if (mapped.panels?.owner) {
         const owner = mapped.panels.owner;
         const ownerFirstName = firstNonEmptyString(owner.firstName);
@@ -694,11 +764,12 @@ class ContractService {
             state: firstNonEmptyString(owner.state) || undefined,
             zip: firstNonEmptyString(owner.zipCode) || undefined,
           };
-          const existingOwner = await (prisma as any).contractOwner.findFirst({
+          const existingOwners = await (prisma as any).contractOwner.findMany({
             where: { contractId },
             select: { id: true },
             orderBy: { createdAt: 'asc' },
           });
+          const existingOwner = existingOwners[ownerIndex - 1];
           if (existingOwner?.id) {
             await this.updateContractOwner(existingOwner.id, ownerPayload);
           } else {
@@ -729,11 +800,12 @@ class ContractService {
             zip: firstNonEmptyString(guarantor.zipCode) || undefined,
             driverLicense: firstNonEmptyString(guarantor.driverLicenseNumber) || undefined,
           };
-          const existingGuarantor = await (prisma as any).contractGuarantor.findFirst({
+          const existingGuarantors = await (prisma as any).contractGuarantor.findMany({
             where: { contractId },
             select: { id: true },
             orderBy: { createdAt: 'asc' },
           });
+          const existingGuarantor = existingGuarantors[ownerIndex - 1];
           if (existingGuarantor?.id) {
             await this.updateContractGuarantor(existingGuarantor.id, guarantorPayload);
           } else {
@@ -828,14 +900,17 @@ class ContractService {
 
       if (isKycDocumentType(documentType)) {
         try {
-          const kycType = normalizeKycDocumentType(documentType)!;
+          const slot = resolveKycUploadSlot(documentType)!;
           const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
             file,
-            kycType,
+            slot.documentType,
+            slot.ownerIndex,
           );
 
           kycExtractions.push({
-            documentType: kycType,
+            documentType: mapped.documentType,
+            ownerIndex: mapped.ownerIndex,
+            slot: mapped.slot,
             keyData: mapped.keyData,
             contractPrefill: mapped.contractPrefill,
             panels: mapped.panels,
@@ -871,14 +946,15 @@ class ContractService {
       throw new Error('Contract not found');
     }
 
-    const documentType = normalizeKycDocumentType(documentTypeRaw);
-    if (!documentType) {
+    const slot = resolveKycUploadSlot(documentTypeRaw);
+    if (!slot) {
       throw new Error('documentType must be driverLicense or voidedCheck');
     }
 
     const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
       file,
-      documentType,
+      slot.documentType,
+      slot.ownerIndex,
     );
 
     const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
@@ -889,7 +965,9 @@ class ContractService {
     const updated = await this.getByIdContract(contractId);
 
     return {
-      documentType,
+      documentType: mapped.documentType,
+      ownerIndex: mapped.ownerIndex,
+      slot: mapped.slot,
       keyData: mapped.keyData,
       contractPrefill: mapped.contractPrefill,
       panels: mapped.panels,
@@ -904,19 +982,27 @@ class ContractService {
   async syncKycPrefillToContract(
     contractId: number,
     payload: {
-      documentType: KycDocumentType;
+      documentType: KycDocumentType | string;
+      slot?: string;
+      ownerIndex?: number;
       contractPrefill?: Record<string, string>;
       panels?: KycExtractionMapped['panels'];
       keyData?: Record<string, string>;
     },
   ) {
-    const documentType = payload.documentType;
-    if (documentType !== 'driverLicense' && documentType !== 'voidedCheck') {
+    const resolved =
+      resolveKycUploadSlot(payload.slot || payload.documentType) ??
+      (payload.ownerIndex === 2
+        ? resolveKycUploadSlot('driverLicenseOwner2')
+        : resolveKycUploadSlot(payload.documentType));
+    if (!resolved) {
       throw new Error('documentType must be driverLicense or voidedCheck');
     }
 
     const mapped: KycExtractionMapped = {
-      documentType,
+      documentType: resolved.documentType,
+      ownerIndex: resolved.ownerIndex,
+      slot: resolved.slot,
       keyData: payload.keyData ?? {},
       contractPrefill: payload.contractPrefill ?? {},
       panels: payload.panels ?? {},
@@ -930,7 +1016,9 @@ class ContractService {
     const updated = await this.getByIdContract(contractId);
 
     return {
-      documentType,
+      documentType: mapped.documentType,
+      ownerIndex: mapped.ownerIndex,
+      slot: mapped.slot,
       keyData: mapped.keyData,
       contractPrefill: mapped.contractPrefill,
       panels: mapped.panels,
@@ -1155,6 +1243,22 @@ class ContractService {
               ownerState: true,
               ownerZipCode: true,
               ownerOwnershipPercentage: true,
+              owners: {
+                orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+                take: 2,
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  email: true,
+                  mobileNumber: true,
+                  address1: true,
+                  address2: true,
+                  city: true,
+                  state: true,
+                  zipCode: true,
+                  ownershipPercentage: true,
+                },
+              },
             },
           },
           salesRepresentative: { select: { id: true } },
@@ -1172,6 +1276,7 @@ class ContractService {
             },
           },
           businessInfo: { select: { id: true } },
+          kycPrefill: true,
         },
       })
       : null;
@@ -1230,6 +1335,11 @@ class ContractService {
     if (derivedApprovedAmount == null) throw new Error('approvedAmount could not be derived');
     if (derivedTotalAmount == null) throw new Error('totalAmount could not be derived');
     const client = application?.client as any;
+    const seedOwners = resolveClientOwnersForContractSeed(client);
+    const secondOwnerSeed = seedOwners[1];
+    const secondOwnerName = firstNonEmptyString(
+      `${String(secondOwnerSeed?.firstName ?? '').trim()} ${String(secondOwnerSeed?.lastName ?? '').trim()}`,
+    );
     const biz = application?.businessInfo as any;
     const offer = application?.OfferDecision as any;
     const paymentBank = resolvedPaymentBank as any;
@@ -1368,6 +1478,31 @@ class ContractService {
     }
     applyContractExtraFields(contractData, data);
 
+    const savedKycSlots = (() => {
+      const raw = (application as { kycPrefill?: { slots?: Record<string, KycExtractionMapped> } } | null)
+        ?.kycPrefill?.slots;
+      if (!raw || typeof raw !== 'object') return [] as KycExtractionMapped[];
+      return Object.values(raw).filter(
+        (slot): slot is KycExtractionMapped =>
+          Boolean(slot && typeof slot === 'object' && (slot.documentType === 'driverLicense' || slot.documentType === 'voidedCheck')),
+      );
+    })();
+    if (savedKycSlots.length) {
+      let kycOverrides: Record<string, unknown> = {};
+      for (const slot of savedKycSlots) {
+        kycOverrides = mergeContractPrefillPatch(kycOverrides, slot.contractPrefill ?? {});
+        const extraPatch: ContractExtraFields = {};
+        for (const key of CONTRACT_EXTRA_STRING_FIELDS) {
+          const val = slot.contractPrefill?.[key];
+          if (firstNonEmptyString(val)) extraPatch[key] = String(val).trim();
+        }
+        applyContractExtraFields(contractData, extraPatch);
+      }
+      if (Object.keys(kycOverrides).length) {
+        contractData.contractPrefillOverrides = kycOverrides;
+      }
+    }
+
     const buildContractUpdateData = (existingStatusRaw?: string | null) => {
       // Preserve lifecycle status set by BoldSign/DocuSign webhooks
       // (SENT/VIEWED/SIGNED/COMPLETED/etc.) when a repeated create is triggered.
@@ -1390,7 +1525,7 @@ class ContractService {
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        return await (prisma as any).$transaction(async (tx: any) => {
+        const createdContract = await (prisma as any).$transaction(async (tx: any) => {
           const findExistingContractRow = async (): Promise<{ id: number; status: string } | null> => {
             if (data.applicationId) {
               const byApp = await tx.contract.findUnique({
@@ -1506,30 +1641,54 @@ class ContractService {
                 principalOwnerAmount2: purchasePrice || null,
                 principalOwner1Name: customerName || null,
                 principalOwner1Date: derivedAgreementDate.toISOString().slice(0, 10),
-                principalOwner2Name: null,
-                principalOwner2Date: null,
+                principalOwner2Name: secondOwnerName || null,
+                principalOwner2Date: secondOwnerName
+                  ? derivedAgreementDate.toISOString().slice(0, 10)
+                  : null,
               },
             });
           }
 
-          const existingOwner = await tx.contractOwner.findFirst({
+          const existingOwners = await tx.contractOwner.findMany({
             where: { contractId: created.id },
             select: { id: true },
+            orderBy: { createdAt: 'asc' },
           });
-          if (!existingOwner && firstNonEmptyString(client?.ownerFirstName, client?.ownerLastName)) {
+          if (existingOwners.length === 0) {
+            for (const owner of seedOwners) {
+              await tx.contractOwner.create({
+                data: {
+                  contractId: created.id,
+                  firstName: owner.firstName || 'Owner',
+                  lastName: owner.lastName || '—',
+                  email: owner.email,
+                  phone: owner.phone,
+                  address: owner.address,
+                  state: owner.state,
+                  city: owner.city,
+                  zip: owner.zip,
+                  ownershipPercentage: Number.isFinite(owner.ownershipPercentage)
+                    ? owner.ownershipPercentage
+                    : null,
+                },
+              });
+            }
+          } else if (existingOwners.length === 1 && seedOwners.length >= 2) {
+            const owner = seedOwners[1]!;
             await tx.contractOwner.create({
               data: {
                 contractId: created.id,
-                firstName: firstNonEmptyString(client?.ownerFirstName),
-                lastName: firstNonEmptyString(client?.ownerLastName),
-                email: firstNonEmptyString(client?.ownerEmail, client?.businessEmail) || null,
-                phone: firstNonEmptyString(client?.ownerMobileNumber, client?.businessNumber) || null,
-                address: firstNonEmptyString(client?.ownerAddress1, client?.ownerAddress2) || null,
-                state: firstNonEmptyString(client?.ownerState) || null,
-                city: firstNonEmptyString(client?.ownerCity) || null,
-                zip: firstNonEmptyString(client?.ownerZipCode) || null,
-                ownershipPercentage:
-                  client?.ownerOwnershipPercentage != null ? Number(client.ownerOwnershipPercentage) : null,
+                firstName: owner.firstName || 'Owner',
+                lastName: owner.lastName || '—',
+                email: owner.email,
+                phone: owner.phone,
+                address: owner.address,
+                state: owner.state,
+                city: owner.city,
+                zip: owner.zip,
+                ownershipPercentage: Number.isFinite(owner.ownershipPercentage)
+                  ? owner.ownershipPercentage
+                  : null,
               },
             });
           }
@@ -1559,6 +1718,13 @@ class ContractService {
 
           return mapContractRecordForApi(created);
         }, createContractTransactionOptions);
+        if (savedKycSlots.length && createdContract?.id) {
+          await this.applySavedApplicationKycSlotsToContract(
+            Number(createdContract.id),
+            savedKycSlots,
+          );
+        }
+        return createdContract;
       } catch (err: any) {
         lastError = err;
         const isUniqueViolation = err?.code === 'P2002';
@@ -1568,6 +1734,29 @@ class ContractService {
       }
     }
     throw lastError;
+  }
+
+  private async applySavedApplicationKycSlotsToContract(
+    contractId: number,
+    slots: KycExtractionMapped[],
+  ) {
+    for (const slot of slots) {
+      try {
+        await this.persistKycExtractionToContract(contractId, {
+          documentType: slot.documentType,
+          ownerIndex: slot.ownerIndex === 2 ? 2 : 1,
+          slot: slot.slot || (slot.ownerIndex === 2 ? 'driverLicenseOwner2' : slot.documentType === 'voidedCheck' ? 'voidedCheck' : 'driverLicense'),
+          keyData: slot.keyData ?? {},
+          contractPrefill: slot.contractPrefill ?? {},
+          panels: slot.panels ?? {},
+        });
+      } catch (err) {
+        console.warn(
+          `[createContract] skipped applying saved KYC slot ${slot.slot ?? slot.documentType}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
   async getAllContracts(filters: {

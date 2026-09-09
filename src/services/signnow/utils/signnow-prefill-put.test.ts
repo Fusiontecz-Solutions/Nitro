@@ -3,6 +3,7 @@ import {
   applySignNowFieldStyle,
   copySignNowTemplateStyle,
   CONTRACT_FILLABLE_MIN_HEIGHT,
+  FILLABLE_FONT_SIZE,
   canLockSignNowPrefill,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
@@ -188,9 +189,158 @@ describe('signnow-prefill-put', () => {
     ]);
     expect(split.fields.filter((field) => field.required === true)).toHaveLength(2);
     const username = split.fields.find((field) => field.name === 'ach_username_p20');
-    expect(username?.size).toBe(16);
-    expect(username?.font_size).toBe(16);
-    expect(username?.height).toBe(22);
+    expect(username?.font).toBe('Times New Roman');
+    expect(username?.size).toBe(FILLABLE_FONT_SIZE);
+    expect(username?.font_size).toBe(FILLABLE_FONT_SIZE);
+    expect(username?.height).toBe(CONTRACT_FILLABLE_MIN_HEIGHT);
+  });
+
+  it('keeps empty Exhibit C orange fields fillable for the merchant', () => {
+    const split = splitPrefillPutPayload(
+      [
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_bank_name_p1',
+          prefilled_text: 'Chase',
+          page_number: 0,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_username_p1',
+          page_number: 0,
+          required: true,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_account_holder_name_p1',
+          page_number: 0,
+          required: true,
+        },
+        {
+          type: 'signature',
+          role: 'Recipient 1',
+          name: 'signature_seller1_p1',
+          page_number: 0,
+        },
+      ],
+      true,
+      { keepEmptyMerchantRequired: true, documentKind: 'exhibit_c' },
+    );
+    expect(split.texts).toEqual([
+      expect.objectContaining({
+        data: 'Chase',
+        name: 'ach_bank_name_p1',
+      }),
+    ]);
+    expect(split.fields.map((field) => field.name)).toEqual([
+      'ach_username_p1',
+      'ach_account_holder_name_p1',
+      'signature_seller1_p1',
+    ]);
+    expect(split.fields.filter((field) => field.required === true)).toHaveLength(2);
+  });
+
+  it('keeps empty page-1 bank widgets fillable on the main agreement', () => {
+    const split = splitPrefillPutPayload(
+      [
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_bank_name_p1',
+          prefilled_text: 'TEST BANK',
+          page_number: 0,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_bank_portal_p1',
+          page_number: 0,
+          required: true,
+          size: 6,
+          height: 8,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_username_p1',
+          page_number: 0,
+          required: true,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_password_p1',
+          page_number: 0,
+          required: true,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_security_q1_p1',
+          page_number: 0,
+          required: true,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ach_account_holder_name_p1',
+          page_number: 0,
+          required: true,
+        },
+      ],
+      true,
+      { keepEmptyMerchantRequired: true },
+    );
+    expect(split.texts).toEqual([
+      expect.objectContaining({
+        data: 'TEST BANK',
+        name: 'ach_bank_name_p1',
+        font: 'Times New Roman',
+        size: 10,
+      }),
+    ]);
+    expect(split.fields.map((field) => field.name)).toEqual([
+      'ach_bank_portal_p1',
+      'ach_username_p1',
+      'ach_password_p1',
+      'ach_security_q1_p1',
+      'ach_account_holder_name_p1',
+    ]);
+    expect(split.fields.filter((field) => field.required === true)).toHaveLength(5);
+    const portal = split.fields.find((field) => field.name === 'ach_bank_portal_p1');
+    expect(portal?.font).toBe('Times New Roman');
+    expect(portal?.size).toBe(FILLABLE_FONT_SIZE);
+    expect(portal?.height).toBe(CONTRACT_FILLABLE_MIN_HEIGHT);
+  });
+
+  it('keeps every dedicated Exhibit C unique name fillable for Signer 1', () => {
+    const names = [
+      'ach_account_holder_name_p1',
+      'ach_bank_portal_p1',
+      'ach_username_p1',
+      'ach_password_p1',
+      'ach_security_q1_p1',
+      'ach_security_q2_p1',
+    ];
+    const split = splitPrefillPutPayload(
+      names.map((name) => ({
+        type: 'text',
+        role: 'Recipient 1',
+        name,
+        page_number: 1,
+        required: true,
+      })),
+      true,
+      { keepEmptyMerchantRequired: true },
+    );
+    expect(split.texts).toEqual([]);
+    expect(split.fields.map((field) => field.name)).toEqual(names);
+    expect(split.fields.every((field) => field.required === true)).toBe(true);
+    expect(split.fields.every((field) => field.font === 'Times New Roman')).toBe(true);
+    expect(split.fields.every((field) => field.size === FILLABLE_FONT_SIZE)).toBe(true);
   });
 
   it('uses Times New Roman 10pt for contract prefill fonts', () => {
@@ -214,7 +364,7 @@ describe('signnow-prefill-put', () => {
     expect(field.font_size).toBe(16);
   });
 
-  it('sizes merchant fillable fields to contract 10pt so typed text is not tiny', () => {
+  it('sizes merchant fillable fields to the addendum 16pt face', () => {
     const field = applyContractFillableFont({
       type: 'text',
       name: 'ach_username_p20',
@@ -224,10 +374,12 @@ describe('signnow-prefill-put', () => {
       line_height: 4,
     });
     expect(field.font).toBe('Times New Roman');
-    expect(field.size).toBe(10);
-    expect(field.font_size).toBe(10);
+    expect(field.size).toBe(FILLABLE_FONT_SIZE);
+    expect(field.font_size).toBe(FILLABLE_FONT_SIZE);
     expect(field.height).toBe(CONTRACT_FILLABLE_MIN_HEIGHT);
+    expect(field.valign).toBe('middle');
     expect(field.stretch_mode).toBeUndefined();
     expect(field.line_height).toBeUndefined();
+    expect((field.json_attributes as { size?: number })?.size).toBe(FILLABLE_FONT_SIZE);
   });
 });

@@ -172,6 +172,16 @@ router.post(
     applicationController.fillApplicationFromPdfFile.bind(applicationController),
 );
 
+// Driver's license / voided check: upload + extract, then sync reviewed fields
+router.post(
+    '/:id/kyc-documents/upload',
+    applicationController.uploadKycDocuments.bind(applicationController),
+);
+router.post(
+    '/:id/kyc-documents/sync',
+    applicationController.syncKycPrefill.bind(applicationController),
+);
+
 // Update application queue
 router.patch('/:id/queue', applicationController.updateQueue.bind(applicationController));
 

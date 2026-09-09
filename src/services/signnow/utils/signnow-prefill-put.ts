@@ -1,4 +1,8 @@
-import { isMerchantRequiredPage20AchField } from './signnow-field-map';
+import {
+  isDedicatedExhibitCRequiredField,
+  isMerchantRequiredSignerField,
+  type SignNowPrefillDocumentKind,
+} from './signnow-field-map';
 
 /**
  * SignNow rejects a whole PUT /document/{id} with
@@ -56,8 +60,13 @@ export function parseSignNowPrefillValidationField(detail: string): string {
 /** Fixed style for baked / prefilled mapping text (contract, addenda, disclosures). */
 const DEFAULT_FONT = 'Times New Roman';
 const DEFAULT_FONT_SIZE = 10;
-/** Thin template underlines shrink typed text; contract widgets are ~20pt tall. */
-export const CONTRACT_FILLABLE_MIN_HEIGHT = 20;
+/**
+ * Signer-typed widgets render smaller than baked `texts[]` at the same size.
+ * 16pt matches the addendum / Exhibit C line face (date, merchant, guarantor).
+ */
+export const FILLABLE_FONT_SIZE = 16;
+/** Thin template underlines shrink typed text; addendum widgets are ~24pt tall. */
+export const CONTRACT_FILLABLE_MIN_HEIGHT = 24;
 
 export function applySignNowFieldStyle(
   target: Record<string, unknown>,
@@ -93,21 +102,37 @@ export function copySignNowTemplateStyle(
   return target;
 }
 
-/** Merchant-typed fillable fields: same 10pt face as contract mapping, tall enough to render it. */
+/** Merchant-typed fillable fields: addendum-sized face, tall enough to render it. */
 export function applyContractFillableFont(
   field: Record<string, unknown>,
   options?: { maxSize?: number },
 ): Record<string, unknown> {
-  applySignNowFieldStyle(field, field, options);
+  const fillableSize =
+    Number.isFinite(Number(options?.maxSize)) && Number(options?.maxSize) > 0
+      ? Number(options?.maxSize)
+      : FILLABLE_FONT_SIZE;
+  applySignNowFieldStyle(field, field, { maxSize: fillableSize });
+  field.size = fillableSize;
+  field.font_size = fillableSize;
+  field.font = DEFAULT_FONT;
+  field.valign = 'middle';
   const height = Number(field.height) || 0;
   if (height < CONTRACT_FILLABLE_MIN_HEIGHT) {
     field.height = CONTRACT_FILLABLE_MIN_HEIGHT;
   }
   delete field.stretch_mode;
-  const lineHeight = Number(field.line_height);
-  if (Number.isFinite(lineHeight) && lineHeight > 0 && lineHeight < Number(field.size)) {
-    delete field.line_height;
-  }
+  delete field.line_height;
+  const attrs =
+    field.json_attributes && typeof field.json_attributes === 'object'
+      ? { ...(field.json_attributes as Record<string, unknown>) }
+      : {};
+  attrs.size = fillableSize;
+  attrs.font_size = fillableSize;
+  attrs.font = DEFAULT_FONT;
+  attrs.valign = 'middle';
+  delete attrs.stretch_mode;
+  delete attrs.line_height;
+  field.json_attributes = attrs;
   return field;
 }
 
@@ -178,12 +203,17 @@ export function toSignNowCompletedText(
 /**
  * Merchant view-only shows committed text elements, not locked prefilled fields.
  * Keep signatures/initials as fillable; stamp CRM values onto the page as texts.
- * Empty page-20 ACH slots stay fillable (and required) only when sending to the merchant.
+ * Empty merchant-required slots (page-20 ACH, Exhibit C orange) stay fillable
+ * only when sending to the merchant.
  */
 export function splitPrefillPutPayload(
   fields: Record<string, unknown>[],
   bakeFilledText: boolean,
-  options?: { maxSize?: number; keepEmptyMerchantRequired?: boolean },
+  options?: {
+    maxSize?: number;
+    keepEmptyMerchantRequired?: boolean;
+    documentKind?: SignNowPrefillDocumentKind;
+  },
 ): { fields: Record<string, unknown>[]; texts: Record<string, unknown>[] } {
   if (!bakeFilledText) {
     return { fields, texts: [] };
@@ -196,16 +226,17 @@ export function splitPrefillPutPayload(
       fillable.push(field);
       continue;
     }
-    const isPage20Ach = isMerchantRequiredPage20AchField(
-      String(field.name || ''),
-      Number(field.page_number),
-    );
+    const isMerchantRequired =
+      isDedicatedExhibitCRequiredField(String(field.name || '')) ||
+      isMerchantRequiredSignerField(
+        String(field.name || ''),
+        Number(field.page_number),
+        options?.documentKind ? { documentKind: options.documentKind } : undefined,
+      );
     const value = String(field.prefilled_text || field.data || '').trim();
     const empty = !value || /^enter text$/i.test(value);
-    if (isPage20Ach && empty && options?.keepEmptyMerchantRequired) {
-      // Keep the template widget face. Forcing 10pt shrinks text the signer types
-      // into required page-20 ACH fields. Addenda already get 10pt earlier.
-      fillable.push(field);
+    if (isMerchantRequired && empty && options?.keepEmptyMerchantRequired) {
+      fillable.push(applyContractFillableFont({ ...field }, options));
       continue;
     }
     const text = toSignNowCompletedText(field, options);

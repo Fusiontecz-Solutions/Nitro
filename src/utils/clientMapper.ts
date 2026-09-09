@@ -31,6 +31,7 @@ const mapOwnerRecordToApi = (owner: any) => ({
     ficoScore: owner.ficoScore ?? undefined,
     ownershipStartDate: owner.ownershipStartDate ?? null,
     ownershipPercentage: owner.ownershipPercentage ?? undefined,
+    driverLicense: owner.driverLicense || '',
     address: {
         address1: owner.address1 || owner.address?.address1 || '',
         address2: owner.address2 || owner.address?.address2 || '',

@@ -1,4 +1,6 @@
 export type KycDocumentType = 'driverLicense' | 'voidedCheck';
+export type KycUploadSlot = 'voidedCheck' | 'driverLicense' | 'driverLicenseOwner2';
+export type KycOwnerIndex = 1 | 2;
 
 export interface KycPanelOwnerPatch {
   firstName: string;
@@ -33,6 +35,8 @@ export interface KycPanelAchPatch {
 
 export interface KycExtractionMapped {
   documentType: KycDocumentType;
+  ownerIndex: KycOwnerIndex;
+  slot: KycUploadSlot;
   keyData: Record<string, string>;
   contractPrefill: Record<string, string>;
   panels: {
@@ -93,6 +97,7 @@ function buildStreetAddress(line1: string, line2: string): string {
 
 export function mapDriverLicenseKeyDataToPrefill(
   keyData: Record<string, string>,
+  ownerIndex: KycOwnerIndex = 1,
 ): KycExtractionMapped {
   const firstName =
     str(keyData.first_name) || str(keyData.given_name) || str(keyData.owner_first_name);
@@ -119,44 +124,56 @@ export function mapDriverLicenseKeyDataToPrefill(
     if (str(val)) contractPrefill[key] = val;
   };
 
-  set('customerName', displayName);
-  set('clientName', displayName);
-  set('owner1GuarantorName', displayName);
-  set('guarantyOwner1Name', displayName);
-  set('guarantyGuarantor1Name', displayName);
-  set('securityGuarantor', displayName);
-  set('achAuthorizationAccountHolderName', displayName);
-  set('achAuthorizationConcentAccountHolderName', displayName);
+  if (ownerIndex === 2) {
+    set('owner2GuarantorName', displayName);
+    set('guarantyOwner2Name', displayName);
+    set('guarantyGuarantor2Name', displayName);
+    if (dlNumber) {
+      set('guarantyOwner2DriverLicense', dlNumber);
+      set('guarantyGuarantor2DriverLicense', dlNumber);
+    }
+  } else {
+    set('customerName', displayName);
+    set('clientName', displayName);
+    set('owner1GuarantorName', displayName);
+    set('guarantyOwner1Name', displayName);
+    set('guarantyGuarantor1Name', displayName);
+    set('securityGuarantor', displayName);
+    set('achAuthorizationAccountHolderName', displayName);
+    set('achAuthorizationConcentAccountHolderName', displayName);
 
-  if (dlNumber) {
-    set('guarantyOwner1DriverLicense', dlNumber);
-    set('guarantyGuarantor1DriverLicense', dlNumber);
-    set('guarantySsDriverLicense', dlNumber);
-  }
+    if (dlNumber) {
+      set('guarantyOwner1DriverLicense', dlNumber);
+      set('guarantyGuarantor1DriverLicense', dlNumber);
+      set('guarantySsDriverLicense', dlNumber);
+    }
 
-  if (street) {
-    set('guarantorAddress', street);
-    set('businessAddressContract', street);
-    set('achAuthorizationAccountHolderAddress', street);
-  }
-  if (city) {
-    set('guarantorAddressCity', city);
-    set('businessAddressContractCity', city);
-    set('achAuthorizationAccountHolderCity', city);
-  }
-  if (state) {
-    set('guarantorAddressState', state);
-    set('businessAddressContractState', state);
-    set('achAuthorizationAccountHolderState', state);
-  }
-  if (zip) {
-    set('guarantorAddressZip', zip);
-    set('businessAddressContractZip', zip);
-    set('achAuthorizationAccountHolderZip', zip);
+    if (street) {
+      set('guarantorAddress', street);
+      set('businessAddressContract', street);
+      set('achAuthorizationAccountHolderAddress', street);
+    }
+    if (city) {
+      set('guarantorAddressCity', city);
+      set('businessAddressContractCity', city);
+      set('achAuthorizationAccountHolderCity', city);
+    }
+    if (state) {
+      set('guarantorAddressState', state);
+      set('businessAddressContractState', state);
+      set('achAuthorizationAccountHolderState', state);
+    }
+    if (zip) {
+      set('guarantorAddressZip', zip);
+      set('businessAddressContractZip', zip);
+      set('achAuthorizationAccountHolderZip', zip);
+    }
   }
 
   return {
     documentType: 'driverLicense',
+    ownerIndex,
+    slot: ownerIndex === 2 ? 'driverLicenseOwner2' : 'driverLicense',
     keyData,
     contractPrefill,
     panels: {
@@ -274,6 +291,8 @@ export function mapVoidedCheckKeyDataToPrefill(
 
   return {
     documentType: 'voidedCheck',
+    ownerIndex: 1,
+    slot: 'voidedCheck',
     keyData,
     contractPrefill,
     panels: {
@@ -295,11 +314,55 @@ export function mapVoidedCheckKeyDataToPrefill(
 export function mapKycKeyDataToPrefill(
   documentType: KycDocumentType,
   keyData: Record<string, string>,
+  ownerIndex: KycOwnerIndex = 1,
 ): KycExtractionMapped {
   if (documentType === 'driverLicense') {
-    return mapDriverLicenseKeyDataToPrefill(keyData);
+    return mapDriverLicenseKeyDataToPrefill(keyData, ownerIndex);
   }
   return mapVoidedCheckKeyDataToPrefill(keyData);
+}
+
+export function resolveKycUploadSlot(raw: unknown): {
+  slot: KycUploadSlot;
+  documentType: KycDocumentType;
+  ownerIndex: KycOwnerIndex;
+} | null {
+  const key = String(raw ?? '')
+    .replace(/[\s_-]+/g, '')
+    .toLowerCase();
+  if (
+    key === 'voidedcheck' ||
+    key === 'voidcheck' ||
+    key === 'voidedcheque'
+  ) {
+    return { slot: 'voidedCheck', documentType: 'voidedCheck', ownerIndex: 1 };
+  }
+  if (
+    key === 'driverlicenseowner2' ||
+    key === 'driverlicense2' ||
+    key === 'owner2driverlicense' ||
+    key === 'owner2dl'
+  ) {
+    return { slot: 'driverLicenseOwner2', documentType: 'driverLicense', ownerIndex: 2 };
+  }
+  if (
+    key === 'driverlicense' ||
+    key === 'driverlicenseowner1' ||
+    key === 'driverlicense1' ||
+    key === 'owner1driverlicense' ||
+    key === 'owner1dl' ||
+    key === 'drivinglicense' ||
+    key === 'driverslicense'
+  ) {
+    return { slot: 'driverLicense', documentType: 'driverLicense', ownerIndex: 1 };
+  }
+  return null;
+}
+
+export function slugFromKycSlot(slot: KycUploadSlot): string {
+  if (slot === 'voidedCheck') return 'voided-check';
+  if (slot === 'driverLicenseOwner2') return 'driver-license-owner-2';
+  return 'driver-license';
 }
 
 export function mergeContractPrefillPatch(
@@ -319,14 +382,9 @@ export function mergeContractPrefillPatch(
 }
 
 export function normalizeKycDocumentType(raw: unknown): KycDocumentType | null {
-  const key = String(raw ?? '')
-    .replace(/[\s_-]+/g, '')
-    .toLowerCase();
-  if (key === 'driverlicense') return 'driverLicense';
-  if (key === 'voidedcheck') return 'voidedCheck';
-  return null;
+  return resolveKycUploadSlot(raw)?.documentType ?? null;
 }
 
 export function isKycDocumentType(raw: unknown): boolean {
-  return normalizeKycDocumentType(raw) != null;
+  return resolveKycUploadSlot(raw) != null;
 }

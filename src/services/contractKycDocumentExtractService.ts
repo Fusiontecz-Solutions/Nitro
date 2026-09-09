@@ -4,8 +4,10 @@ import { resolveMimeTypeFromBuffer } from '../utils/mimeTypeFromBuffer';
 import {
   type KycDocumentType,
   type KycExtractionMapped,
+  type KycOwnerIndex,
   mapKycKeyDataToPrefill,
   normalizeKycDocumentType,
+  resolveKycUploadSlot,
 } from './contractKycPrefillMapper';
 
 type UploadedFileLike = {
@@ -41,19 +43,21 @@ class ContractKycDocumentExtractService {
     buffer: Buffer,
     mimeType: string,
     documentType: KycDocumentType,
+    ownerIndex: KycOwnerIndex = 1,
   ): Promise<KycExtractionMapped> {
     const svc = new DocumentAiPdfExtractionService();
     const { key_data } = await svc.extractKycDocument(buffer, mimeType, documentType);
-    return mapKycKeyDataToPrefill(documentType, key_data);
+    return mapKycKeyDataToPrefill(documentType, key_data, ownerIndex);
   }
 
   async extractFromUploadedFile(
     file: UploadedFileLike,
     documentType: KycDocumentType,
+    ownerIndex: KycOwnerIndex = 1,
   ): Promise<KycExtractionMapped> {
     const buffer = await readFileBuffer(file);
     const mimeType = resolveMimeTypeFromBuffer(declaredMimeFromFile(file), buffer);
-    return this.extractFromBuffer(buffer, mimeType, documentType);
+    return this.extractFromBuffer(buffer, mimeType, documentType, ownerIndex);
   }
 
   resolveDocumentType(raw: unknown): KycDocumentType {
@@ -62,6 +66,14 @@ class ContractKycDocumentExtractService {
       throw new Error('documentType must be driverLicense or voidedCheck');
     }
     return normalized;
+  }
+
+  resolveSlot(raw: unknown) {
+    const slot = resolveKycUploadSlot(raw);
+    if (!slot) {
+      throw new Error('documentType must be driverLicense, driverLicenseOwner2, or voidedCheck');
+    }
+    return slot;
   }
 }
 

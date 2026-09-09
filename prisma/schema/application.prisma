@@ -156,6 +156,7 @@ model ClientOwner {
   city                String?
   state               String?
   zipCode             String?
+  driverLicense       String?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
   client              Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
@@ -232,6 +233,8 @@ model Application {
   /// Soft-delete timestamp — deal appears in Recently Deleted until restored or permanently removed.
   deletedAt                       DateTime?
   deletedById                     String?                       @db.Uuid
+  /// Reviewed DL / voided-check extractions (per owner) used to auto-prefill contract + owner fields.
+  kycPrefill                      Json?
   approvedByUnderwriter           User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
   assignedUnderwriter             User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])
   claimedByUnderwriter            User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])

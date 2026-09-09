@@ -9,6 +9,7 @@ const CONTRACT_TYPE_TO_SLUG: Record<string, string> = {
   voidedcheck: 'voided-check',
   driverlicense: 'driver-license',
   driverslicense: 'driver-license',
+  driverlicenseowner2: 'driver-license-owner-2',
   bankstatement: 'bank-statements',
   bankstatements: 'bank-statements',
   utilitybill: 'proof-of-address',

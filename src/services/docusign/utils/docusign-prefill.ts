@@ -219,8 +219,16 @@ export function buildPrefillValueMap(
     let value = String(f?.value ?? '').trim().toUpperCase();
     if (!id || !value) continue;
     const key = normalizeFieldKey(id);
-    // Contract PDF “$___ per ____”: DAY / WEEK (not DAILY / WEEKLY).
-    if (
+    // INITIAL INSTALLMENT cadence next to the amount: Weekly / Daily.
+    if (/installment[_]?block[_]?frequency/.test(key)) {
+      const raw = String(f?.value ?? '').trim();
+      const text = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+      if (text === 'day' || text === 'daily') value = 'Daily';
+      else if (text === 'week' || text === 'weekly') value = 'Weekly';
+      else if (text === 'bi week' || text === 'biweekly') value = 'Bi-Weekly';
+      else if (text === 'month' || text === 'monthly') value = 'Monthly';
+      else value = raw;
+    } else if (
       key === 'frequency' ||
       key === 'paymentterms' ||
       key === 'payment_terms' ||
@@ -228,6 +236,7 @@ export function buildPrefillValueMap(
       key.endsWith('_frequency') ||
       key.endsWith('paymentterms')
     ) {
+      // Contract PDF “$___ per ____”: DAY / WEEK (not DAILY / WEEKLY).
       value = normalizeContractFrequencyDisplay(value);
     }
     const bare = stripLayoutScopedTabPrefix(key);

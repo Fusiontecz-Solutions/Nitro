@@ -46,7 +46,10 @@ import {
   canonicalizeSignNowFieldName,
   expandSignNowPrefillForUnguidedPut,
   formatSignNowPrefillValue,
-  isMerchantRequiredPage20AchField,
+  isDedicatedExhibitCRequiredField,
+  isExhibitCDocumentName,
+  isMerchantRequiredSignerField,
+  type SignNowPrefillOptions,
   isMonthlyFeeDocumentName,
   isMonthlyFeeForcedBlankField,
   isSupplementalSignNowDocumentName,
@@ -66,6 +69,7 @@ import {
   getSignNowDisclosureTemplates,
   resolveSignNowAddendaFromRefs,
   resolveSignNowAddendumTemplate,
+  signNowExhibitCTemplateId,
   type SignNowAddendumTemplate,
 } from './utils/signnow-addendum-templates';
 
@@ -223,8 +227,25 @@ function fieldsOnExistingPages(
   if (!pageCount) return fields;
   return fields.filter((field) => {
     const page = Number(field.page_number);
-    if (!Number.isFinite(page)) return false;
-    return page >= 0 && page < pageCount;
+    const dedicated = isDedicatedExhibitCRequiredField(String(field.name || ''));
+    if (!Number.isFinite(page)) {
+      if (dedicated) {
+        field.page_number = 0;
+        return true;
+      }
+      return false;
+    }
+    if (page >= 0 && page < pageCount) return true;
+    // Exhibit C / some templates store page 1 on a 1-page document (1-based).
+    if (page >= 1 && page <= pageCount) {
+      field.page_number = page - 1;
+      return true;
+    }
+    if (dedicated) {
+      field.page_number = Math.max(0, pageCount - 1);
+      return true;
+    }
+    return false;
   });
 }
 
@@ -237,9 +258,11 @@ function toSignNowPutField(
   const type = signNowFieldType(field, container);
   if (!type || type === 'attachment') return null;
   if (SIGN_FIELD_TYPES.has(type) && isCompletedSignElement(field)) return null;
+  const name = String(attrs.name || field?.name || field?.field_name || '').trim();
   const role =
     String(field?.role || field?.signer || attrs.role || '').trim() ||
-    String(options?.defaultRole || '').trim();
+    String(options?.defaultRole || '').trim() ||
+    (isDedicatedExhibitCRequiredField(name) ? 'Recipient 1' : '');
   if (!role) return null;
   const page_number = Number(attrs.page_number ?? field?.page_number ?? 0);
   const x = Number(attrs.x ?? field?.x ?? 0);
@@ -247,7 +270,6 @@ function toSignNowPutField(
   const width = Number(attrs.width ?? field?.width ?? (SIGN_FIELD_TYPES.has(type) ? 120 : 12));
   const height = Number(attrs.height ?? field?.height ?? (SIGN_FIELD_TYPES.has(type) ? 34 : 12));
   if (!Number.isFinite(page_number) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
-  const name = String(attrs.name || field?.name || field?.field_name || '').trim();
   const required = Boolean(attrs.required ?? field?.required ?? SIGN_FIELD_TYPES.has(type));
   const id = String(field?.id || field?.unique_id || attrs.id || '').trim();
   const row: Record<string, unknown> = {
@@ -298,42 +320,38 @@ function overlayTemplateFieldFace(
     if (SIGN_FIELD_TYPES.has(String(field.type || ''))) continue;
     const src = byName.get(String(field.name || '').trim().toLowerCase());
     if (!src) continue;
+    if (isDedicatedExhibitCRequiredField(String(field.name || ''))) continue;
     for (const key of ['font', 'font_size', 'size', 'height', 'width'] as const) {
       if (src[key] != null && src[key] !== '') field[key] = src[key];
     }
   }
 }
 
-/** Copy page-20 bank widgets from the agreement template when a live copy dropped them. */
-function mergeMissingPage20AchFields(
+/** Copy page-20 / Exhibit C bank widgets from the template when a live copy dropped them. */
+function mergeMissingMerchantRequiredAchFields(
   fields: Record<string, unknown>[],
   templateFields: Record<string, unknown>[],
+  options?: SignNowPrefillOptions,
 ): Record<string, unknown>[] {
   const present = new Set<string>();
   for (const field of fields) {
-    if (
-      !isMerchantRequiredPage20AchField(
-        String(field.name || ''),
-        Number(field.page_number),
-      )
-    ) {
-      continue;
-    }
     const name = String(field.name || '').trim().toLowerCase();
     if (name) present.add(name);
   }
   const extra: Record<string, unknown>[] = [];
   for (const field of templateFields) {
     if (SIGN_FIELD_TYPES.has(String(field.type || ''))) continue;
+    const rawName = String(field.name || '');
     if (
-      !isMerchantRequiredPage20AchField(
-        String(field.name || ''),
+      !isMerchantRequiredSignerField(
+        rawName,
         Number(field.page_number),
+        options,
       )
     ) {
       continue;
     }
-    const name = String(field.name || '').trim().toLowerCase();
+    const name = rawName.trim().toLowerCase();
     if (name && present.has(name)) continue;
     if (name) present.add(name);
     const copy = { ...field };
@@ -987,6 +1005,21 @@ export class SignNowService {
     if (resolvedTemplateId === SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID) {
       cachedAgreementDocumentId = origin;
     }
+    return origin;
+  }
+
+  private async resolveExhibitCDocumentId(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+  ): Promise<string> {
+    const templateId = signNowExhibitCTemplateId();
+    if (!templateId) {
+      throw new BadRequestException('No SignNow Exhibit C template id is configured.');
+    }
+    const cached = addendumOriginIdCache.get(templateId);
+    if (cached) return cached;
+    const origin =
+      (await this.resolveGroupTemplateOriginDocumentId(client, templateId)) || templateId;
+    addendumOriginIdCache.set(templateId, origin);
     return origin;
   }
 
@@ -2954,23 +2987,31 @@ export class SignNowService {
       remote?.document_name || remote?.name || remote?.original_filename || '',
     ).trim();
     const monthlyFee = isMonthlyFeeDocumentName(documentName);
-    const prefillOpts = signNowPrefillOptionsForDocument(documentName);
     const pageCount = signNowDocumentPageCount(remote);
     const shortDoc = pageCount > 0 && pageCount <= 2;
     const supplementalDoc =
       monthlyFee ||
       isSupplementalSignNowDocumentName(documentName) ||
       (shortDoc && !/agreement|pcm[_ ]?contract/i.test(documentName));
+    const exhibitCDoc = isExhibitCDocumentName(documentName);
     let sourceFields = collectSignNowPutFields(remote, {
-      ...(monthlyFee || shortDoc ? { defaultRole: 'Recipient 1' } : {}),
+      ...(monthlyFee || shortDoc || exhibitCDoc ? { defaultRole: 'Recipient 1' } : {}),
     });
+    const prefillOpts = signNowPrefillOptionsForDocument(
+      documentName,
+      sourceFields.map((field) => String(field.name || '')),
+    ) || (exhibitCDoc ? { documentKind: 'exhibit_c' as const } : undefined);
+    const isExhibitC =
+      exhibitCDoc || prefillOpts?.documentKind === 'exhibit_c';
     sourceFields = fieldsOnExistingPages(sourceFields, pageCount);
     const signCount = sourceFields.filter((field) =>
       SIGN_FIELD_TYPES.has(String(field.type || '')),
     ).length;
-    if (!supplementalDoc) {
+    if (!supplementalDoc || isExhibitC) {
       try {
-        const templateId = await this.resolveAgreementDocumentId(client);
+        const templateId = isExhibitC
+          ? await this.resolveExhibitCDocumentId(client)
+          : await this.resolveAgreementDocumentId(client);
         if (templateId && templateId !== documentId) {
           const templateRes = await client.get(`/document/${templateId}`, {
             validateStatus: () => true,
@@ -2978,7 +3019,9 @@ export class SignNowService {
           if (templateRes.status < 400) {
             const templatePages = signNowDocumentPageCount(templateRes.data);
             const fromTemplate = fieldsOnExistingPages(
-              collectSignNowPutFields(templateRes.data),
+              collectSignNowPutFields(templateRes.data, {
+                ...(isExhibitC ? { defaultRole: 'Recipient 1' } : {}),
+              }),
               pageCount || templatePages,
             );
             if (!pageCount || !templatePages || templatePages === pageCount) {
@@ -2997,13 +3040,18 @@ export class SignNowService {
                 }
               }
             }
-            const beforeP20 = sourceFields.length;
-            sourceFields = mergeMissingPage20AchFields(sourceFields, fromTemplate);
-            if (sourceFields.length > beforeP20) {
-              console.info('[SignNow] restored page 20 ACH fields from template', {
+            const beforeRequired = sourceFields.length;
+            sourceFields = mergeMissingMerchantRequiredAchFields(
+              sourceFields,
+              fromTemplate,
+              isExhibitC ? { documentKind: 'exhibit_c' } : prefillOpts,
+            );
+            if (sourceFields.length > beforeRequired) {
+              console.info('[SignNow] restored merchant-required ACH fields from template', {
                 documentId,
                 templateId,
-                restored: sourceFields.length - beforeP20,
+                exhibitC: isExhibitC,
+                restored: sourceFields.length - beforeRequired,
               });
             }
           }
@@ -3076,20 +3124,26 @@ export class SignNowService {
         delete next.prefilled_text;
         delete next.data;
       }
-      if (!SIGN_FIELD_TYPES.has(type) && supplementalDoc && exposeToMerchant) {
-        applyContractFillableFont(next);
-      }
       const ownerData =
         !SIGN_FIELD_TYPES.has(type) &&
         (isPreparerRole(role, nitroStyle) || role.toLowerCase() === 'owner');
       const hasPrefill = Boolean(String(next.prefilled_text || '').trim());
-      const isPage20Ach =
+      const isMerchantRequired =
         !SIGN_FIELD_TYPES.has(type) &&
-        isMerchantRequiredPage20AchField(String(next.name || ''), Number(next.page_number));
+        isMerchantRequiredSignerField(
+          String(next.name || ''),
+          Number(next.page_number),
+          prefillOpts,
+        );
+      if (!SIGN_FIELD_TYPES.has(type) && exposeToMerchant) {
+        if (supplementalDoc || isMerchantRequired) {
+          applyContractFillableFont(next);
+        }
+      }
       if (SIGN_FIELD_TYPES.has(type)) {
         next.required = true;
         delete next.lock_to_sign_prefill;
-      } else if (isPage20Ach) {
+      } else if (isMerchantRequired) {
         if (exposeToMerchant) {
           next.role = merchantRole;
           if (hasPrefill) {
@@ -3220,18 +3274,18 @@ export class SignNowService {
     // agreement matches addenda/disclosures (values on the line, no field boxes).
     // Owner review stays fillable widgets.
     const bakeFilledText = Boolean(exposeToMerchant);
-    const needsPage20ReviewPut =
+    const needsMerchantRequiredReviewPut =
       !exposeToMerchant &&
-      !supplementalDoc &&
       putFields.some(
         (field) =>
           !SIGN_FIELD_TYPES.has(String(field.type || '')) &&
-          isMerchantRequiredPage20AchField(
+          isMerchantRequiredSignerField(
             String(field.name || ''),
             Number(field.page_number),
+            prefillOpts,
           ),
       );
-    if (!exposeToMerchant && textsApplied > 0 && !needsPage20ReviewPut) {
+    if (!exposeToMerchant && textsApplied > 0 && !needsMerchantRequiredReviewPut) {
       console.info('[SignNow] review prefill complete via prefill-texts (skipped field PUT)', {
         documentId,
         textsApplied,
@@ -3245,6 +3299,7 @@ export class SignNowService {
 
     const bakedRaw = splitPrefillPutPayload(putFields, bakeFilledText, {
       keepEmptyMerchantRequired: exposeToMerchant,
+      documentKind: prefillOpts?.documentKind,
     });
     const baked = {
       fields: fieldsOnExistingPages(bakedRaw.fields, pageCount),

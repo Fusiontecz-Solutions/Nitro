@@ -1238,15 +1238,21 @@ class ContractController {
       }
 
       const documentType = String(req.body?.documentType || '').trim();
-      if (documentType !== 'driverLicense' && documentType !== 'voidedCheck') {
+      if (
+        documentType !== 'driverLicense' &&
+        documentType !== 'driverLicenseOwner2' &&
+        documentType !== 'voidedCheck'
+      ) {
         return res.status(400).json({
           success: false,
-          message: 'documentType must be driverLicense or voidedCheck',
+          message: 'documentType must be driverLicense, driverLicenseOwner2, or voidedCheck',
         });
       }
 
       const data = await contractService.syncKycPrefillToContract(contractId, {
         documentType,
+        slot: req.body?.slot,
+        ownerIndex: req.body?.ownerIndex,
         contractPrefill:
           req.body?.contractPrefill && typeof req.body.contractPrefill === 'object'
             ? req.body.contractPrefill
