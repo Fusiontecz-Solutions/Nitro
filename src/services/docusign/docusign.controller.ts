@@ -612,8 +612,8 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
           sendPackage && typeof sendPackage === 'object' && !Array.isArray(sendPackage)
             ? {
                 includeMainContract: sendPackage.includeMainContract === true,
-                includeAddendum: sendPackage.includeAddendum === true,
-                includeDisclosure: sendPackage.includeDisclosure === true,
+                includeAddendum: sendPackage.includeAddendum !== false,
+                includeDisclosure: sendPackage.includeDisclosure !== false,
               }
             : { includeMainContract: includeMainContract !== false },
         supplementalDocumentRefs: [
@@ -814,6 +814,30 @@ export const sendEnvelope = async (req: Request, res: Response) => {
         title: title ? String(title) : undefined,
         prefillFields: Array.isArray(req.body?.prefillFields) ? req.body.prefillFields : undefined,
         funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+        funderProfileId:
+          typeof req.body?.funderProfileId === 'string' && req.body.funderProfileId.trim()
+            ? req.body.funderProfileId.trim()
+            : undefined,
+        supplementalDocumentRefs: [
+          ...(Array.isArray(req.body?.supplementalDocumentRefs)
+            ? req.body.supplementalDocumentRefs.map((v: unknown) => String(v || '').trim()).filter(Boolean)
+            : []),
+          ...(Array.isArray(req.body?.addendumDocumentRefs)
+            ? req.body.addendumDocumentRefs.map((v: unknown) => String(v || '').trim()).filter(Boolean)
+            : []),
+          String(req.body?.addendumDocumentRef || '').trim(),
+          String(req.body?.disclosureDocumentRef || '').trim(),
+        ].filter(Boolean),
+        sendPackage:
+          req.body?.sendPackage &&
+          typeof req.body.sendPackage === 'object' &&
+          !Array.isArray(req.body.sendPackage)
+            ? {
+                includeMainContract: req.body.sendPackage.includeMainContract !== false,
+                includeAddendum: req.body.sendPackage.includeAddendum !== false,
+                includeDisclosure: req.body.sendPackage.includeDisclosure !== false,
+              }
+            : undefined,
         requestId: requestId || undefined,
       });
       return res.json(result);

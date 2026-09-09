@@ -70,6 +70,11 @@ function isRetryableDbError(err: unknown): boolean {
     if (!message) return false;
     return (
         message.includes('connection') ||
+        message.includes('trying to connect') ||
+        message.includes('connect timeout') ||
+        message.includes('econnrefused') ||
+        message.includes('too many clients') ||
+        message.includes('remaining connection slots') ||
         message.includes('terminated unexpectedly') ||
         message.includes('econnreset') ||
         message.includes('etimedout') ||

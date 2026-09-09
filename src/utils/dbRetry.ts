@@ -33,6 +33,13 @@ export function isRetryableDbError(err: unknown): boolean {
   if (!message) return false;
   return (
     message.includes('connection') ||
+    // pg-pool: "timeout exceeded when trying to connect" (does not contain "connection")
+    message.includes('trying to connect') ||
+    message.includes('connect timeout') ||
+    message.includes('connect etimedout') ||
+    message.includes('econnrefused') ||
+    message.includes('too many clients') ||
+    message.includes('remaining connection slots') ||
     message.includes('not queryable') ||
     message.includes('already executing a query') ||
     message.includes("can't reach database server") ||

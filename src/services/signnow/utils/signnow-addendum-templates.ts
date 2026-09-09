@@ -406,17 +406,36 @@ export function resolveSignNowAddendaFromRefs(
     signnowDisclosureTemplates?: unknown;
   } | null,
 ): SignNowAddendumTemplate[] {
-  const fromFunder = resolveSignNowAddendaFromFunderLinks(refs, funder);
-  if (fromFunder.length) return fromFunder;
-
   const list = Array.isArray(refs) ? refs : [];
+  const fromFunder = resolveSignNowAddendaFromFunderLinks(refs, funder);
   const seen = new Set<string>();
   const out: SignNowAddendumTemplate[] = [];
+  const remember = (row: SignNowAddendumTemplate) => {
+    const id = String(row.templateId || row.layoutKey)
+      .trim()
+      .toLowerCase();
+    const key = String(row.layoutKey || '')
+      .trim()
+      .toLowerCase();
+    if (id) seen.add(id);
+    if (key) seen.add(key);
+    out.push(row);
+  };
+  for (const row of fromFunder) remember(row);
+
+  // Funder Settings may match Monthly Fee (etc.) while the platform disclosure
+  // ref is only in the catalog — keep both instead of dropping unmatched refs.
   for (const raw of list) {
     const match = resolveSignNowAddendumTemplate(String(raw || ''));
-    if (!match || seen.has(match.templateId || match.layoutKey)) continue;
-    seen.add(match.templateId || match.layoutKey);
-    out.push(match);
+    if (!match) continue;
+    const id = String(match.templateId || match.layoutKey)
+      .trim()
+      .toLowerCase();
+    const key = String(match.layoutKey || '')
+      .trim()
+      .toLowerCase();
+    if ((id && seen.has(id)) || (key && seen.has(key))) continue;
+    remember(match);
   }
   return out;
 }

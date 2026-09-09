@@ -96,11 +96,13 @@ const pool = new Pool({
   connectionString: poolConnectionString,
   ssl: { rejectUnauthorized: false },
   keepAlive: true,
-  idleTimeoutMillis: 20000,
+  // Keep idle sockets across long SignNow HTTP waits (prefill/invite can exceed 40s).
+  // A 20s idle close forced a reconnect storm and "timeout exceeded when trying to connect".
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS ?? '90000'),
   max: Number(process.env.DB_POOL_MAX ?? 15),
   // Recycle clients so a poisoned/stale Neon-pooler socket cannot be reused forever.
   maxUses: 500,
-  connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS ?? '10000'),
+  connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS ?? '30000'),
 });
 
 const originalConnect = pool.connect.bind(pool);

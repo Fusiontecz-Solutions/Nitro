@@ -6,6 +6,7 @@ import {
   resolveApplicationAttributedUserIdForActor,
 } from '../middleware/authMiddleware';
 import contractService from '../services/contractService';
+import { withDbRetry } from '../utils/dbRetry';
 
 class ContractController {
   async createContract(req: Request, res: Response) {
@@ -180,10 +181,14 @@ class ContractController {
       const id = Number(req.params.id);
       if (isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid id parameter' });
 
-      const exists = await prisma.contract.findUnique({
-        where: { id },
-        select: { id: true },
-      });
+      const exists = await withDbRetry(
+        () =>
+          prisma.contract.findUnique({
+            where: { id },
+            select: { id: true },
+          }),
+        { maxAttempts: 5, baseDelayMs: 400, label: 'updateContract.exists' },
+      );
       if (!exists) return res.status(404).json({ success: false, message: 'Contract not found' });
 
       const {

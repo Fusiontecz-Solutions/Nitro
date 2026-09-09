@@ -1,6 +1,7 @@
 import {
   applyContractFillableFont,
   applySignNowFieldStyle,
+  copySignNowTemplateStyle,
   CONTRACT_FILLABLE_MIN_HEIGHT,
   canLockSignNowPrefill,
   parseSignNowPrefillValidationField,
@@ -134,7 +135,7 @@ describe('signnow-prefill-put', () => {
     expect(toSignNowCompletedText({ type: 'signature', prefilled_text: 'x' })).toBeNull();
   });
 
-  it('keeps page 20 ACH bank fields fillable so the merchant must complete them', () => {
+  it('bakes filled page 20 ACH values and keeps empty ones fillable for the merchant', () => {
     const split = splitPrefillPutPayload(
       [
         {
@@ -151,6 +152,9 @@ describe('signnow-prefill-put', () => {
           name: 'ach_username_p20',
           page_number: 19,
           required: true,
+          size: 16,
+          font_size: 16,
+          height: 22,
         },
         {
           type: 'text',
@@ -167,15 +171,26 @@ describe('signnow-prefill-put', () => {
         },
       ],
       true,
+      { keepEmptyMerchantRequired: true },
     );
-    expect(split.texts).toEqual([]);
+    expect(split.texts).toEqual([
+      expect.objectContaining({
+        data: '01714856400',
+        name: 'ach_bank_account_p20',
+        font: 'Times New Roman',
+        size: 10,
+      }),
+    ]);
     expect(split.fields.map((field) => field.name)).toEqual([
-      'ach_bank_account_p20',
       'ach_username_p20',
       'Text Field 13',
       'signature_seller1_p2',
     ]);
-    expect(split.fields.filter((field) => field.required === true)).toHaveLength(3);
+    expect(split.fields.filter((field) => field.required === true)).toHaveLength(2);
+    const username = split.fields.find((field) => field.name === 'ach_username_p20');
+    expect(username?.size).toBe(16);
+    expect(username?.font_size).toBe(16);
+    expect(username?.height).toBe(22);
   });
 
   it('uses Times New Roman 10pt for contract prefill fonts', () => {
@@ -189,11 +204,14 @@ describe('signnow-prefill-put', () => {
     expect(applySignNowFieldStyle({ size: 12, height: 20 }, {}, { maxSize: 9 }).size).toBe(9);
   });
 
-  it('uses Times New Roman 10pt for addenda and disclosures like the contract', () => {
-    expect(applySignNowFieldStyle({ height: 20 }).size).toBe(10);
-    expect(applySignNowFieldStyle({ height: 20 }).font_size).toBe(10);
-    expect(applySignNowFieldStyle({ height: 20 }).font).toBe('Times New Roman');
-    expect(applySignNowFieldStyle({ height: 20 }).valign).toBe('middle');
+  it('preserves SignNow template font size instead of forcing 10pt', () => {
+    const field = copySignNowTemplateStyle(
+      { type: 'text', name: 'purchase_price' },
+      { font: 'Times New Roman', size: 16, font_size: 16, height: 22 },
+    );
+    expect(field.font).toBe('Times New Roman');
+    expect(field.size).toBe(16);
+    expect(field.font_size).toBe(16);
   });
 
   it('sizes merchant fillable fields to contract 10pt so typed text is not tiny', () => {

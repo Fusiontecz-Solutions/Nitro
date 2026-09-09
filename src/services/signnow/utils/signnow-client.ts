@@ -133,9 +133,29 @@ export async function getSignNowAccessToken(): Promise<string> {
   throw new Error('SignNow credentials are not configured in .env');
 }
 
+export function isTransientSignNowFailure(
+  status?: number | null,
+  detail?: string,
+): boolean {
+  const text = String(detail || '');
+  if (
+    /timeout|ECONNABORTED|ECONNRESET|socket hang up|network|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|temporarily unavailable|try again/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (status == null) return false;
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+export function sleepSignNow(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function createSignNowApiClient(): Promise<AxiosInstance> {
   const token = await getSignNowAccessToken();
-  return axios.create({
+  const client = axios.create({
     baseURL: SIGNNOW_API_BASE,
     // Group-template copy often needs 25–40s. A 20s abort triggers the slow
     // addendum-group fallback and Review stretches to 2–3 minutes.
@@ -145,4 +165,29 @@ export async function createSignNowApiClient(): Promise<AxiosInstance> {
       Accept: 'application/json',
     },
   });
+  client.interceptors.response.use(
+    async (res) => {
+      const cfg = res.config as { headers?: Record<string, unknown>; __signNowRetried401?: boolean };
+      if (res.status !== 401 || cfg.__signNowRetried401) return res;
+      cfg.__signNowRetried401 = true;
+      clearSignNowAccessTokenCache();
+      const nextToken = await getSignNowAccessToken();
+      cfg.headers = { ...(cfg.headers || {}), Authorization: `Bearer ${nextToken}` };
+      return client.request(res.config);
+    },
+    async (error) => {
+      const cfg = error?.config as
+        | { headers?: Record<string, unknown>; __signNowRetried401?: boolean }
+        | undefined;
+      if (!cfg || cfg.__signNowRetried401 || error?.response?.status !== 401) {
+        throw error;
+      }
+      cfg.__signNowRetried401 = true;
+      clearSignNowAccessTokenCache();
+      const nextToken = await getSignNowAccessToken();
+      cfg.headers = { ...(cfg.headers || {}), Authorization: `Bearer ${nextToken}` };
+      return client.request(error.config);
+    },
+  );
+  return client;
 }

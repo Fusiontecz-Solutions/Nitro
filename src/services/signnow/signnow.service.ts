@@ -26,8 +26,10 @@ import {
   isSignNowConfigured,
   isSignNowDailyLimitError,
   isSignNowEnvelopeId,
+  isTransientSignNowFailure,
   SIGNNOW_DAILY_LIMIT_MESSAGE,
   SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID,
+  sleepSignNow,
 } from './utils/signnow-client';
 import {
   claimSignNowInviteSend,
@@ -54,13 +56,14 @@ import {
 } from './utils/signnow-field-map';
 import {
   applyContractFillableFont,
-  applySignNowFieldStyle,
+  copySignNowTemplateStyle,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
   splitPrefillPutPayload,
 } from './utils/signnow-prefill-put';
 import {
+  getSignNowDisclosureTemplates,
   resolveSignNowAddendaFromRefs,
   resolveSignNowAddendumTemplate,
   type SignNowAddendumTemplate,
@@ -245,9 +248,7 @@ function toSignNowPutField(
   const height = Number(attrs.height ?? field?.height ?? (SIGN_FIELD_TYPES.has(type) ? 34 : 12));
   if (!Number.isFinite(page_number) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
   const name = String(attrs.name || field?.name || field?.field_name || '').trim();
-  const required = isMerchantRequiredPage20AchField(name, page_number)
-    ? true
-    : Boolean(attrs.required ?? field?.required ?? SIGN_FIELD_TYPES.has(type));
+  const required = Boolean(attrs.required ?? field?.required ?? SIGN_FIELD_TYPES.has(type));
   const id = String(field?.id || field?.unique_id || attrs.id || '').trim();
   const row: Record<string, unknown> = {
     type,
@@ -262,17 +263,7 @@ function toSignNowPutField(
   if (id) row.id = id;
   if (name) row.name = name;
   if (!SIGN_FIELD_TYPES.has(type)) {
-    applySignNowFieldStyle(
-      row,
-      { ...attrs, ...field },
-      options?.maxSize ? { maxSize: options.maxSize } : undefined,
-    );
-    if (isMerchantRequiredPage20AchField(name, page_number)) {
-      applyContractFillableFont(
-        row,
-        options?.maxSize ? { maxSize: options.maxSize } : undefined,
-      );
-    }
+    copySignNowTemplateStyle(row, { ...attrs, ...field });
     const value = String(
       field?.data || attrs.data || attrs.prefilled_text || field?.prefilled_text || '',
     ).trim();
@@ -292,6 +283,64 @@ function toSignNowPutField(
     row.enumeration_options = enumerationOptions;
   }
   return row;
+}
+
+function overlayTemplateFieldFace(
+  fields: Record<string, unknown>[],
+  templateFields: Record<string, unknown>[],
+): void {
+  const byName = new Map<string, Record<string, unknown>>();
+  for (const field of templateFields) {
+    const name = String(field.name || '').trim().toLowerCase();
+    if (name && !byName.has(name)) byName.set(name, field);
+  }
+  for (const field of fields) {
+    if (SIGN_FIELD_TYPES.has(String(field.type || ''))) continue;
+    const src = byName.get(String(field.name || '').trim().toLowerCase());
+    if (!src) continue;
+    for (const key of ['font', 'font_size', 'size', 'height', 'width'] as const) {
+      if (src[key] != null && src[key] !== '') field[key] = src[key];
+    }
+  }
+}
+
+/** Copy page-20 bank widgets from the agreement template when a live copy dropped them. */
+function mergeMissingPage20AchFields(
+  fields: Record<string, unknown>[],
+  templateFields: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const present = new Set<string>();
+  for (const field of fields) {
+    if (
+      !isMerchantRequiredPage20AchField(
+        String(field.name || ''),
+        Number(field.page_number),
+      )
+    ) {
+      continue;
+    }
+    const name = String(field.name || '').trim().toLowerCase();
+    if (name) present.add(name);
+  }
+  const extra: Record<string, unknown>[] = [];
+  for (const field of templateFields) {
+    if (SIGN_FIELD_TYPES.has(String(field.type || ''))) continue;
+    if (
+      !isMerchantRequiredPage20AchField(
+        String(field.name || ''),
+        Number(field.page_number),
+      )
+    ) {
+      continue;
+    }
+    const name = String(field.name || '').trim().toLowerCase();
+    if (name && present.has(name)) continue;
+    if (name) present.add(name);
+    const copy = { ...field };
+    delete copy.id;
+    extra.push(copy);
+  }
+  return extra.length ? [...fields, ...extra] : fields;
 }
 
 function collectSignNowPutFields(
@@ -1012,11 +1061,38 @@ export class SignNowService {
       options.supplementalDocumentRefs,
       funderRow,
     );
+    // Addenda in the request refs always attach. The disclosure checkbox is the
+    // only sendPackage flag that should drop a resolved supplemental.
     const toAttach = supplementals.filter((row) => {
       if (row.type === 'disclosure') {
         return options.sendPackage?.includeDisclosure !== false;
       }
-      return options.sendPackage?.includeAddendum !== false;
+      return true;
+    });
+    // Create Contract defaults to including the state disclosure. If the funder
+    // has no Settings disclosure row, still attach the platform template.
+    if (
+      options.sendPackage?.includeDisclosure !== false &&
+      !toAttach.some((row) => row.type === 'disclosure')
+    ) {
+      const platformDisclosure = getSignNowDisclosureTemplates()[0];
+      if (platformDisclosure) {
+        toAttach.push(platformDisclosure);
+        console.info('[SignNow] attaching platform state disclosure', {
+          layoutKey: platformDisclosure.layoutKey,
+          templateId: platformDisclosure.templateId,
+        });
+      }
+    }
+    console.info('[SignNow] package extras', {
+      refs: options.supplementalDocumentRefs || [],
+      sendPackage: options.sendPackage || null,
+      resolved: toAttach.map((row) => ({
+        name: row.name,
+        type: row.type,
+        layoutKey: row.layoutKey,
+        templateId: row.templateId,
+      })),
     });
 
     let groupId = '';
@@ -1025,7 +1101,8 @@ export class SignNowService {
     const appId = String(options.applicationId || '').trim();
     if (options.autoSend !== true && appId) {
       const wantsMonthlyFee = toAttach.some((row) => row.layoutKey === 'monthly_fee');
-      const reused = wantsMonthlyFee
+      const wantsDisclosure = toAttach.some((row) => row.type === 'disclosure');
+      const reused = wantsMonthlyFee || wantsDisclosure
         ? null
         : await this.findReusableDraftGroup(client, appId, groupName);
       if (reused) {
@@ -1069,37 +1146,91 @@ export class SignNowService {
           funderName: funderRow?.name || options.funderName || null,
           contractTemplateId: resolvedContractTemplateId,
         });
-        const createRes = await client.post(
-          `/v2/document-group-templates/${resolvedContractTemplateId}/document-group`,
-          { group_name: groupName },
-          { validateStatus: () => true },
-        );
-        const created = createRes.data?.data || createRes.data || {};
-        groupId = String(created.unique_id || created.id || '').trim();
-        if (createRes.status >= 400 || !groupId) {
-          const detail = this.signNowErrorDetail(createRes);
-          const recovered = isSignNowDailyLimitError(detail)
-            ? (await this.findReusableDraftGroup(client, appId, groupName)) ||
-              (await this.findRecentUnsignedGroupByName(client, groupName))
-            : null;
-          if (recovered) {
-            groupId = recovered.groupId;
-            documents = recovered.documents;
-            console.info('[SignNow] recovered existing draft after copy limit', {
-              groupId,
-              documents: documents.length,
-            });
-          } else if (isSignNowDailyLimitError(detail)) {
-            throw new BadRequestException(SIGNNOW_DAILY_LIMIT_MESSAGE);
-          } else {
-            throw new BadRequestException(`SignNow could not create the contract group: ${detail}`);
+        let createRes: { status: number; data?: any } = { status: 0, data: {} };
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            createRes = await client.post(
+              `/v2/document-group-templates/${resolvedContractTemplateId}/document-group`,
+              { group_name: groupName },
+              { validateStatus: () => true, timeout: 90_000 },
+            );
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err || '');
+            if (attempt === 2 || !isTransientSignNowFailure(undefined, detail)) {
+              throw new BadRequestException(`SignNow could not create the contract group: ${detail}`);
+            }
+            const recovered =
+              (appId ? await this.findReusableDraftGroup(client, appId, groupName) : null) ||
+              (await this.findRecentUnsignedGroupByName(client, groupName));
+            if (recovered) {
+              groupId = recovered.groupId;
+              documents = recovered.documents;
+              reusedExisting = true;
+              console.info('[SignNow] recovered group after create timeout', {
+                groupId,
+                documents: documents.length,
+              });
+              break;
+            }
+            await sleepSignNow(700 * (attempt + 1));
+            continue;
           }
-        } else {
-          documents = this.normalizeGroupDocuments(created.documents);
-          mark('group-created', { documents: documents.length });
-          if (appId) this.rememberDraftGroup(appId, groupId, documents);
-          if (extrasCopyPromise) {
+          const createdAttempt = createRes.data?.data || createRes.data || {};
+          groupId = String(createdAttempt.unique_id || createdAttempt.id || '').trim();
+          if (createRes.status < 400 && groupId) break;
+          const detail = this.signNowErrorDetail(createRes);
+          if (isSignNowDailyLimitError(detail) || !isTransientSignNowFailure(createRes.status, detail)) {
+            break;
+          }
+          await sleepSignNow(700 * (attempt + 1));
+        }
+        if (!(reusedExisting && groupId && documents.length)) {
+          const created = createRes.data?.data || createRes.data || {};
+          groupId = String(created.unique_id || created.id || '').trim();
+          if (createRes.status >= 400 || !groupId) {
+            const detail = this.signNowErrorDetail(createRes);
+            const recovered = isSignNowDailyLimitError(detail)
+              ? (await this.findReusableDraftGroup(client, appId, groupName)) ||
+                (await this.findRecentUnsignedGroupByName(client, groupName))
+              : null;
+            if (recovered) {
+              groupId = recovered.groupId;
+              documents = recovered.documents;
+              console.info('[SignNow] recovered existing draft after copy limit', {
+                groupId,
+                documents: documents.length,
+              });
+            } else if (isSignNowDailyLimitError(detail)) {
+              throw new BadRequestException(SIGNNOW_DAILY_LIMIT_MESSAGE);
+            } else {
+              throw new BadRequestException(`SignNow could not create the contract group: ${detail}`);
+            }
+          } else {
+            documents = this.normalizeGroupDocuments(created.documents);
+            mark('group-created', { documents: documents.length });
+            if (appId) this.rememberDraftGroup(appId, groupId, documents);
+          }
+        }
+        if (extrasCopyPromise && groupId && documents.length) {
+          try {
+            const extraResults = await extrasCopyPromise;
+            const extraIds = this.collectCopiedAddendumIds(toAttach, extraResults);
+            const combined = await this.attachCopiedAddenda(
+              client,
+              groupId,
+              documents,
+              extraIds,
+              groupName,
+            );
+            groupId = combined.groupId;
+            documents = combined.documents;
+            if (appId) this.rememberDraftGroup(appId, groupId, documents);
+            mark('addenda-attached', { documents: documents.length });
+          } catch (error) {
+            const extraDetail = error instanceof Error ? error.message : String(error);
+            console.warn('[SignNow] extras not attached; retrying once', extraDetail);
             try {
+              await sleepSignNow(800);
               const extraResults = await extrasCopyPromise;
               const extraIds = this.collectCopiedAddendumIds(toAttach, extraResults);
               const combined = await this.attachCopiedAddenda(
@@ -1112,15 +1243,16 @@ export class SignNowService {
               groupId = combined.groupId;
               documents = combined.documents;
               if (appId) this.rememberDraftGroup(appId, groupId, documents);
-              mark('addenda-attached', { documents: documents.length });
-            } catch (error) {
-              const extraDetail = error instanceof Error ? error.message : String(error);
-              console.warn('[SignNow] extras not attached; opening main contract group', extraDetail);
+              mark('addenda-attached-retry', { documents: documents.length });
+            } catch (retryError) {
+              const retryDetail =
+                retryError instanceof Error ? retryError.message : String(retryError);
+              console.warn('[SignNow] extras not attached; opening main contract group', retryDetail);
               if (!documents.length) {
-                if (isSignNowDailyLimitError(extraDetail)) {
+                if (isSignNowDailyLimitError(extraDetail) || isSignNowDailyLimitError(retryDetail)) {
                   throw new BadRequestException(SIGNNOW_DAILY_LIMIT_MESSAGE);
                 }
-                throw error;
+                throw retryError;
               }
             }
           }
@@ -1140,6 +1272,8 @@ export class SignNowService {
         'SignNow did not return a contract group to review. Try Review in SignNow again.',
       );
     }
+
+    documents = await this.waitForDocumentsReady(client, documents);
 
     // Reused drafts often already have an Owner embedded invite. SignNow then
     // rejects prefill with "Document has been already sent to a signer".
@@ -1605,9 +1739,7 @@ export class SignNowService {
     }
     // Group listings often carry incomplete/wrong role unions. Only skip a GET when
     // we already hydrated from /document/{id} (listedRoles / remainingRoles set).
-    documents = await this.hydrateDocumentRoles(client, documents, {
-      skipIfHydrated: true,
-    });
+    documents = await this.waitForDocumentsReady(client, documents);
     const missingRoles = documents.filter((d) => !(d.roles || []).length);
     if (missingRoles.length) {
       const hydrated = await this.hydrateDocumentRoles(client, missingRoles);
@@ -1708,18 +1840,45 @@ export class SignNowService {
         // (or use "Owner" while the PDF has "owner"), which SignNow then rejects.
         const listed = uniqueRoleNames(doc.roles || []);
         const isAgreement = /agreement/i.test(String(doc.document_name || doc.name || ''));
-        const assign = uniqueRoleNames(
-          listed.length
-            ? listed.filter((role) => !isOwner2Role(role, nitroStyle) || hasSecondMerchant)
-            : isAgreement
-              ? [ownerRole, 'Recipient 1']
-              : ['Recipient 1'],
-        );
+        const ownerLike =
+          listed.find((role) => /^owner$/i.test(role) || isPreparerRole(role, nitroStyle)) ||
+          '';
+        const merchantRoles = listed.length
+          ? listed.filter((role) => !isOwner2Role(role, nitroStyle) || hasSecondMerchant)
+          : ['Recipient 1'];
+        const assign = uniqueRoleNames([
+          ...(ownerLike ? [ownerLike] : isAgreement ? [ownerRole] : []),
+          ...merchantRoles,
+        ]);
         for (const role of assign) {
           const exact = exactRoleByDoc.get(assignmentKey(doc.id, role)) || role;
           const signer = signerForRole(exact);
           if (!signer) continue;
           pushDoc(signer, { id: doc.id, role: exact, action: 'sign' });
+        }
+        // Owner Review must include every package document. If this extra has no
+        // Owner widgets, still put it on the preparer using a role that exists.
+        const preparerSigner =
+          source.find((s) => s.preparer) ||
+          source.find((s) => isPreparerRole(s.roleName, nitroStyle));
+        if (preparerSigner) {
+          const onPreparer = buckets
+            .find((bucket) => bucket.tag === 'preparer')
+            ?.documents.some((d) => d.id === doc.id);
+          if (!onPreparer) {
+            const fallbackRole =
+              listed.find(
+                (role) => !skippedAssignments.has(assignmentKey(doc.id, role)),
+              ) ||
+              ownerLike ||
+              listed[0] ||
+              'Recipient 1';
+            pushDoc(preparerSigner, {
+              id: doc.id,
+              role: fallbackRole,
+              action: 'sign',
+            });
+          }
         }
       }
       for (const extra of extraAssignments) {
@@ -1780,10 +1939,14 @@ export class SignNowService {
         signers: signers.map((s) => ({
           email: s.email,
           order: s.order,
-          documents: (s.documents as InviteDoc[]).map((d) => ({
-            id: d.id.slice(0, 8),
-            role: d.role,
-          })),
+          documents: (s.documents as InviteDoc[]).map((d) => {
+            const named = documents.find((doc) => doc.id === d.id);
+            return {
+              id: d.id.slice(0, 8),
+              role: d.role,
+              name: named?.document_name || named?.name || '',
+            };
+          }),
         })),
       });
       await client.delete(`/v2/document-groups/${options.groupId}/embedded-invites`, {
@@ -1838,19 +2001,10 @@ export class SignNowService {
           if (fallback) embedSigners.push({ ...fallback, roleName: omitted.role });
         }
         console.warn('[SignNow] adding omitted embedded role', omitted);
-      } else if (emptyFields && emptyFieldsRetries < 1) {
-        // Single short retry only — long multi-hydrate sleeps were adding ~5–15s
-        // when the real fix is avoiding PUT /document races before mint.
+      } else if (emptyFields && emptyFieldsRetries < 3) {
         emptyFieldsRetries += 1;
-        await new Promise((r) => setTimeout(r, 300));
-        const needsRefresh = documents.filter(
-          (d) => !(d.listedRoles?.length || d.roles?.length),
-        );
-        if (needsRefresh.length) {
-          const refreshed = await this.hydrateDocumentRoles(client, needsRefresh);
-          const byId = new Map(refreshed.map((d) => [d.id, d]));
-          documents = documents.map((d) => byId.get(d.id) || d);
-        }
+        await sleepSignNow(700 * emptyFieldsRetries);
+        documents = await this.waitForDocumentsReady(client, documents, 3);
         console.warn('[SignNow] retrying embedded invite after empty-fields error', {
           attempt: emptyFieldsRetries,
           docsWithRoles: documents.filter((d) => (d.roles || []).length).length,
@@ -2121,6 +2275,13 @@ export class SignNowService {
       applicationId?: string;
       prefillFields?: PrefillField[];
       funderName?: string | null;
+      funderProfileId?: string | null;
+      supplementalDocumentRefs?: string[];
+      sendPackage?: {
+        includeMainContract?: boolean;
+        includeAddendum?: boolean;
+        includeDisclosure?: boolean;
+      };
       requestId?: string;
     },
   ) {
@@ -2182,7 +2343,7 @@ export class SignNowService {
       };
     }
     if (claim.kind === 'in_progress') {
-      logSignNowSend('Duplicate send prevented', {
+      logSignNowSend('Waiting for in-progress SignNow send', {
         contractId: id,
         requestId,
         signnowDocumentId: id,
@@ -2190,13 +2351,24 @@ export class SignNowService {
         attemptNumber: claim.row.attemptCount,
         timestamp: new Date().toISOString(),
       });
-      return {
-        success: true,
-        envelopeId: id,
-        status: 'sending',
-        url: null,
-        duplicate: true,
-      };
+      const existingInvite = await this.waitForGroupInviteId(id, 75_000);
+      if (existingInvite) {
+        await markSignNowInviteSent({
+          envelopeId: id,
+          inviteId: existingInvite,
+          requestId,
+        }).catch(() => undefined);
+        return {
+          success: true,
+          envelopeId: id,
+          status: 'sent',
+          url: null,
+          duplicate: true,
+        };
+      }
+      throw new BadRequestException(
+        'SignNow is still sending this contract. Wait a few seconds and click Send via SignNow again.',
+      );
     }
 
     try {
@@ -2238,6 +2410,24 @@ export class SignNowService {
     // per-document invites) before baking merchant-visible values.
     await this.deleteEmbeddedInvites(client, id, documents);
     await this.cancelPendingFieldInvites(client, hydrated);
+    const packaged = await this.attachMissingSupplementalsForSend(client, {
+      groupId: id,
+      groupName: subject,
+      documents,
+      applicationId: appIdEarly,
+      supplementalDocumentRefs: options.supplementalDocumentRefs,
+      sendPackage: options.sendPackage,
+      funderName: options.funderName,
+      funderProfileId: options.funderProfileId,
+    });
+    if (packaged.groupId !== id) {
+      await prisma.document.updateMany({
+        where: { envelopeId: id },
+        data: { envelopeId: packaged.groupId },
+      });
+    }
+    const sendGroupId = packaged.groupId;
+    const sendDocs = await this.waitForDocumentsReady(client, packaged.documents);
     const values = prefillRecord(options.prefillFields);
     if (options.applicationId && !values.application_id) {
       values.application_id = options.applicationId;
@@ -2249,13 +2439,13 @@ export class SignNowService {
     const keepParty2 = Boolean(distinctSecondMerchant(signers));
     const PREFILL_BATCH = 6;
     console.info('[SignNow] baking send prefill for merchant PDF', {
-      groupId: id,
-      documents: hydrated.length,
+      groupId: sendGroupId,
+      documents: sendDocs.length,
       fulfilledRoles,
       crmPrefillKeys: Object.keys(values).filter((k) => values[k]).length,
     });
-    for (let i = 0; i < hydrated.length; i += PREFILL_BATCH) {
-      const batch = hydrated.slice(i, i + PREFILL_BATCH);
+    for (let i = 0; i < sendDocs.length; i += PREFILL_BATCH) {
+      const batch = sendDocs.slice(i, i + PREFILL_BATCH);
       await Promise.all(
         batch.map(async (doc) => {
           try {
@@ -2278,29 +2468,29 @@ export class SignNowService {
     }
     const inviteId = await this.sendGroupInvite(
       client,
-      id,
-      hydrated,
+      sendGroupId,
+      sendDocs,
       signers,
       subject,
       options.ccEmails,
       fulfilledRoles,
       { requestId, attemptNumber: claim.attemptNumber },
     );
-    await markSignNowInviteSent({ envelopeId: id, inviteId, requestId });
+    await markSignNowInviteSent({ envelopeId: sendGroupId, inviteId, requestId });
     const appId = String(options.applicationId || '').trim();
-    const isPackageEnvelope = await isStandalonePackageEnvelope(id, {
+    const isPackageEnvelope = await isStandalonePackageEnvelope(sendGroupId, {
       applicationId: appId || undefined,
     });
     if (isPackageEnvelope) {
-      await updateStandalonePackageDocuSignStatus(id, 'sent', {
+      await updateStandalonePackageDocuSignStatus(sendGroupId, 'sent', {
         applicationId: appId || undefined,
       });
     } else if (appId) {
-      await this.markGroupSent(appId, id);
+      await this.markGroupSent(appId, sendGroupId);
     }
     return {
       success: true,
-      envelopeId: id,
+      envelopeId: sendGroupId,
       status: 'sent',
       url: null,
     };
@@ -2731,8 +2921,9 @@ export class SignNowService {
   }
 
   /**
-   * Write CRM values onto Owner text fields, lock them, and optionally copy
-   * filled values onto Recipient 1 so the merchant can see (but not edit) them.
+   * Write CRM values onto the document. Owner review stays unlocked widgets.
+   * Merchant send stamps filled values as page text (no field boxes), same as
+   * addenda/disclosures. Signature/initials stay fillable.
    *
    * PUT /document/{id} overwrites every field. Signature/initials must be
    * included in the same payload or SignNow deletes them.
@@ -2777,7 +2968,50 @@ export class SignNowService {
     const signCount = sourceFields.filter((field) =>
       SIGN_FIELD_TYPES.has(String(field.type || '')),
     ).length;
-    if (signCount === 0 && pageCount > 2) {
+    if (!supplementalDoc) {
+      try {
+        const templateId = await this.resolveAgreementDocumentId(client);
+        if (templateId && templateId !== documentId) {
+          const templateRes = await client.get(`/document/${templateId}`, {
+            validateStatus: () => true,
+          });
+          if (templateRes.status < 400) {
+            const templatePages = signNowDocumentPageCount(templateRes.data);
+            const fromTemplate = fieldsOnExistingPages(
+              collectSignNowPutFields(templateRes.data),
+              pageCount || templatePages,
+            );
+            if (!pageCount || !templatePages || templatePages === pageCount) {
+              overlayTemplateFieldFace(sourceFields, fromTemplate);
+              if (signCount === 0) {
+                const fromSigns = fromTemplate.filter((field) =>
+                  SIGN_FIELD_TYPES.has(String(field.type || '')),
+                );
+                if (fromSigns.length) {
+                  sourceFields = [...sourceFields, ...fromSigns];
+                  console.info('[SignNow] restored signature fields from template', {
+                    documentId,
+                    templateId,
+                    restored: fromSigns.length,
+                  });
+                }
+              }
+            }
+            const beforeP20 = sourceFields.length;
+            sourceFields = mergeMissingPage20AchFields(sourceFields, fromTemplate);
+            if (sourceFields.length > beforeP20) {
+              console.info('[SignNow] restored page 20 ACH fields from template', {
+                documentId,
+                templateId,
+                restored: sourceFields.length - beforeP20,
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[SignNow] could not restore field face from template', err);
+      }
+    } else if (signCount === 0 && pageCount > 2) {
       try {
         const templateId = await this.resolveAgreementDocumentId(client);
         if (templateId && templateId !== documentId) {
@@ -2816,6 +3050,8 @@ export class SignNowService {
     const merchantRole =
       roles.find((role) => isOwner1Role(role, nitroStyle) && !isPreparerRole(role, nitroStyle)) ||
       'Recipient 1';
+    const ownerRole =
+      roles.find((role) => isPreparerRole(role, nitroStyle)) || 'Owner';
     const fields: Record<string, unknown>[] = [];
     const roleCounts: Record<string, number> = {};
     let applied = 0;
@@ -2840,40 +3076,47 @@ export class SignNowService {
         delete next.prefilled_text;
         delete next.data;
       }
-      if (!SIGN_FIELD_TYPES.has(type)) {
-        applySignNowFieldStyle(next, next);
+      if (!SIGN_FIELD_TYPES.has(type) && supplementalDoc && exposeToMerchant) {
+        applyContractFillableFont(next);
       }
       const ownerData =
         !SIGN_FIELD_TYPES.has(type) &&
         (isPreparerRole(role, nitroStyle) || role.toLowerCase() === 'owner');
       const hasPrefill = Boolean(String(next.prefilled_text || '').trim());
+      const isPage20Ach =
+        !SIGN_FIELD_TYPES.has(type) &&
+        isMerchantRequiredPage20AchField(String(next.name || ''), Number(next.page_number));
       if (SIGN_FIELD_TYPES.has(type)) {
         next.required = true;
         delete next.lock_to_sign_prefill;
+      } else if (isPage20Ach) {
+        if (exposeToMerchant) {
+          next.role = merchantRole;
+          if (hasPrefill) {
+            next.required = false;
+            next.lock_to_sign_prefill = true;
+          } else {
+            next.required = true;
+            delete next.lock_to_sign_prefill;
+          }
+        } else {
+          // Owner Review: assign to Owner so Enter text shows and CRM values can be typed/mapped.
+          next.role = ownerRole;
+          next.required = false;
+          delete next.lock_to_sign_prefill;
+        }
       } else if (hasPrefill) {
         next.required = false;
-        next.lock_to_sign_prefill = true;
-        if (ownerData && exposeToMerchant) next.role = merchantRole;
+        if (exposeToMerchant) {
+          next.lock_to_sign_prefill = true;
+          if (ownerData) next.role = merchantRole;
+        } else {
+          // Owner Review must keep Enter-text widgets editable (contract + addenda).
+          delete next.lock_to_sign_prefill;
+        }
       } else {
-        // Empty Owner slots (owner 2, unmatched ACH, etc.) must stay unlocked.
-        // SignNow rejects the entire PUT if lock_to_sign_prefill is set without text.
         delete next.lock_to_sign_prefill;
         if (ownerData) next.required = false;
-      }
-      if (
-        !SIGN_FIELD_TYPES.has(type) &&
-        isMerchantRequiredPage20AchField(String(next.name || ''), Number(next.page_number))
-      ) {
-        next.required = true;
-        next.role = merchantRole;
-        delete next.lock_to_sign_prefill;
-        applyContractFillableFont(next);
-      } else if (
-        !SIGN_FIELD_TYPES.has(type) &&
-        next.required === true &&
-        !next.lock_to_sign_prefill
-      ) {
-        applyContractFillableFont(next);
       }
       fields.push(next);
     }
@@ -2883,6 +3126,7 @@ export class SignNowService {
       roleCounts,
       keepParty2,
       merchantRole,
+      ownerRole,
       applied,
       putting: countPutFieldTypes(putFields),
     });
@@ -2972,25 +3216,41 @@ export class SignNowService {
       return textsApplied || applied;
     }
 
-    // Owner review: skip field PUT on the main agreement (can take 45s+ and wipe values).
-    // Addenda / disclosures still PUT so their field face matches the contract.
-    if (!exposeToMerchant && textsApplied > 0 && !supplementalDoc) {
+    // Signer (merchant) view: stamp filled CRM values as 10pt page text so the
+    // agreement matches addenda/disclosures (values on the line, no field boxes).
+    // Owner review stays fillable widgets.
+    const bakeFilledText = Boolean(exposeToMerchant);
+    const needsPage20ReviewPut =
+      !exposeToMerchant &&
+      !supplementalDoc &&
+      putFields.some(
+        (field) =>
+          !SIGN_FIELD_TYPES.has(String(field.type || '')) &&
+          isMerchantRequiredPage20AchField(
+            String(field.name || ''),
+            Number(field.page_number),
+          ),
+      );
+    if (!exposeToMerchant && textsApplied > 0 && !needsPage20ReviewPut) {
       console.info('[SignNow] review prefill complete via prefill-texts (skipped field PUT)', {
         documentId,
         textsApplied,
         applied,
         signatures: signFields,
         pages: pageCount,
+        supplemental: supplementalDoc,
       });
       return textsApplied;
     }
 
-    const bakedRaw = splitPrefillPutPayload(putFields, exposeToMerchant);
+    const bakedRaw = splitPrefillPutPayload(putFields, bakeFilledText, {
+      keepEmptyMerchantRequired: exposeToMerchant,
+    });
     const baked = {
       fields: fieldsOnExistingPages(bakedRaw.fields, pageCount),
       texts: fieldsOnExistingPages(bakedRaw.texts, pageCount),
     };
-    const fieldBodies = exposeToMerchant
+    const fieldBodies = bakeFilledText
       ? [baked.fields, baked.fields.map(({ id: _id, ...rest }) => rest)]
       : [
           putFields,
@@ -3017,15 +3277,8 @@ export class SignNowService {
         },
       });
     };
-    if (exposeToMerchant && baked.texts.length) {
-      const signWidgets = putFields.filter((field) =>
-        SIGN_FIELD_TYPES.has(String(field.type || '')) ||
-        isMerchantRequiredPage20AchField(
-          String(field.name || ''),
-          Number(field.page_number),
-        ),
-      );
-      pushPut(signWidgets, true);
+    if (bakeFilledText && baked.texts.length) {
+      pushPut(baked.fields, true);
     }
     for (const bodyFields of fieldBodies) {
       pushPut(bodyFields, true);
@@ -3245,21 +3498,32 @@ export class SignNowService {
     const paths = [`/document/${originId}/copy`, `/template/${originId}/copy`];
     let lastDetail = '';
     for (const path of paths) {
-      try {
-        const res = await client.post(path, body, {
-          validateStatus: () => true,
-          timeout: 25_000,
-        });
-        const copied = res.data?.data || res.data || {};
-        const id = String(copied.id || copied.document_id || copied.unique_id || '').trim();
-        if (res.status < 400 && id) return id;
-        lastDetail = this.signNowErrorDetail(res);
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err || '');
-        lastDetail = detail;
-        if (/timeout|ECONNABORTED|aborted/i.test(detail)) {
-          throw new Error(`could not copy ${originId}: ${detail}`);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const res = await client.post(path, body, {
+            validateStatus: () => true,
+            timeout: 45_000,
+          });
+          const copied = res.data?.data || res.data || {};
+          const id = String(copied.id || copied.document_id || copied.unique_id || '').trim();
+          if (res.status < 400 && id) return id;
+          lastDetail = this.signNowErrorDetail(res);
+          if (isSignNowDailyLimitError(lastDetail)) {
+            throw new Error(lastDetail);
+          }
+          if (
+            !isTransientSignNowFailure(res.status, lastDetail) &&
+            res.status !== 404
+          ) {
+            break;
+          }
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err || '');
+          lastDetail = detail;
+          if (isSignNowDailyLimitError(detail)) throw err instanceof Error ? err : new Error(detail);
+          if (!isTransientSignNowFailure(undefined, detail)) break;
         }
+        await sleepSignNow(500 * (attempt + 1));
       }
     }
     throw new Error(`could not copy ${originId}: ${lastDetail || 'unknown error'}`);
@@ -3273,44 +3537,46 @@ export class SignNowService {
   ): Promise<boolean> {
     const uniqueNew = [...new Set(newIds.map((id) => String(id || '').trim()).filter(Boolean))];
     if (!uniqueNew.length) return false;
-    const results = await Promise.all(
-      uniqueNew.map((documentId) =>
-        client.post(
+    await this.waitForDocumentsReady(
+      client,
+      uniqueNew.map((id) => ({ id })),
+      3,
+    );
+    // SignNow drops a sibling when two extras are POSTed at once.
+    for (const documentId of uniqueNew) {
+      let added = false;
+      for (let attempt = 0; attempt < 4 && !added; attempt += 1) {
+        if (attempt > 0) await sleepSignNow(400 * attempt);
+        const res = await client.post(
           `/v2/document-groups/${groupId}/documents`,
           { unique_id: documentId },
           { validateStatus: () => true },
-        ),
-      ),
-    );
-    const failed: string[] = [];
-    for (let i = 0; i < results.length; i += 1) {
-      const res = results[i];
-      const documentId = uniqueNew[i];
-      if (res.status >= 400) {
+        );
+        if (res.status < 400) {
+          added = true;
+          break;
+        }
+        const detail = this.signNowErrorDetail(res);
+        if (/already|exist/i.test(detail)) {
+          added = true;
+          break;
+        }
         console.warn('[SignNow] add document to group failed', {
           groupId,
           documentId,
           status: res.status,
-          detail: this.signNowErrorDetail(res),
+          attempt: attempt + 1,
+          detail,
         });
-        failed.push(documentId);
+        if (
+          !isTransientSignNowFailure(res.status, detail) &&
+          res.status !== 400 &&
+          res.status !== 404
+        ) {
+          break;
+        }
       }
-    }
-    for (const documentId of failed) {
-      const retry = await client.post(
-        `/v2/document-groups/${groupId}/documents`,
-        { unique_id: documentId },
-        { validateStatus: () => true },
-      );
-      if (retry.status >= 400) {
-        console.warn('[SignNow] sequential add document to group failed', {
-          groupId,
-          documentId,
-          status: retry.status,
-          detail: this.signNowErrorDetail(retry),
-        });
-        return false;
-      }
+      if (!added) return false;
     }
     const ids = await this.listGroupDocumentIds(client, groupId);
     return uniqueNew.every((id) => ids.includes(id));
@@ -3344,22 +3610,30 @@ export class SignNowService {
     const ids = [...new Set(documentIds.map((id) => String(id || '').trim()).filter(Boolean))];
     if (ids.length < 2) return null;
     await this.deleteDocumentGroup(client, oldGroupId);
-    const res = await client.post(
-      '/documentgroup',
-      { document_ids: ids, group_name: groupName },
-      { validateStatus: () => true },
-    );
-    const created = res.data?.data || res.data || {};
-    const groupId = String(created.unique_id || created.id || '').trim();
-    if (res.status >= 400 || !groupId) {
-      console.warn('[SignNow] rebuild combined group failed', this.signNowErrorDetail(res));
-      return null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const res = await client.post(
+        '/documentgroup',
+        { document_ids: ids, group_name: groupName },
+        { validateStatus: () => true },
+      );
+      const created = res.data?.data || res.data || {};
+      const groupId = String(created.unique_id || created.id || '').trim();
+      if (res.status < 400 && groupId) {
+        const documents =
+          this.normalizeGroupDocuments(created.documents).length > 0
+            ? this.normalizeGroupDocuments(created.documents)
+            : await this.refreshGroupDocuments(client, groupId);
+        return { groupId, documents };
+      }
+      const detail = this.signNowErrorDetail(res);
+      console.warn('[SignNow] rebuild combined group failed', {
+        attempt: attempt + 1,
+        detail,
+      });
+      if (!isTransientSignNowFailure(res.status, detail) && attempt === 2) break;
+      await sleepSignNow(600 * (attempt + 1));
     }
-    const documents =
-      this.normalizeGroupDocuments(created.documents).length > 0
-        ? this.normalizeGroupDocuments(created.documents)
-        : await this.refreshGroupDocuments(client, groupId);
-    return { groupId, documents };
+    return null;
   }
 
   /**
@@ -3368,6 +3642,95 @@ export class SignNowService {
    * to another group, and POST /v2/document-groups/{id}/documents expects
    * `{ unique_id: documentId }` — not the group id.
    */
+  private groupHasSupplemental(
+    documents: SignNowDocumentRef[],
+    row: SignNowAddendumTemplate,
+  ): boolean {
+    const name = String(row.name || '').trim().toLowerCase();
+    const key = String(row.layoutKey || '')
+      .trim()
+      .toLowerCase()
+      .replace(/_/g, ' ');
+    return documents.some((doc) => {
+      const n = String(doc.document_name || doc.name || '')
+        .trim()
+        .toLowerCase();
+      if (!n) return false;
+      if (name && n.includes(name)) return true;
+      if (key && n.includes(key)) return true;
+      if (row.type === 'disclosure' && n.includes('disclosure')) return true;
+      if (row.layoutKey === 'monthly_fee' && /monthly/.test(n) && /fee/.test(n)) return true;
+      if (row.layoutKey === 'ach_weekly' && /\bach\b/.test(n) && /week/.test(n)) return true;
+      if (row.layoutKey === 'ach_daily' && /\bach\b/.test(n) && /daily/.test(n)) return true;
+      return false;
+    });
+  }
+
+  private async attachMissingSupplementalsForSend(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    options: {
+      groupId: string;
+      groupName: string;
+      documents: SignNowDocumentRef[];
+      applicationId?: string;
+      supplementalDocumentRefs?: string[];
+      sendPackage?: {
+        includeMainContract?: boolean;
+        includeAddendum?: boolean;
+        includeDisclosure?: boolean;
+      };
+      funderName?: string | null;
+      funderProfileId?: string | null;
+    },
+  ): Promise<{ groupId: string; documents: SignNowDocumentRef[] }> {
+    const funderProfileId = String(options.funderProfileId || '').trim();
+    const funderRow = funderProfileId
+      ? await prisma.funderProfile.findUnique({
+          where: { id: funderProfileId },
+          select: {
+            signnowAddendumTemplates: true,
+            signnowDisclosureTemplates: true,
+          },
+        })
+      : null;
+    const supplementals = resolveSignNowAddendaFromRefs(
+      options.supplementalDocumentRefs,
+      funderRow,
+    );
+    const toAttach = supplementals.filter((row) => {
+      if (row.type === 'disclosure') {
+        return options.sendPackage?.includeDisclosure !== false;
+      }
+      return true;
+    });
+    if (
+      options.sendPackage?.includeDisclosure !== false &&
+      !toAttach.some((row) => row.type === 'disclosure')
+    ) {
+      const platformDisclosure = getSignNowDisclosureTemplates()[0];
+      if (platformDisclosure) toAttach.push(platformDisclosure);
+    }
+    const missing = toAttach.filter((row) => !this.groupHasSupplemental(options.documents, row));
+    if (!missing.length) {
+      return { groupId: options.groupId, documents: options.documents };
+    }
+    console.info('[SignNow] attaching missing extras before send', {
+      groupId: options.groupId,
+      missing: missing.map((row) => row.name),
+    });
+    const combined = await this.combineGroupWithAddenda(
+      client,
+      options.groupId,
+      options.documents,
+      missing,
+      options.groupName,
+    );
+    if (options.applicationId) {
+      this.rememberDraftGroup(options.applicationId, combined.groupId, combined.documents);
+    }
+    return combined;
+  }
+
   private collectCopiedAddendumIds(
     addenda: SignNowAddendumTemplate[],
     extraResults: PromiseSettledResult<string[]>[],
@@ -3402,11 +3765,18 @@ export class SignNowService {
     const added = await this.addDocumentsToGroup(client, groupId, existingIds, uniqueExtra);
     if (added) {
       const merged = await this.refreshGroupDocuments(client, groupId);
+      const mergedIds = new Set(merged.map((d) => d.id));
+      const missing = uniqueExtra.filter((id) => !mergedIds.has(id));
       console.info('[SignNow] extras added to existing group', {
         groupId,
         count: merged.length,
+        names: merged.map((d) => d.document_name || d.name || d.id),
+        extraIds: uniqueExtra.length,
+        missing: missing.length,
       });
-      return { groupId, documents: merged.length ? merged : documents };
+      if (!missing.length && merged.length >= existingIds.length + uniqueExtra.length) {
+        return { groupId, documents: merged.length ? merged : documents };
+      }
     }
     const rebuilt = await this.rebuildGroupWithDocuments(client, groupId, groupName, [
       ...existingIds,
@@ -3729,6 +4099,21 @@ export class SignNowService {
     return this.extractGroupInviteId(res.data);
   }
 
+  private async waitForGroupInviteId(groupId: string, timeoutMs: number): Promise<string> {
+    const started = Date.now();
+    let delay = 800;
+    while (Date.now() - started < timeoutMs) {
+      const inviteId = await this.peekGroupInviteId(groupId).catch(() => '');
+      if (inviteId) return inviteId;
+      const row = await getSignNowInviteSend(groupId).catch(() => null);
+      if (row?.sendStatus === 'SENT' && row.inviteId) return row.inviteId;
+      if (row?.sendStatus === 'FAILED') return '';
+      await sleepSignNow(delay);
+      delay = Math.min(3_000, delay + 400);
+    }
+    return this.peekGroupInviteId(groupId).catch(() => '');
+  }
+
   private async deleteEmbeddedInvites(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     groupId: string,
@@ -3913,6 +4298,27 @@ export class SignNowService {
     });
   }
 
+  private async waitForDocumentsReady(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    documents: SignNowDocumentRef[],
+    attempts = 4,
+  ): Promise<SignNowDocumentRef[]> {
+    const usable = documents.filter((d) => String(d.id || '').trim());
+    if (!usable.length) return documents;
+    let current = usable;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      current = await this.hydrateDocumentRoles(client, current);
+      const pending = current.filter((d) => !d.remote);
+      if (!pending.length) return current;
+      console.warn('[SignNow] waiting for copied documents to finish loading', {
+        attempt: attempt + 1,
+        pending: pending.map((d) => d.document_name || d.name || d.id),
+      });
+      await sleepSignNow(450 * (attempt + 1));
+    }
+    return current;
+  }
+
   private async hydrateDocumentRoles(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     documents: SignNowDocumentRef[],
@@ -3928,7 +4334,18 @@ export class SignNowService {
         ) {
           return doc;
         }
-        const res = await client.get(`/document/${doc.id}`, { validateStatus: () => true });
+        let res: { status: number; data?: any } = { status: 0, data: {} };
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          res = await client.get(`/document/${doc.id}`, { validateStatus: () => true });
+          if (res.status < 400) break;
+          if (
+            !isTransientSignNowFailure(res.status, this.signNowErrorDetail(res)) &&
+            res.status !== 404
+          ) {
+            break;
+          }
+          await sleepSignNow(350 * (attempt + 1));
+        }
         if (res.status >= 400) {
           return {
             ...doc,

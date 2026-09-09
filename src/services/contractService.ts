@@ -62,6 +62,48 @@ async function resolveContractApplicationUuid(applicationRef: string): Promise<s
 }
 
 /**
+ * Prisma 7.9 adapter-pg fans out `include` with Promise.all, each checkout
+ * competing for the Neon pool. After a long SignNow send that saturates the
+ * pool, that burst becomes `timeout exceeded when trying to connect`.
+ * Load relations one query at a time instead.
+ */
+async function loadContractRowForUpdateResponse(id: number) {
+  const row = await prisma.contract.findUnique({ where: { id } });
+  if (!row) return null;
+
+  const client = row.clientId
+    ? await prisma.client.findUnique({
+        where: { id: row.clientId },
+        select: { id: true, businessName: true, businessEmail: true },
+      })
+    : null;
+  const application = row.applicationId
+    ? await prisma.application.findUnique({
+        where: { id: row.applicationId },
+        select: { id: true, applicationId: true },
+      })
+    : null;
+  const offer = row.offerId
+    ? await prisma.offerDecision.findUnique({
+        where: { id: row.offerId },
+        select: { id: true },
+      })
+    : null;
+  const paymentTerms = await prisma.paymentTerms.findMany({
+    where: { contractId: id },
+    select: { id: true, paymentMethod: true, paymentFrequency: true },
+  });
+  const paymentBank = row.paymentBankId
+    ? await prisma.bankDetail.findUnique({
+        where: { id: row.paymentBankId },
+        select: { id: true, bankName: true },
+      })
+    : null;
+
+  return { ...row, client, application, offer, paymentTerms, paymentBank };
+}
+
+/**
  * When a contract funder is selected, rewrite `Application.dealId` from the
  * numeric core (e.g. `3` / `WF3`) to `{prefix}{core}` using the funder's
  * `dealIdPrefix` from the FunderProfile table (Settings → Funders).
@@ -1721,15 +1763,19 @@ class ContractService {
     }
     applyContractExtraFields(updateData, data);
 
-    const existingMeta = await prisma.contract.findUnique({
-      where: { id },
-      select: {
-        applicationId: true,
-        state: true,
-        funderName: true,
-        contractPrefillOverrides: true,
-      },
-    });
+    const existingMeta = await withDbRetry(
+      () =>
+        prisma.contract.findUnique({
+          where: { id },
+          select: {
+            applicationId: true,
+            state: true,
+            funderName: true,
+            contractPrefillOverrides: true,
+          },
+        }),
+      { maxAttempts: 5, baseDelayMs: 400, label: 'updateContract.existingMeta' },
+    );
 
     if (data.contractPrefillOverrides !== undefined && data.contractPrefillOverrides !== null) {
       // FE prefill saves often rebuild the JSON blob and omit DocuSign history keys.
@@ -1751,30 +1797,26 @@ class ContractService {
     const funderOrStateChanged =
       data.funderName !== undefined || data.state !== undefined;
 
-    // Write without `include`: Prisma 7.9 adapter-pg runs relation fetches concurrently
-    // on the implicit transaction connection, which poisons the pg client.
-    const row = await withDbRetry(
-      async () => {
-        await prisma.contract.update({
+    // Write without `include`, then reload relations sequentially. Prisma 7.9
+    // adapter-pg fans out includes with Promise.all and exhausts the Neon pool
+    // right after a long SignNow send ("timeout exceeded when trying to connect").
+    await withDbRetry(
+      () =>
+        prisma.contract.update({
           where: { id },
           data: updateData,
-        });
-        const updated = await prisma.contract.findUnique({
-          where: { id },
-          include: {
-            client: { select: { id: true, businessName: true, businessEmail: true } },
-            application: { select: { id: true, applicationId: true } },
-            offer: { select: { id: true } },
-            paymentTerms: { select: { id: true, paymentMethod: true, paymentFrequency: true } },
-            paymentBank: { select: { id: true, bankName: true } },
-          },
-        });
+        }),
+      { maxAttempts: 5, baseDelayMs: 400, label: 'updateContract.write' },
+    );
+    const row = await withDbRetry(
+      async () => {
+        const updated = await loadContractRowForUpdateResponse(id);
         if (!updated) {
           throw new Error(`Contract ${id} not found after update`);
         }
         return updated;
       },
-      { maxAttempts: 2, label: 'updateContract' },
+      { maxAttempts: 5, baseDelayMs: 400, label: 'updateContract.reload' },
     );
 
     if (funderOrStateChanged) {
