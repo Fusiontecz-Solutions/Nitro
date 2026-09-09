@@ -7,6 +7,7 @@ import {
     formatDisclosureUsd,
     formatDisclosureUsDate,
     applyDisclosurePlatformFee,
+    resolveDailyEstimatedTermDays,
     type DisclosureCalculatorFrequency,
 } from "./disclosureAprCalculator";
 import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
@@ -183,14 +184,27 @@ export function calculateRefinanceDealMetrics(
               ? Math.max(1, numberOfPaymentDays || numberOfWeeks * 5)
               : Math.max(1, numberOfPaymentDays);
     /**
-     * Guide CA/NY: estimated term is always calendar days (weekly = weeks × 7).
-     * Daily deals: weeks × 7 (not business-day count).
+     * Estimated term in calendar days:
+     * Daily = remittance days (never weeks). Weekly = weeks × 7.
      * CT uses estimatedTermBusinessDays (weekly = weeks × 5) separately.
      */
     const estimatedTermDays =
-        frequency === "Weekly" || frequency === "Daily"
-            ? Math.max(1, numberOfWeeks * 7)
-            : Math.max(1, numberOfPaymentDays);
+        frequency === "Weekly"
+            ? Math.max(1, numberOfPayments * 7)
+            : frequency === "Daily"
+              ? Math.max(
+                    1,
+                    resolveDailyEstimatedTermDays({
+                        numberOfPayments,
+                        numberOfPaymentDays,
+                        totalPayback,
+                        paymentAmount:
+                            input.paymentAmount != null && input.paymentAmount > 0
+                                ? input.paymentAmount
+                                : undefined,
+                    }),
+                )
+              : Math.max(1, numberOfPaymentDays);
 
     const estimatedTermMonths = computeDisclosureTermMonths({
         frequency,

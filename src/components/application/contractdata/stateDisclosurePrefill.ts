@@ -1034,7 +1034,7 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
                 previousRefiBalance: refinanceAmountRaw,
                 previousDealDate,
                 averageMonthlyRevenue: metrics.estimatedMerchantAverageMonthlyRevenue,
-                numberOfPayments: numberOfPayments ?? calcInputs.numberOfPayments,
+                numberOfPayments: calcInputs.numberOfPayments,
                 numberOfPaymentDays: calcInputs.numberOfPaymentDays,
                 specifiedPercent: percentOfGross ?? 0,
             });
@@ -1068,7 +1068,7 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
                 paymentAmount: periodicPayment ?? metrics.estimatedPayment,
                 previousRefiBalance: 0,
                 averageMonthlyRevenue: metrics.estimatedMerchantAverageMonthlyRevenue,
-                numberOfPayments: numberOfPayments ?? calcInputs.numberOfPayments,
+                numberOfPayments: calcInputs.numberOfPayments,
                 numberOfPaymentDays: calcInputs.numberOfPaymentDays,
                 specifiedPercent: percentOfGross ?? 0,
             });

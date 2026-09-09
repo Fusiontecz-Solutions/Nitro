@@ -74,7 +74,7 @@ export interface BuildContractPrefillFieldsArgs {
     includeWireFee?: string;
     /** Recipient funds / net cash to merchant (offer − fees − refinance). DocuSign: `net_to_merchant`. */
     netToMerchant?: string;
-    /** Monthly ACH program fee (SignNow `ach_program_fee_p13`). */
+    /** Monthly ACH program fee (Monthly Fee addendum). Contract page 14 stays 0.00. */
     achProgramFee?: string;
 
     clientName?: string;
@@ -521,7 +521,8 @@ function normalizePrefillValueForUsFormat(
         k === "payment_terms" ||
         k === "paymentfrequency"
     ) {
-        formatted = formatContractDocumentFrequencyLabel(value) || value;
+        /** INITIAL INSTALLMENT small field next to the amount: Daily / Weekly. */
+        formatted = formatInitialInstallmentFrequencyLabel(value) || value;
     }
 
     return toContractDocumentUppercase(formatted);
@@ -811,6 +812,7 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.frequency, "Frequency", frequency),
         ...mapIds(FIELD_IDS.netToMerchant, "Recipient funds", netToMerchant),
         ...mapIds(FIELD_IDS.achProgramFee, "ACH Program Fee", achProgramFee, wireFeeOn),
+        ...mapIds(["ach_program_fee_p13"], "ACH Program Fee", "0.00", wireFeeOn),
         ...mapIds(FIELD_IDS.clientName, "Client Name", clientName),
         ...mapIds(FIELD_IDS.owner1GuarantorName, "Owner1 Guarantor Name", owner1GuarantorName),
         ...mapIds(FIELD_IDS.owner2GuarantorName, "Owner2 Guarantor Name", owner2GuarantorName),
@@ -1852,7 +1854,6 @@ const ACH_PROGRAM_FEE_SOURCE_KEYS = [
     "ach_program_fee_amount",
     "program_fee_amount",
     "ach_program_fee_p1",
-    "ach_program_fee_p13",
 ] as const;
 
 function firstAchProgramFeeFromRecord(row: Record<string, unknown> | null | undefined): string {
@@ -1879,7 +1880,7 @@ function achProgramFeeFromMappingBlob(raw: unknown): string {
     return firstAchProgramFeeFromRecord(rec);
 }
 
-/** Monthly ACH program fee for SignNow `ach_program_fee_p13` / Monthly Fee addendum. */
+/** Monthly ACH program fee for the Monthly Fee addendum (not contract page 14). */
 export function resolveAchProgramFeePrefillValue(sources: NetToMerchantPrefillSources): string {
     const contract = sources.contract ?? null;
     const app =

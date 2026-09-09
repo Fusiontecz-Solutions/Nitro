@@ -468,9 +468,9 @@ export function expandDisclosureEditorValuesToPdfFields(
     if (!String(out.disclosure_page3_third_parties ?? "").trim()) {
         out.disclosure_page3_third_parties = "0.00";
     }
-    if (!String(out.disclosure_page3_3a ?? "").trim()) out.disclosure_page3_3a = "N/A";
-    if (!String(out.disclosure_page3_3b ?? "").trim()) out.disclosure_page3_3b = "N/A";
-    if (!String(out.disclosure_page3_3c ?? "").trim()) out.disclosure_page3_3c = "N/A";
+    if (!String(out.disclosure_page3_3a ?? "").trim()) out.disclosure_page3_3a = "";
+    if (!String(out.disclosure_page3_3b ?? "").trim()) out.disclosure_page3_3b = "";
+    if (!String(out.disclosure_page3_3c ?? "").trim()) out.disclosure_page3_3c = "";
     // SignNow unique names are `*_p3` on the Florida disclosure PDF.
     for (const editorId of DISCLOSURE_PAGE3_SIGNNOW_P3_IDS) {
         const v = String(out[editorId] ?? "").trim();
@@ -482,9 +482,8 @@ export function expandDisclosureEditorValuesToPdfFields(
         );
         out.previous_lender_name =
             refiLine && refiLine > 0
-                ? String(editorValues.funder_name || PLATFORM_DISCLOSURE_FUNDER_NAME).trim() ||
-                  "N/A"
-                : "N/A";
+                ? String(editorValues.funder_name || PLATFORM_DISCLOSURE_FUNDER_NAME).trim()
+                : "";
     }
 
     const INLINE_PERCENT_TAB_IDS = new Set([
@@ -591,14 +590,14 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_page3_subtotal: page3.page3Subtotal,
         disclosure_page3_net: page3.page3Net,
         disclosure_page3_third_parties: "0.00",
-        disclosure_page3_3a: "N/A",
-        disclosure_page3_3b: "N/A",
-        disclosure_page3_3c: "N/A",
+        disclosure_page3_3a: "",
+        disclosure_page3_3b: "",
+        disclosure_page3_3c: "",
         previous_lender_name: coercePositiveMoney(
             nyLines.page3Line2 || page3.page3Line2,
         )
-            ? String(ctx.funderName ?? PLATFORM_DISCLOSURE_FUNDER_NAME).trim() || "N/A"
-            : "N/A",
+            ? String(ctx.funderName ?? PLATFORM_DISCLOSURE_FUNDER_NAME).trim()
+            : "",
         client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
         funder_name: String(ctx.funderName ?? PLATFORM_DISCLOSURE_FUNDER_NAME)
             .trim()
@@ -763,13 +762,13 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
         disclosure_page3_subtotal: page3.page3Subtotal,
         disclosure_page3_net: page3.page3Net,
         disclosure_page3_third_parties: "0.00",
-        disclosure_page3_3a: "N/A",
-        disclosure_page3_3b: "N/A",
-        disclosure_page3_3c: "N/A",
+        disclosure_page3_3a: "",
+        disclosure_page3_3b: "",
+        disclosure_page3_3c: "",
         previous_lender_name:
             isRefinance && (metrics.previousRefiBalance ?? 0) > 0
                 ? PLATFORM_DISCLOSURE_FUNDER_NAME
-                : "N/A",
+                : "",
         ...(merchant ? { client_name: merchant } : {}),
         funder_name: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         ...(disclosureDate ? { disclosure_date: disclosureDate } : {}),

@@ -114,6 +114,40 @@ function averagePositive(values: number[]): number {
     return roundMoney(valid.reduce((sum, v) => sum + v, 0) / valid.length);
 }
 
+/**
+ * Daily Estimated Term is remittance days — never weeks (days ÷ 5).
+ * (2, 10) = weeks + remittance days → 10. (20, 100) = term days + business days → 20.
+ */
+export function resolveDailyEstimatedTermDays(args: {
+    numberOfPayments?: number;
+    numberOfPaymentDays?: number;
+    totalPayback?: number;
+    paymentAmount?: number;
+}): number {
+    const payments = Math.max(0, Math.trunc(Number(args.numberOfPayments) || 0));
+    const days = Math.max(0, Math.trunc(Number(args.numberOfPaymentDays) || 0));
+    const payback = Number(args.totalPayback) || 0;
+    const payment = Number(args.paymentAmount) || 0;
+    const implied =
+        payback > 0 && payment > 0 ? Math.max(1, Math.round(payback / payment)) : 0;
+
+    if (!(payments > 0) && !(days > 0) && !(implied > 0)) return 0;
+
+    if (days > 0 && payments > 0 && days === payments * BUSINESS_DAYS_PER_WEEK) {
+        if (payments < 10) return days;
+        return payments;
+    }
+
+    if (implied > 0) {
+        if (payments > 0 && implied === payments * BUSINESS_DAYS_PER_WEEK && payments >= 10) {
+            return payments;
+        }
+        return implied;
+    }
+
+    return Math.max(1, days || payments);
+}
+
 function resolveDisclosurePaymentSchedule(input: DisclosureCalculatorInputs): {
     /** Weeks in term ("Number of payments in weeks" for daily). */
     numberOfWeeks: number;
@@ -337,11 +371,21 @@ export function calculateDisclosureMetrics(
         termMonths,
     });
 
-    /** Guide CA/NY: calendar days (weeks × 7). Payment-day count kept for schedules separately. */
+    /** Daily = remittance days (not weeks). Weekly = weeks × 7. */
     const estimatedTermCalendarDays =
-        input.frequency === "Weekly" || input.frequency === "Daily"
+        input.frequency === "Weekly"
             ? Math.max(1, numberOfWeeks * 7)
-            : Math.max(0, Math.trunc(input.numberOfPaymentDays));
+            : input.frequency === "Daily"
+              ? Math.max(
+                    1,
+                    resolveDailyEstimatedTermDays({
+                        numberOfPayments: input.numberOfPayments,
+                        numberOfPaymentDays: actualPaymentCount,
+                        totalPayback: estimatedTotalPayment,
+                        paymentAmount: remittancePayment || estimatedPayment,
+                    }),
+                )
+              : Math.max(0, Math.trunc(input.numberOfPaymentDays));
 
     return {
         purchasePrice,
@@ -537,37 +581,21 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     let numberOfPaymentDays = numberOfPayments;
 
     if (frequency === "Daily") {
-        const explicitWeeks = numberOfPayments > 0 ? Math.trunc(numberOfPayments) : 0;
+        const explicitCount = numberOfPayments > 0 ? Math.trunc(numberOfPayments) : 0;
         const term = termNum > 0 ? Math.trunc(termNum) : 0;
-        let weeks = explicitWeeks;
-        let days = 0;
-
-        if (term >= 40) {
-            days = term;
-            if (!(weeks > 0)) {
-                weeks = Math.max(1, Math.round(days / BUSINESS_DAYS_PER_WEEK));
-            }
-        } else if (term > 0) {
-            weeks = weeks > 0 ? weeks : term;
-            days = weeks * BUSINESS_DAYS_PER_WEEK;
-        } else if (weeks > 0) {
-            days = weeks * BUSINESS_DAYS_PER_WEEK;
-        }
-
         const perPeriod = parseMoney(
             offer?.paymentAmount ?? offer?.repayPerPeriod ?? offer?.daysWeeks,
         );
-        if (payback > 0 && perPeriod > 0) {
-            const impliedCount = Math.max(1, Math.round(payback / perPeriod));
-            days = impliedCount;
-            weeks = Math.max(1, Math.round(days / BUSINESS_DAYS_PER_WEEK));
-        }
-
-        numberOfPayments = Math.max(1, weeks || 1);
-        numberOfPaymentDays = Math.max(
-            1,
-            days || numberOfPayments * BUSINESS_DAYS_PER_WEEK,
-        );
+        const impliedDays =
+            payback > 0 && perPeriod > 0 ? Math.max(1, Math.round(payback / perPeriod)) : 0;
+        const remittanceDays = resolveDailyEstimatedTermDays({
+            numberOfPayments: explicitCount || term,
+            numberOfPaymentDays: impliedDays || (term >= 40 ? term : 0),
+            totalPayback: payback,
+            paymentAmount: perPeriod,
+        });
+        numberOfPayments = Math.max(1, remittanceDays || impliedDays || term || explicitCount || 1);
+        numberOfPaymentDays = numberOfPayments;
     } else if (frequency === "Weekly") {
         numberOfPaymentDays =
             numberOfPayments > 0 ? numberOfPayments * 7 : termNum > 0 ? termNum * 7 : 0;
@@ -625,15 +653,7 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     const today = new Date();
     const defaultDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
-    let resolvedPaymentDays = Math.max(1, numberOfPaymentDays || 1);
-    if (
-        frequency === "Daily" &&
-        resolvedPaymentDays <= numberOfPayments &&
-        numberOfPayments > 0 &&
-        numberOfPayments < 40
-    ) {
-        resolvedPaymentDays = Math.max(resolvedPaymentDays, numberOfPayments * BUSINESS_DAYS_PER_WEEK);
-    }
+    const resolvedPaymentDays = Math.max(1, numberOfPaymentDays || 1);
 
     const refinanceAmount =
         parseMoney(offer?.refinanceAmount) ||

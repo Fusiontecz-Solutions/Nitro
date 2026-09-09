@@ -1,4 +1,5 @@
 import type { ContractPrefillField } from "./Contract";
+import { resolveDailyEstimatedTermDays } from "./disclosureAprCalculator";
 import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
 
 /** BoldSign merge `roles[].formFields` row (camelCase; server normalizes to PascalCase). */
@@ -254,27 +255,33 @@ function formatUsdAmount(amount: number): string {
     }).format(Math.round(amount * 100) / 100);
 }
 
-/** Guide CA/NY: estimated term is always calendar days (weekly or daily weeks × 7). */
+/** Estimated term in calendar days: daily = day count; weekly = weeks × 7. */
 export function resolveCaliforniaEstimatedTermDays(args: {
     estimatedTermDays?: string;
     estimatedNumberOfPayments?: string;
     frequency?: string | null;
 }): string {
-    const fromDays = String(args.estimatedTermDays ?? "").trim();
-    if (fromDays) return fromDays;
-
     const periods = Number.parseInt(String(args.estimatedNumberOfPayments ?? "").trim(), 10);
-    if (!(periods > 0) || periods >= 40) return "";
-
+    const days = Number.parseInt(String(args.estimatedTermDays ?? "").trim(), 10);
     const frequency = String(args.frequency ?? "")
         .trim()
         .toLowerCase();
     const isWeekly = frequency.startsWith("week");
     /** Note: "daily".startsWith("day") is false — match "daily" explicitly. */
     const isDaily = frequency.startsWith("daily") || frequency === "day";
-    if (isWeekly || isDaily || !frequency) {
+
+    if (isWeekly && periods > 0 && periods < 40) {
         return String(periods * 7);
     }
+    if (isDaily) {
+        const resolved = resolveDailyEstimatedTermDays({
+            numberOfPayments: Number.isFinite(periods) && periods > 0 ? periods : 0,
+            numberOfPaymentDays: Number.isFinite(days) && days > 0 ? days : 0,
+        });
+        if (resolved > 0) return String(resolved);
+    }
+
+    if (Number.isFinite(days) && days > 0) return String(days);
     return "";
 }
 

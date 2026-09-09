@@ -389,14 +389,61 @@ test("Guide CA daily estimated term is calendar days", () => {
         businessName: "Biz LLC",
         businessAddress: "1 Main St",
     });
-    assert.equal(m.estimatedTermDays, 140);
+    assert.equal(m.estimatedTermDays, 20);
     assert.equal(m.estimatedTermBusinessDays, 100);
     assert.equal(
         resolveCaliforniaEstimatedTermDays({
             estimatedNumberOfPayments: "20",
             frequency: "Daily",
         }),
-        "140",
+        "20",
+    );
+});
+
+test("Daily $10K / term 10 uses payment days, not weeks", () => {
+    const m = calculateDisclosureMetrics({
+        state: "California",
+        frequency: "Daily",
+        purchasePrice: 10_000,
+        factorRate: 1.499,
+        originationFee: 1_000,
+        numberOfPayments: 2,
+        numberOfPaymentDays: 10,
+        disbursementDate: "2026-09-08",
+        firstPaymentDate: "2026-09-08",
+        monthlyRevenues: [],
+        paymentAmount: 1_499,
+    });
+    assert.equal(m.estimatedTermDays, 10);
+    assert.equal(
+        calculateRefinanceDealMetrics({
+            state: "California",
+            label: "NITRO",
+            paymentFrequency: "Daily",
+            contractAmount: 10_000,
+            originationFee: 1_000,
+            factorRate: 1.499,
+            paymentAmount: 1_499,
+            previousRefiBalance: 0,
+            numberOfPayments: 2,
+            numberOfPaymentDays: 10,
+        }).estimatedTermDays,
+        10,
+    );
+    assert.equal(
+        resolveCaliforniaEstimatedTermDays({
+            estimatedTermDays: "10",
+            estimatedNumberOfPayments: "2",
+            frequency: "Daily",
+        }),
+        "10",
+    );
+    assert.equal(
+        resolveCaliforniaEstimatedTermDays({
+            estimatedNumberOfPayments: "10",
+            frequency: "Weekly",
+        }),
+        "70",
     );
 });
 
