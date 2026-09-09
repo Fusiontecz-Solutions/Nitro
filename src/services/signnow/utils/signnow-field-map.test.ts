@@ -35,6 +35,8 @@ describe('signnow-field-map', () => {
     expect(formatSignNowPrefillValue('DAY', 'page1_installmentBlock_frequency')).toBe(
       'Daily',
     );
+    expect(formatSignNowPrefillValue('149.90 DailyDaily', 'remittance')).toBe('149.90');
+    expect(formatSignNowPrefillValue('149.90 Daily', 'remittance')).toBe('149.90');
   });
 
   it('strips page suffixes from SignNow unique names', () => {
@@ -167,13 +169,28 @@ describe('signnow-field-map', () => {
         remittance: '14.99',
         frequency: 'Weekly',
       }),
-    ).toBe('14.99 Weekly');
+    ).toBe('14.99');
+    expect(
+      resolveSignNowPrefillValue('remittance', {
+        remittance: '14.99 Daily',
+        frequency: 'daily',
+      }),
+    ).toBe('14.99');
     expect(
       buildSignNowDocumentPrefillTexts(['remittance'], {
         remittance: '14.99',
         frequency: 'daily',
       }),
-    ).toEqual([{ field_name: 'remittance', prefilled_text: '14.99 Daily' }]);
+    ).toEqual([{ field_name: 'remittance', prefilled_text: '14.99' }]);
+    expect(
+      buildSignNowDocumentPrefillTexts(
+        ['remittance', 'page1_installmentBlock_frequency'],
+        { remittance: '149.90 Daily', frequency: 'daily' },
+      ),
+    ).toEqual([
+      { field_name: 'remittance', prefilled_text: '149.90' },
+      { field_name: 'page1_installmentBlock_frequency', prefilled_text: 'Daily' },
+    ]);
     expect(
       resolveSignNowPrefillValue('remittance_p21', {
         remittance: '14.99',

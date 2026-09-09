@@ -1218,10 +1218,10 @@ export function resolveSignNowPrefillValue(
     if (canon === 'disclosure_page3_third_parties') return '0.00';
     return '';
   }
-  // Page-1 INITIAL INSTALLMENT is a single `remittance` widget — cadence must
-  // sit next to the amount (the dedicated frequency unique name is not on the template).
+  // Page-1 INITIAL INSTALLMENT amount stays dollars-only. Cadence is a separate
+  // `page1_installmentBlock_frequency` widget; appending here stacked DailyDaily.
   if (isPage1InitialInstallmentAmountField(raw)) {
-    return appendInstallmentFrequencyToAmount(hit, map);
+    return stripInstallmentFrequencyFromAmount(hit);
   }
   return hit;
 }
@@ -1340,23 +1340,19 @@ function installmentFrequencyFromMap(map: Map<string, string>): string {
   );
 }
 
-function appendInstallmentFrequencyToAmount(
-  amount: string,
-  map: Map<string, string>,
-): string {
-  const money = String(amount || '')
-    .replace(/\s+(Daily|Weekly|Monthly|Bi-Weekly|Day|Week|Month|Bi-Week)\s*$/i, '')
-    .trim();
-  const freq = installmentFrequencyFromMap(map);
-  if (!money) return String(amount || '').trim();
-  if (!freq) return money;
-  if (new RegExp(`\\b${freq}\\b`, 'i').test(money)) return money;
-  return `${money} ${freq}`;
+const INSTALLMENT_FREQUENCY_SUFFIX =
+  /(?:\s*(Daily|Weekly|Monthly|Bi-Weekly|Day|Week|Month|Bi-Week))+$/i;
+
+function stripInstallmentFrequencyFromAmount(amount: string): string {
+  return String(amount || '').replace(INSTALLMENT_FREQUENCY_SUFFIX, '').trim();
 }
 
 export function formatSignNowPrefillValue(value: string, fieldName?: string): string {
   const v = String(value || '').trim();
   if (!v) return '';
+  if (isPage1InitialInstallmentAmountField(fieldName || '')) {
+    return stripInstallmentFrequencyFromAmount(v);
+  }
   if (isInstallmentBlockFrequencyField(fieldName || '')) {
     return formatInstallmentBlockFrequencyLabel(v);
   }
