@@ -11,7 +11,10 @@ import {
 import {
     computeDisclosureApr,
     calculateDisclosureMetrics,
+    formatDisclosureDocumentFrequencyLabel,
+    formatDisclosurePaymentFrequencyLabel,
 } from "./disclosureAprCalculator";
+import { expandDisclosureEditorValuesToPdfFields } from "./disclosureEditorFields";
 import { resolveWantedAddendumKinds } from "./disclosureDocumentRules";
 import {
     buildCaliforniaRefinancePage3Amounts,
@@ -445,6 +448,20 @@ test("Daily $10K / term 10 uses payment days, not weeks", () => {
         }),
         "70",
     );
+});
+
+test("Disclosure PDF frequency is day/week; CRM editor stays Daily/Weekly", () => {
+    assert.equal(formatDisclosurePaymentFrequencyLabel("Daily"), "Daily");
+    assert.equal(formatDisclosurePaymentFrequencyLabel("Weekly"), "Weekly");
+    assert.equal(formatDisclosureDocumentFrequencyLabel("Daily"), "day");
+    assert.equal(formatDisclosureDocumentFrequencyLabel("Weekly"), "week");
+    const pdf = expandDisclosureEditorValuesToPdfFields({
+        disclosure_payment_frequency: "Daily",
+        payment_frequency: "Weekly",
+        funder_name: "Nitro Advance",
+    });
+    assert.equal(pdf.disclosure_payment_frequency, "DAY");
+    assert.equal(pdf.payment_frequency, "WEEK");
 });
 
 test("Guide Utah provider-pays field left blank", () => {

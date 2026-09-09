@@ -257,6 +257,7 @@ import {
     knownAddendumLayoutKeyFromName,
     matchFunderSignNowAddendumOption,
     resolveFunderAddendumDisplayName,
+    resolveSignNowDisclosureOption,
 } from "@/utils/signnowTemplateLink";
 import {
     contractSendPackageFingerprint,
@@ -1644,6 +1645,9 @@ async function parseApiErrorMessageFromAxios(error: unknown): Promise<string> {
     if (/daily document limit exceeded/i.test(raw)) {
         return "SignNow's daily document limit is used up on this account. Click Review again to open the draft that was already created, uncheck addenda you do not need, or try again tomorrow.";
     }
+    if (/timeout|ECONNABORTED/i.test(raw) || /timeout/i.test(String(e?.message || ""))) {
+        return "SignNow is still preparing the contract. Wait a few seconds and click again.";
+    }
     return raw;
 }
 
@@ -1841,6 +1845,10 @@ const PDFViewerModal = ({
         [selectedFunderProfile],
     );
     const primaryFunderDisclosure = funderDisclosureOptions[0] ?? null;
+    const effectiveSignNowDisclosure = useMemo(
+        () => resolveSignNowDisclosureOption(selectedFunderProfile),
+        [selectedFunderProfile],
+    );
     const selectedFunderDefaultCcEmail = useMemo(() => {
         return (
             String(selectedFunderProfile?.docusignDefaultCcEmail ?? "").trim() ||
@@ -2143,11 +2151,10 @@ const PDFViewerModal = ({
     const configuredDisclosureRef = useMemo((): string | null => {
         if (isSignNowContractUiEnabled()) {
             if (!includeDisclosureInSend) return null;
-            // Only the selected funder's Settings disclosure — never Nitro hardcoded fallback.
             return (
-                primaryFunderDisclosure?.templateId ||
-                primaryFunderDisclosure?.layoutKey ||
-                null
+                effectiveSignNowDisclosure.templateId ||
+                effectiveSignNowDisclosure.layoutKey ||
+                SIGNNOW_DISCLOSURE_LAYOUT_KEY
             );
         }
         if (!linkedDisclosureMapping || !linkedDisclosureMatchesSelectedState) return null;
@@ -2157,7 +2164,7 @@ const PDFViewerModal = ({
         includeDisclosureInSend,
         linkedDisclosureMapping,
         linkedDisclosureMatchesSelectedState,
-        primaryFunderDisclosure,
+        effectiveSignNowDisclosure,
     ]);
 
     const canSendWithoutContract = useMemo(
@@ -3860,9 +3867,9 @@ const PDFViewerModal = ({
     const resolveDisclosureTemplateRefForDocuSignMerge = useCallback((): string | null => {
         if (isSignNowContractUiEnabled()) {
             return (
-                primaryFunderDisclosure?.templateId ||
-                primaryFunderDisclosure?.layoutKey ||
-                null
+                effectiveSignNowDisclosure.templateId ||
+                effectiveSignNowDisclosure.layoutKey ||
+                SIGNNOW_DISCLOSURE_LAYOUT_KEY
             );
         }
         const row = linkedDisclosureMappingRef.current;
@@ -3870,7 +3877,7 @@ const PDFViewerModal = ({
         if (layoutKey) return layoutKey;
         const rowId = String(row?.template?.id ?? "").trim();
         return rowId || null;
-    }, [primaryFunderDisclosure]);
+    }, [effectiveSignNowDisclosure]);
 
     const resolveAddendumLayoutKeysForDocuSignMerge = useCallback((): string[] => {
         return resolveAddendumTemplateIdsForDocuSignMerge().filter((ref) => {
@@ -4916,9 +4923,7 @@ const PDFViewerModal = ({
                     return;
                 }
 
-                const addendumTemplateIds = packageSelection.includeAddendum
-                    ? resolveAddendumTemplateIdsForDocuSignMerge()
-                    : [];
+                const addendumTemplateIds = resolveAddendumTemplateIdsForDocuSignMerge();
                 const addendumTemplateId = addendumTemplateIds[0] ?? null;
                 const addendumIdsFingerprint = addendumTemplateIds.slice().sort().join(",");
                 const sessionEnv = outForSignatureBeforeSend
@@ -4954,8 +4959,21 @@ const PDFViewerModal = ({
                                 String(
                                     selectedFunderRef.current || selectedFunder || "",
                                 ).trim() || undefined,
+                            funderProfileId:
+                                persistedFunderProfileIdForApi(selectedFunderProfile) ||
+                                undefined,
+                            addendumDocumentRefs: addendumTemplateIds,
+                            disclosureDocumentRef: includeDisclosureInSendRef.current
+                                ? resolveDisclosureTemplateRefForDocuSignMerge()
+                                : null,
+                            sendPackage: {
+                                ...getEffectiveSendPackage(),
+                                includeAddendum: addendumTemplateIds.length > 0,
+                                includeDisclosure: includeDisclosureInSendRef.current,
+                            },
                         },
                         {
+                            timeout: 300_000,
                             headers: {
                                 "Idempotency-Key": envelopeId,
                             },
@@ -5067,16 +5085,21 @@ const PDFViewerModal = ({
                         id: f.id,
                         value: f.value,
                     }));
-                    const disclosureDocumentRef = packageSelection.includeDisclosure
+                    const disclosureDocumentRef = includeDisclosureInSendRef.current
                         ? resolveDisclosureTemplateRefForDocuSignMerge()
                         : null;
                     // Extra funder Settings disclosures (beyond the primary) ride along as supplemental refs.
-                    const extraFunderDisclosureRefs = packageSelection.includeDisclosure
+                    const extraFunderDisclosureRefs = disclosureDocumentRef
                         ? funderDisclosureOptions
                               .slice(1)
                               .map((d) => d.templateId || d.layoutKey)
                               .filter(Boolean)
                         : [];
+                    const sendPackageForDraft: ContractSendPackageSelection = {
+                        ...packageSelection,
+                        includeAddendum: addendumTemplateIds.length > 0,
+                        includeDisclosure: Boolean(disclosureDocumentRef),
+                    };
                     const prepared = await onPrepareDocuSignDraft({
                         ccEmails: toSend,
                         addendumDocumentRef: addendumTemplateId,
@@ -5085,8 +5108,8 @@ const PDFViewerModal = ({
                             ...extraFunderDisclosureRefs,
                         ],
                         disclosureDocumentRef,
-                        includeMainContract: packageSelection.includeMainContract,
-                        sendPackage: packageSelection,
+                        includeMainContract: sendPackageForDraft.includeMainContract,
+                        sendPackage: sendPackageForDraft,
                         roles: signerRolesForSend,
                         funderName: selectedFunder.trim() || null,
                         funderProfileId:
@@ -10235,17 +10258,13 @@ const PDFViewerModal = ({
                                                             {isSignNowContractUiEnabled()
                                                                 ? primaryFunderDisclosure
                                                                     ? "From Settings → Funders for the selected funder. Check to merge when sending."
-                                                                    : "Always available. Check to merge it at the bottom of the contract when sending."
+                                                                    : "Platform state disclosure is included by default. Uncheck to send the agreement without it."
                                                                 : "Linked from the selected state and merged at the bottom of the contract."}
                                                         </p>
                                                     </div>
                                                 </div>
                                                 {isSignNowContractUiEnabled() ? (
-                                                    !primaryFunderDisclosure ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200/80 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700">
-                                                        Not configured
-                                                    </span>
-                                                    ) : includeDisclosureInSend ? (
+                                                    includeDisclosureInSend ? (
                                                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-emerald-200/80 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-800/50">
                                                         <CheckCircle2 className="h-3 w-3" aria-hidden />
                                                         Included
@@ -10271,7 +10290,6 @@ const PDFViewerModal = ({
 
                                             <div className="space-y-2">
                                                 {isSignNowContractUiEnabled() ? (
-                                                    primaryFunderDisclosure ? (
                                                     <>
                                                         <div className="flex items-center justify-between gap-2 rounded-lg border border-teal-200/90 bg-gradient-to-r from-teal-50/80 to-white px-2.5 py-2.5 shadow-sm dark:border-slate-600 dark:from-teal-950/25 dark:to-slate-900/80">
                                                             <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
@@ -10288,12 +10306,16 @@ const PDFViewerModal = ({
                                                                         </span>
                                                                     </div>
                                                                     <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                                                                        {primaryFunderDisclosure.name}
+                                                                        {effectiveSignNowDisclosure.name}
                                                                     </p>
                                                                     {funderDisclosureOptions.length > 1 ? (
                                                                         <p className="mt-0.5 text-[10px] text-slate-500">
                                                                             +{funderDisclosureOptions.length - 1}{" "}
                                                                             more from funder Settings
+                                                                        </p>
+                                                                    ) : !primaryFunderDisclosure ? (
+                                                                        <p className="mt-0.5 text-[10px] text-slate-500">
+                                                                            Using the platform SignNow disclosure
                                                                         </p>
                                                                     ) : null}
                                                                 </div>
@@ -10308,20 +10330,20 @@ const PDFViewerModal = ({
                                                                     disabled={
                                                                         linkingDisclosureTemplate ||
                                                                         previewingTemplateId ===
-                                                                            String(primaryFunderDisclosure.id)
+                                                                            String(effectiveSignNowDisclosure.id)
                                                                     }
                                                                     onClick={() => {
                                                                         const disclosureRef =
-                                                                            primaryFunderDisclosure.templateId ||
-                                                                            primaryFunderDisclosure.layoutKey;
+                                                                            effectiveSignNowDisclosure.templateId ||
+                                                                            effectiveSignNowDisclosure.layoutKey;
                                                                         const row = {
-                                                                                      id: primaryFunderDisclosure.id,
+                                                                                      id: effectiveSignNowDisclosure.id,
                                                                                       contractId:
                                                                                           effectiveContractId ?? 0,
                                                                                       templateId: disclosureRef,
                                                                                       documentType: "disclosure",
                                                                                       template: {
-                                                                                          name: primaryFunderDisclosure.name,
+                                                                                          name: effectiveSignNowDisclosure.name,
                                                                                           type: "disclosure",
                                                                                           layoutKey: disclosureRef,
                                                                                           templateId: disclosureRef,
@@ -10332,7 +10354,7 @@ const PDFViewerModal = ({
                                                                 >
                                                                     {linkingDisclosureTemplate ||
                                                                     previewingTemplateId ===
-                                                                        String(primaryFunderDisclosure.id) ? (
+                                                                        String(effectiveSignNowDisclosure.id) ? (
                                                                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                                                     ) : (
                                                                         <Eye className="h-3.5 w-3.5" />
@@ -10367,13 +10389,6 @@ const PDFViewerModal = ({
                                                             Calculate disclosure
                                                         </Button>
                                                     </>
-                                                    ) : (
-                                                        <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-                                                            {selectedFunder
-                                                                ? `No disclosure configured for ${selectedFunder}. Add one in Settings → Funders.`
-                                                                : "Select a funder to load its disclosure templates."}
-                                                        </p>
-                                                    )
                                                 ) : linkingDisclosureTemplate ? (
                                                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--brand)]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
                                                         <Loader2

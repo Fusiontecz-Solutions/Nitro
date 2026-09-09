@@ -29,7 +29,7 @@ export function applyDisclosurePlatformFee(
 
 /**
  * Disclosure payment frequency labels: Daily / Weekly / Monthly.
- * Written long-form so PDF placeholders like "Weekly" are fully covered.
+ * CRM edit-prefill dropdowns keep this long form.
  */
 export function formatDisclosurePaymentFrequencyLabel(raw: unknown): string {
     const text = String(raw ?? "")
@@ -43,6 +43,20 @@ export function formatDisclosurePaymentFrequencyLabel(raw: unknown): string {
     if (text === "bi weekly" || text === "biweekly") return "Bi-Weekly";
     if (text === "month" || text === "monthly") return "Monthly";
     return text.toUpperCase();
+}
+
+/**
+ * Disclosure PDF / SignNow “$___ per ____” slot: day / week / month (not DAILY).
+ */
+export function formatDisclosureDocumentFrequencyLabel(raw: unknown): string {
+    const coerced = formatDisclosurePaymentFrequencyLabel(raw);
+    const text = coerced.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+    if (!text) return "";
+    if (text === "day" || text === "daily") return "day";
+    if (text === "week" || text === "weekly") return "week";
+    if (text === "bi week" || text === "bi weekly" || text === "biweekly") return "bi-week";
+    if (text === "month" || text === "monthly") return "month";
+    return coerced;
 }
 
 export interface DisclosureCalculatorInputs {
@@ -762,10 +776,10 @@ export function mapDisclosureMetricsToFieldOverrides(
             metrics.percentOfDailyIncomePurchased,
             "",
         ),
-        ...(formatDisclosurePaymentFrequencyLabel(options.frequency)
+        ...(formatDisclosureDocumentFrequencyLabel(options.frequency)
             ? {
-                  payment_frequency: formatDisclosurePaymentFrequencyLabel(options.frequency),
-                  disclosure_payment_frequency: formatDisclosurePaymentFrequencyLabel(
+                  payment_frequency: formatDisclosureDocumentFrequencyLabel(options.frequency),
+                  disclosure_payment_frequency: formatDisclosureDocumentFrequencyLabel(
                       options.frequency,
                   ),
               }

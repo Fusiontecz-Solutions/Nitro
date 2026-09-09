@@ -5,6 +5,7 @@ import type {
 } from "./disclosureAprCalculator";
 import {
     applyDisclosurePlatformFee,
+    formatDisclosureDocumentFrequencyLabel,
     formatDisclosurePaymentFrequencyLabel,
     formatDisclosurePercent,
     formatDisclosureUsd,
@@ -508,7 +509,7 @@ export function expandDisclosureEditorValuesToPdfFields(
         if (raw.endsWith("%")) out[id] = raw.replace(/%+\s*$/, "").trim();
     }
 
-    // Disclosure PDF text: ALL CAPS; payment cadence as DAY / WEEK (not DAILY / WEEKLY).
+    // Disclosure PDF: cadence is day / week (renders as “per day”). CRM editor keeps Daily / Weekly.
     for (const [id, raw] of Object.entries(out)) {
         let value = String(raw ?? "").trim();
         if (!value) continue;
@@ -519,8 +520,9 @@ export function expandDisclosureEditorValuesToPdfFields(
             idNorm === "frequency" ||
             idNorm === "paymentterms"
         ) {
-            const freq = formatDisclosurePaymentFrequencyLabel(value);
-            value = freq || value;
+            const freq = formatDisclosureDocumentFrequencyLabel(value);
+            out[id] = (freq || value).toUpperCase();
+            continue;
         }
         out[id] = value.toUpperCase();
     }

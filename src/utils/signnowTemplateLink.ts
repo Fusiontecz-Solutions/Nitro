@@ -8,6 +8,8 @@ import {
   SIGNNOW_ACH_WEEKLY_LAYOUT_KEY,
   SIGNNOW_ACH_WEEKLY_TEMPLATE_ID,
   SIGNNOW_ADDENDUM_TEMPLATE_OPTIONS,
+  SIGNNOW_DISCLOSURE_LAYOUT_KEY,
+  SIGNNOW_DISCLOSURE_TEMPLATE_ID,
   SIGNNOW_EPA_LAYOUT_KEY,
   SIGNNOW_EPA_TEMPLATE_ID,
   SIGNNOW_EXHIBIT_A_LAYOUT_KEY,
@@ -34,6 +36,7 @@ const KNOWN_SIGNNOW_TEMPLATE_ID_LABELS: Record<string, string> = {
   [SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID]: "PayOff Addendum (Refi)",
   [SIGNNOW_EPA_TEMPLATE_ID]: "EPA Nitro Advance",
   [SIGNNOW_MONTHLY_FEE_TEMPLATE_ID]: "Monthly Fee",
+  [SIGNNOW_DISCLOSURE_TEMPLATE_ID]: "State Disclosure",
 };
 
 const KNOWN_SIGNNOW_LAYOUT_LABELS: Record<string, string> = {
@@ -45,6 +48,7 @@ const KNOWN_SIGNNOW_LAYOUT_LABELS: Record<string, string> = {
   [SIGNNOW_PAYOFF_ADDENDUM_LAYOUT_KEY]: "PayOff Addendum (Refi)",
   [SIGNNOW_EPA_LAYOUT_KEY]: "EPA Nitro Advance",
   [SIGNNOW_MONTHLY_FEE_LAYOUT_KEY]: "Monthly Fee",
+  [SIGNNOW_DISCLOSURE_LAYOUT_KEY]: "State Disclosure",
   ...Object.fromEntries(
     SIGNNOW_ADDENDUM_TEMPLATE_OPTIONS.map((opt) => [opt.layoutKey, opt.label]),
   ),
@@ -384,6 +388,27 @@ export function funderSignNowDisclosureOptions(
     profile?.signnowDisclosureTemplates,
     "disclosure",
   );
+}
+
+/** Platform SignNow state disclosure when the funder has none in Settings. */
+export function platformSignNowDisclosureOption(): FunderSignNowTemplateOption {
+  return {
+    id: SIGNNOW_DISCLOSURE_LAYOUT_KEY,
+    layoutKey: SIGNNOW_DISCLOSURE_LAYOUT_KEY,
+    knownLayoutKey: SIGNNOW_DISCLOSURE_LAYOUT_KEY,
+    templateId: SIGNNOW_DISCLOSURE_TEMPLATE_ID,
+    name: "State Disclosure",
+    type: "disclosure",
+    pdfUrl: `signnow://${SIGNNOW_DISCLOSURE_TEMPLATE_ID}`,
+    link: SIGNNOW_DISCLOSURE_TEMPLATE_ID,
+  };
+}
+
+/** Funder Settings disclosure, or the shared Nitro SignNow disclosure template. */
+export function resolveSignNowDisclosureOption(
+  profile?: FunderProfile | null,
+): FunderSignNowTemplateOption {
+  return funderSignNowDisclosureOptions(profile)[0] ?? platformSignNowDisclosureOption();
 }
 
 export function funderSignNowContractTemplateId(
