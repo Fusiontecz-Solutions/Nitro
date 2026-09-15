@@ -1382,6 +1382,8 @@ function buildAddendumAchWeeklyComputed(
             str(c.accountNumber),
         printName,
         printTitle: get("owner_print_title") || "OWNER",
+        // Bottom "Date:" box. See ACH_WEEKLY.ts for why it is `Text Field 1`.
+        signatureDate: sctx.signatureDate || todayUsDate(),
     });
 }
 

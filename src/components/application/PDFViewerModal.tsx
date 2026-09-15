@@ -1393,6 +1393,15 @@ function pickContractEnvelopeDocument(contract: Record<string, unknown> | null |
     return null;
 }
 
+/**
+ * One shared empty array for redux slices that may hold a non-array while loading.
+ * `Array.isArray(x) ? x : []` mints a NEW [] on every render, and that identity
+ * propagates through the addendum useMemo chain into AddendumSendOrderBoard,
+ * whose sync effect then calls setState on every render — the render churn that
+ * kept framer-motion's layout animations re-measuring the send-order list.
+ */
+const EMPTY_LIST: never[] = [];
+
 const DOCUSIGN_DOC_DRAFT_STATUSES = new Set(["draft", "created"]);
 
 const DOCUSIGN_DOC_SENT_STATUSES = new Set([
@@ -2709,7 +2718,7 @@ const PDFViewerModal = ({
     );
     const boldSignTemplates = Array.isArray(boldSignTemplatesState.data)
         ? boldSignTemplatesState.data
-        : [];
+        : EMPTY_LIST;
     const boldSignTemplatesLoading = Boolean(boldSignTemplatesState.loading);
     /** True after this modal open has finished at least one templates fetch (even if empty). */
     const [boldSignTemplatesHydrated, setBoldSignTemplatesHydrated] = useState(false);
@@ -2854,7 +2863,7 @@ const PDFViewerModal = ({
     const hasSavedSignerOverrides = Boolean(contractSignerOverrides?.length);
     const uploadedDocs = Array.isArray(uploadedDocsState.data)
         ? uploadedDocsState.data
-        : [];
+        : EMPTY_LIST;
     const normalizeDocumentTypeKey = (value: unknown): string =>
         String(value ?? "")
             .toLowerCase()
