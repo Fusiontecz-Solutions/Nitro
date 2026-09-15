@@ -698,7 +698,10 @@ function formatUsDate(value: unknown): string {
     }
     const t = String(value || "").trim();
     if (!t) return "";
-    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) return t;
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) {
+        const [month, day, year] = t.split("/");
+        return `${month.padStart(2, "0")}/${day.padStart(2, "0")}/${year}`;
+    }
     if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
         return `${t.slice(5, 7)}/${t.slice(8, 10)}/${t.slice(0, 4)}`;
     }
@@ -952,10 +955,13 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
             .filter(Boolean)
             .join(", ");
 
-    const signatureDate =
-        formatUsDate(args.agreementDate) ||
-        formatUsDate(contract.agreementDate) ||
-        formatUsDate(contract.contractDate);
+    const todayUs = new Intl.DateTimeFormat("en-US", {
+        month: "2-digit",
+        day: "2-digit",
+        year: "numeric",
+    }).format(new Date());
+    // Disclosures are issued on send day — never the stored contract/agreement date.
+    const signatureDate = todayUs;
 
     /** Average monthly income is sourced from bank analysis, then application/business. */
     const client = (application.client as Record<string, unknown> | null) ?? null;

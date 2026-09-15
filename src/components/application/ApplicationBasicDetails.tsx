@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { useTheme } from "@/context/ThemeContext";
-import { isApplicationDetailFetchFresh } from "@/lib/applicationDetailCache";
+import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import {
@@ -80,21 +80,25 @@ const newOwnerFormKey = () =>
         ? crypto.randomUUID()
         : `owner-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-const mapOwnerToForm = (owner: any): OwnerForm => ({
-    formKey: String(owner?.formKey || owner?.id || owner?._id || newOwnerFormKey()),
-    firstName: String(owner?.firstName ?? ""),
-    lastName: String(owner?.lastName ?? ""),
-    email: String(owner?.email ?? ""),
-    mobileNumber: String(owner?.mobileNumber ?? ""),
-    dateOfBirth: toDateInput(owner?.dateOfBirth),
-    ssn: String(owner?.ssn ?? ""),
-    ficoScore: String(owner?.ficoScore ?? ""),
-    ownershipPercentage: String(owner?.ownershipPercentage ?? ""),
-    address1: String(owner?.address?.address1 ?? ""),
-    city: String(owner?.address?.city ?? ""),
-    state: String(owner?.address?.state ?? ""),
-    zipCode: String(owner?.address?.zipCode ?? ""),
-});
+const mapOwnerToForm = (owner: any): OwnerForm => {
+    const addr =
+        owner?.address && typeof owner.address === "object" ? owner.address : {};
+    return {
+        formKey: String(owner?.formKey || owner?.id || owner?._id || newOwnerFormKey()),
+        firstName: String(owner?.firstName ?? ""),
+        lastName: String(owner?.lastName ?? ""),
+        email: String(owner?.email ?? ""),
+        mobileNumber: String(owner?.mobileNumber ?? ""),
+        dateOfBirth: toDateInput(owner?.dateOfBirth),
+        ssn: String(owner?.ssn ?? ""),
+        ficoScore: String(owner?.ficoScore ?? ""),
+        ownershipPercentage: String(owner?.ownershipPercentage ?? ""),
+        address1: String(addr.address1 ?? owner?.address1 ?? ""),
+        city: String(addr.city ?? owner?.city ?? ""),
+        state: String(addr.state ?? owner?.state ?? ""),
+        zipCode: String(addr.zipCode ?? owner?.zipCode ?? ""),
+    };
+};
 
 const createEmptyOwnerForm = (): OwnerForm => mapOwnerToForm({});
 
@@ -137,7 +141,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
 
-    const { loading: fetchLoading, isRefreshing, data: applicationData, error: detailError } = useSelector(
+    const { loading: fetchLoading, data: applicationData, error: detailError } = useSelector(
         (state: RootState) => state.applicationDetail
     );
     const loginUser = useSelector((state: RootState) => state.login.data?.user);
@@ -402,12 +406,17 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
     };
 
     const detailRouteKey = String(applicationId || data?.applicationId || data?._id || "").trim();
+    const hasMatchingDetail = Boolean(
+        data &&
+            (!detailRouteKey || routeParamMatchesApplication(detailRouteKey, data)),
+    );
+    // Show cached Redux detail immediately when returning from later pipeline steps.
+    // Only block the form on a true first load (no matching row yet).
     const showDetailsLoading =
         !isEditMode &&
         !detailError &&
-        (fetchLoading ||
-            isRefreshing ||
-            (Boolean(detailRouteKey) && !isApplicationDetailFetchFresh(detailRouteKey)));
+        !hasMatchingDetail &&
+        (fetchLoading || Boolean(detailRouteKey));
 
     if (showDetailsLoading) {
         return (
@@ -562,15 +571,19 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                                         </div>
                                     </button>
 
-                                    <div className={isExpanded ? "px-4 py-2 space-y-2" : "hidden"}>
+                                    {isExpanded ? (
+                                    <div className="px-4 py-2 space-y-2">
                                         {OWNER_FIELD_DEFS.map(([label, key]) => (
                                             <div
-                                                key={key}
+                                                key={`${owner.formKey}-${key}`}
                                                 className="grid grid-cols-2 gap-4 py-1 font-roboto"
                                             >
                                                 <span className={`text-sm font-medium ${isDark ? "text-[#C07BE0]" : "text-[var(--brand)]"}`}>{label}</span>
                                                 {isEditMode ? (
                                                     <Input
+                                                        id={`application-owner-${ownerIndex}-${key}`}
+                                                        name={`owners.${ownerIndex}.${key}`}
+                                                        autoComplete="off"
                                                         type={key.toLowerCase().includes("date") ? "date" : key.toLowerCase().includes("email") ? "email" : "text"}
                                                         value={owner[key]}
                                                         onChange={(e) => updateOwnerField(ownerIndex, key, e.target.value)}
@@ -584,6 +597,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                                             </div>
                                         ))}
                                     </div>
+                                    ) : null}
                                 </div>
                             );
                         })}

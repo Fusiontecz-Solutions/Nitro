@@ -57,6 +57,9 @@ import {
 } from '@/components/ui/table'
 import { useTheme } from '@/context/ThemeContext'
 import PDFViewerDocsModal from '@/components/application/PDFViewerDocsModal'
+import AutoCreateFromPdfPanel, {
+    type AutoCreatePdfBundle,
+} from '@/components/application/AutoCreateFromPdfPanel'
 import {
     RefinanceDealSelectModal,
     type ClientDealForRefinance,
@@ -217,7 +220,6 @@ const CreateApplication = () => {
     const dispatch = useDispatch<AppDispatch>()
     const { applicationId } = useParams<{ applicationId: string }>()
     const fileInputRef = useRef<HTMLInputElement>(null)
-    const autoClientPdfInputRef = useRef<HTMLInputElement>(null)
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
     const [isAutoCreatingClient, setIsAutoCreatingClient] = useState(false)
     const [isDragOver, setIsDragOver] = useState(false)
@@ -469,20 +471,26 @@ const CreateApplication = () => {
     }, [])
 
     const handleAutoCreateClientFromPDF = useCallback(
-        async (file: File | null) => {
-            if (!file) {
-                toast.error('Please select a PDF file first')
+        async (bundle: AutoCreatePdfBundle) => {
+            const files = Array.isArray(bundle.files) ? bundle.files.filter(Boolean) : []
+            if (!files.length) {
+                toast.error('Please select one or more PDF files')
                 return
             }
-            if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-                toast.error('Please select a PDF file')
+            const hasPdf = files.some(
+                (f) =>
+                    f.type === 'application/pdf' ||
+                    f.name.toLowerCase().endsWith('.pdf'),
+            )
+            if (!hasPdf) {
+                toast.error('Include at least one application PDF')
                 return
             }
 
             setIsAutoCreatingClient(true)
             try {
                 const result = (await dispatch(
-                    parseApplicationPdfForClientPrefill(file) as any,
+                    parseApplicationPdfForClientPrefill({ files }) as any,
                 )) as {
                     payload?: any
                     meta: { requestStatus: 'fulfilled' | 'rejected' }
@@ -512,17 +520,13 @@ const CreateApplication = () => {
                     return
                 }
 
-                if (rawData.existingClient) {
-                    toast.success(
-                        'Client already exists. Application has been created for the existing client.',
-                    )
-                } else {
-                    toast.success('Client created successfully and application generated.')
-                }
-
-                if (autoClientPdfInputRef.current) {
-                    autoClientPdfInputRef.current.value = ''
-                }
+                const message =
+                    typeof result.payload?.message === 'string' && result.payload.message.trim()
+                        ? result.payload.message
+                        : rawData.existingClient
+                          ? 'Client already exists. Application has been created for the existing client.'
+                          : 'Client created successfully and application generated.'
+                toast.success(message)
 
                 navigate('/applications', {
                     state: { refreshApplicationsList: true },
@@ -754,44 +758,6 @@ const CreateApplication = () => {
                     : 'border-[#E5E7EB] bg-white hover:border-[var(--brand)]/50 hover:bg-slate-50',
         )
 
-    const autoCreateFromPdfControl = !isEditMode ? (
-        <div className="flex min-w-0 flex-col gap-1.5 lg:shrink-0">
-            <Label
-                aria-hidden
-                tabIndex={-1}
-                className={cn(
-                    'pointer-events-none hidden select-none lg:flex lg:opacity-0',
-                    fieldLabelClass,
-                )}
-            >
-                Auto-Create
-            </Label>
-            <div className="flex shrink-0">
-                <input
-                    ref={autoClientPdfInputRef}
-                    type="file"
-                    accept="application/pdf"
-                    className="hidden"
-                    onChange={(e) =>
-                        handleAutoCreateClientFromPDF(e.target.files?.[0] || null)
-                    }
-                />
-                <Button
-                    type="button"
-                    variant="outline"
-                    className="h-10 whitespace-nowrap px-4 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
-                    onClick={() => autoClientPdfInputRef.current?.click()}
-                    disabled={isAutoCreatingClient}
-                >
-                    {isAutoCreatingClient && (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    )}
-                    Auto-Create from PDF
-                </Button>
-            </div>
-        </div>
-    ) : null
-
     return (
         <div className="min-h-[calc(100vh-64px)] w-full bg-background p-4 md:p-6 lg:p-8">
             {/* Main Content */}
@@ -813,6 +779,14 @@ const CreateApplication = () => {
                             </span>
                         </CardContent>
                     </Card>
+
+                    {!isEditMode ? (
+                        <AutoCreateFromPdfPanel
+                            isDark={isDark}
+                            loading={isAutoCreatingClient}
+                            onSubmit={handleAutoCreateClientFromPDF}
+                        />
+                    ) : null}
 
                     {/* Form - key forces re-render after form reset */}
                     <form key={isFormReset ? 'reset' : 'initial'} onSubmit={handleSubmit(onSubmit)} className="space-y-6">
@@ -1059,11 +1033,10 @@ const CreateApplication = () => {
                                                     </p>
                                                 )}
                                             </div>
-                                            {autoCreateFromPdfControl}
                                         </div>
                                     </div>
                                 ) : (
-                                <div className="grid grid-cols-1 gap-4 px-6 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+                                <div className="grid grid-cols-1 gap-4 px-6 sm:grid-cols-2 lg:items-end">
                                     <div className="flex min-w-0 flex-col gap-1.5">
                                         <Label className={fieldLabelClass}>
                                             Client <span className="text-red-500">*</span>
@@ -1130,7 +1103,6 @@ const CreateApplication = () => {
                                             </p>
                                         )}
                                     </div>
-                                    {autoCreateFromPdfControl}
                                 </div>
                                 )}
 

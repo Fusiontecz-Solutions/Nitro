@@ -51,6 +51,14 @@ import {
     resolveSharedDbaValue,
     usesCoordinateLayoutTemplate,
 } from "./documentTemplateMappingPrefill";
+import {
+    EXHIBIT_C_ENTITIES_PREFILL_KEY,
+    exhibitCEntitiesFromPrefill,
+    exhibitCEntityFromTabValues,
+    serializeExhibitCEntities,
+    upsertExhibitCEntityAtIndex,
+} from "./exhibitCEntityPrefill";
+import { isAchDailyAddendumRef, isMultiInstanceAddendumRef } from "./multiInstanceAddendum";
 
 export type TemplateMappingPrefillEditRow = {
     id: string;
@@ -85,6 +93,11 @@ type TemplateMappingPrefillEditDialogProps = {
     documentTemplatePrefillByMappingId: Record<string, Record<string, string>>;
     /** Main contract prefill overrides (without document mapping blob); merged on save. */
     mainPrefillOverrides: Partial<BuildContractPrefillFieldsArgs> | null;
+    /**
+     * 0-based index among Exhibit C copies on this deal.
+     * Index &gt; 0 starts empty and saves without overwriting other Exhibit C / shared bank.
+     */
+    exhibitCEntityIndex?: number;
     /**
      * Optional title suffix (e.g. selected funder name for ACH).
      * When set, replaces the template name in the dialog title.
@@ -133,6 +146,7 @@ export function TemplateMappingPrefillEditDialog({
     agreementDate,
     documentTemplatePrefillByMappingId,
     mainPrefillOverrides,
+    exhibitCEntityIndex = 0,
     titleSuffix = null,
     onSaved,
 }: TemplateMappingPrefillEditDialogProps) {
@@ -143,6 +157,24 @@ export function TemplateMappingPrefillEditDialog({
     const hydratedSessionKeyRef = useRef<string | null>(null);
 
     const coordinateLayout = usesCoordinateLayoutTemplate(row);
+    const isAchDailyRow = Boolean(
+        row &&
+            isAchDailyAddendumRef(
+                row.template?.layoutKey || row.template?.templateId || "",
+                row.template?.name,
+            ),
+    );
+    const isExhibitCRow = Boolean(
+        row &&
+            !isAchDailyRow &&
+            isMultiInstanceAddendumRef(
+                row.template?.layoutKey || row.template?.templateId || "",
+                row.template?.name,
+            ),
+    );
+    // Every Exhibit C copy saves only its own mapping + entity slot — never overwrite siblings.
+    // ACH Daily is a separate template (same field ids) and must not use Exhibit C entity slots.
+    const isolateExhibitCInstance = isExhibitCRow;
 
     const editorRows = useMemo(() => {
         if (!row) return [];
@@ -173,6 +205,7 @@ export function TemplateMappingPrefillEditDialog({
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
             ach: (contractRecords?.ach as Record<string, unknown> | null) ?? null,
+            exhibitCEntityIndex,
         });
     }, [
         row,
@@ -183,6 +216,7 @@ export function TemplateMappingPrefillEditDialog({
         contractRecords,
         agreementDate,
         mainPrefillOverrides,
+        exhibitCEntityIndex,
     ]);
 
     const groupedEditorRows = useMemo(() => groupPrefillEditorRows(editorRows), [editorRows]);
@@ -192,11 +226,16 @@ export function TemplateMappingPrefillEditDialog({
             hydratedSessionKeyRef.current = null;
             return;
         }
-        const sessionKey = String(row.id);
+        const sessionKey = `${String(row.id)}:${exhibitCEntityIndex}`;
         if (hydratedSessionKeyRef.current === sessionKey) return;
         if (editorRows.length === 0) return;
         hydratedSessionKeyRef.current = sessionKey;
         const fromRows = Object.fromEntries(editorRows.map((r) => [r.id, r.value ?? ""]));
+        if (isolateExhibitCInstance) {
+            // Extra Exhibit C: only this mapping's saved values — no shared DBA seed.
+            setFieldValues(fromRows);
+            return;
+        }
         const sharedDba = resolveSharedDbaValue({
             mainPrefill: mainPrefillOverrides ?? null,
             contract: resolvedContract,
@@ -208,7 +247,7 @@ export function TemplateMappingPrefillEditDialog({
                 knownIds: editorRows.map((r) => String(r.id)),
             }),
         );
-    }, [open, row?.id, editorRows]);
+    }, [open, row?.id, editorRows, exhibitCEntityIndex, isolateExhibitCInstance]);
 
     const handleSave = useCallback(async () => {
         const cid = contractId != null && Number.isFinite(Number(contractId)) ? Number(contractId) : null;
@@ -252,6 +291,66 @@ export function TemplateMappingPrefillEditDialog({
                 }
             }
 
+            let nextBlob: Record<string, Record<string, string>> = {
+                ...existingBlob,
+                ...documentTemplatePrefillByMappingId,
+                [row.id]: tabValues,
+            };
+
+            const existingEntities = exhibitCEntitiesFromPrefill(rawOverrides);
+            const entityForSlot = exhibitCEntityFromTabValues(
+                tabValues,
+                existingEntities[exhibitCEntityIndex] ?? null,
+            );
+            const nextEntities = upsertExhibitCEntityAtIndex(
+                existingEntities,
+                exhibitCEntityIndex,
+                entityForSlot,
+            );
+            const exhibitCSerialized = serializeExhibitCEntities(nextEntities);
+
+            // Extra Exhibit C copies: write only this mapping + entity slot.
+            // Do not push bank/DBA into sibling mappings or main ACH columns.
+            if (isolateExhibitCInstance) {
+                const main = { ...rawOverrides } as Record<string, unknown>;
+                delete main[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+                delete main[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
+                if (exhibitCSerialized) {
+                    main[EXHIBIT_C_ENTITIES_PREFILL_KEY] = exhibitCSerialized;
+                } else {
+                    delete main[EXHIBIT_C_ENTITIES_PREFILL_KEY];
+                }
+                const contractPrefillOverrides: Record<string, unknown> = {
+                    ...main,
+                    [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
+                    ...(Object.keys(envelopeBlob).length
+                        ? { [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: envelopeBlob }
+                        : {}),
+                };
+                const result = await dispatch(
+                    updateContract({
+                        id: cid,
+                        data: { contractPrefillOverrides },
+                    }),
+                ).unwrap();
+                const savedPayload =
+                    (result as { data?: Record<string, unknown> })?.data ?? result;
+                const savedOverrides =
+                    savedPayload &&
+                    typeof savedPayload === "object" &&
+                    "contractPrefillOverrides" in savedPayload
+                        ? (savedPayload as { contractPrefillOverrides?: unknown })
+                              .contractPrefillOverrides
+                        : contractPrefillOverrides;
+                toast.success("Exhibit C prefill saved (this copy only).");
+                onSaved({
+                    tabValues,
+                    contractPrefillOverrides: savedOverrides,
+                });
+                onOpenChange(false);
+                return;
+            }
+
             const sharedBank = mergeSharedBankDetails(
                 extractSharedBankDetailsFromRecord(contractRecords?.bankDetail ?? null),
                 extractSharedBankDetailsFromRecord(
@@ -261,18 +360,18 @@ export function TemplateMappingPrefillEditDialog({
             );
             if (hasSharedBankDetails(sharedBank)) {
                 Object.assign(tabValues, applySharedBankDetailsToTabValues(tabValues, sharedBank));
+                nextBlob[row.id] = tabValues;
             }
 
             const sharedDba = resolveSharedDbaValue({
                 mainPrefill: { ...(mainPrefillOverrides ?? {}), ...tabValues },
                 contract: resolvedContract,
-                mappingBlobs: { ...existingBlob, ...documentTemplatePrefillByMappingId, [row.id]: tabValues },
+                mappingBlobs: {
+                    ...existingBlob,
+                    ...documentTemplatePrefillByMappingId,
+                    [row.id]: tabValues,
+                },
             });
-            let nextBlob: Record<string, Record<string, string>> = {
-                ...existingBlob,
-                ...documentTemplatePrefillByMappingId,
-                [row.id]: tabValues,
-            };
             if (sharedDba) {
                 nextBlob = applySharedDbaToMappingBlob(nextBlob, sharedDba);
                 nextBlob[row.id] = applySharedDbaToFieldValues(tabValues, sharedDba);
@@ -296,6 +395,9 @@ export function TemplateMappingPrefillEditDialog({
             const main = { ...rawOverrides } as Record<string, unknown>;
             delete main[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
             delete main[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
+            if (exhibitCSerialized) {
+                main[EXHIBIT_C_ENTITIES_PREFILL_KEY] = exhibitCSerialized;
+            }
 
             const contractPrefillOverrides: Record<string, unknown> = {
                 ...main,
@@ -425,20 +527,26 @@ export function TemplateMappingPrefillEditDialog({
         applicationData,
         onSaved,
         onOpenChange,
+        isolateExhibitCInstance,
+        exhibitCEntityIndex,
     ]);
 
     const overrideTitle = String(titleSuffix ?? "").trim();
     const titleName = overrideTitle
         ? overrideTitle
-        : row?.template?.name?.trim()
-          ? row.template.name
-          : coordinateLayout
-            ? "ACH authorization"
-            : row?.template?.templateId || "DocuSign template";
+        : isAchDailyRow
+          ? "ACH Daily"
+          : row?.template?.name?.trim()
+            ? row.template.name
+            : coordinateLayout
+              ? "ACH authorization"
+              : row?.template?.templateId || "DocuSign template";
 
     const dialogTitle = coordinateLayout
         ? `Edit ACH form — ${titleName}`
-        : `Edit template mapping — ${titleName}`;
+        : isAchDailyRow
+          ? `Edit ACH Daily — ${titleName}`
+          : `Edit template mapping — ${titleName}`;
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -450,8 +558,11 @@ export function TemplateMappingPrefillEditDialog({
                     <DialogTitle className="text-base">{dialogTitle}</DialogTitle>
                     {!coordinateLayout ? (
                         <p className="text-muted-foreground text-sm font-normal leading-snug">
-                            Adjust field values used when prefilling this document. Bank name, routing, and
-                            account are stored on the application and auto-filled on every contract document.
+                            {isAchDailyRow
+                                ? "ACH Daily uses the ACH Authorization field map (same SignNow widgets as Exhibit C). Date, names, and bank fill correctly — edits apply only to this ACH Daily document."
+                                : isExhibitCRow
+                                  ? "All Exhibit C copies use the same field map. Prefill comes from this copy’s entity (send-order Exhibit C / Exhibit C (2) / …) — not from other copies or stale mapping text."
+                                  : "Adjust field values used when prefilling this document. Bank name, routing, and account are stored on the application and auto-filled on every contract document."}
                         </p>
                     ) : null}
                 </DialogHeader>

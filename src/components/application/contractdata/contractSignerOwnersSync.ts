@@ -24,6 +24,7 @@ import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
 import {
     getClientFetchArg,
     getClientFetchKeyFromApplicationClient,
+    mapOwnerContactFromClientRow,
     resolveOwnersFromClientData,
 } from "@/lib/clientOwners";
 import {
@@ -372,27 +373,19 @@ function buildClientPayloadFromApplication(application: unknown): CreateClientPa
             : index === 0
               ? ((client.owner ?? {}) as Record<string, unknown>)
               : undefined;
-        const ownAddr = (related?.address ?? {}) as Record<string, unknown>;
+        const contact = mapOwnerContactFromClientRow(related, client, index);
         return {
             firstName: str(party.ownerFirstName ?? related?.firstName),
             middleName: str(related?.middleName),
             lastName: str(party.ownerLastName ?? related?.lastName),
             email: str(party.ownerEmail ?? related?.email),
-            mobileNumber: str(
-                related?.mobileNumber ?? client.ownerMobileNumber ?? client.ownerPhone,
-            ),
-            dateOfBirth: str(related?.dateOfBirth),
-            ssn: str(related?.ssn ?? client.ownerSsn),
+            mobileNumber: contact.mobileNumber,
+            dateOfBirth: contact.dateOfBirth,
+            ssn: contact.ssn,
             ficoScore: (related?.ficoScore as string | number) ?? "",
             ownershipStartDate: str(related?.ownershipStartDate),
             ownershipPercentage: (related?.ownershipPercentage as string | number) ?? "",
-            address: {
-                address1: str(ownAddr.address1),
-                address2: str(ownAddr.address2),
-                city: str(ownAddr.city),
-                state: str(ownAddr.state),
-                zipCode: str(ownAddr.zipCode),
-            },
+            address: contact.address,
         };
     };
 

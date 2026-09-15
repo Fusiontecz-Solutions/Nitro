@@ -52,7 +52,7 @@ function App() {
     registerApplicationsListQueryInvalidator(() => {
       void appQueryClient.invalidateQueries({
         queryKey: ["applications-list"],
-        refetchType: "all",
+        refetchType: "active",
       });
     });
     return () => registerApplicationsListQueryInvalidator(null);

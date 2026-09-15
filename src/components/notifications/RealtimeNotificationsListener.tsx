@@ -8,7 +8,7 @@ import {
     prependNotification,
     type Notification,
 } from "@/redux/slices/notificationSlice";
-import { invalidateApplicationsListCache } from "@/lib/applicationsListCache";
+import { invalidateApplicationsListCache, shouldSkipApplicationCreatedInvalidation } from "@/lib/applicationsListCache";
 import { invalidateDashboardData } from "@/lib/invalidateDashboardData";
 
 /**
@@ -90,8 +90,11 @@ const RealtimeNotificationsListener = () => {
             dispatch(prependNotification(incoming));
 
             if (String(incoming.type || "").toLowerCase() === "application_created") {
-                invalidateApplicationsListCache();
-                invalidateDashboardData(dispatch);
+                // Create flow already refreshed list/stats on navigate; skip brief duplicate fan-out.
+                if (!shouldSkipApplicationCreatedInvalidation()) {
+                    invalidateApplicationsListCache();
+                    invalidateDashboardData(dispatch);
+                }
             }
 
             const role = userRoleRef.current;

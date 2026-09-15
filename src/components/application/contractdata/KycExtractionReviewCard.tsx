@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CheckCircle2, Pencil, RefreshCw, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, Pencil, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -57,6 +57,29 @@ function voidedCheckFields(extraction: KycExtractionResult): FieldDef[] {
     ];
 }
 
+function summaryLine(documentKey: KycDocKey, extraction: KycExtractionResult): string {
+    if (documentKey === "driverLicense") {
+        const g = extraction.panels?.guarantor;
+        const o = extraction.panels?.owner;
+        const name = [g?.firstName || o?.firstName, g?.lastName || o?.lastName]
+            .filter(Boolean)
+            .join(" ")
+            .trim();
+        const dl = (g?.driverLicenseNumber || "").trim();
+        if (name && dl) return `${name} · DL ${dl}`;
+        if (name) return name;
+        if (dl) return `DL ${dl}`;
+        return extraction.fileName || "Extracted fields available";
+    }
+    const ach = extraction.panels?.ach;
+    const holder = (ach?.fullNameOnAccount || "").trim();
+    const account = (ach?.accountNumber || "").trim();
+    if (holder && account) return `${holder} · ****${account.slice(-4)}`;
+    if (holder) return holder;
+    if (account) return `Account ****${account.slice(-4)}`;
+    return extraction.fileName || "Extracted fields available";
+}
+
 export default function KycExtractionReviewCard({
     documentKey,
     extraction,
@@ -67,12 +90,17 @@ export default function KycExtractionReviewCard({
     onSync,
     onDismiss,
 }: KycExtractionReviewCardProps) {
+    const [expanded, setExpanded] = useState(false);
     const [editing, setEditing] = useState(false);
     const fields = useMemo(
         () =>
             documentKey === "driverLicense"
                 ? driverLicenseFields(extraction)
                 : voidedCheckFields(extraction),
+        [documentKey, extraction],
+    );
+    const summary = useMemo(
+        () => summaryLine(documentKey, extraction),
         [documentKey, extraction],
     );
 
@@ -156,36 +184,78 @@ export default function KycExtractionReviewCard({
     return (
         <div
             className={cn(
-                "min-w-0 rounded-xl border p-3 shadow-sm",
+                "min-w-0 rounded-xl border shadow-sm",
                 synced
                     ? "border-emerald-200 bg-emerald-50/60"
                     : "border-[var(--brand)]/25 bg-gradient-to-br from-white to-slate-50/90",
             )}
         >
-            <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-                <div>
-                    <p className="text-sm font-semibold text-slate-900">
-                        Extracted — {title || labelForKey(documentKey)}
-                    </p>
-                    <p className="text-[11px] text-slate-500">
-                        {synced
-                            ? "Synced to contract prefill."
-                            : "Review extracted fields, edit if needed, then sync. Saved values auto-fill later."}
-                    </p>
-                </div>
-                <div className="flex items-center gap-1.5">
-                    {!synced && (
-                        <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 gap-1.5 text-xs"
-                            onClick={() => setEditing((v) => !v)}
-                        >
-                            <Pencil className="h-3.5 w-3.5" />
-                            {editing ? "Done" : "Edit"}
-                        </Button>
-                    )}
+            <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+                <button
+                    type="button"
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                    aria-expanded={expanded}
+                    onClick={() => setExpanded((v) => !v)}
+                >
+                    <ChevronDown
+                        className={cn(
+                            "h-4 w-4 shrink-0 text-slate-500 transition-transform",
+                            expanded ? "rotate-0" : "-rotate-90",
+                        )}
+                    />
+                    <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900">
+                            Extracted — {title || labelForKey(documentKey)}
+                        </p>
+                        <p className="truncate text-[11px] text-slate-500">
+                            {expanded
+                                ? synced
+                                    ? "Synced to contract prefill."
+                                    : "Review extracted fields, edit if needed, then sync."
+                                : summary}
+                        </p>
+                    </div>
+                </button>
+
+                <div className="flex shrink-0 items-center gap-1.5">
+                    {synced ? (
+                        <span className="hidden items-center gap-1 text-[11px] font-medium text-emerald-700 sm:inline-flex">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Prefill updated
+                        </span>
+                    ) : null}
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setExpanded(true);
+                            setEditing((v) => !v);
+                        }}
+                    >
+                        <Pencil className="h-3.5 w-3.5" />
+                        {editing ? "Done" : "Edit"}
+                    </Button>
+                    <Button
+                        type="button"
+                        size="sm"
+                        className="h-8 gap-1.5 bg-[image:var(--brand-gradient)] text-xs text-white hover:opacity-90"
+                        disabled={syncing}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setExpanded(true);
+                            onSync();
+                        }}
+                    >
+                        {syncing ? (
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        {synced ? "Re-sync" : "Sync"}
+                    </Button>
                     {onDismiss ? (
                         <Button
                             type="button"
@@ -193,7 +263,10 @@ export default function KycExtractionReviewCard({
                             size="icon"
                             className="h-8 w-8"
                             aria-label="Dismiss"
-                            onClick={onDismiss}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onDismiss();
+                            }}
                         >
                             <X className="h-4 w-4" />
                         </Button>
@@ -201,52 +274,37 @@ export default function KycExtractionReviewCard({
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {fields.map((field) => (
-                    <div key={field.key} className="min-w-0">
-                        <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
-                            {field.label}
-                        </p>
-                        {editing && !synced ? (
-                            <Input
-                                className="h-8 bg-white text-xs"
-                                value={field.value}
-                                onChange={(e) => updateField(field.key, e.target.value)}
-                            />
-                        ) : (
-                            <p className="truncate rounded-md border border-slate-200/80 bg-white px-2 py-1.5 text-xs text-slate-800">
-                                {field.value.trim() || "—"}
-                            </p>
-                        )}
+            {expanded ? (
+                <div className="border-t border-slate-200/70 px-3 pb-3 pt-3">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {fields.map((field) => (
+                            <div key={field.key} className="min-w-0">
+                                <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                    {field.label}
+                                </p>
+                                {editing ? (
+                                    <Input
+                                        className="h-8 bg-white text-xs"
+                                        value={field.value}
+                                        onChange={(e) => updateField(field.key, e.target.value)}
+                                    />
+                                ) : (
+                                    <p className="truncate rounded-md border border-slate-200/80 bg-white px-2 py-1.5 text-xs text-slate-800">
+                                        {field.value.trim() || "—"}
+                                    </p>
+                                )}
+                            </div>
+                        ))}
                     </div>
-                ))}
-            </div>
 
-            {!synced && (
-                <div className="mt-3 flex justify-end">
-                    <Button
-                        type="button"
-                        size="sm"
-                        className="h-8 gap-1.5 bg-[image:var(--brand-gradient)] text-xs text-white hover:opacity-90"
-                        disabled={syncing}
-                        onClick={onSync}
-                    >
-                        {syncing ? (
-                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                            <RefreshCw className="h-3.5 w-3.5" />
-                        )}
-                        Sync to prefill
-                    </Button>
+                    {synced ? (
+                        <p className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 sm:hidden">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Prefill updated
+                        </p>
+                    ) : null}
                 </div>
-            )}
-
-            {synced && (
-                <p className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    Prefill updated
-                </p>
-            )}
+            ) : null}
         </div>
     );
 }

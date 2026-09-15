@@ -82,6 +82,7 @@ import {
 import {
   applicationsListParamsCacheKey,
   invalidateApplicationsListCache,
+  markApplicationsCreatedRefresh,
 } from "@/lib/applicationsListCache";
 import { invalidateDashboardData } from "@/lib/invalidateDashboardData";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
@@ -1282,7 +1283,7 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
 
   fetchApplicationsRef.current = fetchApplications;
 
-  /** After create/update, drop caches and reload the table immediately. */
+  /** After create/update, drop caches once — React Query remount/invalidation reloads the table. */
   useEffect(() => {
     if (!isListFilterInitialized) return;
     const refreshList = Boolean(
@@ -1290,24 +1291,15 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
         ?.refreshApplicationsList,
     );
     if (!refreshList) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        await fetchApplicationsRef.current?.();
-        if (cancelled) return;
-        invalidateDashboardData(dispatch);
-        void dispatch(fetchOperationsDashboardSummary());
-      } finally {
-        if (cancelled) return;
-        navigate(
-          { pathname: location.pathname, search: location.search },
-          { replace: true, state: {} },
-        );
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // Mark create-refresh so socket `application_created` does not immediately
+    // re-invalidate list/stats (avoids duplicate GETs right after navigate).
+    markApplicationsCreatedRefresh();
+    invalidateApplicationsListCache();
+    invalidateDashboardData(dispatch);
+    navigate(
+      { pathname: location.pathname, search: location.search },
+      { replace: true, state: {} },
+    );
   }, [
     dispatch,
     isListFilterInitialized,

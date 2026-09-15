@@ -1,4 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    Fragment,
+    memo,
+    startTransition,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 import { flushSync } from "react-dom";
 import {
     AlertCircle,
@@ -122,6 +131,7 @@ import {
     prepareDealReviewPrefillDisplay,
     applyTexasContractUsdMoneyToPrefillFields,
     uppercaseContractDocumentPrefillFields,
+    resolveContractBusinessLegalNameForPrefill,
     CONTRACT_PREFILL_OVERRIDES_SECTION,
     getApplicationPrimaryRecipientName,
     resolveEffectiveDocuSignSignerEmail,
@@ -136,7 +146,7 @@ import {
     parseKycExtractionsFromUploadResponse,
     kycExtractionHasReadableFields,
 } from "./contractdata/kycDocumentPrefill";
-import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
+import { cn, formatDate, formatDateMonthDayYear, formatDateTimeUS } from "@/lib/utils";
 import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
 import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
@@ -217,6 +227,11 @@ import {
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
+    EXHIBIT_C_ENTITIES_PREFILL_KEY,
+    mergeExhibitCEntitiesForSignNowSend,
+    serializeExhibitCEntities,
+} from "./contractdata/exhibitCEntityPrefill";
+import {
     docuSignPrefillSyncToast,
     patchDocuSignPrefillFields,
 } from "./contractdata/syncDocuSignPrefillFields";
@@ -238,6 +253,7 @@ import {
 import {
     isSignNowAddendumLayoutKey,
     isSignNowDisclosureLayoutKey,
+    SIGNNOW_ACH_DAILY_LAYOUT_KEY,
     SIGNNOW_DISCLOSURE_LAYOUT_KEY,
 } from "./contractdata/signnowAddendumTemplates";
 import {
@@ -251,6 +267,13 @@ import {
     resolveFunderAddendumDisplayName,
     resolveSignNowDisclosureOption,
 } from "@/utils/signnowTemplateLink";
+import {
+    beginSignNowReviewTiming,
+    getActiveSignNowReviewTimingId,
+    markSignNowReviewEmbedSet,
+    markSignNowReviewIframeLoad,
+    newSignNowTimingRequestId,
+} from "@/utils/signnowTiming";
 import {
     contractSendPackageFingerprint,
     canSendWithoutMainContract,
@@ -270,6 +293,7 @@ import {
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { Checkbox } from "@/components/ui/checkbox";
+import { AddendumSendOrderBoard } from "./AddendumSendOrderBoard";
 import {
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
 } from "./contractdata/docusignTemplateConfig";
@@ -280,6 +304,21 @@ import {
     isSignNowLoginWebappUrl,
     signNowEmbeddedReturnUrl,
 } from "./contractdata/contractTemplatePreview";
+import {
+    countAddendumRefOccurrences,
+    expandAddendumRefsAllowingDuplicates,
+    findExhibitCOptionRef,
+    canonicalAddendumDedupKey,
+    isAchDailyAddendumRef,
+    isAchWeeklyAddendumRef,
+    isExhibitCFamilyAddendumRef,
+    isMultiInstanceAddendumRef,
+    labelForAddendumInstance,
+    labelForExhibitCFamilyInstance,
+    MULTI_INSTANCE_ADDENDUM_MAX,
+    sameAddendumPickerRef,
+    setAddendumRefCount,
+} from "./contractdata/multiInstanceAddendum";
 
 const SIGNNOW_REVIEW_TOAST_ID = "signnow-review-hint";
 import {
@@ -448,6 +487,8 @@ interface PDFViewerModalProps {
         prefillFields?: Array<{ id: string; value: string }>;
         /** SignNow: false opens an in-CRM review iframe; true emails signers immediately. */
         autoSend?: boolean;
+        /** Correlation id for SignNow Review timing logs only. */
+        timingRequestId?: string;
     }) => void | Promise<
         void | {
             envelopeId?: string;
@@ -474,6 +515,8 @@ type ContractDocumentTemplateMappingRow = {
     template?: {
         id: string;
         name?: string;
+        title?: string;
+        templateName?: string;
         type?: string;
         state?: string | null;
         templateId?: string;
@@ -483,6 +526,21 @@ type ContractDocumentTemplateMappingRow = {
 };
 
 type InfoPanelId = "addendum" | "ach" | "epo" | "owner" | "guarantor";
+
+function sameOrderedStrings(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function addendumMappingTemplateRef(
+    row: ContractDocumentTemplateMappingRow | null | undefined,
+): string {
+    if (!row) return "";
+    return (
+        getAddendumDropdownRef(row.template) ||
+        getBoldSignTemplateMappingRef(row.template) ||
+        ""
+    );
+}
 
 function isDisclosureMappingRow(row: ContractDocumentTemplateMappingRow): boolean {
     return String(row.documentType || "").toLowerCase() === "disclosure";
@@ -1650,6 +1708,271 @@ async function parseApiErrorMessageFromAxios(error: unknown): Promise<string> {
     return raw;
 }
 
+function formatDropdownLabel(raw: unknown): string {
+    const input = String(raw ?? "").trim();
+    if (!input) return "";
+    if (isSignNowTemplateIdToken(input)) return "";
+    const noExt = input.replace(/\.pdf$/i, "");
+    const normalized = noExt
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!normalized || isSignNowTemplateIdToken(normalized)) return "";
+    return normalized
+        .split(" ")
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(" ");
+}
+
+function sameStringList(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((item) => b.includes(item));
+}
+
+type AddendumPickerOption = { ref: string; label: string };
+
+/** Isolated from PDFViewerModal re-renders so checkbox clicks stay instant on modal open. */
+const AddendumTemplatesPicker = memo(function AddendumTemplatesPicker({
+    options,
+    selectedRefs,
+    forceClosed,
+    onToggle,
+    onSetCount,
+    onClear,
+    onOpenChange,
+}: {
+    options: AddendumPickerOption[];
+    selectedRefs: string[];
+    forceClosed: boolean;
+    onToggle: (ref: string) => void;
+    onSetCount?: (ref: string, count: number) => void;
+    onClear: () => void;
+    onOpenChange?: (open: boolean) => void;
+}) {
+    const [open, setOpen] = useState(false);
+    const [localSelected, setLocalSelected] = useState<string[]>(selectedRefs);
+    const localSelectedRef = useRef(localSelected);
+    localSelectedRef.current = localSelected;
+    const rootRef = useRef<HTMLDivElement>(null);
+    const ignorePropsUntilRef = useRef(0);
+    const lastToggleRef = useRef<{ ref: string; at: number } | null>(null);
+    const onOpenChangeRef = useRef(onOpenChange);
+    onOpenChangeRef.current = onOpenChange;
+
+    const setOpenAndNotify = useCallback((next: boolean) => {
+        setOpen(next);
+        onOpenChangeRef.current?.(next);
+    }, []);
+
+    useEffect(() => {
+        if (!forceClosed) return;
+        setOpenAndNotify(false);
+    }, [forceClosed, setOpenAndNotify]);
+
+    useEffect(() => {
+        if (Date.now() < ignorePropsUntilRef.current) return;
+        if (!sameStringList(localSelectedRef.current, selectedRefs)) {
+            setLocalSelected(selectedRefs);
+        }
+    }, [selectedRefs]);
+
+    useEffect(() => {
+        if (!open) return;
+        const onPointerDown = (event: MouseEvent) => {
+            const el = rootRef.current;
+            if (!el) return;
+            if (!el.contains(event.target as Node)) setOpenAndNotify(false);
+        };
+        document.addEventListener("mousedown", onPointerDown);
+        return () => document.removeEventListener("mousedown", onPointerDown);
+    }, [open, setOpenAndNotify]);
+
+    const toggle = (ref: string, label?: string) => {
+        const now = Date.now();
+        const last = lastToggleRef.current;
+        if (last && last.ref === ref && now - last.at < 80) return;
+        lastToggleRef.current = { ref, at: now };
+        ignorePropsUntilRef.current = now + 500;
+        if (isMultiInstanceAddendumRef(ref, label)) {
+            const count = countAddendumRefOccurrences(localSelectedRef.current, ref);
+            const nextCount = count > 0 ? 0 : 1;
+            setLocalSelected((prev) => setAddendumRefCount(prev, ref, nextCount, label));
+            onSetCount?.(ref, nextCount);
+            return;
+        }
+        setLocalSelected((prev) =>
+            prev.includes(ref) ? prev.filter((r) => r !== ref) : [...prev, ref],
+        );
+        onToggle(ref);
+    };
+
+    const adjustCount = (ref: string, delta: number, label?: string) => {
+        ignorePropsUntilRef.current = Date.now() + 500;
+        const current = countAddendumRefOccurrences(localSelectedRef.current, ref);
+        const nextCount = Math.max(0, Math.min(MULTI_INSTANCE_ADDENDUM_MAX, current + delta));
+        setLocalSelected((prev) => setAddendumRefCount(prev, ref, nextCount, label));
+        onSetCount?.(ref, nextCount);
+    };
+
+    const selectedLabels = localSelected.map((ref, index) => {
+        const match = options.find(
+            (o) =>
+                o.ref === ref ||
+                (isMultiInstanceAddendumRef(ref) &&
+                    isMultiInstanceAddendumRef(o.ref, o.label)),
+        );
+        return labelForAddendumInstance(
+            match?.label || formatDropdownLabel(ref) || "Addendum",
+            ref,
+            localSelected,
+            index,
+        );
+    });
+
+    return (
+        <div className="relative" ref={rootRef}>
+            <button
+                type="button"
+                aria-expanded={open}
+                aria-haspopup="listbox"
+                onClick={() => setOpenAndNotify(!open)}
+                className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left text-xs text-slate-800 outline-none transition hover:bg-slate-50 focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+            >
+                <span className="min-w-0 truncate">
+                    {localSelected.length === 0
+                        ? "Select addendum(s)"
+                        : selectedLabels.join(", ")}
+                </span>
+                <ChevronDown
+                    className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${
+                        open ? "rotate-180" : ""
+                    }`}
+                    aria-hidden
+                />
+            </button>
+
+            {open ? (
+                <div
+                    role="listbox"
+                    aria-multiselectable="true"
+                    className="absolute left-0 right-0 top-[calc(100%+4px)] z-[200] max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg dark:border-slate-600 dark:bg-slate-950"
+                >
+                    <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Available addendums
+                    </p>
+                    {options.length > 0 ? (
+                        options.map((opt) => {
+                            const multi = isMultiInstanceAddendumRef(opt.ref, opt.label);
+                            const count = countAddendumRefOccurrences(localSelected, opt.ref);
+                            const checked = multi ? count > 0 : localSelected.includes(opt.ref);
+                            return (
+                                <div
+                                    key={opt.ref}
+                                    role="option"
+                                    aria-selected={checked}
+                                    tabIndex={0}
+                                    onPointerDown={(event) => {
+                                        if (
+                                            multi &&
+                                            (event.target as HTMLElement)?.closest?.(
+                                                "[data-exhibit-c-qty]",
+                                            )
+                                        ) {
+                                            return;
+                                        }
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        toggle(opt.ref, opt.label);
+                                    }}
+                                    onKeyDown={(event) => {
+                                        if (event.key === " " || event.key === "Enter") {
+                                            event.preventDefault();
+                                            toggle(opt.ref, opt.label);
+                                        }
+                                    }}
+                                    className={`flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-xs transition-colors ${
+                                        checked
+                                            ? "bg-[var(--brand)]/10 text-slate-900 dark:text-slate-100"
+                                            : "text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-900"
+                                    }`}
+                                >
+                                    <Checkbox
+                                        checked={checked}
+                                        tabIndex={-1}
+                                        className="pointer-events-none"
+                                    />
+                                    <span className="min-w-0 flex-1 leading-snug">
+                                        {opt.label}
+                                        {multi && count > 1 ? (
+                                            <span className="ml-1 text-[10px] font-semibold text-[var(--brand)]">
+                                                ×{count}
+                                            </span>
+                                        ) : null}
+                                    </span>
+                                    {multi && checked ? (
+                                        <div
+                                            data-exhibit-c-qty
+                                            className="flex shrink-0 items-center gap-1 rounded-md border border-[var(--brand)]/30 bg-white px-1 py-0.5 dark:bg-slate-900"
+                                            onPointerDown={(e) => e.stopPropagation()}
+                                        >
+                                            <button
+                                                type="button"
+                                                className="flex h-7 w-7 items-center justify-center rounded text-[14px] font-bold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    adjustCount(opt.ref, -1, opt.label);
+                                                }}
+                                                aria-label={`Remove one ${opt.label}`}
+                                            >
+                                                −
+                                            </button>
+                                            <span className="min-w-[1.5rem] text-center text-[12px] font-bold text-[var(--brand)]">
+                                                {count}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                className="flex h-7 w-7 items-center justify-center rounded bg-[var(--brand)] text-[14px] font-bold text-white hover:opacity-90 disabled:opacity-40"
+                                                disabled={count >= MULTI_INSTANCE_ADDENDUM_MAX}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    adjustCount(opt.ref, 1, opt.label);
+                                                }}
+                                                aria-label={`Add another ${opt.label}`}
+                                            >
+                                                +
+                                            </button>
+                                        </div>
+                                    ) : multi ? (
+                                        <span className="text-[10px] font-medium text-slate-400">
+                                            select, then +
+                                        </span>
+                                    ) : null}
+                                </div>
+                            );
+                        })
+                    ) : (
+                        <p className="px-2 py-2 text-[11px] text-slate-500">
+                            No addendum PDFs uploaded for this funder yet.
+                        </p>
+                    )}
+                    {localSelected.length > 0 ? (
+                        <button
+                            type="button"
+                            className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:hover:bg-slate-900 dark:hover:text-slate-200"
+                            onClick={() => {
+                                ignorePropsUntilRef.current = Date.now() + 500;
+                                setLocalSelected([]);
+                                onClear();
+                            }}
+                        >
+                            Clear all addendums
+                        </button>
+                    ) : null}
+                </div>
+            ) : null}
+        </div>
+    );
+});
+
 const PDFViewerModal = ({
     isOpen,
     onClose,
@@ -1744,10 +2067,6 @@ const PDFViewerModal = ({
     };
     const goToNextStep = () => {
         if (!canGoNextStep) return;
-        if (activeStep === "documents" && waitingForSourceApplicationPdf) {
-            toast.info("Wait until the application PDF finishes uploading.");
-            return;
-        }
         setActiveStep(stepSequence[activeStepIndex + 1]);
     };
     const [selectedState, setSelectedState] = useState<string>("");
@@ -1986,21 +2305,19 @@ const PDFViewerModal = ({
         [selectedFunderProfile],
     );
 
-    /** Canonical linked addenda (highest `order` first) — one row per template. */
+    /** Canonical linked addenda (position 1 first) — one row per mapping (Exhibit C may repeat). */
     const linkedAddendumMappings = useMemo(() => {
         if (!addendumTemplateMappings.length) return [];
         const sorted = [...addendumTemplateMappings].sort(
-            (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
+            (a, b) => Number(a.order ?? 0) - Number(b.order ?? 0),
         );
-        const seen = new Set<string>();
+        const seenIds = new Set<string>();
         return sorted.filter((row) => {
-            const templateKey =
-                String(row?.template?.id ?? "").trim() ||
-                String(row?.templateId ?? "").trim() ||
-                getAddendumDropdownRef(row?.template) ||
-                String(row?.id ?? "").trim();
-            if (!templateKey || seen.has(templateKey)) return false;
-            seen.add(templateKey);
+            const rowId = String(row?.id ?? "").trim();
+            if (rowId) {
+                if (seenIds.has(rowId)) return false;
+                seenIds.add(rowId);
+            }
             // SignNow: never show another funder's linked addendum under this funder.
             if (
                 isSignNowContractUiEnabled() &&
@@ -2090,29 +2407,24 @@ const PDFViewerModal = ({
 
     /** `bs:<layoutOrTemplateRef>` values — multiple addenda allowed. */
     const [selectedAddendumOptions, setSelectedAddendumOptions] = useState<string[]>([]);
-    const [addendumDropdownOpen, setAddendumDropdownOpen] = useState(false);
-    const addendumDropdownRef = useRef<HTMLDivElement>(null);
+    const addendumDropdownOpenRef = useRef(false);
+    const [addendumPickerEpoch, setAddendumPickerEpoch] = useState(0);
+    const addendumAutoLinkKeyRef = useRef("");
+    const addendumUserRemovedKindsRef = useRef<Set<AutoSelectAddendumKind>>(new Set());
+    const addendumOptimisticRefsRef = useRef<string[] | null>(null);
+    const addendumUserInteractedAtRef = useRef(0);
     /** Main contract in envelope — default on; addendum/disclosure auto-merge when configured below. */
     const [includeMainContractInSend, setIncludeMainContractInSend] = useState(true);
     /** SignNow permanent disclosure — user can uncheck to send the contract without it. */
     const [includeDisclosureInSend, setIncludeDisclosureInSend] = useState(true);
 
-    useEffect(() => {
-        if (!addendumDropdownOpen) return;
-        const onPointerDown = (event: MouseEvent) => {
-            const el = addendumDropdownRef.current;
-            if (!el) return;
-            if (!el.contains(event.target as Node)) {
-                setAddendumDropdownOpen(false);
-            }
-        };
-        document.addEventListener("mousedown", onPointerDown);
-        return () => document.removeEventListener("mousedown", onPointerDown);
-    }, [addendumDropdownOpen]);
-
-    useEffect(() => {
-        if (activeStep !== "info") setAddendumDropdownOpen(false);
-    }, [activeStep]);
+    const handleAddendumPickerOpenChange = useCallback((open: boolean) => {
+        const wasOpen = addendumDropdownOpenRef.current;
+        addendumDropdownOpenRef.current = open;
+        if (wasOpen && !open) {
+            setAddendumPickerEpoch((n) => n + 1);
+        }
+    }, []);
 
     const configuredAddendumLayoutKey = useMemo((): string | null => {
         for (const opt of selectedAddendumOptions) {
@@ -2178,6 +2490,8 @@ const PDFViewerModal = ({
     >({});
     const [templateMappingPrefillEditRow, setTemplateMappingPrefillEditRow] =
         useState<ContractDocumentTemplateMappingRow | null>(null);
+    const [templateMappingPrefillExhibitCIndex, setTemplateMappingPrefillExhibitCIndex] =
+        useState(0);
     const [loadingTemplateMappings, setLoadingTemplateMappings] = useState(false);
     const [linkingDisclosureTemplate, setLinkingDisclosureTemplate] = useState(false);
     const [disclosureCalcModalOpen, setDisclosureCalcModalOpen] = useState(false);
@@ -2318,12 +2632,8 @@ const PDFViewerModal = ({
         () => applicationWithClientOwners(applicationData, applicationClientOwners),
         [applicationData, applicationClientOwners],
     );
-    const applicationFilesLoading = useSelector((state: RootState) =>
-        Boolean(state.applicationDetail.loading || state.applicationDetail.isRefreshing),
-    );
     const applicationDataRef = useRef(applicationData);
     applicationDataRef.current = applicationData;
-    const [sourcePdfWaitTimedOut, setSourcePdfWaitTimedOut] = useState(false);
 
     const offerDecisionState = useSelector((state: RootState) => state.offerDecision);
     const offerDecisionData = offerDecisionState?.data ?? null;
@@ -2545,43 +2855,6 @@ const PDFViewerModal = ({
     const uploadedDocs = Array.isArray(uploadedDocsState.data)
         ? uploadedDocsState.data
         : [];
-    const sourceApplicationPdf = useMemo(() => {
-        const files = Array.isArray((applicationData as any)?.files)
-            ? (applicationData as any).files
-            : [];
-        if (!files.length) return null;
-        const isPdfRow = (f: any) => {
-            const name = String(f?.originalName || f?.fileName || "").toLowerCase();
-            const type = String(f?.mimeType || f?.documentType || f?.type || "").toLowerCase();
-            return type.includes("pdf") || name.endsWith(".pdf");
-        };
-        const isApplicationPdfRow = (f: any) => {
-            const name = String(f?.originalName || f?.fileName || "").toLowerCase();
-            const slug = String(f?.requestedDocumentSlug || f?.documentType || "").toLowerCase();
-            return (
-                slug === "application-pdf" ||
-                slug.includes("application") ||
-                name.includes("application") ||
-                name.includes("business") ||
-                name.includes("app.pdf")
-            );
-        };
-        const preferred = files.find((f: any) => isPdfRow(f) && isApplicationPdfRow(f));
-        const fallbackPdf = files.find((f: any) => isPdfRow(f));
-        const row = preferred || fallbackPdf;
-        if (!row) return null;
-        const url = String(row?.url || row?.fileUrl || row?.downloadUrl || "").trim();
-        if (!url) return null;
-        return {
-            name: String(row?.originalName || row?.fileName || "Application PDF"),
-            url,
-        };
-    }, [applicationData]);
-    const waitingForSourceApplicationPdf =
-        isOpen &&
-        activeStep === "documents" &&
-        !sourceApplicationPdf &&
-        (!sourcePdfWaitTimedOut || applicationFilesLoading);
     const normalizeDocumentTypeKey = (value: unknown): string =>
         String(value ?? "")
             .toLowerCase()
@@ -2607,22 +2880,6 @@ const PDFViewerModal = ({
         }
         return map;
     }, [uploadedDocs]);
-    const formatDropdownLabel = (raw: unknown): string => {
-        const input = String(raw ?? "").trim();
-        if (!input) return "";
-        // Never pretty-print a raw SignNow template id into the UI.
-        if (isSignNowTemplateIdToken(input)) return "";
-        const noExt = input.replace(/\.pdf$/i, "");
-        const normalized = noExt
-            .replace(/[_-]+/g, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-        if (!normalized || isSignNowTemplateIdToken(normalized)) return "";
-        return normalized
-            .split(" ")
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(" ");
-    };
     const addendumDocsLayoutFunderId = useMemo(
         () =>
             selectedFunderProfile
@@ -2730,60 +2987,178 @@ const PDFViewerModal = ({
         [selectedFunderAddendumOptions, addendumTemplateOptions],
     );
 
-    const selectedAddendumDisplayLabels = useMemo(() => {
-        return selectedAddendumOptions.map((opt) => {
-            const tid = opt.startsWith("bs:")
-                ? opt.slice(3).trim()
-                : String(opt || "").trim();
-            const match = addendumTemplateOptions.find((t: any) => {
-                if (getAddendumDropdownRef(t) === tid) return true;
-                const templateId = extractSignNowTemplateId(
-                    t?.templateId || t?.id || "",
-                );
-                const layoutKey = String(t?.layoutKey || "")
-                    .trim()
-                    .toLowerCase();
-                const lower = tid.toLowerCase();
-                return Boolean(
-                    (templateId && templateId === lower) ||
-                        (layoutKey && layoutKey === lower),
-                );
+    const addendumPickerOptions = useMemo((): AddendumPickerOption[] => {
+        const options: AddendumPickerOption[] = [];
+        const seen = new Set<string>();
+        for (const t of addendumTemplateOptions as any[]) {
+            const ref = getAddendumDropdownRef(t);
+            if (!ref || !boldSignTemplateIsPreviewable(t) || seen.has(ref)) continue;
+            seen.add(ref);
+            const rawName = resolveFunderAddendumDisplayName(
+                ref,
+                selectedFunderAddendumOptions,
+                t?.name || t?.templateName || t?.title || null,
+            );
+            options.push({
+                ref,
+                label: formatDropdownLabel(rawName) || "Addendum",
             });
-            const linkedRow = linkedAddendumMappings.find((row) => {
-                const ref = resolveAddendumSelectionRef(row?.template);
-                if (ref === tid || getAddendumDropdownRef(row?.template) === tid) {
+        }
+        return options;
+    }, [addendumTemplateOptions, selectedFunderAddendumOptions]);
+
+    const selectedAddendumRefs = useMemo(
+        () =>
+            expandAddendumRefsAllowingDuplicates(
+                selectedAddendumOptions
+                    .filter((opt) => opt.startsWith("bs:"))
+                    .map((opt) => opt.slice(3).trim())
+                    .filter(Boolean),
+            ),
+        [selectedAddendumOptions],
+    );
+
+    const exhibitCPickerRef = useMemo(
+        () => findExhibitCOptionRef(addendumPickerOptions, selectedAddendumRefs),
+        [addendumPickerOptions, selectedAddendumRefs],
+    );
+
+    const exhibitCSelectedCount = useMemo(() => {
+        if (!exhibitCPickerRef) return 0;
+        return countAddendumRefOccurrences(selectedAddendumRefs, exhibitCPickerRef);
+    }, [exhibitCPickerRef, selectedAddendumRefs]);
+
+    const orderedLinkedAddendumMappings = useMemo(() => {
+        const selectedRefs = expandAddendumRefsAllowingDuplicates(
+            selectedAddendumOptions
+                .map((opt) => {
+                    const trimmed = String(opt || "").trim();
+                    if (!trimmed.startsWith("bs:")) return "";
+                    return trimmed.slice(3).trim();
+                })
+                .filter(Boolean),
+        );
+
+        // Instant send-order rows from the picker while CRM mappings catch up.
+        // Prevents the empty "No addendum template linked yet" flash / stuck state.
+        const buildPendingRow = (
+            ref: string,
+            index: number,
+        ): ContractDocumentTemplateMappingRow => {
+            const opt = addendumPickerOptions.find(
+                (o) =>
+                    o.ref === ref ||
+                    (isMultiInstanceAddendumRef(ref) &&
+                        isMultiInstanceAddendumRef(o.ref, o.label)),
+            );
+            const funderOpt = selectedFunderAddendumOptions.find(
+                (o) =>
+                    o.layoutKey === ref ||
+                    o.templateId === ref ||
+                    (isMultiInstanceAddendumRef(ref, opt?.label) &&
+                        o.knownLayoutKey === "exhibit_c"),
+            );
+            const label =
+                opt?.label ||
+                funderOpt?.name ||
+                formatDropdownLabel(ref) ||
+                "Addendum";
+            const templateId =
+                funderOpt?.templateId ||
+                (extractSignNowTemplateId(ref) || ref);
+            return {
+                id: `pending:${ref}:${index}`,
+                contractId: 0,
+                templateId,
+                documentType: "addendum",
+                order: index + 1,
+                template: {
+                    id: templateId,
+                    name: label,
+                    templateId,
+                    layoutKey: funderOpt?.knownLayoutKey || ref,
+                    pdfUrl: funderOpt?.pdfUrl || undefined,
+                },
+            };
+        };
+
+        if (!linkedAddendumMappings.length) {
+            return selectedRefs.map((ref, index) => buildPendingRow(ref, index));
+        }
+        if (!selectedRefs.length) return linkedAddendumMappings;
+
+        const used = new Set<string>();
+        const usedNonMultiKinds = new Set<string>();
+        const ordered: ContractDocumentTemplateMappingRow[] = [];
+        for (let i = 0; i < selectedRefs.length; i++) {
+            const ref = selectedRefs[i];
+            const refKind = canonicalAddendumDedupKey(ref);
+            const row = linkedAddendumMappings.find((candidate) => {
+                if (used.has(candidate.id)) return false;
+                const dropdownRef = getAddendumDropdownRef(candidate.template);
+                const mappingRef = getBoldSignTemplateMappingRef(candidate.template);
+                const selectionRef = resolveAddendumSelectionRef(candidate.template);
+                const rowLabel = candidate.template?.name || "";
+                if (
+                    sameAddendumPickerRef(dropdownRef, ref) ||
+                    sameAddendumPickerRef(mappingRef, ref) ||
+                    sameAddendumPickerRef(selectionRef, ref)
+                ) {
                     return true;
                 }
-                const rowTid = extractSignNowTemplateId(
-                    row?.template?.templateId || row?.template?.id || "",
+                if (
+                    isAchDailyAddendumRef(ref) &&
+                    isAchDailyAddendumRef(
+                        selectionRef || dropdownRef || mappingRef || candidate.template?.layoutKey,
+                        rowLabel,
+                    )
+                ) {
+                    return true;
+                }
+                if (
+                    isAchWeeklyAddendumRef(ref) &&
+                    isAchWeeklyAddendumRef(
+                        selectionRef || dropdownRef || mappingRef || candidate.template?.layoutKey,
+                        rowLabel,
+                    )
+                ) {
+                    return true;
+                }
+                return (
+                    isMultiInstanceAddendumRef(ref) &&
+                    isMultiInstanceAddendumRef(
+                        selectionRef || dropdownRef || mappingRef,
+                        rowLabel,
+                    )
                 );
-                return Boolean(rowTid && rowTid === tid.toLowerCase());
             });
-            const funderName =
-                matchFunderSignNowAddendumOption(
-                    linkedRow?.template ||
-                        match || { layoutKey: tid, templateId: tid },
-                    selectedFunderAddendumOptions,
-                )?.name || null;
-            const rawName = resolveFunderAddendumDisplayName(
-                tid,
-                selectedFunderAddendumOptions,
-                funderName ||
-                    match?.name ||
-                    match?.templateName ||
-                    match?.title ||
-                    linkedRow?.template?.name ||
-                    null,
-            );
-            if (!rawName || isSignNowTemplateIdToken(rawName)) return "Addendum";
-            return formatDropdownLabel(rawName) || "Addendum";
-        });
+            if (row) {
+                used.add(row.id);
+                if (refKind && !isMultiInstanceAddendumRef(ref)) {
+                    usedNonMultiKinds.add(refKind);
+                }
+                ordered.push(row);
+                continue;
+            }
+            // Never invent a second pending spinner for the same ACH Daily/Weekly
+            // (or other single-instance) when hex + layout key both appear in selection.
+            if (refKind && !isMultiInstanceAddendumRef(ref) && usedNonMultiKinds.has(refKind)) {
+                continue;
+            }
+            if (refKind && !isMultiInstanceAddendumRef(ref)) {
+                usedNonMultiKinds.add(refKind);
+            }
+            ordered.push(buildPendingRow(ref, i));
+        }
+        // Selection is the send-order source of truth — do not re-append unused
+        // linked leftovers (those became stuck Ach Daily/Weekly spinner twins).
+        return ordered;
     }, [
-        selectedAddendumOptions,
-        addendumTemplateOptions,
         linkedAddendumMappings,
-        selectedFunderAddendumOptions,
+        selectedAddendumOptions,
         resolveAddendumSelectionRef,
+        addendumPickerOptions,
+        selectedFunderAddendumOptions,
     ]);
 
     const addendumDocs = uploadedDocs.filter((file: any) => {
@@ -2831,39 +3206,6 @@ const PDFViewerModal = ({
             void dispatch(getApplicationById(String(uuid)));
         }
     }, [dispatch, numericApplicationId, applicationMongoId, applicationIdForLookup]);
-
-    useEffect(() => {
-        if (!isOpen) {
-            setSourcePdfWaitTimedOut(false);
-        }
-    }, [isOpen, applicationIdForLookup]);
-
-    useEffect(() => {
-        if (!isOpen || activeStep !== "documents") return;
-        if (sourceApplicationPdf) {
-            setSourcePdfWaitTimedOut(false);
-            return;
-        }
-        if (sourcePdfWaitTimedOut) return;
-        let attempts = 0;
-        const maxAttempts = 8;
-        refreshApplicationDocumentsTab();
-        const interval = window.setInterval(() => {
-            attempts += 1;
-            refreshApplicationDocumentsTab();
-            if (attempts >= maxAttempts) {
-                setSourcePdfWaitTimedOut(true);
-                window.clearInterval(interval);
-            }
-        }, 2000);
-        return () => window.clearInterval(interval);
-    }, [
-        isOpen,
-        activeStep,
-        sourceApplicationPdf,
-        sourcePdfWaitTimedOut,
-        refreshApplicationDocumentsTab,
-    ]);
 
     const documentRequestLookupId = numericApplicationId || applicationIdForLookup;
 
@@ -3104,7 +3446,7 @@ const PDFViewerModal = ({
             contractPrefillLoaded ? contractPrefillFromDb : null,
         );
         const fromApp = buildContractPrefillFieldsFromApplication(applicationForPrefill, {
-            agreementDate: formatDate(new Date()),
+            agreementDate: formatDateMonthDayYear(new Date()),
             contractRecords: contractPrefillRecords,
             overrides:
                 Object.keys(effectiveOverrides).length > 0 ? effectiveOverrides : undefined,
@@ -3315,16 +3657,12 @@ const PDFViewerModal = ({
     useEffect(() => {
         if (!isOpen) {
             setResolvedContractId(null);
-            setSelectedState("");
-            setSelectedFunder("");
-            setSelectedFunderProfileId("");
+            addendumDropdownOpenRef.current = false;
             userSelectedFunderRef.current = false;
             userSelectedStateRef.current = false;
-            contractPrefillLoadKeyRef.current = "";
             setContractPrefillFromDb(null);
             setContractPrefillLoaded(false);
             setDocumentTemplatePrefillByMappingId({});
-            setSelectedAddendumOptions([]);
             setSessionEnvelopeId(null);
             setDocuSignOpenUrl(null);
             setContractSignerOverrides(null);
@@ -3364,6 +3702,14 @@ const PDFViewerModal = ({
             userSelectedFunderRef.current = false;
             userSelectedStateRef.current = false;
             setContractPrefillLoaded(false);
+            setSelectedState("");
+            setSelectedFunder("");
+            setSelectedFunderProfileId("");
+            setSelectedAddendumOptions([]);
+            addendumOptimisticRefsRef.current = null;
+            addendumAutoLinkKeyRef.current = "";
+            addendumUserInteractedAtRef.current = 0;
+            addendumUserRemovedKindsRef.current.clear();
         }
         const applyContractMeta = (contract: unknown) => {
             const c = contract as { state?: unknown; funderName?: unknown; contractPrefillOverrides?: unknown } | null;
@@ -3659,18 +4005,14 @@ const PDFViewerModal = ({
     const selectedAddendumOptionsRef = useRef<string[]>([]);
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
     const linkedAddendumMappingsRef = useRef<ContractDocumentTemplateMappingRow[]>([]);
+    const addendumTemplateMappingsRef = useRef<ContractDocumentTemplateMappingRow[]>([]);
     const linkedDisclosureMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
     const disclosureAutoLinkKeyRef = useRef("");
     const disclosureSyncGenRef = useRef(0);
     const disclosureMappingsWriteChainRef = useRef<Promise<void>>(Promise.resolve());
-    const addendumAutoLinkKeyRef = useRef("");
-    /** Auto-kinds the user explicitly unchecked for the current state/type context. */
-    const addendumUserRemovedKindsRef = useRef<Set<AutoSelectAddendumKind>>(new Set());
     const addendumMappingsWriteChainRef = useRef<Promise<void>>(Promise.resolve());
     /** In-flight addendum mapping writes — blocks sync effect from overwriting optimistic UI. */
     const addendumMappingsWriteInFlightRef = useRef(0);
-    /** Latest user-intended addendum refs while writes are queued/in flight. */
-    const addendumOptimisticRefsRef = useRef<string[] | null>(null);
     const addendumPersistTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
     const flushAddendumMappingsRef = useRef<() => Promise<void>>(async () => {});
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
@@ -3683,6 +4025,7 @@ const PDFViewerModal = ({
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
     linkedAddendumMappingRef.current = linkedAddendumMapping;
     linkedAddendumMappingsRef.current = linkedAddendumMappings;
+    addendumTemplateMappingsRef.current = addendumTemplateMappings;
     linkedDisclosureMappingRef.current = linkedDisclosureMapping;
     docuSignPdfCacheSuffixRef.current = docuSignPdfCacheSuffix;
 
@@ -3885,26 +4228,47 @@ const PDFViewerModal = ({
     );
 
     const resolveAddendumTemplateIdsForDocuSignMerge = useCallback((): string[] => {
+        const toSendRef = (ref: string, label?: string | null) => {
+            const trimmed = String(ref || "").trim();
+            if (!trimmed) return "";
+            // Funder Exhibit C often uses a SignNow hex id that expand() would treat as
+            // a normal addendum and collapse. Normalize unrecognized multi instances to
+            // exhibit_c so N copies survive into SignNow.
+            if (isMultiInstanceAddendumRef(trimmed, label)) {
+                return isMultiInstanceAddendumRef(trimmed) ? trimmed : "exhibit_c";
+            }
+            return trimmed;
+        };
+
         const fromSelected = selectedAddendumOptionsRef.current
             .map((opt) => {
                 const trimmed = String(opt || "").trim();
                 if (trimmed.startsWith("up:")) return "";
-                if (trimmed.startsWith("bs:")) return trimmed.slice(3).trim();
-                return "";
+                if (!trimmed.startsWith("bs:")) return "";
+                const ref = trimmed.slice(3).trim();
+                const label =
+                    addendumPickerOptions.find((o) => o.ref === ref)?.label ||
+                    selectedFunderAddendumOptions.find(
+                        (o) => o.layoutKey === ref || o.templateId === ref,
+                    )?.name ||
+                    null;
+                return toSendRef(ref, label);
             })
             .filter(Boolean);
-        if (fromSelected.length) return [...new Set(fromSelected)];
+        if (fromSelected.length) return expandAddendumRefsAllowingDuplicates(fromSelected);
 
         const fromMappings = linkedAddendumMappingsRef.current
-            .map(
-                (row) =>
+            .map((row) =>
+                toSendRef(
                     getAddendumDropdownRef(row?.template) ||
-                    getBoldSignTemplateMappingRef(row?.template) ||
-                    "",
+                        getBoldSignTemplateMappingRef(row?.template) ||
+                        "",
+                    row?.template?.name || null,
+                ),
             )
             .filter(Boolean);
-        return [...new Set(fromMappings)];
-    }, []);
+        return expandAddendumRefsAllowingDuplicates(fromMappings);
+    }, [addendumPickerOptions, selectedFunderAddendumOptions]);
 
     const resolveAddendumTemplateIdForDocuSignMerge = useCallback((): string | null => {
         return resolveAddendumTemplateIdsForDocuSignMerge()[0] ?? null;
@@ -3952,7 +4316,7 @@ const PDFViewerModal = ({
         () =>
             [
                 contractSendPackageFingerprint(getEffectiveSendPackage()),
-                resolveAddendumTemplateIdsForDocuSignMerge().slice().sort().join(","),
+                resolveAddendumTemplateIdsForDocuSignMerge().join(","),
             ].join("|"),
         [
             getEffectiveSendPackage,
@@ -4926,6 +5290,7 @@ const PDFViewerModal = ({
     };
 
     const handleSend = async () => {
+        const clickAt = Date.now();
         if (sendingLockRef.current || isSending) return;
         if (
             isSignNowContractUiEnabled() &&
@@ -5154,6 +5519,11 @@ const PDFViewerModal = ({
                     );
                     return;
                 }
+                let signNowTimingRequestId = "";
+                if (sendViaSignNowApi) {
+                    signNowTimingRequestId = newSignNowTimingRequestId();
+                    beginSignNowReviewTiming(signNowTimingRequestId, clickAt);
+                }
                 const signerFingerprintForSend = contractSignerOverridesFingerprint(
                     signerRolesForSend.map((r) => ({
                         role: r.signerRole,
@@ -5199,6 +5569,9 @@ const PDFViewerModal = ({
                         ccEmailDeliveredRef.current = false;
                         awaitingDocuSignSendRef.current = true;
                         setPdfRightPaneTab("docusign");
+                        if (signNowTimingRequestId) {
+                            markSignNowReviewEmbedSet(signNowTimingRequestId);
+                        }
                         setSignNowEmbedUrl(embedUrl);
                         setSignNowReviewVisible(true);
                         setSignNowReviewComplete(false);
@@ -5278,6 +5651,9 @@ const PDFViewerModal = ({
                         ),
                         prefillFields: prefillFieldsForDraft,
                         autoSend: false,
+                        ...(signNowTimingRequestId
+                            ? { timingRequestId: signNowTimingRequestId }
+                            : {}),
                     });
                     envelopeId =
                         String(
@@ -5350,6 +5726,9 @@ const PDFViewerModal = ({
                     awaitingDocuSignSendRef.current = true;
                     setPdfRightPaneTab("docusign");
                     signNowCachedEmbedUrlRef.current = embedUrl;
+                    if (signNowTimingRequestId) {
+                        markSignNowReviewEmbedSet(signNowTimingRequestId);
+                    }
                     setSignNowEmbedUrl(embedUrl);
                     setSignNowReviewVisible(true);
                     setSignNowReviewComplete(false);
@@ -5488,6 +5867,8 @@ const PDFViewerModal = ({
     }, []);
 
     const handleSignNowIframeLoad = useCallback(() => {
+        const timingId = getActiveSignNowReviewTimingId();
+        if (timingId) markSignNowReviewIframeLoad(timingId);
         if (signNowReviewCompleteRef.current) return;
         signNowIframeLoadCountRef.current += 1;
         try {
@@ -5552,11 +5933,6 @@ const PDFViewerModal = ({
     const autoUploadDocumentFile = useCallback(
         async (key: RequiredDocumentKey, file: File) => {
             if (!file) return;
-
-            if (waitingForSourceApplicationPdf) {
-                toast.info("Wait until the application PDF finishes uploading.");
-                return;
-            }
 
             if (effectiveContractId == null) {
                 const msg = "Please select or generate a contract first.";
@@ -5679,7 +6055,7 @@ const PDFViewerModal = ({
                 toast.error(msg);
             }
         },
-        [dispatch, effectiveContractId, refreshApplicationDocumentsTab, waitingForSourceApplicationPdf],
+        [dispatch, effectiveContractId, refreshApplicationDocumentsTab],
     );
 
     const autoUploadRequestedDocument = useCallback(
@@ -6417,7 +6793,7 @@ const PDFViewerModal = ({
             contractPrefillOverridesRaw,
             contract: resolvedContract as Record<string, unknown> | null,
             application: applicationData as unknown as Record<string, unknown> | null,
-            agreementDate: formatDate(new Date()),
+            agreementDate: formatDateMonthDayYear(new Date()),
             mainPrefillOverrides: mainPrefillForTemplates,
             bankDetail: contractPrefillRecords.bankDetail ?? null,
             ach: contractPrefillRecords.ach ?? null,
@@ -6443,7 +6819,7 @@ const PDFViewerModal = ({
             savedOverridesForMapping: savedOverrides,
             contract: resolvedContract as Record<string, unknown> | null,
             application: applicationData as unknown as Record<string, unknown> | null,
-            agreementDate: formatDate(new Date()),
+            agreementDate: formatDateMonthDayYear(new Date()),
             mainPrefillOverrides: mainPrefillForTemplates,
             bankDetail: contractPrefillRecords.bankDetail ?? null,
             ach: contractPrefillRecords.ach ?? null,
@@ -6459,7 +6835,7 @@ const PDFViewerModal = ({
             ],
             contract: resolvedContract as Record<string, unknown> | null,
             application: applicationData as unknown as Record<string, unknown> | null,
-            agreementDate: formatDate(new Date()),
+            agreementDate: formatDateMonthDayYear(new Date()),
             mainPrefillOverrides: mainPrefillForTemplates,
             bankDetail: contractPrefillRecords.bankDetail ?? null,
             ach: contractPrefillRecords.ach ?? null,
@@ -6568,6 +6944,84 @@ const PDFViewerModal = ({
                 ].filter(Boolean).join(", "),
                 secondOwnerTitle: "OWNER",
             });
+        }
+
+        const exhibitCJson = serializeExhibitCEntities(
+            mergeExhibitCEntitiesForSignNowSend({
+                rawOverrides: contractPrefillOverridesRaw,
+                mappingRows: templateMappings,
+            }),
+        );
+        if (exhibitCJson) {
+            const existingEntities = mergedPayload.find((f) => f.id === EXHIBIT_C_ENTITIES_PREFILL_KEY);
+            if (existingEntities) {
+                existingEntities.value = exhibitCJson;
+            } else {
+                mergedPayload.push({
+                    id: EXHIBIT_C_ENTITIES_PREFILL_KEY,
+                    label: "Exhibit C entities",
+                    value: exhibitCJson,
+                });
+            }
+        }
+
+        const dealBusinessName = resolveContractBusinessLegalNameForPrefill(
+            (resolvedContract as Record<string, unknown>) ?? {},
+            applicationData,
+        );
+        if (dealBusinessName) {
+            for (const id of [
+                "client_legal_name",
+                "client_legal_name_p1",
+                "legal_name",
+                "business_legal_name",
+                "merchant_legal_name",
+                "security_business_name",
+            ] as const) {
+                const existing = mergedPayload.find((f) => f.id === id);
+                if (existing) existing.value = dealBusinessName;
+                else {
+                    mergedPayload.push({
+                        id,
+                        label: id,
+                        value: dealBusinessName,
+                    });
+                }
+            }
+        }
+
+        const todayPrefillDate = `${String(new Date().getMonth() + 1).padStart(2, "0")}/${String(new Date().getDate()).padStart(2, "0")}/${new Date().getFullYear()}`;
+        for (const id of [
+            "agreement_date",
+            "agreement_date_p1",
+            "signature_date",
+            "signature_date2",
+            "signature1_date",
+            "signature2_date",
+            "disclosure_date",
+            "disclosure_date2",
+            "remittance_start_date",
+        ] as const) {
+            const existing = mergedPayload.find((f) => f.id === id);
+            if (existing) existing.value = todayPrefillDate;
+            else {
+                mergedPayload.push({
+                    id,
+                    label: id,
+                    value: todayPrefillDate,
+                });
+            }
+        }
+        for (const field of mergedPayload) {
+            const id = String(field.id ?? "").toLowerCase();
+            if (id.includes("previous")) continue;
+            if (
+                /(agreement_date|signature_date|disclosure_date|signature1_date|signature2_date|_dated)/.test(
+                    id,
+                )
+            ) {
+                field.value = todayPrefillDate;
+            }
         }
 
         return uppercaseContractDocumentPrefillFields(
@@ -6887,18 +7341,18 @@ const PDFViewerModal = ({
         didSuggestSentTabThisOpenRef.current = true;
     }, [isOpen, activeStep, resolvedContract, sentAt, sentStepUnlocked]);
 
-    /** Replace addendum mappings with the given template refs (multi-select). */
+    /** Replace addendum mappings with the given template refs (multi-select; Exhibit C may repeat). */
     const persistAddendumTemplateMappingsNow = useCallback(
         async (templateRefs: string[]) => {
             if (effectiveContractId == null) return;
-            const nextRefs = [
-                ...new Set(
-                    templateRefs.map((r) => String(r || "").trim()).filter(Boolean),
-                ),
-            ];
+            const nextRefs = expandAddendumRefsAllowingDuplicates(
+                templateRefs.map((r) => String(r || "").trim()).filter(Boolean),
+            );
 
             const applyLatestSelection = () => {
-                const latestRefs = addendumOptimisticRefsRef.current ?? nextRefs;
+                const latestRefs = expandAddendumRefsAllowingDuplicates(
+                    addendumOptimisticRefsRef.current ?? nextRefs,
+                );
                 const opts = latestRefs.map((ref) => `bs:${ref}`);
                 selectedAddendumOptionsRef.current = opts;
                 setSelectedAddendumOptions(opts);
@@ -6907,32 +7361,25 @@ const PDFViewerModal = ({
             const run = async () => {
                 addendumMappingsWriteInFlightRef.current += 1;
                 try {
-                    const latestRefs = [
-                        ...new Set(
-                            (addendumOptimisticRefsRef.current ?? nextRefs)
-                                .map((r) => String(r || "").trim())
-                                .filter(Boolean),
-                        ),
-                    ];
-                    const rows = linkedAddendumMappingsRef.current;
-                    const addendumRows = rows.filter(
+                    const latestRefs = expandAddendumRefsAllowingDuplicates(
+                        (addendumOptimisticRefsRef.current ?? nextRefs)
+                            .map((r) => String(r || "").trim())
+                            .filter(Boolean),
+                    );
+                    const addendumRows = addendumTemplateMappingsRef.current.filter(
                         (row) => String(row.documentType || "").toLowerCase() === "addendum",
                     );
-                    const currentRefs = [
-                        ...new Set(
-                            addendumRows
-                                .map(
-                                    (row) =>
-                                        getAddendumDropdownRef(row?.template) ||
-                                        getBoldSignTemplateMappingRef(row?.template) ||
-                                        "",
-                                )
-                                .filter(Boolean),
-                        ),
-                    ];
-                    const same =
-                        currentRefs.length === latestRefs.length &&
-                        latestRefs.every((ref) => currentRefs.includes(ref));
+                    const currentRefs = expandAddendumRefsAllowingDuplicates(
+                        addendumRows
+                            .map(
+                                (row) =>
+                                    getAddendumDropdownRef(row?.template) ||
+                                    getBoldSignTemplateMappingRef(row?.template) ||
+                                    "",
+                            )
+                            .filter(Boolean),
+                    );
+                    const same = sameOrderedStrings(currentRefs, latestRefs);
                     if (same) {
                         applyLatestSelection();
                         return;
@@ -6964,23 +7411,21 @@ const PDFViewerModal = ({
                     if (
                         addendumMappingsWriteInFlightRef.current <= 1 &&
                         addendumOptimisticRefsRef.current &&
-                        addendumOptimisticRefsRef.current.length === nextRefs.length &&
-                        nextRefs.every((ref) =>
-                            addendumOptimisticRefsRef.current!.includes(ref),
+                        sameOrderedStrings(
+                            addendumOptimisticRefsRef.current,
+                            nextRefs,
                         )
                     ) {
-                        const serverRefs = [
-                            ...new Set(
-                                linkedAddendumMappingsRef.current
-                                    .map(
-                                        (row) =>
-                                            getAddendumDropdownRef(row?.template) ||
-                                            getBoldSignTemplateMappingRef(row?.template) ||
-                                            "",
-                                    )
-                                    .filter(Boolean),
-                            ),
-                        ];
+                        const serverRefs = expandAddendumRefsAllowingDuplicates(
+                            linkedAddendumMappingsRef.current
+                                .map(
+                                    (row) =>
+                                        getAddendumDropdownRef(row?.template) ||
+                                        getBoldSignTemplateMappingRef(row?.template) ||
+                                        "",
+                                )
+                                .filter(Boolean),
+                        );
                         addendumOptimisticRefsRef.current = serverRefs;
                         const opts = serverRefs.map((ref) => `bs:${ref}`);
                         selectedAddendumOptionsRef.current = opts;
@@ -6994,9 +7439,7 @@ const PDFViewerModal = ({
                     if (addendumMappingsWriteInFlightRef.current === 0) {
                         const latest = addendumOptimisticRefsRef.current;
                         const isLatestIntent =
-                            latest != null &&
-                            latest.length === nextRefs.length &&
-                            nextRefs.every((ref) => latest.includes(ref));
+                            latest != null && sameOrderedStrings(latest, nextRefs);
                         if (latest == null || isLatestIntent) {
                             addendumOptimisticRefsRef.current = null;
                         }
@@ -7028,17 +7471,16 @@ const PDFViewerModal = ({
     /** Replace addendum mappings with the given template refs (multi-select, incremental). */
     const setAddendumTemplateMappings = useCallback(
         async (templateRefs: string[], options?: { immediate?: boolean }) => {
-            if (effectiveContractId == null) return;
-            const nextRefs = [
-                ...new Set(
-                    templateRefs.map((r) => String(r || "").trim()).filter(Boolean),
-                ),
-            ];
+            const nextRefs = expandAddendumRefsAllowingDuplicates(
+                templateRefs.map((r) => String(r || "").trim()).filter(Boolean),
+            );
 
             const nextOpts = nextRefs.map((ref) => `bs:${ref}`);
             addendumOptimisticRefsRef.current = nextRefs;
             selectedAddendumOptionsRef.current = nextOpts;
             setSelectedAddendumOptions(nextOpts);
+
+            if (effectiveContractId == null) return;
 
             if (options?.immediate) {
                 if (addendumPersistTimerRef.current != null) {
@@ -7056,38 +7498,147 @@ const PDFViewerModal = ({
                 addendumPersistTimerRef.current = null;
                 const latest = addendumOptimisticRefsRef.current ?? nextRefs;
                 void persistAddendumTemplateMappingsNow(latest);
-            }, 450);
+            }, 120);
         },
         [effectiveContractId, persistAddendumTemplateMappingsNow],
     );
+
+    useEffect(() => {
+        if (!isOpen || effectiveContractId == null) return;
+        const refs = addendumOptimisticRefsRef.current;
+        if (!refs) return;
+        void persistAddendumTemplateMappingsNow(refs);
+    }, [isOpen, effectiveContractId, persistAddendumTemplateMappingsNow]);
 
     const toggleAddendumTemplateSelection = useCallback(
         (templateRef: string) => {
             const ref = String(templateRef || "").trim();
             if (!ref) return;
-            const current = resolveAddendumTemplateIdsForDocuSignMerge();
-            const removing = current.includes(ref);
-            const next = removing
-                ? current.filter((r) => r !== ref)
-                : [...current, ref];
-
+            addendumUserInteractedAtRef.current = Date.now();
+            const live =
+                addendumOptimisticRefsRef.current ??
+                (selectedAddendumOptionsRef.current.some((o) => o.startsWith("bs:"))
+                    ? selectedAddendumOptionsRef.current
+                          .map((opt) =>
+                              opt.startsWith("bs:") ? opt.slice(3).trim() : "",
+                          )
+                          .filter(Boolean)
+                    : resolveAddendumTemplateIdsForDocuSignMerge());
             const match = addendumTemplateOptions.find(
                 (t: any) => getAddendumDropdownRef(t) === ref,
             );
+            const pickerLabel =
+                addendumPickerOptions.find((o) => o.ref === ref)?.label ||
+                resolveFunderAddendumDisplayName(
+                    ref,
+                    selectedFunderAddendumOptions,
+                    match?.name || match?.templateName || match?.title || null,
+                );
+            const removing =
+                isMultiInstanceAddendumRef(ref, pickerLabel)
+                    ? countAddendumRefOccurrences(live, ref) > 0
+                    : live.includes(ref);
+            const next = isMultiInstanceAddendumRef(ref, pickerLabel)
+                ? setAddendumRefCount(live, ref, removing ? 0 : 1, pickerLabel)
+                : removing
+                  ? live.filter((r) => r !== ref)
+                  : [...live, ref];
+
             const kind = resolveTemplateAutoAddendumKind(match ?? null);
             if (kind) {
                 if (removing) addendumUserRemovedKindsRef.current.add(kind);
                 else addendumUserRemovedKindsRef.current.delete(kind);
             }
 
-            // Persist in background; UI already updates optimistically inside.
-            void setAddendumTemplateMappings(next);
+            startTransition(() => {
+                void setAddendumTemplateMappings(next, { immediate: true });
+            });
         },
         [
+            addendumPickerOptions,
             addendumTemplateOptions,
             resolveAddendumTemplateIdsForDocuSignMerge,
+            selectedFunderAddendumOptions,
             setAddendumTemplateMappings,
         ],
+    );
+
+    const setAddendumTemplateRefCount = useCallback(
+        (templateRef: string, count: number) => {
+            const ref = String(templateRef || "").trim();
+            if (!ref) return;
+            addendumUserInteractedAtRef.current = Date.now();
+            const live =
+                addendumOptimisticRefsRef.current ??
+                (selectedAddendumOptionsRef.current.some((o) => o.startsWith("bs:"))
+                    ? selectedAddendumOptionsRef.current
+                          .map((opt) =>
+                              opt.startsWith("bs:") ? opt.slice(3).trim() : "",
+                          )
+                          .filter(Boolean)
+                    : resolveAddendumTemplateIdsForDocuSignMerge());
+            const match = addendumTemplateOptions.find(
+                (t: any) => getAddendumDropdownRef(t) === ref,
+            );
+            const pickerLabel =
+                addendumPickerOptions.find((o) => o.ref === ref)?.label ||
+                resolveFunderAddendumDisplayName(
+                    ref,
+                    selectedFunderAddendumOptions,
+                    match?.name || match?.templateName || match?.title || null,
+                );
+            const next = setAddendumRefCount(live, ref, count, pickerLabel);
+            const kind = resolveTemplateAutoAddendumKind(match ?? null);
+            if (kind) {
+                if (count <= 0) addendumUserRemovedKindsRef.current.add(kind);
+                else addendumUserRemovedKindsRef.current.delete(kind);
+            }
+            startTransition(() => {
+                void setAddendumTemplateMappings(next, { immediate: true });
+            });
+        },
+        [
+            addendumPickerOptions,
+            addendumTemplateOptions,
+            resolveAddendumTemplateIdsForDocuSignMerge,
+            selectedFunderAddendumOptions,
+            setAddendumTemplateMappings,
+        ],
+    );
+
+    const clearAllAddendumSelections = useCallback(() => {
+        addendumUserInteractedAtRef.current = Date.now();
+        for (const opt of selectedAddendumOptionsRef.current) {
+            const tid = opt.startsWith("bs:") ? opt.slice(3) : "";
+            const match = addendumTemplateOptions.find(
+                (t: any) => getAddendumDropdownRef(t) === tid,
+            );
+            const kind = resolveTemplateAutoAddendumKind(match ?? null);
+            if (kind) addendumUserRemovedKindsRef.current.add(kind);
+        }
+        startTransition(() => {
+            void setAddendumTemplateMappings([]);
+        });
+    }, [addendumTemplateOptions, setAddendumTemplateMappings]);
+
+    const reorderLinkedAddendums = useCallback(
+        (nextRows: ContractDocumentTemplateMappingRow[]) => {
+            const nextRefs = nextRows
+                .map((row) => {
+                    const pendingRef = String(row.id || "").startsWith("pending:")
+                        ? String(row.id).split(":")[1] || ""
+                        : "";
+                    return (
+                        pendingRef ||
+                        resolveAddendumSelectionRef(row.template) ||
+                        addendumMappingTemplateRef(row) ||
+                        ""
+                    );
+                })
+                .filter(Boolean);
+            void setAddendumTemplateMappings(nextRefs, { immediate: true });
+        },
+        [resolveAddendumSelectionRef, setAddendumTemplateMappings],
     );
 
     const lookupDisclosureTemplateRef = useCallback(
@@ -7480,27 +8031,32 @@ const PDFViewerModal = ({
             );
 
             const currentMappings = linkedAddendumMappingsRef.current;
+            const readLiveRefs = (): string[] => {
+                const fromOptimistic = addendumOptimisticRefsRef.current;
+                const fromSelected = fromOptimistic ??
+                    selectedAddendumOptionsRef.current
+                        .map((opt) => {
+                            const trimmed = String(opt || "").trim();
+                            if (!trimmed.startsWith("bs:")) return "";
+                            return trimmed.slice(3).trim();
+                        })
+                        .filter(Boolean);
+                const fromMappings = currentMappings
+                    .map(
+                        (row) =>
+                            resolveAddendumSelectionRef(row?.template) ||
+                            getAddendumDropdownRef(row?.template) ||
+                            getBoldSignTemplateMappingRef(row?.template) ||
+                            "",
+                    )
+                    .filter(Boolean);
+                return expandAddendumRefsAllowingDuplicates(
+                    fromSelected.length ? fromSelected : fromMappings,
+                );
+            };
             // Prefer the live checkbox selection — filtered linked rows can lag or hide
             // another funder's in-flight picks and look "empty" for 3–5s.
-            const fromSelected = selectedAddendumOptionsRef.current
-                .map((opt) => {
-                    const trimmed = String(opt || "").trim();
-                    if (!trimmed.startsWith("bs:")) return "";
-                    return trimmed.slice(3).trim();
-                })
-                .filter(Boolean);
-            const fromMappings = currentMappings
-                .map(
-                    (row) =>
-                        resolveAddendumSelectionRef(row?.template) ||
-                        getAddendumDropdownRef(row?.template) ||
-                        getBoldSignTemplateMappingRef(row?.template) ||
-                        "",
-                )
-                .filter(Boolean);
-            const currentRefs = [
-                ...new Set(fromSelected.length ? fromSelected : fromMappings),
-            ];
+            const currentRefs = readLiveRefs();
 
             // Keep non-auto selections and user-added auto addenda beyond the defaults.
             const keptExtraRefs = currentRefs.filter((ref) => {
@@ -7508,10 +8064,23 @@ const PDFViewerModal = ({
                     (m) =>
                         resolveAddendumSelectionRef(m?.template) === ref ||
                         getAddendumDropdownRef(m?.template) === ref ||
-                        getBoldSignTemplateMappingRef(m?.template) === ref,
+                        getBoldSignTemplateMappingRef(m?.template) === ref ||
+                        (isMultiInstanceAddendumRef(ref) &&
+                            isMultiInstanceAddendumRef(
+                                resolveAddendumSelectionRef(m?.template) ||
+                                    getAddendumDropdownRef(m?.template) ||
+                                    "",
+                                m?.template?.name || m?.template?.templateName,
+                            )),
                 );
                 const option = addendumTemplateOptions.find(
-                    (t: any) => getAddendumDropdownRef(t) === ref,
+                    (t: any) =>
+                        getAddendumDropdownRef(t) === ref ||
+                        (isMultiInstanceAddendumRef(ref) &&
+                            isMultiInstanceAddendumRef(
+                                getAddendumDropdownRef(t),
+                                t?.name || t?.templateName || t?.title,
+                            )),
                 );
                 const kind = resolveTemplateAutoAddendumKind(
                     row?.template || option || null,
@@ -7522,11 +8091,20 @@ const PDFViewerModal = ({
                 return true;
             });
 
-            const nextRefs = [...new Set([...wantedRefs, ...keptExtraRefs])];
-            const same =
-                nextRefs.length === currentRefs.length &&
-                nextRefs.every((ref) => currentRefs.includes(ref));
+            const liveRefs = readLiveRefs();
+            // Keep live multi-instance counts (Exhibit C × N). Do not concat
+            // keptExtraRefs + liveExtras — that doubled Exhibit C after expand.
+            const manualRefs = liveRefs.filter((ref) => !wantedRefs.includes(ref));
+            const nextRefs = expandAddendumRefsAllowingDuplicates([
+                ...wantedRefs,
+                ...manualRefs,
+            ]);
+            const same = sameOrderedStrings(nextRefs, liveRefs);
+            const userPicking =
+                addendumDropdownOpenRef.current ||
+                Date.now() - addendumUserInteractedAtRef.current < 800;
             if (same) {
+                if (userPicking) return;
                 const nextOpts = nextRefs.map((ref) => `bs:${ref}`);
                 const selected = selectedAddendumOptionsRef.current;
                 const selectedSame =
@@ -7548,12 +8126,14 @@ const PDFViewerModal = ({
                     return Boolean(kind && wantedKinds.includes(kind));
                 });
                 if (preservedAutoRefs.length || keptExtraRefs.length) {
-                    const preserveRefs = [
-                        ...new Set([...preservedAutoRefs, ...keptExtraRefs]),
-                    ];
-                    const preserveSame =
-                        preserveRefs.length === currentRefs.length &&
-                        preserveRefs.every((ref) => currentRefs.includes(ref));
+                    const preserveRefs = expandAddendumRefsAllowingDuplicates([
+                        ...preservedAutoRefs,
+                        ...keptExtraRefs,
+                    ]);
+                    const preserveSame = sameOrderedStrings(
+                        preserveRefs,
+                        currentRefs,
+                    );
                     if (preserveSame) {
                         const nextOpts = preserveRefs.map((ref) => `bs:${ref}`);
                         const selected = selectedAddendumOptionsRef.current;
@@ -7563,7 +8143,9 @@ const PDFViewerModal = ({
                         if (!selectedSame) setSelectedAddendumOptions(nextOpts);
                         return;
                     }
-                    await setAddendumTemplateMappings(preserveRefs, { immediate: true });
+                    await setAddendumTemplateMappings(preserveRefs, {
+                        immediate: !userPicking,
+                    });
                     return;
                 }
                 if (!options?.silent) {
@@ -7574,12 +8156,16 @@ const PDFViewerModal = ({
                 return;
             }
 
-            if (!wantedKinds.length && !keptExtraRefs.length) {
-                if (currentRefs.length) await setAddendumTemplateMappings([], { immediate: true });
+            if (!wantedKinds.length && !manualRefs.length) {
+                if (liveRefs.length && !userPicking) {
+                    await setAddendumTemplateMappings([], { immediate: true });
+                }
                 return;
             }
 
-            await setAddendumTemplateMappings(nextRefs, { immediate: true });
+            await setAddendumTemplateMappings(nextRefs, {
+                immediate: !userPicking,
+            });
         },
         [
             addendumTemplateOptions,
@@ -7592,14 +8178,16 @@ const PDFViewerModal = ({
     );
 
     useEffect(() => {
-        if (!isOpen) {
-            addendumAutoLinkKeyRef.current = "";
-            return;
-        }
+        if (!isOpen) return;
+        if (addendumDropdownOpenRef.current) return;
         if (effectiveContractId == null || loadingTemplateMappings) return;
-        // Wait for funder profiles + template catalog so we don't wipe saved
+        // SignNow options come from the funder profile — don't wait on the BoldSign catalog.
+        // Other providers still need funder profiles + template catalog so we don't wipe
         // funder-scoped addenda while still on fallback/platform scope.
-        if (fundersLoading || !boldSignTemplatesHydrated || boldSignTemplatesLoading) {
+        if (
+            !isSignNowContractUiEnabled() &&
+            (fundersLoading || !boldSignTemplatesHydrated || boldSignTemplatesLoading)
+        ) {
             return;
         }
         const isRefinance = applicationIsRefinance(
@@ -7631,7 +8219,9 @@ const PDFViewerModal = ({
                 `${effectiveContractId}:${selectedState}:${isRefinance ? "refi" : "norefi"}:${appType}:`,
             )
         ) {
-            addendumUserRemovedKindsRef.current.clear();
+            if (Date.now() - addendumUserInteractedAtRef.current > 800) {
+                addendumUserRemovedKindsRef.current.clear();
+            }
         }
         addendumAutoLinkKeyRef.current = key;
         void syncAddendumTemplateForApplication({
@@ -7651,6 +8241,7 @@ const PDFViewerModal = ({
         applicationData,
         offerDecisionData,
         addendumTemplateOptions,
+        addendumPickerEpoch,
         syncAddendumTemplateForApplication,
     ]);
 
@@ -7947,7 +8538,8 @@ const PDFViewerModal = ({
         return o as Partial<BuildContractPrefillFieldsArgs>;
     }, [contractPrefillFromDb]);
 
-    // Drop duplicate addendum mappings that share the same template (race leftovers).
+    // Drop accidental duplicate addendum mappings that share the same template
+    // (race leftovers). Exhibit C is allowed to repeat — never prune those.
     useEffect(() => {
         if (!isOpen || effectiveContractId == null || loadingTemplateMappings) return;
         const byTemplate = new Map<string, ContractDocumentTemplateMappingRow[]>();
@@ -7962,9 +8554,20 @@ const PDFViewerModal = ({
             list.push(row);
             byTemplate.set(key, list);
         }
-        const extras = [...byTemplate.values()].flatMap((list) =>
-            list.length > 1 ? list.slice(1) : [],
-        );
+        const extras = [...byTemplate.entries()].flatMap(([key, list]) => {
+            if (list.length <= 1) return [];
+            const sample = list[0];
+            const rowLabel = sample?.template?.name || "";
+            const multi = isMultiInstanceAddendumRef(
+                getAddendumDropdownRef(sample?.template) ||
+                    sample?.template?.layoutKey ||
+                    key,
+                rowLabel,
+            );
+            // Keep every Exhibit C instance row in the DB.
+            if (multi) return [];
+            return list.slice(1);
+        });
         if (!extras.length) return;
         void (async () => {
             try {
@@ -7995,25 +8598,26 @@ const PDFViewerModal = ({
         // Don't clobber optimistic checkbox state while a persist is in flight.
         if (
             addendumMappingsWriteInFlightRef.current > 0 ||
-            addendumOptimisticRefsRef.current != null
+            addendumOptimisticRefsRef.current != null ||
+            addendumDropdownOpenRef.current ||
+            Date.now() - addendumUserInteractedAtRef.current < 800
         ) {
             return;
         }
         // Avoid treating funder-scoped mappings as invalid before catalog/funder hydrate.
-        if (fundersLoading || !boldSignTemplatesHydrated || boldSignTemplatesLoading) {
+        if (
+            !isSignNowContractUiEnabled() &&
+            (fundersLoading || !boldSignTemplatesHydrated || boldSignTemplatesLoading)
+        ) {
             // Still restore checkbox UI from whatever mappings we already have.
-            const pendingRefs = [
-                ...new Set(
-                    linkedAddendumMappings
-                        .map((row) => resolveAddendumSelectionRef(row?.template))
-                        .filter(Boolean),
-                ),
-            ] as string[];
+            const pendingRefs = expandAddendumRefsAllowingDuplicates(
+                linkedAddendumMappings
+                    .map((row) => resolveAddendumSelectionRef(row?.template))
+                    .filter(Boolean),
+            );
             const next = pendingRefs.map((ref) => `bs:${ref}`);
-            const current = selectedAddendumOptions;
-            const same =
-                current.length === next.length &&
-                current.every((o) => next.includes(o));
+            const current = selectedAddendumOptionsRef.current;
+            const same = sameOrderedStrings(current, next);
             if (!same && !current.some((o) => o.startsWith("up:"))) {
                 setSelectedAddendumOptions(next);
             }
@@ -8024,7 +8628,9 @@ const PDFViewerModal = ({
         const invalidRows: ContractDocumentTemplateMappingRow[] = [];
         // Compare against raw mappings so we can delete another funder's leftovers
         // even when the visible linked list already filters them out.
-        const rowsToReconcile = addendumTemplateMappings;
+        const rowsToReconcile = [...addendumTemplateMappings].sort(
+            (a, b) => Number(a.order ?? 0) - Number(b.order ?? 0),
+        );
         const optimisticSelectedRefs = new Set(
             selectedAddendumOptionsRef.current
                 .map((o) => String(o || "").trim())
@@ -8036,6 +8642,11 @@ const PDFViewerModal = ({
             // Prefer this funder's unique SignNow template id as the selection ref.
             const tid = resolveAddendumSelectionRef(row?.template);
             if (!tid) continue;
+            const rowLabel =
+                row?.template?.name ||
+                row?.template?.templateName ||
+                row?.template?.title ||
+                "";
             if (isSignNowContractUiEnabled()) {
                 const owned =
                     selectedFunderAddendumOptions.length === 0 ||
@@ -8047,6 +8658,8 @@ const PDFViewerModal = ({
                     // Keep in-flight user picks while the mapping row still points at a
                     // legacy Nitro catalog id (race that used to clear after 3–5s).
                     optimisticSelectedRefs.has(tid.toLowerCase()) ||
+                    (optimisticSelectedRefs.has("exhibit_c") &&
+                        isMultiInstanceAddendumRef(tid, rowLabel)) ||
                     optimisticSelectedRefs.has(
                         extractSignNowTemplateId(
                             row?.template?.templateId || row?.template?.id || "",
@@ -8066,18 +8679,50 @@ const PDFViewerModal = ({
                 invalidRows.push(row);
                 continue;
             }
-            if (!validRefs.includes(tid)) validRefs.push(tid);
+            // Exhibit C may appear N times — keep every mapping row's selection ref.
+            if (isMultiInstanceAddendumRef(tid, rowLabel)) {
+                validRefs.push(tid);
+            } else if (
+                !validRefs.some((v) => v.toLowerCase() === tid.toLowerCase())
+            ) {
+                validRefs.push(tid);
+            }
         }
 
         // Also keep any optimistic SignNow selections that belong to this funder even
         // before their mapping rows finish saving.
         if (isSignNowContractUiEnabled() && selectedFunderAddendumOptions.length) {
-            for (const ref of optimisticSelectedRefs) {
-                if (
-                    funderOwnsSignNowAddendumRef(ref, selectedFunderAddendumOptions) &&
-                    !validRefs.some((v) => v.toLowerCase() === ref)
-                ) {
+            const optimisticList = selectedAddendumOptionsRef.current
+                .map((o) => String(o || "").trim())
+                .filter((o) => o.startsWith("bs:"))
+                .map((o) => o.slice(3).trim())
+                .filter(Boolean);
+            for (const ref of optimisticList) {
+                const owned =
+                    funderOwnsSignNowAddendumRef(ref, selectedFunderAddendumOptions) ||
+                    isMultiInstanceAddendumRef(ref);
+                if (!owned) continue;
+                if (isMultiInstanceAddendumRef(ref)) {
+                    // Preserve each optimistic Exhibit C copy; do not collapse.
+                    continue;
+                }
+                if (!validRefs.some((v) => v.toLowerCase() === ref.toLowerCase())) {
                     validRefs.push(ref);
+                }
+            }
+            const optimisticExhibitRefs = optimisticList.filter((r) =>
+                isMultiInstanceAddendumRef(r),
+            );
+            const mappedExhibitCount = validRefs.filter((r) =>
+                isMultiInstanceAddendumRef(r),
+            ).length;
+            if (optimisticExhibitRefs.length > mappedExhibitCount) {
+                for (
+                    let i = mappedExhibitCount;
+                    i < optimisticExhibitRefs.length;
+                    i++
+                ) {
+                    validRefs.push(optimisticExhibitRefs[i]);
                 }
             }
         }
@@ -8101,11 +8746,11 @@ const PDFViewerModal = ({
             // so a cleanup pass cannot blank the user's current selection.
         }
 
-        const next = validRefs.map((ref) => `bs:${ref}`);
-        const current = selectedAddendumOptions;
-        const same =
-            current.length === next.length &&
-            current.every((o) => next.includes(o));
+        const next = expandAddendumRefsAllowingDuplicates(validRefs).map(
+            (ref) => `bs:${ref}`,
+        );
+        const current = selectedAddendumOptionsRef.current;
+        const same = sameOrderedStrings(current, next);
         if (!same && !current.some((o) => o.startsWith("up:"))) {
             setSelectedAddendumOptions(next);
         }
@@ -8121,9 +8766,9 @@ const PDFViewerModal = ({
         fetchTemplateMappings,
         docsLayoutFunderId,
         boldSignTemplates,
-        selectedAddendumOptions,
         resolveAddendumSelectionRef,
         selectedFunderAddendumOptions,
+        addendumPickerEpoch,
     ]);
 
     const prevActiveStepRef = useRef<ContractWizardStep>(activeStep);
@@ -9353,15 +9998,7 @@ const PDFViewerModal = ({
                                                 embedded
                                                 pending={pendingDocumentRequests}
                                                 completed={completedDocumentRequests}
-                                                onUpload={
-                                                    waitingForSourceApplicationPdf
-                                                        ? async () => {
-                                                              toast.info(
-                                                                  "Wait until the application PDF finishes uploading.",
-                                                              );
-                                                          }
-                                                        : autoUploadRequestedDocument
-                                                }
+                                                onUpload={autoUploadRequestedDocument}
                                                 onView={handleViewRequestedDocument}
                                                 canView={canViewRequestedDocument}
                                                 onRemove={handleRemoveDocumentRequest}
@@ -9379,7 +10016,7 @@ const PDFViewerModal = ({
                                                 const isUploading = typeof progress === "number";
                                                 const isDragOver = dragOverDocKey === key;
                                                 const pendingName = pendingFileNameByKey[key];
-                                                const disabled = effectiveContractId == null || waitingForSourceApplicationPdf;
+                                                const disabled = effectiveContractId == null;
 
                                                 const onPickFiles = (files: FileList | null) => {
                                                     const file = files?.[0];
@@ -9471,9 +10108,7 @@ const PDFViewerModal = ({
                                                                     </p>
                                                                 ) : (
                                                                     <p className="truncate text-[11px] text-slate-500">
-                                                                        {waitingForSourceApplicationPdf
-                                                                            ? "Waiting for application PDF…"
-                                                                            : disabled
+                                                                        {disabled
                                                                             ? "Generate or select a contract first."
                                                                             : isDragOver
                                                                                 ? "Drop file to upload"
@@ -9596,43 +10231,6 @@ const PDFViewerModal = ({
                                         {documentUploadMessage && (
                                             <p className="pt-1 text-xs text-slate-600">{documentUploadMessage}</p>
                                         )}
-                                        <div className="rounded-lg border border-slate-200 bg-white p-3">
-                                            <div className="mb-2 flex items-center justify-between">
-                                                <p className="text-xs font-semibold uppercase tracking-wide text-slate-600 ">
-                                                    Source Application PDF
-                                                </p>
-                                            </div>
-                                            <div className="flex items-center justify-between rounded border border-slate-200 bg-slate-50 px-2.5 py-2">
-                                                <div className="min-w-0 pr-2">
-                                                    <p className="truncate text-xs font-medium text-slate-800">
-                                                        Application PDF
-                                                    </p>
-                                                    <p className="truncate text-[11px] text-slate-500">
-                                                        {waitingForSourceApplicationPdf
-                                                            ? "Uploading…"
-                                                            : sourceApplicationPdf?.name || "Not found"}
-                                                    </p>
-                                                </div>
-                                                <Button
-                                                    type="button"
-                                                    size="icon"
-                                                    variant="ghost"
-                                                    className="h-7 w-7 cursor-pointer"
-                                                    title="View source application PDF"
-                                                    disabled={!sourceApplicationPdf?.url}
-                                                    onClick={() => {
-                                                        if (!sourceApplicationPdf?.url) {
-                                                            setDocumentUploadMessage("Application PDF is not available.");
-                                                            return;
-                                                        }
-                                                        setUploadedPreviewUrl(sourceApplicationPdf.url);
-                                                        setActivePreview(null);
-                                                    }}
-                                                >
-                                                    <Eye className="h-3.5 w-3.5" />
-                                                </Button>
-                                            </div>
-                                        </div>
                                     </section>
                                 )}
 
@@ -9755,127 +10353,72 @@ const PDFViewerModal = ({
                                                     </span>
                                                 )}
                                             </div>
-                                            <div className="relative" ref={addendumDropdownRef}>
-                                                <button
-                                                    type="button"
-                                                    aria-expanded={addendumDropdownOpen}
-                                                    aria-haspopup="listbox"
-                                                    onClick={() =>
-                                                        setAddendumDropdownOpen((open) => !open)
-                                                    }
-                                                    className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left text-xs text-slate-800 outline-none transition hover:bg-slate-50 focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
-                                                >
-                                                    <span className="min-w-0 truncate">
-                                                        {selectedAddendumOptions.length === 0
-                                                            ? "Select addendum(s)"
-                                                            : selectedAddendumDisplayLabels.join(
-                                                                  ", ",
-                                                              )}
+                                            <AddendumTemplatesPicker
+                                                options={addendumPickerOptions}
+                                                selectedRefs={selectedAddendumRefs}
+                                                forceClosed={!isOpen || activeStep !== "info"}
+                                                onToggle={toggleAddendumTemplateSelection}
+                                                onSetCount={setAddendumTemplateRefCount}
+                                                onClear={clearAllAddendumSelections}
+                                                onOpenChange={handleAddendumPickerOpenChange}
+                                            />
+                                            {exhibitCPickerRef ? (
+                                                <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--brand)]/20 bg-[var(--brand)]/5 px-2.5 py-2">
+                                                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                                                        Exhibit C copies:{" "}
+                                                        <span className="font-bold text-[var(--brand)]">
+                                                            {exhibitCSelectedCount}
+                                                        </span>
+                                                        <span className="font-normal text-slate-500">
+                                                            {" "}
+                                                            / {MULTI_INSTANCE_ADDENDUM_MAX}
+                                                        </span>
                                                     </span>
-                                                    <ChevronDown
-                                                        className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${
-                                                            addendumDropdownOpen ? "rotate-180" : ""
-                                                        }`}
-                                                        aria-hidden
-                                                    />
-                                                </button>
-
-                                                {addendumDropdownOpen ? (
-                                                    <div
-                                                        role="listbox"
-                                                        aria-multiselectable="true"
-                                                        className="absolute left-0 right-0 top-[calc(100%+4px)] z-[200] max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg dark:border-slate-600 dark:bg-slate-950"
-                                                    >
-                                                        <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                                            Available addendums
-                                                        </p>
-                                                        {addendumTemplateOptions.length > 0 ? (
-                                                            addendumTemplateOptions.map((t: any) => {
-                                                                const tid = getAddendumDropdownRef(t);
-                                                                if (
-                                                                    !tid ||
-                                                                    !boldSignTemplateIsPreviewable(t)
-                                                                ) {
-                                                                    return null;
-                                                                }
-                                                                const optionValue = `bs:${tid}`;
-                                                                const checked =
-                                                                    selectedAddendumOptions.includes(
-                                                                        optionValue,
-                                                                    );
-                                                                const label =
-                                                                    formatDropdownLabel(
-                                                                        t?.name ||
-                                                                            t?.templateName ||
-                                                                            t?.title ||
-                                                                            "Addendum",
-                                                                    ) || "Addendum";
-                                                                return (
-                                                                    <label
-                                                                        key={optionValue}
-                                                                        role="option"
-                                                                        aria-selected={checked}
-                                                                        className={`flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-xs transition-colors ${
-                                                                            checked
-                                                                                ? "bg-[var(--brand)]/10 text-slate-900 dark:text-slate-100"
-                                                                                : "text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-900"
-                                                                        }`}
-                                                                    >
-                                                                        <Checkbox
-                                                                            checked={checked}
-                                                                            onCheckedChange={() => {
-                                                                                void toggleAddendumTemplateSelection(
-                                                                                    tid,
-                                                                                );
-                                                                            }}
-                                                                        />
-                                                                        <span className="min-w-0 flex-1 leading-snug">
-                                                                            {label}
-                                                                        </span>
-                                                                    </label>
-                                                                );
-                                                            })
-                                                        ) : (
-                                                            <p className="px-2 py-2 text-[11px] text-slate-500">
-                                                                No addendum PDFs uploaded for this
-                                                                funder yet.
-                                                            </p>
-                                                        )}
-                                                        {selectedAddendumOptions.length > 0 ? (
-                                                            <button
-                                                                type="button"
-                                                                className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:hover:bg-slate-900 dark:hover:text-slate-200"
-                                                                onClick={() => {
-                                                                    for (const opt of selectedAddendumOptions) {
-                                                                        const tid = opt.startsWith("bs:")
-                                                                            ? opt.slice(3)
-                                                                            : "";
-                                                                        const match =
-                                                                            addendumTemplateOptions.find(
-                                                                                (t: any) =>
-                                                                                    getAddendumDropdownRef(
-                                                                                        t,
-                                                                                    ) === tid,
-                                                                            );
-                                                                        const kind =
-                                                                            resolveTemplateAutoAddendumKind(
-                                                                                match ?? null,
-                                                                            );
-                                                                        if (kind) {
-                                                                            addendumUserRemovedKindsRef.current.add(
-                                                                                kind,
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                    void setAddendumTemplateMappings([]);
-                                                                }}
-                                                            >
-                                                                Clear all addendums
-                                                            </button>
-                                                        ) : null}
+                                                    <div className="ml-auto flex items-center gap-1.5">
+                                                        <button
+                                                            type="button"
+                                                            disabled={exhibitCSelectedCount <= 0}
+                                                            className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-200"
+                                                            onClick={() =>
+                                                                setAddendumTemplateRefCount(
+                                                                    exhibitCPickerRef,
+                                                                    Math.max(0, exhibitCSelectedCount - 1),
+                                                                )
+                                                            }
+                                                            aria-label="Remove one Exhibit C"
+                                                        >
+                                                            −
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            disabled={
+                                                                exhibitCSelectedCount >=
+                                                                MULTI_INSTANCE_ADDENDUM_MAX
+                                                            }
+                                                            className="inline-flex h-8 items-center gap-1 rounded-md bg-[var(--brand)] px-2.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                                                            onClick={() =>
+                                                                setAddendumTemplateRefCount(
+                                                                    exhibitCPickerRef,
+                                                                    Math.min(
+                                                                        MULTI_INSTANCE_ADDENDUM_MAX,
+                                                                        exhibitCSelectedCount + 1,
+                                                                    ),
+                                                                )
+                                                            }
+                                                            aria-label="Add another Exhibit C"
+                                                        >
+                                                            <Plus className="h-3.5 w-3.5" aria-hidden />
+                                                            Add another Exhibit C
+                                                        </button>
                                                     </div>
-                                                ) : null}
-                                            </div>
+                                                </div>
+                                            ) : null}
+                                            <p className="mt-1.5 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
+                                                Exhibit C supports multiple copies on one deal — use{" "}
+                                                <span className="font-semibold">Add another Exhibit C</span>{" "}
+                                                (or <span className="font-semibold">+</span> inside the
+                                                dropdown) up to {MULTI_INSTANCE_ADDENDUM_MAX}.
+                                            </p>
                                         </div>
                                         <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start gap-2.5">
@@ -10500,7 +11043,7 @@ const PDFViewerModal = ({
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
                                                             {isSignNowContractUiEnabled()
-                                                                ? "SignNow addendums from Settings → Funders for the selected funder."
+                                                                ? "Drag addendums to set SignNow send order. Position 1 is attached first after the contract."
                                                                 : "DocuSign addendum templates merged when you send the contract."}
                                                         </p>
                                                     </div>
@@ -10520,8 +11063,15 @@ const PDFViewerModal = ({
                                                     : "DocuSign templates"}
                                             </p>
                                             <div className="space-y-2">
-                                                {linkedAddendumMappings.length > 0 ? (
-                                                    linkedAddendumMappings.map((row) => {
+                                                {orderedLinkedAddendumMappings.length > 0 ? (
+                                                    <AddendumSendOrderBoard
+                                                        items={orderedLinkedAddendumMappings}
+                                                        disabled={loadingTemplateMappings}
+                                                        onReorder={reorderLinkedAddendums}
+                                                        renderItem={(row, index) => {
+                                                        const isPending = String(row.id || "").startsWith(
+                                                            "pending:",
+                                                        );
                                                         const mappingRef = getAddendumDropdownRef(row?.template);
                                                         // Non-Nitro funders often persist BoldSignTemplate
                                                         // rows as generic "Addendum" — recover Settings name
@@ -10531,12 +11081,49 @@ const PDFViewerModal = ({
                                                                 row?.template,
                                                                 selectedFunderAddendumOptions,
                                                             );
-                                                        const displayName =
+                                                        const baseDisplayName =
                                                             funderMatch?.name ||
                                                             row?.template?.name ||
                                                             row?.template?.templateId ||
                                                             row?.templateId ||
                                                             "Template";
+                                                        const isExhibitCCopy =
+                                                            isExhibitCFamilyAddendumRef(
+                                                                funderMatch?.knownLayoutKey ||
+                                                                    funderMatch?.templateId ||
+                                                                    mappingRef ||
+                                                                    row?.template?.layoutKey,
+                                                                funderMatch?.name ||
+                                                                    row?.template?.name,
+                                                            );
+                                                        const exhibitCFamilyIndex =
+                                                            orderedLinkedAddendumMappings
+                                                                .slice(0, index + 1)
+                                                                .filter((candidate) => {
+                                                                    const match =
+                                                                        matchFunderSignNowAddendumOption(
+                                                                            candidate?.template,
+                                                                            selectedFunderAddendumOptions,
+                                                                        );
+                                                                    return isExhibitCFamilyAddendumRef(
+                                                                        match?.knownLayoutKey ||
+                                                                            match?.templateId ||
+                                                                            getAddendumDropdownRef(
+                                                                                candidate?.template,
+                                                                            ) ||
+                                                                            candidate?.template
+                                                                                ?.layoutKey,
+                                                                        match?.name ||
+                                                                            candidate?.template?.name,
+                                                                    );
+                                                                }).length;
+                                                        // ACH Daily must stay "ACH Daily" — never
+                                                        // rename it to Exhibit C / Exhibit C (N).
+                                                        const displayName = isExhibitCCopy
+                                                            ? labelForExhibitCFamilyInstance(
+                                                                  exhibitCFamilyIndex,
+                                                              )
+                                                            : baseDisplayName;
                                                         const prefillTemplateId =
                                                             funderMatch?.templateId ||
                                                             row?.template?.templateId ||
@@ -10563,11 +11150,23 @@ const PDFViewerModal = ({
                                                             funderMatch?.name ||
                                                             row?.template?.name ||
                                                             null;
+                                                        const isAchDailyRow = isAchDailyAddendumRef(
+                                                            funderMatch?.knownLayoutKey ||
+                                                                prefillLayoutKey ||
+                                                                mappingRef ||
+                                                                row?.template?.layoutKey,
+                                                            funderMatch?.name || prefillName,
+                                                        );
+                                                        // Prefer catalog key so the editor resolves
+                                                        // ach_daily (not Exhibit C entity slots).
+                                                        const editorLayoutKey = isAchDailyRow
+                                                            ? SIGNNOW_ACH_DAILY_LAYOUT_KEY
+                                                            : prefillLayoutKey;
                                                         const supportsPrefill =
                                                             hasAddendumPrefillFieldMap(
                                                                 prefillTemplateId,
                                                                 prefillName,
-                                                                prefillLayoutKey,
+                                                                editorLayoutKey,
                                                             );
                                                         return (
                                                             <div
@@ -10576,21 +11175,23 @@ const PDFViewerModal = ({
                                                             >
                                                                 <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
                                                                     <div
-                                                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm"
+                                                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-[11px] font-bold text-white shadow-sm"
                                                                         aria-hidden
                                                                     >
-                                                                        <FileText className="h-4 w-4" />
+                                                                        {index + 1}
                                                                     </div>
                                                                     <div className="min-w-0">
                                                                         <div className="flex flex-wrap items-center gap-1.5">
                                                                             <span className="inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-200">
-                                                                                Addendum
+                                                                                Position {index + 1}
                                                                             </span>
                                                                         </div>
                                                                         <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                                                                            {formatDropdownLabel(
-                                                                                displayName,
-                                                                            ) || "Addendum"}
+                                                                            {isExhibitCCopy
+                                                                                ? displayName
+                                                                                : formatDropdownLabel(
+                                                                                      displayName,
+                                                                                  ) || "Addendum"}
                                                                         </p>
                                                                     </div>
                                                                 </div>
@@ -10600,10 +11201,15 @@ const PDFViewerModal = ({
                                                                         size="icon"
                                                                         variant="ghost"
                                                                         className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
-                                                                        title="View template PDF"
+                                                                        title={
+                                                                            isPending
+                                                                                ? "Saving addendum link…"
+                                                                                : "View template PDF"
+                                                                        }
                                                                         disabled={
+                                                                            isPending ||
                                                                             previewingTemplateId ===
-                                                                            String(row.id)
+                                                                                String(row.id)
                                                                         }
                                                                         onClick={() =>
                                                                             void handlePreviewBoldSignTemplate(
@@ -10614,42 +11220,73 @@ const PDFViewerModal = ({
                                                                         {previewingTemplateId ===
                                                                         String(row.id) ? (
                                                                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                        ) : isPending ? (
+                                                                            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--brand)]" />
                                                                         ) : (
                                                                             <Eye className="h-3.5 w-3.5" />
                                                                         )}
                                                                     </Button>
-                                                                    {supportsPrefill ? (
+                                                                    {supportsPrefill && !isPending ? (
                                                                         <Button
                                                                             type="button"
                                                                             size="icon"
                                                                             variant="ghost"
                                                                             className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-amber-50 hover:text-amber-800 dark:hover:bg-amber-950/40"
                                                                             title="Edit addendum prefill"
-                                                                            onClick={() =>
-                                                                                setTemplateMappingPrefillEditRow(
-                                                                                    funderMatch
-                                                                                        ? {
-                                                                                              ...row,
-                                                                                              template: {
-                                                                                                  ...(row.template ??
-                                                                                                      {}),
-                                                                                                  id:
-                                                                                                      row.template?.id ??
-                                                                                                      row.id,
-                                                                                                  name:
-                                                                                                      prefillName ??
-                                                                                                      undefined,
-                                                                                                  layoutKey:
-                                                                                                      prefillLayoutKey ??
-                                                                                                      undefined,
-                                                                                                  templateId:
-                                                                                                      prefillTemplateId ??
-                                                                                                      undefined,
-                                                                                              },
-                                                                                          }
-                                                                                        : row,
-                                                                                )
-                                                                            }
+                                                                            onClick={() => {
+                                                                                // ACH Daily must never inherit Exhibit C (2)/(3) entity slots.
+                                                                                if (isAchDailyRow || !isExhibitCCopy) {
+                                                                                    setTemplateMappingPrefillExhibitCIndex(
+                                                                                        0,
+                                                                                    );
+                                                                                } else {
+                                                                                    const exhibitCIndexAmongOrdered =
+                                                                                        orderedLinkedAddendumMappings
+                                                                                            .slice(0, index + 1)
+                                                                                            .filter((candidate) =>
+                                                                                                isExhibitCFamilyAddendumRef(
+                                                                                                    getAddendumDropdownRef(
+                                                                                                        candidate?.template,
+                                                                                                    ) ||
+                                                                                                        candidate
+                                                                                                            ?.template
+                                                                                                            ?.layoutKey,
+                                                                                                    candidate?.template
+                                                                                                        ?.name,
+                                                                                                ),
+                                                                                            ).length;
+                                                                                    setTemplateMappingPrefillExhibitCIndex(
+                                                                                        Math.max(
+                                                                                            0,
+                                                                                            exhibitCIndexAmongOrdered -
+                                                                                                1,
+                                                                                        ),
+                                                                                    );
+                                                                                }
+                                                                                setTemplateMappingPrefillEditRow({
+                                                                                    ...row,
+                                                                                    template: {
+                                                                                        ...(row.template ?? {}),
+                                                                                        id:
+                                                                                            row.template?.id ??
+                                                                                            row.id,
+                                                                                        name: isAchDailyRow
+                                                                                            ? prefillName ||
+                                                                                              "ACH Daily"
+                                                                                            : prefillName ??
+                                                                                              row.template?.name ??
+                                                                                              undefined,
+                                                                                        layoutKey:
+                                                                                            editorLayoutKey ??
+                                                                                            undefined,
+                                                                                        templateId:
+                                                                                            prefillTemplateId ??
+                                                                                            row.template
+                                                                                                ?.templateId ??
+                                                                                            undefined,
+                                                                                    },
+                                                                                });
+                                                                            }}
                                                                         >
                                                                             <Pencil className="h-3.5 w-3.5" />
                                                                         </Button>
@@ -10661,11 +11298,44 @@ const PDFViewerModal = ({
                                                                         className="h-8 w-8 cursor-pointer text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/40"
                                                                         title="Remove addendum"
                                                                         onClick={() => {
-                                                                            if (mappingRef) {
-                                                                                void toggleAddendumTemplateSelection(
-                                                                                    mappingRef,
-                                                                                );
-                                                                            }
+                                                                            const nextRefs =
+                                                                                orderedLinkedAddendumMappings
+                                                                                    .filter(
+                                                                                        (candidate) =>
+                                                                                            candidate.id !==
+                                                                                            row.id,
+                                                                                    )
+                                                                                    .map((candidate) => {
+                                                                                        const pendingRef =
+                                                                                            String(
+                                                                                                candidate.id ||
+                                                                                                    "",
+                                                                                            ).startsWith(
+                                                                                                "pending:",
+                                                                                            )
+                                                                                                ? String(
+                                                                                                      candidate.id,
+                                                                                                  ).split(
+                                                                                                      ":",
+                                                                                                  )[1] ||
+                                                                                                  ""
+                                                                                                : "";
+                                                                                        return (
+                                                                                            pendingRef ||
+                                                                                            getAddendumDropdownRef(
+                                                                                                candidate.template,
+                                                                                            ) ||
+                                                                                            getBoldSignTemplateMappingRef(
+                                                                                                candidate.template,
+                                                                                            ) ||
+                                                                                            ""
+                                                                                        );
+                                                                                    })
+                                                                                    .filter(Boolean);
+                                                                            void setAddendumTemplateMappings(
+                                                                                nextRefs,
+                                                                                { immediate: true },
+                                                                            );
                                                                         }}
                                                                     >
                                                                         <Trash2 className="h-3.5 w-3.5" />
@@ -10673,17 +11343,32 @@ const PDFViewerModal = ({
                                                                 </div>
                                                             </div>
                                                         );
-                                                    })
+                                                        }}
+                                                    />
                                                 ) : (
                                                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
                                                         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
-                                                            <Layers className="h-5 w-5" aria-hidden />
+                                                            {loadingTemplateMappings ||
+                                                            addendumOptimisticRefsRef.current !=
+                                                                null ? (
+                                                                <Loader2
+                                                                    className="h-5 w-5 animate-spin"
+                                                                    aria-hidden
+                                                                />
+                                                            ) : (
+                                                                <Layers className="h-5 w-5" aria-hidden />
+                                                            )}
                                                         </div>
                                                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
-                                                            No addendum template linked yet.
+                                                            {selectedAddendumOptions.some((o) =>
+                                                                o.startsWith("bs:"),
+                                                            )
+                                                                ? "Linking addendum templates…"
+                                                                : "No addendum template linked yet."}
                                                         </p>
                                                         <p className="max-w-[240px] text-[10px] text-slate-500">
-                                                            Pick addendum templates above to merge with the contract.
+                                                            Pick addendum templates in Addendum Templates
+                                                            above — send order appears here right away.
                                                         </p>
                                                     </div>
                                                 )}
@@ -12599,16 +13284,8 @@ const PDFViewerModal = ({
                                             size="sm"
                                             className="ml-auto h-9 rounded-sm bg-[image:var(--brand-gradient)] px-4 text-sm text-white hover:opacity-90 disabled:opacity-60"
                                             onClick={goToNextStep}
-                                            disabled={activeStep === "documents" && waitingForSourceApplicationPdf}
                                         >
-                                            {activeStep === "documents" && waitingForSourceApplicationPdf ? (
-                                                <span className="inline-flex items-center gap-1.5">
-                                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                    Waiting…
-                                                </span>
-                                            ) : (
-                                                "Next"
-                                            )}
+                                            Next
                                         </Button>
                                     )}
                                 </div>
@@ -13232,6 +13909,7 @@ const PDFViewerModal = ({
                 contractRecords={contractPrefillRecords}
                 resolvedContract={resolvedContract}
                 linkedAddendumMapping={linkedAddendumMapping}
+                linkedAddendumMappings={orderedLinkedAddendumMappings}
                 linkedDisclosureMapping={linkedDisclosureMapping}
                 contractDisclosureState={selectedState}
                 contractDisclosureFrequency={contractDisclosureFrequency}
@@ -13247,7 +13925,10 @@ const PDFViewerModal = ({
             <TemplateMappingPrefillEditDialog
                 open={templateMappingPrefillEditRow != null}
                 onOpenChange={(nextOpen) => {
-                    if (!nextOpen) setTemplateMappingPrefillEditRow(null);
+                    if (!nextOpen) {
+                        setTemplateMappingPrefillEditRow(null);
+                        setTemplateMappingPrefillExhibitCIndex(0);
+                    }
                 }}
                 row={templateMappingPrefillEditRow}
                 contractId={effectiveContractId}
@@ -13258,6 +13939,7 @@ const PDFViewerModal = ({
                 agreementDate={formatDate(new Date())}
                 documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
                 mainPrefillOverrides={mainPrefillOverridesForTemplateDialog}
+                exhibitCEntityIndex={templateMappingPrefillExhibitCIndex}
                 onSaved={(saved) => {
                     const full = saved?.contractPrefillOverrides;
                     if (full != null) {

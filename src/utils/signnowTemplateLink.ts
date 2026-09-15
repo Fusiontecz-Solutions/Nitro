@@ -102,6 +102,12 @@ function knownLayoutKeyFromName(
     return KNOWN_DISCLOSURE_NAME_KEYS[slug] || "";
   }
   if (KNOWN_ADDENDUM_NAME_KEYS[slug]) return KNOWN_ADDENDUM_NAME_KEYS[slug];
+  // ACH Daily/Weekly before Exhibit C — names like "Extra Exhibit C (ACH Daily)"
+  // must not collapse into exhibit_c.
+  if (slug.includes("ach") && slug.includes("daily") && !slug.includes("weekly")) {
+    return "ach_daily";
+  }
+  if (slug.includes("ach") && slug.includes("weekly")) return "ach_weekly";
   if (slug.includes("exhibit_c") || (slug.includes("exhibit") && slug.includes("ach"))) {
     return "exhibit_c";
   }
@@ -112,8 +118,6 @@ function knownLayoutKeyFromName(
   if (slug === "epa" || (slug.includes("epa") && !slug.includes("discover"))) {
     return "epa";
   }
-  if (slug.includes("ach") && slug.includes("daily")) return "ach_daily";
-  if (slug.includes("ach") && slug.includes("weekly")) return "ach_weekly";
   return "";
 }
 
@@ -221,6 +225,13 @@ export function funderOwnsSignNowAddendumRef(
   const rowLk = String(template?.layoutKey ?? "")
     .trim()
     .toLowerCase();
+  const rowKnown = knownLayoutKeyFromName(
+    String(template?.name ?? ""),
+    "addendum",
+  );
+  const tokenKnown =
+    knownLayoutKeyFromName(token, "addendum") ||
+    (token.toLowerCase() === "exhibit_c" ? "exhibit_c" : "");
 
   // Owned if any Settings option matches this funder's SignNow id / selection ref.
   return options.some((opt) => {
@@ -231,6 +242,14 @@ export function funderOwnsSignNowAddendumRef(
     if (tokenId && optId && tokenId === optId) return true;
     if (token && optKey && token === optKey) return true;
     if (rowLk && optKey && rowLk === optKey.toLowerCase()) return true;
+    // Shared catalog keys (exhibit_c / ach_*) — match funder option by known kind
+    // even when the CRM row still points at the platform template id.
+    if (optKnown) {
+      if (rowLk && rowLk === optKnown) return true;
+      if (rowKnown && rowKnown === optKnown) return true;
+      if (tokenKnown && tokenKnown === optKnown) return true;
+      if (token && token.toLowerCase() === optKnown) return true;
+    }
     // Legacy rows stored under shared Nitro keys (ach_weekly) — only keep when
     // this funder's option uses that same SignNow id (not a different copy).
     if (

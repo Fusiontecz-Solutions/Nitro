@@ -458,7 +458,10 @@ export function formatDisclosureUsDate(value: unknown): string {
     if (value == null) return "";
     const t = String(value).trim();
     if (!t) return "";
-    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) return t;
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) {
+        const [month, day, year] = t.split("/");
+        return `${month.padStart(2, "0")}/${day.padStart(2, "0")}/${year}`;
+    }
     if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
         return `${t.slice(5, 7)}/${t.slice(8, 10)}/${t.slice(0, 4)}`;
     }

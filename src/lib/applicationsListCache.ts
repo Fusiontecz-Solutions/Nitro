@@ -200,6 +200,20 @@ export function invalidateApplicationsListCache() {
   invalidateUnderwriterPipelineCounts();
 }
 
+/** Cooldown after create→list navigation so socket `application_created` does not re-fan-out GETs. */
+const CREATE_REFRESH_COOLDOWN_MS = 4000;
+let applicationsCreatedRefreshUntil = 0;
+
+export function markApplicationsCreatedRefresh(
+  cooldownMs: number = CREATE_REFRESH_COOLDOWN_MS,
+): void {
+  applicationsCreatedRefreshUntil = Date.now() + Math.max(0, cooldownMs);
+}
+
+export function shouldSkipApplicationCreatedInvalidation(): boolean {
+  return Date.now() < applicationsCreatedRefreshUntil;
+}
+
 /**
  * Warm list cache for a single filter key (hover / active filter only).
  * Skips network when cache is fresh or an identical request is in flight.

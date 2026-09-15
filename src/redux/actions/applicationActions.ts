@@ -1074,35 +1074,75 @@ export const sendFundedEmail = createAsyncThunk(
     }
 );
 
-// Extract business and owner details from PDF (parse-only endpoint used for client prefill)
+export type AutoCreateFromPdfPayload = {
+    /** Preferred: multi-select batch (application + DL + voided check). */
+    files?: File[];
+    /** Legacy single application PDF */
+    pdfFile?: File;
+    applicationType?: string;
+    isoId?: string;
+    driverLicense?: File | null;
+    driverLicenseOwner2?: File | null;
+    voidedCheck?: File | null;
+};
+
+// Auto-create client + application from one or many PDFs (classifies + maps owners server-side)
 export const parseApplicationPdfForClientPrefill = createAsyncThunk(
     'application/parseApplicationPdfForClientPrefill',
     async (
-        payload: File | { pdfFile: File; applicationType?: string; isoId?: string },
+        payload: File | AutoCreateFromPdfPayload,
         { rejectWithValue }
     ) => {
         try {
-            const pdfFile = payload instanceof File ? payload : payload.pdfFile;
-            const applicationType =
-                payload instanceof File ? undefined : payload.applicationType;
-            const isoId =
-                payload instanceof File ? undefined : payload.isoId;
             const formData = new FormData();
-            formData.append('pdf', pdfFile);
-            if (applicationType) {
-                formData.append('applicationType', applicationType);
-            }
-            if (isoId) {
-                formData.append('isoId', isoId);
+            let fileCount = 0;
+
+            if (payload instanceof File) {
+                formData.append('pdf', payload);
+                fileCount = 1;
+            } else {
+                const batch = Array.isArray(payload.files)
+                    ? payload.files.filter(Boolean)
+                    : [];
+                if (batch.length > 0) {
+                    for (const file of batch) {
+                        formData.append('files', file);
+                    }
+                    fileCount = batch.length;
+                } else if (payload.pdfFile) {
+                    formData.append('pdf', payload.pdfFile);
+                    fileCount = 1;
+                    if (payload.driverLicense) {
+                        formData.append('driverLicense', payload.driverLicense);
+                        fileCount += 1;
+                    }
+                    if (payload.driverLicenseOwner2) {
+                        formData.append('driverLicenseOwner2', payload.driverLicenseOwner2);
+                        fileCount += 1;
+                    }
+                    if (payload.voidedCheck) {
+                        formData.append('voidedCheck', payload.voidedCheck);
+                        fileCount += 1;
+                    }
+                } else {
+                    return rejectWithValue('Please select at least one PDF file');
+                }
+
+                if (payload.applicationType) {
+                    formData.append('applicationType', payload.applicationType);
+                }
+                if (payload.isoId) {
+                    formData.append('isoId', payload.isoId);
+                }
             }
 
-            // Use the auto-create endpoint for combined client + application creation
             const response = await axiosPostFormData(
                 '/applications/auto-create-from-pdf',
                 formData,
-                { timeout: 180000 },
+                { timeout: fileCount > 1 ? 300000 : 180000 },
             );
-            await invalidateApplicationsListCache();
+            // List refresh is handled on /applications navigate (refreshApplicationsList).
+            // Only clear detail caches here so we do not trigger an extra list GET mid-navigate.
             const created = (response.data as { data?: { application?: { _id?: string; id?: string; applicationId?: number } } })?.data?.application;
             if (created?._id) invalidateApplicationDetailCache(String(created._id));
             if (created?.id) invalidateApplicationDetailCache(String(created.id));

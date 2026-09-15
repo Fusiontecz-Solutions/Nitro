@@ -592,7 +592,7 @@ const ApplicationDetails = () => {
                 ) : null}
                 {isFinalUnderwriter ? (
                     /* UNDERWRITER: 1) Tab row (tabs + links) 2) Application Summary below tabs 3) Tab content */
-                    <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+                    <Tabs key={applicationId} value={activeTab} onValueChange={handleTabChange} className="w-full">
                         {/* Row 1: Tabs (left) + Links (right) */}
                         <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                             <HorizontalScrollFade className="min-w-0 w-full flex-1" scrollKey={activeTab}>
@@ -691,6 +691,7 @@ const ApplicationDetails = () => {
                 ) : null}
                 {!isFinalUnderwriter && (
                     <Tabs
+                        key={applicationId}
                         value={activeTab}
                         onValueChange={
                             useOperationsPipelineTabs

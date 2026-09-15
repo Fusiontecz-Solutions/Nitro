@@ -257,6 +257,10 @@ function rebuildDriverLicenseContractPrefill(
     return contractPrefill;
 }
 
+/**
+ * Void-check sync must not overwrite merchant legal / authorization business names.
+ * Bank + ACH holder fields still update; a different holder becomes an Exhibit C entity on the server.
+ */
 function rebuildVoidedCheckContractPrefill(
     panels: KycExtractionResult["panels"],
 ): Record<string, string> {
@@ -270,17 +274,9 @@ function rebuildVoidedCheckContractPrefill(
 
     const holderName = str(ach.fullNameOnAccount);
     if (holderName) {
-        set("legalName", holderName);
-        set("authorizationClientName", holderName);
-        set("authorizationClientNamePrint", holderName);
-        set("authorizationApplication", holderName);
         set("achAuthorizationAccountHolderName", holderName);
-        set("achAuthorizationConcentAccountHolderName", holderName);
-        set("securityBusinessName", holderName);
     }
     if (str(ach.dba)) {
-        set("doingBusinessAs", ach.dba);
-        set("securityDoingBusinessAs", ach.dba);
         set("achAuthorizationAccountHolderDba", ach.dba);
     }
     if (str(ach.bankName)) {
@@ -296,23 +292,15 @@ function rebuildVoidedCheckContractPrefill(
         set("achAuthorizationAccountHolderBankAccountNumber", ach.accountNumber);
     }
     if (str(ach.address)) {
-        set("businessAddress", ach.address);
-        set("securityBusinessAddress", ach.address);
         set("achAuthorizationAccountHolderAddress", ach.address);
     }
     if (str(ach.city)) {
-        set("businessAddressCity", ach.city);
-        set("securityBusinessAddressCity", ach.city);
         set("achAuthorizationAccountHolderCity", ach.city);
     }
     if (str(ach.state)) {
-        set("businessAddressState", ach.state);
-        set("securityBusinessAddressState", ach.state);
         set("achAuthorizationAccountHolderState", ach.state);
     }
     if (str(ach.zip)) {
-        set("businessAddressZip", ach.zip);
-        set("securityBusinessAddressZip", ach.zip);
         set("achAuthorizationAccountHolderZip", ach.zip);
     }
     return contractPrefill;

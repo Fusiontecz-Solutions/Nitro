@@ -70,6 +70,8 @@ export type BoldSignMergeAndSendPayload = {
   ccEmails?: string[];
   /** When false, creates a draft envelope only (no signing emails). */
   autoSend?: boolean;
+  /** Correlation id for SignNow Review timing logs only. */
+  timingRequestId?: string;
   /** DocuSign envelope email subject (`emailSubject`). */
   title?: string;
   /** DocuSign envelope email body (`emailBlurb`). */
@@ -85,8 +87,12 @@ export const mergeAndSendBoldSignTemplates = createAsyncThunk(
   "boldSign/mergeAndSendTemplates",
   async (payload: BoldSignMergeAndSendPayload, { rejectWithValue }) => {
     try {
+      const timingRequestId = String(payload.timingRequestId || "").trim();
       const response = await axiosPost("/docusign/merge-and-send", payload, {
         timeout: 300_000,
+        ...(timingRequestId
+          ? { headers: { "X-SignNow-Timing-Id": timingRequestId } }
+          : {}),
       });
       return response.data;
     } catch (error: any) {

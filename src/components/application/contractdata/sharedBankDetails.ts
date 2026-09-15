@@ -14,7 +14,7 @@ function normalizeBankFieldId(id: string): string {
         .trim()
         .toLowerCase()
         .replace(/-/g, "_")
-        .replace(/_p\d+(?:_ach)?$/i, "");
+        .replace(/_p\d+(?:_achd|_ach)?$/i, "");
 }
 
 /**

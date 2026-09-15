@@ -12,6 +12,7 @@ import {
 } from "./Contract";
 import { bankSlotFromRecords, overlayCanonicalBankOnPrefillRows } from "./sharedBankDetails";
 import { addendumCompanySlots } from "./exhibitCompanyPrefill";
+import { exhibitCEntitiesFromPrefill } from "./exhibitCEntityPrefill";
 import {
     buildBalanceTransferSheetContractPrefillFields,
     formatFunderNameWithDealIdPrefix,
@@ -59,6 +60,8 @@ import {
     buildAchWeeklyContractPrefillFields,
     type AchWeeklyContractPrefillFields,
 } from "./ACH_WEEKLY";
+import { buildAchDailyContractPrefillFields } from "./ACH_DAILY";
+import type { AchDailyContractPrefillFields } from "./ACH_DAILY";
 import {
     buildExhibitCContractPrefillFields,
     type ExhibitCContractPrefillFields,
@@ -859,6 +862,12 @@ function mergeFieldRows(
         const fromSavedTrim =
             fromSaved !== undefined ? String(fromSaved).trim() : "";
         const computedVal = String(computedById.get(def.id)?.value ?? "").trim();
+        if (isMerchantLegalNameFieldId(def.id) && computedVal) {
+            return { id: def.id, label: def.label, value: computedVal, group: def.group };
+        }
+        if (isSendDayPrefillDateFieldId(def.id) && computedVal) {
+            return { id: def.id, label: def.label, value: computedVal, group: def.group };
+        }
         if (fromSavedTrim !== "") {
             const savedNum = parsePrefillMoneyForMerge(fromSavedTrim);
             const computedNum = parsePrefillMoneyForMerge(computedVal);
@@ -882,6 +891,35 @@ function mergeFieldRows(
             id: def.id,
             label: def.label,
             value: computedVal,
+            group: def.group,
+        };
+    });
+}
+
+/**
+ * Every Exhibit C copy uses the same SignNow field ids. Live entity/CRM computed
+ * values win over a stale per-mapping blob so copy (2)/(3) cannot keep wrong
+ * merchant/bank text from an older save.
+ */
+function mergeExhibitCFieldRows(
+    allDefs: ContractPrefillField[],
+    computed: ContractPrefillField[],
+    savedForRow: Record<string, string> | null | undefined,
+): ContractPrefillField[] {
+    const computedById = new Map(computed.map((f) => [f.id, f]));
+    const saved = savedForRow ?? {};
+    return allDefs.map((def) => {
+        const computedVal = String(computedById.get(def.id)?.value ?? "").trim();
+        const fromSaved = saved[def.id] ?? saved[`${def.id}_p1`] ?? saved[`${def.id}_p3`];
+        const fromSavedTrim =
+            fromSaved !== undefined ? String(fromSaved).trim() : "";
+        if (isMerchantLegalNameFieldId(def.id) && computedVal) {
+            return { id: def.id, label: def.label, value: computedVal, group: def.group };
+        }
+        return {
+            id: def.id,
+            label: def.label,
+            value: computedVal || fromSavedTrim,
             group: def.group,
         };
     });
@@ -1110,6 +1148,53 @@ function todayUsDate(): string {
     return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
 }
 
+function isMerchantLegalNameFieldId(id: string): boolean {
+    const n = String(id || "")
+        .trim()
+        .toLowerCase();
+    return (
+        n === "client_legal_name" ||
+        n === "client_legal_name_p1" ||
+        n === "legal_name" ||
+        n === "business_legal_name" ||
+        n === "merchant_legal_name" ||
+        n === "security_business_name" ||
+        n === "authorization_application"
+    );
+}
+
+function dealMerchantLegalName(
+    contract: Record<string, unknown> | null,
+    application: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+): string {
+    return (
+        resolveContractBusinessLegalNameForPrefill(contract ?? {}, application) ||
+        sctx.recipientName ||
+        ""
+    );
+}
+
+function isSendDayPrefillDateFieldId(id: string): boolean {
+    const n = String(id || "").trim().toLowerCase();
+    if (!n || n.includes("previous")) return false;
+    return (
+        n === "agreement_date" ||
+        n === "agreement_date_p1" ||
+        n === "signature_date" ||
+        n === "signature_date2" ||
+        n === "signature1_date" ||
+        n === "signature2_date" ||
+        n === "disclosure_date" ||
+        n === "disclosure_date2" ||
+        n === "remittance_start_date" ||
+        /(?:^|_)(agreement_date|signature_date|disclosure_date|signature1_date|signature2_date)(?:_|$)/.test(
+            n,
+        ) ||
+        /_dated(?:_|$)/.test(n)
+    );
+}
+
 function buildAddendumPComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
@@ -1305,8 +1390,38 @@ function buildAddendumExhibitCComputed(
     sctx: StateDisclosureContext,
     application: Record<string, unknown> | null,
     contractRecords?: ContractPrefillContractRecords | null,
+    entityIndex = 0,
 ): ContractPrefillField[] {
     const c = contract ?? {};
+    const overrides =
+        c.contractPrefillOverrides &&
+        typeof c.contractPrefillOverrides === "object" &&
+        !Array.isArray(c.contractPrefillOverrides)
+            ? (c.contractPrefillOverrides as Record<string, unknown>)
+            : null;
+    const exhibitEntities = exhibitCEntitiesFromPrefill(overrides ?? c);
+    const dealLegalName = dealMerchantLegalName(c, application, sctx);
+    // Extra Exhibit C copies (2)/(3)/… must start empty — never inherit entity[0] or main ACH.
+    if (entityIndex > 0) {
+        const entity = exhibitEntities[entityIndex] ?? null;
+        return buildExhibitCContractPrefillFields({
+            agreementDate: todayUsDate(),
+            clientLegalName: dealLegalName,
+            clientName: str(entity?.clientName),
+            accountHolderName: str(entity?.accountHolderName),
+            accountHolderDba: str(entity?.accountHolderDba),
+            accountHolderAddress: str(entity?.accountHolderAddress),
+            bankName: str(entity?.bankName),
+            bankAccount: str(entity?.bankAccount),
+            bankRouting: str(entity?.bankRouting),
+            bankPortal: str(entity?.bankPortal),
+            bankUsername: str(entity?.bankUsername),
+            bankPassword: str(entity?.bankPassword),
+            securityQa1: str(entity?.securityQa1),
+            securityQa2: str(entity?.securityQa2),
+        });
+    }
+
     const fromApp = buildContractPrefillFieldsFromApplication(application, {
         agreementDate: sctx.signatureDate || todayUsDate(),
         contractRecords: { contract: c },
@@ -1320,32 +1435,38 @@ function buildAddendumExhibitCComputed(
         }
         return "";
     };
-    const legalName =
-        get("client_legal_name", "legal_name", "business_legal_name") ||
-        sctx.recipientName;
+    const primaryEntity = exhibitEntities[0] ?? null;
+
+    const legalName = dealLegalName;
     const guarantor =
+        str(primaryEntity?.clientName) ||
         sctx.merchantName ||
         get("client_name", "owner1_guarantor_name", "merchant_contact_name") ||
         str(c.clientName);
     const holderName =
+        str(primaryEntity?.accountHolderName) ||
         get("ach_authorization_account_holder_name", "ach_account_holder_name") ||
         legalName ||
         guarantor;
 
     return buildExhibitCContractPrefillFields({
-        agreementDate: sctx.signatureDate || todayUsDate(),
+        agreementDate: todayUsDate(),
         clientLegalName: legalName,
         clientName: guarantor,
         accountHolderName: holderName,
-        accountHolderDba: dbaFromContractAndGet(c, get),
+        accountHolderDba:
+            str(primaryEntity?.accountHolderDba) || dbaFromContractAndGet(c, get),
         accountHolderAddress:
+            str(primaryEntity?.accountHolderAddress) ||
             get(
                 "ach_authorization_account_holder_address",
                 "ach_account_holder_address",
                 "business_address",
                 "business_address_contract",
-            ) || sctx.recipientAddress,
+            ) ||
+            sctx.recipientAddress,
         bankName:
+            str(primaryEntity?.bankName) ||
             get(
                 "ach_authorization_account_holder_bank_name",
                 "ach_bank_name",
@@ -1356,6 +1477,7 @@ function buildAddendumExhibitCComputed(
             str(c.bankName) ||
             str((c.paymentBank as Record<string, unknown> | null)?.bankName),
         bankAccount:
+            str(primaryEntity?.bankAccount) ||
             get(
                 "ach_authorization_account_holder_bank_account_number",
                 "ach_bank_account",
@@ -1366,6 +1488,7 @@ function buildAddendumExhibitCComputed(
             str(c.accountNumber) ||
             str((c.paymentBank as Record<string, unknown> | null)?.accountNumber),
         bankRouting:
+            str(primaryEntity?.bankRouting) ||
             get(
                 "ach_authorization_account_holder_bank_routing_number",
                 "ach_bank_routing",
@@ -1375,24 +1498,31 @@ function buildAddendumExhibitCComputed(
             str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
             str(c.routingNumber) ||
             str((c.paymentBank as Record<string, unknown> | null)?.routingNumber),
-        bankPortal: get(
-            "ach_authorization_bank_portal_website",
-            "ach_bank_portal",
-        ),
-        bankUsername: get("ach_authorization_username", "ach_username"),
-        bankPassword: get("ach_authorization_password", "ach_password"),
-        securityQa1: (() => {
-            const q = get("ach_authorization_security_question1");
-            const a = get("ach_authorization_security_answer1");
-            if (q && a) return `${q} / ${a}`;
-            return q || a;
-        })(),
-        securityQa2: (() => {
-            const q = get("ach_authorization_security_question2");
-            const a = get("ach_authorization_security_answer2");
-            if (q && a) return `${q} / ${a}`;
-            return q || a;
-        })(),
+        bankPortal:
+            str(primaryEntity?.bankPortal) ||
+            get("ach_authorization_bank_portal_website", "ach_bank_portal"),
+        bankUsername:
+            str(primaryEntity?.bankUsername) ||
+            get("ach_authorization_username", "ach_username"),
+        bankPassword:
+            str(primaryEntity?.bankPassword) ||
+            get("ach_authorization_password", "ach_password"),
+        securityQa1:
+            str(primaryEntity?.securityQa1) ||
+            (() => {
+                const q = get("ach_authorization_security_question1");
+                const a = get("ach_authorization_security_answer1");
+                if (q && a) return `${q} / ${a}`;
+                return q || a;
+            })(),
+        securityQa2:
+            str(primaryEntity?.securityQa2) ||
+            (() => {
+                const q = get("ach_authorization_security_question2");
+                const a = get("ach_authorization_security_answer2");
+                if (q && a) return `${q} / ${a}`;
+                return q || a;
+            })(),
     });
 }
 
@@ -1489,9 +1619,7 @@ function buildAddendumEpaComputed(
     };
     return buildEpaNitroContractPrefillFields({
         agreementDate: sctx.signatureDate || todayUsDate(),
-        clientLegalName:
-            get("client_legal_name", "legal_name", "business_legal_name") ||
-            sctx.recipientName,
+        clientLegalName: dealMerchantLegalName(c, application, sctx),
         epoDate1: get("epo_received_date_1", "receivedDate1"),
         epoAmount1: get("epo_amount_received_1", "earlyPayoffAmount1"),
         epoDate2: get("epo_received_date_2", "receivedDate2"),
@@ -1621,9 +1749,7 @@ function buildAddendumExhibitAComputed(
         }
         return "";
     };
-    const legalName =
-        get("client_legal_name", "legal_name", "business_legal_name") ||
-        sctx.recipientName;
+    const legalName = dealMerchantLegalName(c, application, sctx);
     const entityType = get("entity_type", "type_of_entity", "form_of_business_entity");
     const ein = get("ein", "security_tax_ein", "tax_id");
     const companyNames: string[] = [];
@@ -1661,9 +1787,7 @@ function buildAddendumExhibitAComputed(
     }
     return buildExhibitAContractPrefillFields({
         agreementDate: sctx.signatureDate || todayUsDate(),
-        clientLegalName:
-            get("client_legal_name", "legal_name", "business_legal_name") ||
-            sctx.recipientName,
+        clientLegalName: dealMerchantLegalName(c, application, sctx),
         doingBusinessAs: dbaFromContractAndGet(c, get),
         companyNames,
         companyEins,
@@ -1748,6 +1872,22 @@ function dotAchWeekly(): AchWeeklyContractPrefillFields {
         accountNumber: DUMMY,
         printName: DUMMY,
         printTitle: "OWNER",
+    };
+}
+
+function dotAchDaily(): AchDailyContractPrefillFields {
+    return {
+        agreementDate: DUMMY,
+        clientLegalName: DUMMY,
+        clientName: DUMMY,
+        accountHolderName: DUMMY,
+        accountHolderDba: DUMMY,
+        accountHolderAddress: DUMMY,
+        bankPortal: DUMMY,
+        bankUsername: DUMMY,
+        bankPassword: DUMMY,
+        securityQa1: DUMMY,
+        securityQa2: DUMMY,
     };
 }
 
@@ -1882,6 +2022,7 @@ type AddendumKind =
     | "addendum_ny"
     | "addendum_va"
     | "ach_weekly"
+    | "ach_daily"
     | "exhibit_c"
     | "exhibit_a"
     | "flex_addendum"
@@ -1959,6 +2100,25 @@ function resolveAddendumKind(
     }
     const compactKey = key.replace(/_/g, "");
     const compactName = normName.replace(/_/g, "");
+    // ACH Daily/Weekly before Exhibit C — names like "Extra Exhibit C (ACH Daily)"
+    // must not resolve as exhibit_c (wrong entity slots + crossed remittance fill).
+    if (
+        key === SIGNNOW_ACH_DAILY_LAYOUT_KEY ||
+        key.endsWith("_ach_daily") ||
+        tid === SIGNNOW_ACH_DAILY_TEMPLATE_ID.toLowerCase() ||
+        (normName.includes("ach") && normName.includes("daily") && !normName.includes("weekly"))
+    ) {
+        return "ach_daily";
+    }
+    if (
+        key === SIGNNOW_ACH_WEEKLY_LAYOUT_KEY ||
+        key.endsWith("_ach_weekly") ||
+        tid === SIGNNOW_ACH_WEEKLY_TEMPLATE_ID.toLowerCase() ||
+        (normName.includes("ach") && normName.includes("weekly")) ||
+        normName.includes("ach_weekly")
+    ) {
+        return "ach_weekly";
+    }
     if (
         key === SIGNNOW_EXHIBIT_C_LAYOUT_KEY ||
         key.endsWith("_exhibit_c") ||
@@ -2006,20 +2166,6 @@ function resolveAddendumKind(
     ) {
         return "payoff_addendum";
     }
-    if (
-        key === SIGNNOW_ACH_DAILY_LAYOUT_KEY ||
-        key.endsWith("_ach_daily") ||
-        tid === SIGNNOW_ACH_DAILY_TEMPLATE_ID
-    ) {
-        return "ach_weekly";
-    }
-    if (
-        key === SIGNNOW_ACH_WEEKLY_LAYOUT_KEY ||
-        key.endsWith("_ach_weekly") ||
-        tid === SIGNNOW_ACH_WEEKLY_TEMPLATE_ID
-    ) {
-        return "ach_weekly";
-    }
     if (tid === ADDENDUM_GUID.WOODMERE_BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
     if (matches(normName, "case", "takeover")) return "case_takeover_addendum";
     if (matches(normName, "balance", "transfer") && !normName.includes("discover") && !normName.includes("refi"))
@@ -2040,12 +2186,6 @@ function resolveAddendumKind(
         return "addendum_ny";
     if (normName.includes("addendum") && (normName.includes(" va") || normName.endsWith("_va") || normName.includes("virginia")))
         return "addendum_va";
-    if (
-        (normName.includes("ach") && (normName.includes("daily") || normName.includes("weekly"))) ||
-        normName.includes("ach_daily") ||
-        normName.includes("ach_weekly")
-    )
-        return "ach_weekly";
     return null;
 }
 
@@ -2146,6 +2286,8 @@ function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
             return buildAddendumVaContractPrefillFields(dotAddendumVa());
         case "ach_weekly":
             return buildAchWeeklyContractPrefillFields(dotAchWeekly());
+        case "ach_daily":
+            return buildAchDailyContractPrefillFields(dotAchDaily());
         case "exhibit_c":
             return buildExhibitCContractPrefillFields(dotExhibitC());
         case "exhibit_a":
@@ -2169,6 +2311,7 @@ function addendumComputed(
     sctx: StateDisclosureContext,
     application: Record<string, unknown> | null,
     contractRecords?: ContractPrefillContractRecords | null,
+    exhibitCEntityIndex = 0,
 ): ContractPrefillField[] {
     switch (kind) {
         case "balance_transfer_sheet":
@@ -2191,8 +2334,28 @@ function addendumComputed(
             return buildAddendumVaComputed(contract, sctx);
         case "ach_weekly":
             return buildAddendumAchWeeklyComputed(contract, sctx, application);
+        case "ach_daily": {
+            // Extra Exhibit C PDF — use Exhibit C widgets with live deal data.
+            const rows = buildAddendumExhibitCComputed(
+                contract,
+                sctx,
+                application,
+                contractRecords,
+                0,
+            );
+            return rows.map((row) => ({
+                ...row,
+                group: row.group ? `ACH Daily — ${row.group}` : "ACH Daily",
+            }));
+        }
         case "exhibit_c":
-            return buildAddendumExhibitCComputed(contract, sctx, application, contractRecords);
+            return buildAddendumExhibitCComputed(
+                contract,
+                sctx,
+                application,
+                contractRecords,
+                exhibitCEntityIndex,
+            );
         case "exhibit_a":
             return buildAddendumExhibitAComputed(contract, sctx, application, contractRecords);
         case "flex_addendum":
@@ -2362,6 +2525,8 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     ach?: Record<string, unknown> | null;
     bankAnalyses?: unknown;
     documentType?: string | null;
+    /** 0-based index among Exhibit C copies on this deal. */
+    exhibitCEntityIndex?: number;
 }): ContractPrefillField[] {
     const sharedDba = resolveSharedDbaValue({
         mainPrefill: options.mainPrefillOverrides ?? null,
@@ -2431,14 +2596,25 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     if (docType === "addendum" || addendum) {
         if (!addendum) return [];
         const all = addendumAllDefs(addendum);
+        const exhibitIndex = options.exhibitCEntityIndex ?? 0;
         const computed = addendumComputed(
             addendum,
             effectiveContract,
             sctx,
             options.application ?? null,
             options.contractRecords ?? null,
+            exhibitIndex,
         );
-        return withCanonicalBank(mergeFieldRows(all, computed, options.savedOverridesForMapping));
+        const merged =
+            addendum === "exhibit_c"
+                ? mergeExhibitCFieldRows(all, computed, options.savedOverridesForMapping)
+                : mergeFieldRows(all, computed, options.savedOverridesForMapping);
+        // Extra Exhibit C copies stay isolated — no shared bank/DBA auto-fill.
+        // Same field map as Exhibit C #1; values come from that copy's entity only.
+        if (addendum === "exhibit_c" && exhibitIndex > 0) {
+            return merged.filter((row) => !isOptionalExtraBankField(row));
+        }
+        return withCanonicalBank(merged);
     }
 
     const isSignNowDisclosure = isSignNowDisclosureTemplateRef(
@@ -2772,11 +2948,24 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     ]);
     const byId = new Map(args.prefillFieldsPayload.map((f) => [f.id, { ...f }]));
 
+    let exhibitCEntityIndex = 0;
     for (const row of args.templateMappingRows) {
         const layoutKey = String(row.template?.layoutKey ?? "").trim();
         const tid = String(row.template?.templateId ?? "").trim();
         const templateId = String(row.template?.id ?? "").trim();
         if (!mappingRowIsInSendPackage(row, mergedSet)) continue;
+        const addendumKindForIndex = resolveAddendumKind(
+            templateId || tid || null,
+            normalizeKey(row.template?.name ?? ""),
+            layoutKey || null,
+        );
+        const thisExhibitIndex =
+            addendumKindForIndex === "exhibit_c" ? exhibitCEntityIndex++ : 0;
+        // Extra Exhibit C copies share field ids with copy #1. Keep #1 in the
+        // flat payload; SignNow fills (2)/(3) from exhibitCEntities by index.
+        if (addendumKindForIndex === "exhibit_c" && thisExhibitIndex > 0) {
+            continue;
+        }
         const perMap =
             String(row.documentType || "").toLowerCase() === "ach" ||
             isAchAuthorizationLayoutKey(layoutKey) ||
@@ -2802,6 +2991,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             ach: args.ach ?? null,
             bankAnalyses: args.bankAnalyses,
             documentType: row.documentType ?? null,
+            exhibitCEntityIndex: thisExhibitIndex,
         });
         const isDisclosureRow =
             String(row.documentType || "").toLowerCase() === "disclosure";

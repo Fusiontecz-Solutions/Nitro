@@ -36,6 +36,11 @@ import {
     voidBoldSignDocument,
 } from "@/redux/actions/boldSignActions";
 import { mergeWithDefaultCcEmails } from "./docusignCcList";
+import {
+    logSignNowFeTiming,
+    markSignNowReviewHttpResponse,
+    markSignNowReviewRequestStart,
+} from "@/utils/signnowTiming";
 import { funderNamesEquivalent, formatFunderSelectLabel, useFunderProfiles } from "@/hooks/useFunderProfiles";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
@@ -100,6 +105,7 @@ import {
     contractPrefillFieldsToPartial,
     contractPrefillToContractColumnUpdate,
     mergeSyncedPartialIntoPrefillFields,
+    resolveContractBusinessLegalNameForPrefill,
     uppercaseContractDocumentPrefillFields,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
@@ -121,6 +127,12 @@ import {
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
+import { expandAddendumRefsAllowingDuplicates } from "./contractdata/multiInstanceAddendum";
+import {
+    EXHIBIT_C_ENTITIES_PREFILL_KEY,
+    mergeExhibitCEntitiesForSignNowSend,
+    serializeExhibitCEntities,
+} from "./contractdata/exhibitCEntityPrefill";
 import {
     achCamelPartialToTabValues,
     ACH_PREFILL_MAPPING_ALIAS_KEY,
@@ -197,7 +209,7 @@ import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 import {
     formatCurrency,
     formatCurrencyFull,
-    formatDate,
+    formatDateMonthDayYear,
     formatDateTimeUS,
     formatNumberUSForInput,
     parseNumberUS,
@@ -2289,7 +2301,7 @@ export default function ContractTab({
               }
             : undefined;
         return buildContractPrefillFieldsFromApplication(applicationForPrefill, {
-            agreementDate: formatDate(new Date()),
+            agreementDate: formatDateMonthDayYear(new Date()),
             contractRecords: recordsForBuild,
             overrides,
             offerDecision: (offerDecision as Record<string, unknown> | null) ?? null,
@@ -2329,6 +2341,8 @@ export default function ContractTab({
             mainContractLayoutKey?: string | null;
             /** Deal Review values from the contract modal (latest UI state). */
             prefillFields?: Array<{ id: string; value: string }>;
+            /** Correlation id for SignNow Review timing logs only. */
+            timingRequestId?: string;
         },
         options: { autoSend: boolean; suppressSuccessToast?: boolean },
     ): Promise<{
@@ -2669,9 +2683,14 @@ export default function ContractTab({
                     )
                   : `Please review and sign your agreement with ${envelopeFunderLabel}.`;
 
+            // Keep Exhibit C × N (same layout key / template id). Set() was collapsing
+            // duplicates so SignNow only attached one Exhibit C.
             const supplementalDocumentRefs = standaloneAchOnly
                 ? []
-                : [...new Set([...addendumDocumentRefs, disclosureDocumentRef].filter(Boolean))];
+                : expandAddendumRefsAllowingDuplicates([
+                      ...addendumDocumentRefs,
+                      disclosureDocumentRef,
+                  ].filter(Boolean));
             const mergedTemplateIdsForPrefill = standaloneAchOnly
                 ? [achDocumentRef]
                 : supplementalDocumentRefs;
@@ -2824,7 +2843,7 @@ export default function ContractTab({
                         contractPrefillOverridesRaw: rawOverrides,
                         contract: latestContract as Record<string, unknown>,
                         application: applicationData as unknown as Record<string, unknown>,
-                        agreementDate: formatDate(new Date()),
+                        agreementDate: formatDateMonthDayYear(new Date()),
                         mainPrefillOverrides: mainPrefillForTemplates,
                         bankDetail: contractPrefillRecords.bankDetail ?? null,
                         ach: contractPrefillRecords.ach ?? null,
@@ -2875,7 +2894,7 @@ export default function ContractTab({
                     supplementalRefs: supplementalDocumentRefs,
                     contract: latestContract as Record<string, unknown>,
                     application: applicationData as unknown as Record<string, unknown>,
-                    agreementDate: formatDate(new Date()),
+                    agreementDate: formatDateMonthDayYear(new Date()),
                     mainPrefillOverrides: mainPrefillForTemplates,
                     contractPrefillOverridesRaw: rawOverrides,
                     templateMappingRows: mapRows,
@@ -2887,13 +2906,33 @@ export default function ContractTab({
                     supplementalRefs: supplementalDocumentRefs,
                     contract: latestContract as Record<string, unknown>,
                     application: applicationData as unknown as Record<string, unknown>,
-                    agreementDate: formatDate(new Date()),
+                    agreementDate: formatDateMonthDayYear(new Date()),
                     mainPrefillOverrides: mainPrefillForTemplates,
                     contractPrefillOverridesRaw: rawOverrides,
                     templateMappingRows: mapRows,
                     bankDetail: contractPrefillRecords.bankDetail ?? null,
                     ach: contractPrefillRecords.ach ?? null,
                 });
+                const exhibitCJson = serializeExhibitCEntities(
+                    mergeExhibitCEntitiesForSignNowSend({
+                        rawOverrides,
+                        mappingRows: mapRows,
+                    }),
+                );
+                if (exhibitCJson) {
+                    const existingEntities = prefillFieldsPayload.find(
+                        (f) => f.id === EXHIBIT_C_ENTITIES_PREFILL_KEY,
+                    );
+                    if (existingEntities) {
+                        existingEntities.value = exhibitCJson;
+                    } else {
+                        prefillFieldsPayload.push({
+                            id: EXHIBIT_C_ENTITIES_PREFILL_KEY,
+                            label: "Exhibit C entities",
+                            value: exhibitCJson,
+                        });
+                    }
+                }
             } catch (mapErr) {
                 console.warn("[ContractTab] document template mapping prefill skipped:", mapErr);
             }
@@ -3102,6 +3141,65 @@ export default function ContractTab({
                     layoutKey: mainContractLayoutKey,
                 },
             );
+            const dealBusinessName = resolveContractBusinessLegalNameForPrefill(
+                latestContract as Record<string, unknown>,
+                applicationData,
+            );
+            if (dealBusinessName) {
+                for (const id of [
+                    "client_legal_name",
+                    "client_legal_name_p1",
+                    "legal_name",
+                    "business_legal_name",
+                    "merchant_legal_name",
+                    "security_business_name",
+                ] as const) {
+                    const existing = prefillFieldsPayload.find((f) => f.id === id);
+                    if (existing) existing.value = dealBusinessName;
+                    else {
+                        prefillFieldsPayload.push({
+                            id,
+                            label: id,
+                            value: dealBusinessName,
+                        });
+                    }
+                }
+            }
+            const todayPrefillDate = `${String(new Date().getMonth() + 1).padStart(2, "0")}/${String(new Date().getDate()).padStart(2, "0")}/${new Date().getFullYear()}`;
+            const sendDayDateIds = [
+                "agreement_date",
+                "agreement_date_p1",
+                "signature_date",
+                "signature_date2",
+                "signature1_date",
+                "signature2_date",
+                "disclosure_date",
+                "disclosure_date2",
+                "remittance_start_date",
+            ] as const;
+            for (const id of sendDayDateIds) {
+                const existing = prefillFieldsPayload.find((f) => f.id === id);
+                if (existing) {
+                    existing.value = todayPrefillDate;
+                } else {
+                    prefillFieldsPayload.push({
+                        id,
+                        label: id,
+                        value: todayPrefillDate,
+                    });
+                }
+            }
+            for (const field of prefillFieldsPayload) {
+                const id = String(field.id ?? "").toLowerCase();
+                if (id.includes("previous")) continue;
+                if (
+                    /(agreement_date|signature_date|disclosure_date|signature1_date|signature2_date|_dated)/.test(
+                        id,
+                    )
+                ) {
+                    field.value = todayPrefillDate;
+                }
+            }
             prefillFieldsPayload = uppercaseContractDocumentPrefillFields(prefillFieldsPayload);
             const mergeRequest = {
                 ...(standaloneAchOnly
@@ -3149,6 +3247,9 @@ export default function ContractTab({
                 autoSend: options.autoSend,
                 title: docuSignEmailSubject,
                 message: docuSignEmailMessage,
+                ...(String(sendPayload.timingRequestId || "").trim()
+                    ? { timingRequestId: String(sendPayload.timingRequestId).trim() }
+                    : {}),
             };
             console.log(
                 standaloneAchOnly
@@ -3156,9 +3257,16 @@ export default function ContractTab({
                     : "[ContractTab] DocuSign layout send (contract PDF + optional supplemental docs):",
                 mergeRequest,
             );
-            const sendResponse = await dispatch(
-                mergeAndSendDocuSignEnvelope(mergeRequest),
-            ).unwrap();
+            const timingRequestId = String(sendPayload.timingRequestId || "").trim();
+            if (timingRequestId) markSignNowReviewRequestStart(timingRequestId);
+            let sendResponse: unknown;
+            try {
+                sendResponse = await dispatch(
+                    mergeAndSendDocuSignEnvelope(mergeRequest),
+                ).unwrap();
+            } finally {
+                if (timingRequestId) markSignNowReviewHttpResponse(timingRequestId);
+            }
             console.log("[ContractTab] DocuSign layout send response:", sendResponse);
 
             const documentId =
@@ -3386,6 +3494,7 @@ export default function ContractTab({
         mainContractLayoutKey?: string | null;
         prefillFields?: Array<{ id: string; value: string }>;
         autoSend?: boolean;
+        timingRequestId?: string;
     }) => {
         const result = await runDocuSignEnvelope(payload, {
             autoSend: payload.autoSend === true,
@@ -3395,66 +3504,81 @@ export default function ContractTab({
         if (!envelopeId) {
             throw new Error("DocuSign did not return an envelope ID after creating the draft.");
         }
-        if (!payload.standaloneAchOnly && payload.includeMainContract !== false) {
+        const persistStarted = Date.now();
+        const timingRequestId = String(payload.timingRequestId || "").trim();
+        const persistWork = async () => {
+            if (payload.standaloneAchOnly || payload.includeMainContract === false) return;
             const cid = Number((fetchedContract as { id?: unknown })?.id);
-            if (Number.isFinite(cid) && cid > 0) {
-                await persistContractFunderMeta(cid, {
-                    funderName: payload.funderName,
-                    state: payload.contractState,
-                });
-                try {
-                    const raw =
-                        normalizeContractPrefillOverrides(
-                            (fetchedContract as { contractPrefillOverrides?: unknown })
-                                ?.contractPrefillOverrides,
-                        ) ?? {};
-                    const main = stripDocumentTemplateBlobFromPrefillOverrides(
-                        raw,
-                    ) as Record<string, unknown>;
-                    const sendHistory = upsertDocumentSendHistory(
-                        parseDocumentSendHistory(raw),
-                        {
-                            envelopeId,
-                            documentKind: "contract",
-                            label: "Contract",
-                            status: payload.autoSend === true ? "sent" : "draft",
-                            updatedAt: new Date().toISOString(),
-                        },
-                    );
-                    const envelopeBlob = parseDocumentTemplateEnvelopeByMappingId(raw);
-                    const prefillBlob = (raw as Record<string, unknown>)[
-                        DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY
-                    ];
-                    await dispatch(
-                        updateContract({
-                            id: cid,
-                            data: {
-                                contractPrefillOverrides: {
-                                    ...pickPreservedDocuSignEnvelopeMetaFromPrefill(raw),
-                                    ...main,
-                                    ...(prefillBlob != null
-                                        ? {
-                                              [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]:
-                                                  prefillBlob,
-                                          }
-                                        : {}),
-                                    ...(Object.keys(envelopeBlob).length
-                                        ? {
-                                              [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]:
-                                                  envelopeBlob,
-                                          }
-                                        : {}),
-                                    [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
-                                },
+            if (!Number.isFinite(cid) || cid <= 0) return;
+            await persistContractFunderMeta(cid, {
+                funderName: payload.funderName,
+                state: payload.contractState,
+            });
+            try {
+                const raw =
+                    normalizeContractPrefillOverrides(
+                        (fetchedContract as { contractPrefillOverrides?: unknown })
+                            ?.contractPrefillOverrides,
+                    ) ?? {};
+                const main = stripDocumentTemplateBlobFromPrefillOverrides(
+                    raw,
+                ) as Record<string, unknown>;
+                const sendHistory = upsertDocumentSendHistory(
+                    parseDocumentSendHistory(raw),
+                    {
+                        envelopeId,
+                        documentKind: "contract",
+                        label: "Contract",
+                        status: payload.autoSend === true ? "sent" : "draft",
+                        updatedAt: new Date().toISOString(),
+                    },
+                );
+                const envelopeBlob = parseDocumentTemplateEnvelopeByMappingId(raw);
+                const prefillBlob = (raw as Record<string, unknown>)[
+                    DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY
+                ];
+                await dispatch(
+                    updateContract({
+                        id: cid,
+                        data: {
+                            contractPrefillOverrides: {
+                                ...pickPreservedDocuSignEnvelopeMetaFromPrefill(raw),
+                                ...main,
+                                ...(prefillBlob != null
+                                    ? {
+                                          [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]:
+                                              prefillBlob,
+                                      }
+                                    : {}),
+                                ...(Object.keys(envelopeBlob).length
+                                    ? {
+                                          [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]:
+                                              envelopeBlob,
+                                      }
+                                    : {}),
+                                [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
                             },
-                        }),
-                    ).unwrap();
-                    void refreshFetchedContract();
-                } catch (historyErr) {
-                    console.warn("[ContractTab] contract send history save skipped:", historyErr);
-                }
+                        },
+                    }),
+                ).unwrap();
+                void refreshFetchedContract();
+            } catch (historyErr) {
+                console.warn("[ContractTab] contract send history save skipped:", historyErr);
             }
-        }
+        };
+        void persistWork()
+            .catch((err) => {
+                console.warn("[ContractTab] contract persist after SignNow URL failed:", err);
+            })
+            .finally(() => {
+                if (timingRequestId) {
+                    logSignNowFeTiming(
+                        timingRequestId,
+                        "frontend-persist-after-response",
+                        Date.now() - persistStarted,
+                    );
+                }
+            });
         return {
             envelopeId,
             prefillTabsApplied: result.prefillTabsApplied,

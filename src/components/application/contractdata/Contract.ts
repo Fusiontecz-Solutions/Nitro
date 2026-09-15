@@ -216,6 +216,11 @@ export interface BuildContractPrefillFieldsArgs {
     exhibitAValue8?: string;
     exhibitAValue9?: string;
     exhibitAValue10?: string;
+    /**
+     * JSON string of extra Exhibit C entities (void-check / alternate account holders).
+     * Not a DocuSign tab — consumed by Verify Prefill + Exhibit C addendum compute.
+     */
+    exhibitCEntities?: string;
 }
 
 export const EXHIBIT_A_VALUE_COUNT = 10;
@@ -453,6 +458,15 @@ export function uppercaseContractDocumentPrefillFields<
         const value = String(field?.value ?? "").trim();
         if (!value) return field;
         if (/installment[_]?block[_]?frequency/.test(id)) return field;
+        // Structured JSON (Exhibit C entities) must keep original keys/casing.
+        if (
+            id === "exhibitcentities" ||
+            id === "exhibit_c_entities" ||
+            value.startsWith("{") ||
+            value.startsWith("[")
+        ) {
+            return field;
+        }
         return { ...field, value: toContractDocumentUppercase(value) };
     });
 }
@@ -3798,13 +3812,15 @@ export function resolveContractBusinessLegalNameForPrefill(
     const authAppMerchant =
         authApp && !/^\d+$/.test(authApp.replace(/\s/g, "")) ? authApp : "";
     const linkedClient = row.client as Record<string, unknown> | undefined;
+    /** Live deal business name (Application Summary) outranks stale Contract / OCR snapshots. */
+    const fromApplication = businessNameFromApplicationClient(application);
 
     return (
+        fromApplication ||
+        str(linkedClient?.businessName) ||
         str(row.legalName) ||
         str(row.securityBusinessName) ||
-        str(linkedClient?.businessName) ||
-        authAppMerchant ||
-        businessNameFromApplicationClient(application)
+        authAppMerchant
     );
 }
 
@@ -3858,9 +3874,21 @@ export function applyAuthorizationBusinessNamePrefillFields(
     partial: Partial<BuildContractPrefillFieldsArgs>,
     application?: unknown,
 ): Partial<BuildContractPrefillFieldsArgs> {
-    const businessName = resolveContractBusinessLegalNameForPrefill(partial, application);
+    const fromApplication = businessNameFromApplicationClient(application);
+    const businessName =
+        fromApplication || resolveContractBusinessLegalNameForPrefill(partial, application);
     let out = { ...partial };
     if (businessName) {
+        /**
+         * When the application has a live business name, keep Legal name (and related
+         * merchant tabs) aligned with Application Summary — do not keep void-check OCR
+         * or older Contract.legalName snapshots like "SUBWAY OF SHIV LI.C".
+         */
+        if (fromApplication) {
+            out.legalName = fromApplication;
+            out.securityBusinessName = fromApplication;
+            out.authorizationApplication = fromApplication;
+        }
         for (const key of AUTHORIZATION_BUSINESS_NAME_PREFILL_KEYS) {
             (out as Record<string, string>)[key] = businessName;
         }
@@ -4253,10 +4281,10 @@ export function resolveBalanceTransferMerchantContext(
     const linkedOwnerName = ownerFullName(linkedClient?.ownerFirstName, linkedClient?.ownerLastName);
 
     const businessName =
-        str(c.legalName) ||
-        str(overrides.legalName) ||
         str(app.legalName) ||
         linkedBusinessName ||
+        str(c.legalName) ||
+        str(overrides.legalName) ||
         str(c.securityBusinessName) ||
         str(overrides.securityBusinessName);
 

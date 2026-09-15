@@ -11,8 +11,10 @@ import {
     Globe,
     Landmark,
     LayoutList,
+    Plus,
     Receipt,
     ScrollText,
+    Trash2,
     Users,
     Wallet,
 } from "lucide-react";
@@ -94,6 +96,21 @@ import {
 } from "./templateRecipients";
 import { isSignNowContractUiEnabled } from "./contractTemplatePreview";
 import { isSignNowDisclosureLayoutKey } from "./signnowAddendumTemplates";
+import {
+    createEmptyExhibitCEntity,
+    EXHIBIT_C_ENTITIES_PREFILL_KEY,
+    EXHIBIT_C_ENTITY_FIELD_DEFS,
+    EXHIBIT_C_ENTITY_MAX,
+    exhibitCEntitiesFromPrefill,
+    exhibitCEntityNavTitle,
+    exhibitCEntitySectionId,
+    exhibitCEntityToTabValues,
+    padExhibitCEntitiesToCount,
+    parseExhibitCEntitySectionIndex,
+    serializeExhibitCEntities,
+    type ExhibitCEntityPrefill,
+} from "./exhibitCEntityPrefill";
+import { isMultiInstanceAddendumRef } from "./multiInstanceAddendum";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -106,7 +123,10 @@ type LegacySnakeCasePrefillKey =
     | "ach_authorization_security_question3"
     | "ach_authorization_security_answer3"
     | "ach_authorization_other_infomation";
-type ContractPrefillFormFieldKey = Exclude<keyof BuildContractPrefillFieldsArgs, LegacySnakeCasePrefillKey>;
+type ContractPrefillFormFieldKey = Exclude<
+    keyof BuildContractPrefillFieldsArgs,
+    LegacySnakeCasePrefillKey | "exhibitCEntities"
+>;
 
 /** Field labels aligned with Deal Review + Offer decision (section title provides context). */
 const FIELD_LABELS = {
@@ -567,7 +587,8 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
     {
         id: "businessName",
         label: "Business / legal name",
-        keys: ["legalName", "achAuthorizationAccountHolderName", "authorizationClientName"],
+        // ACH account holder is intentionally separate — different void-check entities live on Exhibit C.
+        keys: ["legalName", "authorizationClientName"],
     },
     {
         id: "clientName",
@@ -1445,6 +1466,8 @@ export type ContractPrefillEditFormProps = {
     contractRecords?: ContractPrefillContractRecords;
     resolvedContract?: Record<string, unknown> | null;
     linkedAddendumMapping?: LinkedAddendumMappingRef | null;
+    /** All linked addendum mappings (Exhibit C may appear more than once). */
+    linkedAddendumMappings?: LinkedAddendumMappingRef[] | null;
     /** Linked state disclosure mapping — shows disclosure data labels (same catalog as Katan). */
     linkedDisclosureMapping?: LinkedDisclosureMappingRef | null;
     /** Contract / Info panel state when the disclosure template row has no `state` column. */
@@ -1482,6 +1505,7 @@ export function ContractPrefillEditForm({
     contractRecords,
     resolvedContract = null,
     linkedAddendumMapping = null,
+    linkedAddendumMappings = null,
     linkedDisclosureMapping = null,
     contractDisclosureState = null,
     contractDisclosureFrequency = null,
@@ -1507,6 +1531,7 @@ export function ContractPrefillEditForm({
     const pendingFocusFieldKeyRef = useRef<keyof BuildContractPrefillFieldsArgs | null>(null);
     const [spaModalOpen, setSpaModalOpen] = useState(false);
     const [savingSpaCalculation, setSavingSpaCalculation] = useState(false);
+    const [exhibitCEntities, setExhibitCEntities] = useState<ExhibitCEntityPrefill[]>([]);
 
     const agreementDateForDefaults = agreementDatePlaceholder || "";
 
@@ -1536,6 +1561,46 @@ export function ContractPrefillEditForm({
             contractRecords?.contract ?? null,
         );
     }, [persistedPrefillOverrides, offerDecision, applicationData, contractRecords?.contract]);
+
+    const exhibitCLinkedMappings = useMemo(() => {
+        const rows =
+            Array.isArray(linkedAddendumMappings) && linkedAddendumMappings.length
+                ? linkedAddendumMappings
+                : linkedAddendumMapping
+                  ? [linkedAddendumMapping]
+                  : [];
+        return rows.filter((row) =>
+            isMultiInstanceAddendumRef(
+                row?.template?.layoutKey || row?.template?.templateId || row?.templateId || "",
+                row?.template?.name,
+            ),
+        );
+    }, [linkedAddendumMappings, linkedAddendumMapping]);
+
+    useEffect(() => {
+        if (!open || !prefillOverridesReady) return;
+        const fromPersisted = exhibitCEntitiesFromPrefill(
+            (strippedMainPrefillOverrides ??
+                persistedPrefillOverrides ??
+                additionalContractPrefillJson ??
+                {}) as Record<string, unknown>,
+        );
+        const fromAdditional = exhibitCEntitiesFromPrefill(
+            (additionalContractPrefillJson ?? {}) as Record<string, unknown>,
+        );
+        const base = fromPersisted.length > 0 ? fromPersisted : fromAdditional;
+        // One entity slot per Exhibit C document mapping so extras persist like other addenda.
+        setExhibitCEntities(
+            padExhibitCEntitiesToCount(base, Math.max(base.length, exhibitCLinkedMappings.length)),
+        );
+    }, [
+        open,
+        prefillOverridesReady,
+        strippedMainPrefillOverrides,
+        persistedPrefillOverrides,
+        additionalContractPrefillJson,
+        exhibitCLinkedMappings.length,
+    ]);
 
     const addendumEditorRows = useMemo(() => {
         if (!linkedAddendumMapping?.id) return [];
@@ -1756,6 +1821,17 @@ export function ContractPrefillEditForm({
                 groups: [],
             });
         }
+        for (let i = 0; i < exhibitCEntities.length; i++) {
+            const entity = exhibitCEntities[i];
+            base.push({
+                id: exhibitCEntitySectionId(i),
+                title: exhibitCEntityNavTitle(entity, i),
+                description:
+                    "Extra Exhibit C entity — use when the void-check account holder differs from the merchant legal name.",
+                Icon: FileText,
+                groups: [],
+            });
+        }
         return base;
     }, [
         linkedAddendumMapping,
@@ -1765,6 +1841,7 @@ export function ContractPrefillEditForm({
         linkedDisclosureState,
         linkedDisclosureFrequency,
         linkedDisclosureHasFieldMap,
+        exhibitCEntities,
         activeOwnerCount,
         activeGuarantorCount,
         owner2KeySet,
@@ -1784,12 +1861,22 @@ export function ContractPrefillEditForm({
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (strippedMainPrefillOverrides ?? ({} as Partial<BuildContractPrefillFieldsArgs>));
         /** Reload must not keep stale saved offer/payback/remit over the live OfferDecision. */
-        const persistedForMerge = forceLiveOfferMoney
+        let persistedForMerge = forceLiveOfferMoney
             ? omitLiveOfferMoneyPrefillKeys(persistedRaw)
             : persistedRaw;
         const defaultsForMerge = forceLiveOfferMoney
             ? omitLiveOfferMoneyPrefillKeys(defaults)
             : defaults;
+        /** Reload also drops stale merchant legal-name overrides (void-check OCR snapshots). */
+        if (forceLiveOfferMoney) {
+            const dropLegal = { ...persistedForMerge } as Record<string, unknown>;
+            delete dropLegal.legalName;
+            delete dropLegal.securityBusinessName;
+            delete dropLegal.authorizationApplication;
+            delete dropLegal.authorizationClientName;
+            delete dropLegal.authorizationClientSignerName;
+            persistedForMerge = dropLegal as Partial<BuildContractPrefillFieldsArgs>;
+        }
         const mergedBase = applyLiveBankDetailsToPrefillMerge(
             defaultsForMerge,
             mergeNonemptyPrefillPartial(
@@ -1847,6 +1934,8 @@ export function ContractPrefillEditForm({
             merged as Record<string, unknown>,
             documentTemplatePrefillByMappingId,
         );
+        /** Re-assert live deal business name after addendum overlay (never keep OCR legal name). */
+        merged = applyAuthorizationBusinessNamePrefillFields(merged, applicationData);
         if (!String(merged.guarantyOwner1Ss ?? "").trim()) {
             const fromApp = String(
                 getContractPrefillEditDefaultsFromApplication(applicationData, {
@@ -1875,7 +1964,7 @@ export function ContractPrefillEditForm({
         setValues(nextValues);
         setFieldErrors({});
         if (forceLiveOfferMoney) {
-            toast.success("Reloaded offer & deal terms from the application.");
+            toast.success("Reloaded legal name, offer & deal terms from the application.");
         }
         return nextValues;
     }, [
@@ -2025,6 +2114,44 @@ export function ContractPrefillEditForm({
         activeIdx >= 0 && activeIdx < navSections.length - 1 ? navSections[activeIdx + 1] : null;
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
     const isLinkedDisclosureSection = activeSectionId === LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID;
+    const activeExhibitCEntityIndex = parseExhibitCEntitySectionIndex(activeSectionId);
+    const isExhibitCEntitySection = activeExhibitCEntityIndex != null;
+    const activeExhibitCEntity =
+        activeExhibitCEntityIndex != null ? exhibitCEntities[activeExhibitCEntityIndex] ?? null : null;
+
+    const handleAddExhibitCEntity = useCallback(() => {
+        setExhibitCEntities((prev) => {
+            if (prev.length >= EXHIBIT_C_ENTITY_MAX) return prev;
+            const next = [...prev, createEmptyExhibitCEntity()];
+            setActiveSectionId(exhibitCEntitySectionId(next.length - 1));
+            return next;
+        });
+    }, []);
+
+    const handleRemoveExhibitCEntity = useCallback((index: number) => {
+        setExhibitCEntities((prev) => {
+            if (index < 0 || index >= prev.length) return prev;
+            const next = prev.filter((_, i) => i !== index);
+            setActiveSectionId((current) => {
+                const currentIdx = parseExhibitCEntitySectionIndex(current);
+                if (currentIdx == null) return current;
+                if (next.length === 0) return "ach_account_bank";
+                if (currentIdx >= next.length) return exhibitCEntitySectionId(next.length - 1);
+                if (currentIdx > index) return exhibitCEntitySectionId(currentIdx - 1);
+                return exhibitCEntitySectionId(currentIdx);
+            });
+            return next;
+        });
+    }, []);
+
+    const setExhibitCEntityField = useCallback(
+        (index: number, key: keyof Omit<ExhibitCEntityPrefill, "id">, value: string) => {
+            setExhibitCEntities((prev) =>
+                prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)),
+            );
+        },
+        [],
+    );
 
     useEffect(() => {
         if (!open || !isLinkedAddendumSection || addendumEditorRows.length === 0) return;
@@ -2075,12 +2202,17 @@ export function ContractPrefillEditForm({
     }, [navSections, fieldErrors]);
 
     const activeSectionSyncGroups = useMemo(() => {
-        if (!activeSection || isLinkedAddendumSection || isLinkedDisclosureSection) {
+        if (
+            !activeSection ||
+            isLinkedAddendumSection ||
+            isLinkedDisclosureSection ||
+            isExhibitCEntitySection
+        ) {
             return [] as PrefillSyncGroup[];
         }
         const keysInSection = new Set<string>(activeSection.groups.flatMap((g) => g.keys));
         return PREFILL_SYNC_GROUPS.filter((group) => group.keys.some((k) => keysInSection.has(k)));
-    }, [activeSection, isLinkedAddendumSection, isLinkedDisclosureSection]);
+    }, [activeSection, isLinkedAddendumSection, isLinkedDisclosureSection, isExhibitCEntitySection]);
 
     const offerDecisionSyncKey = useMemo(() => {
         const root =
@@ -2284,13 +2416,34 @@ export function ContractPrefillEditForm({
             ) {
                 nextBlob[linkedDisclosureMapping.id] = { ...disclosureFieldValues };
             }
+            // Persist each Exhibit C entity onto its matching addendum mapping row in DB
+            // (documentTemplatePrefillByMappingId), same pattern as other addendums.
+            const exhibitMappingIds = new Set<string>();
+            for (let i = 0; i < exhibitCEntities.length; i++) {
+                const mapping = exhibitCLinkedMappings[i];
+                if (!mapping?.id) continue;
+                exhibitMappingIds.add(String(mapping.id));
+                const entityTabs = exhibitCEntityToTabValues(exhibitCEntities[i]);
+                nextBlob[mapping.id] = {
+                    ...(nextBlob[mapping.id] ?? {}),
+                    ...entityTabs,
+                };
+            }
             const sharedDba = resolveSharedDbaValue({
                 mainPrefill: aliased,
                 contract: resolvedContract,
                 mappingBlobs: nextBlob,
             });
             if (sharedDba) {
-                Object.assign(nextBlob, applySharedDbaToMappingBlob(nextBlob, sharedDba));
+                const withDba = applySharedDbaToMappingBlob(nextBlob, sharedDba);
+                // Do not push shared DBA onto isolated Exhibit C copies.
+                for (const [mappingId, row] of Object.entries(withDba)) {
+                    if (exhibitMappingIds.has(mappingId) && exhibitCLinkedMappings.length > 1) {
+                        // Keep entity-written values for multi Exhibit C deals.
+                        continue;
+                    }
+                    nextBlob[mappingId] = row;
+                }
             }
             const contractPrefillOverrides: Record<string, unknown> = {
                 ...pickPreservedContractPrefillMeta(
@@ -2306,6 +2459,12 @@ export function ContractPrefillEditForm({
                     : {}),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
             };
+            const exhibitCSerialized = serializeExhibitCEntities(exhibitCEntities);
+            if (exhibitCSerialized) {
+                contractPrefillOverrides[EXHIBIT_C_ENTITIES_PREFILL_KEY] = exhibitCSerialized;
+            } else {
+                delete contractPrefillOverrides[EXHIBIT_C_ENTITIES_PREFILL_KEY];
+            }
             const netToMerchantRaw = String(
                 (payload as { netToMerchant?: unknown }).netToMerchant ?? "",
             ).trim();
@@ -2470,6 +2629,7 @@ export function ContractPrefillEditForm({
             resetFromSources();
             resetAddendumFromSources();
             resetDisclosureFromSources();
+            setExhibitCEntities([]);
             setSaveError(null);
             toast.success("Saved overrides cleared; DocuSign will use application data again.");
         } catch (e) {
@@ -2842,6 +3002,71 @@ export function ContractPrefillEditForm({
                                             </div>
                                         )}
                                     </div>
+                                ) : isExhibitCEntitySection &&
+                                  activeExhibitCEntity &&
+                                  activeExhibitCEntityIndex != null ? (
+                                    <div className="space-y-5">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                                                Keep the merchant legal name on Merchant &amp; agreement. Use this
+                                                Exhibit C entity for a different void-check / bank account holder.
+                                            </p>
+                                            {!readOnly ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-8 text-destructive hover:text-destructive"
+                                                    onClick={() =>
+                                                        handleRemoveExhibitCEntity(activeExhibitCEntityIndex)
+                                                    }
+                                                >
+                                                    <Trash2 className="mr-1 h-3.5 w-3.5" aria-hidden />
+                                                    Remove entity
+                                                </Button>
+                                            ) : null}
+                                        </div>
+                                        {(["Account", "Bank", "Online banking"] as const).map((groupName) => {
+                                            const fields = EXHIBIT_C_ENTITY_FIELD_DEFS.filter(
+                                                (f) => f.group === groupName,
+                                            );
+                                            if (!fields.length) return null;
+                                            return (
+                                                <div key={groupName} className="space-y-3">
+                                                    <h5 className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                        {groupName}
+                                                    </h5>
+                                                    <div className="grid gap-4 sm:grid-cols-2">
+                                                        {fields.map((field) => (
+                                                            <div key={field.key} className="space-y-1.5">
+                                                                <Label
+                                                                    htmlFor={`exhibit-c-${activeExhibitCEntityIndex}-${field.key}`}
+                                                                    className="text-xs font-medium"
+                                                                >
+                                                                    {field.label}
+                                                                </Label>
+                                                                <Input
+                                                                    id={`exhibit-c-${activeExhibitCEntityIndex}-${field.key}`}
+                                                                    value={
+                                                                        activeExhibitCEntity[field.key] ?? ""
+                                                                    }
+                                                                    onChange={(e) =>
+                                                                        setExhibitCEntityField(
+                                                                            activeExhibitCEntityIndex,
+                                                                            field.key,
+                                                                            e.target.value,
+                                                                        )
+                                                                    }
+                                                                    disabled={readOnly}
+                                                                    className="h-9 text-sm"
+                                                                />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
                                 ) : (
                                     <div className="space-y-5">
                                         {activeSection.groups.map((group, groupIdx) => (
@@ -3112,6 +3337,24 @@ export function ContractPrefillEditForm({
                                 disabled={saving}
                             >
                                 Reload from application
+                            </Button>
+                        )}
+                        {!readOnly && (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="gap-1.5 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                                onClick={handleAddExhibitCEntity}
+                                disabled={saving || exhibitCEntities.length >= EXHIBIT_C_ENTITY_MAX}
+                                title={
+                                    exhibitCEntities.length >= EXHIBIT_C_ENTITY_MAX
+                                        ? `Maximum ${EXHIBIT_C_ENTITY_MAX} Exhibit C entities`
+                                        : "Add another Exhibit C entity"
+                                }
+                            >
+                                <Plus className="h-3.5 w-3.5" aria-hidden />
+                                Add Exhibit C entity
                             </Button>
                         )}
                         {!readOnly && (

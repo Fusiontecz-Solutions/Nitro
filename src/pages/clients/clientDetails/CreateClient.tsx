@@ -66,7 +66,15 @@ const businessEntityTypes = [
 	{ value: 'Other', label: 'Other' },
 ]
 
-const defaultOwnerDetail: OwnerDetail = {
+const createEmptyOwnerAddress = () => ({
+	address1: '',
+	address2: '',
+	city: '',
+	state: '',
+	zipCode: '',
+})
+
+const createEmptyOwnerDetail = (): OwnerDetail => ({
 	firstName: '',
 	middleName: '',
 	lastName: '',
@@ -77,16 +85,10 @@ const defaultOwnerDetail: OwnerDetail = {
 	ficoScore: '',
 	ownershipStartDate: '',
 	ownershipPercentage: '',
-	address: {
-		address1: '',
-		address2: '',
-		city: '',
-		state: '',
-		zipCode: '',
-	},
-}
+	address: createEmptyOwnerAddress(),
+})
 
-const defaultFormValues: FormValues = {
+const createDefaultFormValues = (): FormValues => ({
 	business: {
 		name: '',
 		email: '',
@@ -105,8 +107,10 @@ const defaultFormValues: FormValues = {
 			zipCode: '',
 		},
 	},
-	owners: [{ ...defaultOwnerDetail }],
-}
+	owners: [createEmptyOwnerDetail()],
+})
+
+const defaultFormValues: FormValues = createDefaultFormValues()
 
 const optionalEmail = yup
 	.string()
@@ -178,7 +182,7 @@ const resolveOwnersFromClient = (clientData: any): OwnerDetail[] => {
 	if (clientData?.owner) {
 		return [mapOwnerToForm(clientData.owner)]
 	}
-	return [{ ...defaultOwnerDetail }]
+	return [createEmptyOwnerDetail()]
 }
 
 const CreateClient = () => {
@@ -264,7 +268,10 @@ const CreateClient = () => {
 
 	const applyFormValues = (formData: FormValues) => {
 		reset(formData, { keepDefaultValues: false })
-		pendingOwnersReplaceRef.current = formData.owners.map((owner) => ({ ...owner }))
+		pendingOwnersReplaceRef.current = formData.owners.map((owner) => ({
+			...owner,
+			address: { ...createEmptyOwnerAddress(), ...owner.address },
+		}))
 		setOwnersSyncTick((tick) => tick + 1)
 	}
 
@@ -285,7 +292,7 @@ const CreateClient = () => {
 				? prefilledClientData.owners.map((owner) => mapOwnerToForm(owner))
 				: prefilledClientData.owner
 					? [mapOwnerToForm(prefilledClientData.owner)]
-					: defaultFormValues.owners
+					: [createEmptyOwnerDetail()]
 
 			const merged: FormValues = {
 				business: {
@@ -450,7 +457,7 @@ const CreateClient = () => {
 
 	const handleAddOwner = () => {
 		const nextIndex = fields.length
-		append({ ...defaultOwnerDetail })
+		append(createEmptyOwnerDetail())
 		setExpandedOwnerIndex(nextIndex)
 	}
 
@@ -689,9 +696,11 @@ const CreateClient = () => {
 														</div>
 													</button>
 
-													<div className={`${isExpanded ? 'px-4 pb-4 pt-2 grid grid-cols-1 md:grid-cols-2 gap-4' : 'hidden'} ${isViewMode ? 'pointer-events-none opacity-90' : ''}`}>
-														{renderOwnerFields(index)}
-													</div>
+													{isExpanded ? (
+														<div className={`px-4 pb-4 pt-2 grid grid-cols-1 md:grid-cols-2 gap-4 ${isViewMode ? 'pointer-events-none opacity-90' : ''}`}>
+															{renderOwnerFields(index)}
+														</div>
+													) : null}
 												</div>
 											)
 										})}
