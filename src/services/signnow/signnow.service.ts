@@ -1284,6 +1284,18 @@ const cachedAddendumPdf = new Map<string, { buffer: Buffer; at: number }>();
 const addendumPdfInflight = new Map<string, Promise<Buffer>>();
 /** Blank template PDFs change rarely — keep them warm so View Contract is instant. */
 const AGREEMENT_PDF_TTL_MS = 6 * 60 * 60 * 1000;
+/**
+ * Origin template documents fetched for the prefill field-face overlay.
+ *
+ * Every Review re-fetched the full agreement template (a 22-page document with
+ * hundreds of widgets) once for the agreement, plus once more for *each* Exhibit C
+ * copy — the same template document, refetched N times inside one request. The
+ * payload only changes when someone edits the template in SignNow, so a short TTL
+ * plus in-flight dedupe removes those calls without changing any field logic.
+ */
+const templateDocumentCache = new Map<string, { data: any; at: number }>();
+const templateDocumentInflight = new Map<string, Promise<any>>();
+const TEMPLATE_DOCUMENT_TTL_MS = 10 * 60 * 1000;
 const DRAFT_GROUP_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const draftGroupCache = new Map<
   string,
@@ -1407,6 +1419,50 @@ export class SignNowService {
       cachedAgreementDocumentId = origin;
     }
     return origin;
+  }
+
+  /**
+   * GET an origin template document, deduped across the request and cached briefly.
+   * Returns the response body, or null when SignNow refused it.
+   */
+  private async fetchTemplateDocumentCached(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    templateId: string,
+  ): Promise<any | null> {
+    const id = String(templateId || '').trim();
+    if (!id) return null;
+    const cached = templateDocumentCache.get(id);
+    if (cached && Date.now() - cached.at < TEMPLATE_DOCUMENT_TTL_MS) {
+      logSignNowTiming('template-origin-field-overlay-get', 0, {
+        documentId: id,
+        cached: true,
+      });
+      return cached.data;
+    }
+    const inflight = templateDocumentInflight.get(id);
+    if (inflight) {
+      logSignNowTiming('template-origin-field-overlay-get', 0, {
+        documentId: id,
+        coalesced: true,
+      });
+      return inflight;
+    }
+    const started = Date.now();
+    const work = (async () => {
+      const res = await client.get(`/document/${id}`, { validateStatus: () => true });
+      if (res.status >= 400) return null;
+      templateDocumentCache.set(id, { data: res.data, at: Date.now() });
+      return res.data;
+    })()
+      .finally(() => {
+        templateDocumentInflight.delete(id);
+        logSignNowTiming('template-origin-field-overlay-get', Date.now() - started, {
+          documentId: id,
+          cached: false,
+        });
+      });
+    templateDocumentInflight.set(id, work);
+    return work;
   }
 
   private async resolveExhibitCDocumentId(
@@ -1589,7 +1645,10 @@ export class SignNowService {
       timing.monthlyFeeEnabled = wantsMonthlyFee;
     }
 
-    const ensured = await this.ensureReviewDocumentGroup(client, {
+    const ensured = await measureSignNowStep(
+      'ensure-review-group',
+      { extras: toAttach.length, includeMainContract },
+      () => this.ensureReviewDocumentGroup(client, {
       appId,
       groupName,
       includeMainContract,
@@ -1599,7 +1658,8 @@ export class SignNowService {
       funderName: funderRow?.name || options.funderName || null,
       packageFingerprint,
       allowReuse: options.autoSend !== true,
-    });
+      }),
+    );
     let groupId = ensured.groupId;
     let documents = ensured.documents;
     const reusedExisting = ensured.reusedExisting;
@@ -1627,7 +1687,10 @@ export class SignNowService {
     );
     if (packageHasExhibitC && Number.isFinite(contractIdNum) && contractIdNum > 0) {
       countSignNowDb();
-      const [contractRow, mappingRows] = await Promise.all([
+      const [contractRow, mappingRows] = await measureSignNowStep(
+        'contract-mapping-query',
+        { contractId: contractIdNum },
+        () => Promise.all([
         prisma.contract.findUnique({
           where: { id: contractIdNum },
           select: { contractPrefillOverrides: true },
@@ -1637,7 +1700,8 @@ export class SignNowService {
           include: { template: true },
           orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
         }),
-      ]);
+        ]),
+      );
       const overrides = contractRow?.contractPrefillOverrides;
       if (
         !exhibitCEntitiesRaw &&
@@ -1753,6 +1817,7 @@ export class SignNowService {
     // Reused drafts often already have an Owner embedded invite. SignNow then
     // rejects prefill with "Document has been already sent to a signer".
     if (reusedExisting) {
+      const cleanupStarted = Date.now();
       try {
         await this.deleteEmbeddedInvites(client, groupId, documents);
         const alreadyHydrated = documents.every((d) => Boolean(d.remote));
@@ -1761,6 +1826,9 @@ export class SignNowService {
           : await this.hydrateDocumentRoles(client, documents, { skipIfHydrated: true });
         documents = hydrated;
         await this.cancelPendingFieldInvites(client, hydrated);
+        logSignNowTiming('reused-draft-invite-cleanup', Date.now() - cleanupStarted, {
+          documents: documents.length,
+        });
         console.info('[SignNow] cleared prior review invites before re-prefill', {
           groupId,
           documents: documents.length,
@@ -1813,25 +1881,35 @@ export class SignNowService {
       // Once an embedded invite exists, SignNow rejects edits with
       // "Document has been already sent to a signer" — which left addenda empty.
       this.scheduleCrmPersist(runCrmPersist);
-      const prefillStats = await this.withSignNowGroupWriteLock(groupId, () =>
-        this.prefillDocumentsForReview(
-          client,
-          documents,
-          values,
-          signers,
-          exhibitCEntitiesRaw,
-          exhibitCMappingEntities,
-        ),
+      const prefillStats = await measureSignNowStep(
+        'prefill-documents-total',
+        { documents: documents.length },
+        () =>
+          this.withSignNowGroupWriteLock(groupId, () =>
+            this.prefillDocumentsForReview(
+              client,
+              documents,
+              values,
+              signers,
+              exhibitCEntitiesRaw,
+              exhibitCMappingEntities,
+            ),
+          ),
       );
       applied = prefillStats.applied;
       attempted = prefillStats.attempted;
-      const embedded = await this.getSenderViewUrl(groupId, {
+      const embedded = await measureSignNowStep(
+        'review-url-generation',
+        { groupId },
+        () =>
+          this.getSenderViewUrl(groupId, {
         returnUrl: options.returnUrl,
         documentId: this.pickEditorDocumentId(documents),
-        roles: options.roles,
-        client,
-        documents,
-      });
+            roles: options.roles,
+            client,
+            documents,
+          }),
+      );
       sendUrl = embedded.url;
       console.info('[SignNow] prefill summary', {
         groupId,
@@ -3502,17 +3580,11 @@ export class SignNowService {
           ? await this.resolveExhibitCDocumentId(client)
           : await this.resolveAgreementDocumentId(client);
         if (templateId && templateId !== documentId) {
-          const overlayStarted = Date.now();
-          const templateRes = await client.get(`/document/${templateId}`, {
-            validateStatus: () => true,
-          });
-          logSignNowTiming('template-origin-field-overlay-get', Date.now() - overlayStarted, {
-            documentId: templateId,
-          });
-          if (templateRes.status < 400) {
-            const templatePages = signNowDocumentPageCount(templateRes.data);
+          const templateData = await this.fetchTemplateDocumentCached(client, templateId);
+          if (templateData) {
+            const templatePages = signNowDocumentPageCount(templateData);
             const fromTemplate = fieldsOnExistingPages(
-              collectSignNowPutFields(templateRes.data, {
+              collectSignNowPutFields(templateData, {
                 ...(isExhibitC ? { defaultRole: 'Recipient 1' } : {}),
               }),
               pageCount || templatePages,

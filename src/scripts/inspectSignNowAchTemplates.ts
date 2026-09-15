@@ -1,13 +1,20 @@
 /**
- * READ-ONLY SignNow inspection: what widgets do the ACH Daily, ACH Weekly and
- * Exhibit C templates actually carry?
+ * READ-ONLY SignNow inspection: the real widget names on the ACH Daily,
+ * ACH Weekly and Exhibit C templates.
  *
  *   npx ts-node --transpile-only src/scripts/inspectSignNowAchTemplates.ts
  *
- * Creates nothing and sends nothing — it only GETs templates, so it is safe to
- * run against production credentials and does not touch the daily copy limit.
- * Use it to confirm that ACH Daily really needs the Exhibit C `*_p1` widget
- * names before changing the ACH Daily field map.
+ * Creates nothing and sends nothing — it only GETs, so it is safe against
+ * production credentials and does not touch the daily document limit.
+ *
+ * The ids in this CRM are document-GROUP-TEMPLATE ids, so each one is resolved
+ * to its member documents first (GET /document/{groupTemplateId} returns
+ * "internal api error", which is what makes this look like an auth failure).
+ *
+ * Use the output to confirm which widgets actually exist before editing any
+ * field map: a widget printed here that is absent from ACH_WEEKLY.ts FIELD_DEFS
+ * is being filled by alias fallback in signnow-field-map.ts, which is how a date
+ * or an amount can land in the Printed Name / Date boxes.
  */
 import '../config/loadEnv';
 import prisma from '../config/prismaClient';
@@ -34,27 +41,53 @@ function widgetNames(doc: any): string[] {
   return out;
 }
 
-async function inspect(client: Client, templateId: string) {
-  const paths = [
-    `/document/${templateId}`,
-    `/documentgroup/${templateId}`,
+async function originDocumentIds(client: Client, templateId: string): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const path of [
+    `/documentgroup/template/${templateId}`,
     `/v2/document-group-templates/${templateId}`,
-  ];
-  for (const path of paths) {
+  ]) {
     const res = await client.get(path, { validateStatus: () => true });
     if (res.status >= 400) continue;
-    const data = res.data?.data || res.data || {};
-    const docs = Array.isArray(data.documents) ? data.documents : [data];
-    const names: string[] = [];
-    for (const doc of docs) names.push(...widgetNames(doc));
-    return {
-      path,
-      documentName: String(data.document_name || data.name || data.template_name || ''),
-      documentCount: docs.length,
-      widgets: [...new Set(names)].sort(),
-    };
+    const row = res.data?.data || res.data || {};
+    const buckets = [
+      row.documents,
+      row.template?.documents,
+      row.document_group_template?.documents,
+      row.templates,
+      row.document_ids,
+      row.template_ids,
+    ];
+    for (const bucket of buckets) {
+      for (const item of Array.isArray(bucket) ? bucket : []) {
+        const id =
+          typeof item === 'string'
+            ? item
+            : String(item?.id || item?.document_id || item?.unique_id || '').trim();
+        if (id) ids.add(id);
+      }
+    }
   }
-  return null;
+  if (!ids.size) ids.add(templateId);
+  return [...ids];
+}
+
+async function inspect(client: Client, templateId: string) {
+  const docs: Array<{ id: string; name: string; widgets: string[] }> = [];
+  for (const id of await originDocumentIds(client, templateId)) {
+    const res = await client.get(`/document/${id}`, { validateStatus: () => true });
+    if (res.status >= 400) {
+      docs.push({ id, name: `(unreadable: HTTP ${res.status})`, widgets: [] });
+      continue;
+    }
+    const data = res.data?.data || res.data || {};
+    docs.push({
+      id,
+      name: String(data.document_name || data.name || data.original_filename || ''),
+      widgets: widgetNames(data),
+    });
+  }
+  return docs;
 }
 
 async function main() {
@@ -67,40 +100,51 @@ async function main() {
 
   const collected = new Map<string, string[]>();
   for (const [label, templateId] of targets) {
-    console.log(`\n===== ${label}  id=${templateId} =====`);
-    const info = await inspect(client, templateId);
-    if (!info) {
-      console.log('  not readable with these credentials');
-      continue;
+    console.log('');
+    console.log(`===== ${label}  group-template=${templateId} =====`);
+    const docs = await inspect(client, templateId);
+    const all: string[] = [];
+    for (const doc of docs) {
+      console.log(`  document ${doc.id}  "${doc.name}"  ${doc.widgets.length} widget(s)`);
+      for (const name of doc.widgets) console.log(`     ${name}`);
+      all.push(...doc.widgets);
     }
-    collected.set(label, info.widgets);
-    console.log(`  resolved via ${info.path}`);
-    console.log(`  name: "${info.documentName}"  documents: ${info.documentCount}`);
-    console.log(`  ${info.widgets.length} widget(s):`);
-    for (const name of info.widgets) console.log(`    ${name}`);
+    collected.set(label, [...new Set(all)].sort());
   }
 
-  const daily = collected.get('ACH DAILY');
-  const exhibitC = collected.get('EXHIBIT C');
-  if (daily && exhibitC) {
-    const shared = daily.filter((name) => exhibitC.includes(name));
-    const dailyOnly = daily.filter((name) => !exhibitC.includes(name));
-    console.log('\n===== ACH DAILY vs EXHIBIT C =====');
+  const daily = collected.get('ACH DAILY') || [];
+  const weekly = collected.get('ACH WEEKLY') || [];
+  const exhibitC = collected.get('EXHIBIT C') || [];
+
+  if (daily.length && exhibitC.length) {
+    const shared = daily.filter((n) => exhibitC.includes(n));
+    const dailyOnly = daily.filter((n) => !exhibitC.includes(n));
+    console.log('');
+    console.log('===== ACH DAILY vs EXHIBIT C =====');
     console.log(`  shared widget names: ${shared.length}`);
     console.log(`  ACH Daily-only widget names: ${dailyOnly.length}`);
     if (dailyOnly.length) console.log(`    ${dailyOnly.join(', ')}`);
-    console.log(
-      shared.length === daily.length
-        ? '  => ACH Daily reuses the Exhibit C widget NAMES. Keep the field map; the\n' +
-            '     fix belongs in which DATA fills them, not in renaming widgets.'
-        : '  => ACH Daily has widget names of its own. It needs its own field map.',
-    );
+  }
+
+  if (weekly.length) {
+    console.log('');
+    console.log('===== ACH WEEKLY bottom-section widgets =====');
+    for (const name of weekly.filter((n) => /print|name|date|title|signature|amount|remit/i.test(n))) {
+      console.log(`  ${name}`);
+    }
+    console.log('');
+    console.log('  Compare against FIELD_DEFS in');
+    console.log('  nitro-contract-fe/src/components/application/contractdata/ACH_WEEKLY.ts');
+    console.log('  A widget above that is NOT in FIELD_DEFS is filled by alias fallback');
+    console.log('  in signnow-field-map.ts — that is how a date or amount reaches the');
+    console.log('  Printed Name / Date boxes.');
   }
 }
 
 main()
   .catch((err) => {
-    console.error('\nFAIL:', err instanceof Error ? err.message : err);
+    console.error('');
+    console.error('FAIL:', err instanceof Error ? err.message : err);
     process.exitCode = 1;
   })
   .finally(async () => {

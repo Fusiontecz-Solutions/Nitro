@@ -560,6 +560,15 @@ export function isSupplementalSignNowDocumentName(value: unknown): boolean {
   );
 }
 
+/** "ACH weekly" is the live template's document name. */
+export function isAchWeeklyDocumentName(value: unknown): boolean {
+  const n = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!n) return false;
+  return /\bach\b/.test(n) && /week/.test(n);
+}
+
 export function isObsidianDocumentName(value: unknown): boolean {
   return String(value || '')
     .trim()
@@ -570,7 +579,8 @@ export function isObsidianDocumentName(value: unknown): boolean {
 export type SignNowPrefillDocumentKind =
   | 'monthly_fee'
   | 'obsidian_agreement'
-  | 'exhibit_c';
+  | 'exhibit_c'
+  | 'ach_weekly';
 
 export type SignNowPrefillOptions = { documentKind?: SignNowPrefillDocumentKind };
 
@@ -601,6 +611,36 @@ export const OBSIDIAN_AGREEMENT_TEXT_FIELDS: Record<
   91: { crmId: 'ref_personal2_phone' },
 };
 
+/**
+ * ACH Weekly bottom-section widget names do not match their position on the PDF.
+ * Verified against the live template (document 136150ac…, page 0) with
+ * `npx ts-node --transpile-only src/scripts/inspectSignNowAchTemplates.ts`:
+ *
+ *   y=667  signature_p1_ach        -> "Account Holder's Signature:"
+ *   y=676  Text Field 1            -> the "Date:" box on that same line
+ *   y=691  signature_date_p1_ach   -> the "Printed Names:" line below it
+ *
+ * So the widget called `signature_date_p1_ach` is physically the printed-name
+ * box, and the unnamed `Text Field 1` is physically the date box. Filling them
+ * by name put an amount in Date (the CA-disclosure `text field 1` alias) and a
+ * date in Printed Names. ACH Daily needs none of this: its equivalent widget is
+ * properly named `authorization_client_name_print_p1_ach`.
+ *
+ * The clean permanent fix is to rename these two widgets in the SignNow
+ * template; until then this table routes each one by its verified position.
+ */
+export const ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS: Record<string, string[]> = {
+  // Physically the "Date:" box.
+  'text field 1': ['agreement_date', 'signature_date', 'disclosure_date'],
+  // Physically the "Printed Names:" line.
+  signature_date_p1_ach: [
+    'print_name',
+    'client_name',
+    'owner1_guarantor_name',
+    'merchant_contact_name',
+  ],
+};
+
 export function signNowPrefillDocumentKind(
   documentName?: unknown,
   fieldNames?: string[],
@@ -623,6 +663,15 @@ export function signNowPrefillDocumentKind(
     names.length <= 40
   ) {
     return 'exhibit_c';
+  }
+  if (isAchWeeklyDocumentName(documentName)) return 'ach_weekly';
+  // Field-name signature of the ACH Weekly PDF (see the positional table above).
+  if (
+    names.includes('text field 1') &&
+    names.includes('signature_date_p1_ach') &&
+    names.includes('remittance_start_date_p1_ach')
+  ) {
+    return 'ach_weekly';
   }
   return undefined;
 }
@@ -1343,6 +1392,21 @@ export function resolveSignNowPrefillValue(
     return '';
   }
   const map = lookupMap(prefill);
+
+  if (options?.documentKind === 'ach_weekly') {
+    const positional =
+      ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS[lower] ||
+      ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS[canon];
+    if (positional) {
+      for (const crmId of positional) {
+        const hit = mapGet(map, crmId);
+        if (hit) return formatSignNowPrefillValue(hit, fieldName);
+      }
+      // Never fall through to the generic aliases: `text field 1` there is the
+      // California disclosure amount, which is exactly the wrong value here.
+      return '';
+    }
+  }
 
   if (options?.documentKind === 'monthly_fee') {
     const numbered = raw.match(/^text field\s*(\d+)$/i);

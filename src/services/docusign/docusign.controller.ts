@@ -591,6 +591,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       funderName,
       funderProfileId,
       contractState,
+      structureOnly,
     } = req.body;
 
     if (!roles?.length) {
@@ -636,6 +637,12 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
             ? funderProfileId.trim()
             : undefined,
         timingRequestId: timingRequestId || undefined,
+        // Pre-warm: copy/attach the document group only — no prefill, no invite,
+        // no review URL. Lets the UI build the package before the user clicks
+        // Review, so the click only has to prefill and mint the link. The service
+        // already dedupes by package fingerprint, so the later real call reuses
+        // this group instead of copying a second one.
+        structureOnly: structureOnly === true,
       });
       return res.json(result);
     }
