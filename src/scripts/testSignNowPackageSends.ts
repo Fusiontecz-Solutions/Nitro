@@ -10,6 +10,7 @@ import '../config/loadEnv';
 import prisma from '../config/prismaClient';
 import { createSignNowApiClient } from '../services/signnow/utils/signnow-client';
 import { signNowService } from '../services/signnow/signnow.service';
+import { signNowDocumentOrderRank } from '../services/signnow/utils/signnow-document-order';
 
 const TEST_ROLES = [
   {
@@ -94,10 +95,38 @@ async function deleteGroup(groupId: string): Promise<{ ok: boolean; status: numb
   return last;
 }
 
+/** Count live documents whose name matches a token, ignoring the "(2)" suffix. */
+function countByToken(names: string[], token: string): number {
+  const needle = token.trim().toLowerCase();
+  return names.filter((name) => name.trim().toLowerCase().includes(needle)).length;
+}
+
+/** Assert the live group reads Disclosure → Contract → Addendums. */
+function assertCanonicalOrder(label: string, names: string[]) {
+  const ranks = names.map((name) =>
+    signNowDocumentOrderRank({ id: name, document_name: name }),
+  );
+  for (let i = 1; i < ranks.length; i += 1) {
+    if (ranks[i] < ranks[i - 1]) {
+      throw new Error(
+        `${label}: documents are out of order (want Disclosure → Contract → Addendums), got: ${names.join(' | ')}`,
+      );
+    }
+  }
+  console.log('  order: OK (Disclosure → Contract → Addendums)');
+}
+
 async function runCase(
   label: string,
   options: Parameters<typeof signNowService.createContractFromGroupTemplate>[1],
-  expect: { mustInclude: string[]; mustExclude: string[] },
+  expect: {
+    mustInclude: string[];
+    mustExclude: string[];
+    /** Exact live-document count per name token, e.g. { 'exhibit c': 1 }. */
+    exactCounts?: Record<string, number>;
+    /** Verify Disclosure → Contract → Addendums in the live group. */
+    canonicalOrder?: boolean;
+  },
 ) {
   console.log(`\n=== ${label} ===`);
   const result = await signNowService.createContractFromGroupTemplate('package-send-test', {
@@ -129,6 +158,17 @@ async function runCase(
   if (unexpected.length) {
     throw new Error(`${label}: unexpected document token(s): ${unexpected.join(', ')}`);
   }
+
+  for (const [token, want] of Object.entries(expect.exactCounts || {})) {
+    const got = countByToken(inspected.names, token);
+    if (got !== want) {
+      throw new Error(
+        `${label}: expected exactly ${want} "${token}" document(s), got ${got}: ${inspected.names.join(' | ')}`,
+      );
+    }
+    console.log(`  count "${token}": ${got} (expected ${want})`);
+  }
+  if (expect.canonicalOrder) assertCanonicalOrder(label, inspected.names);
 
   const deleted = await deleteGroup(groupId);
   console.log(
@@ -186,9 +226,77 @@ async function main() {
     );
   }
 
-  console.log('\nRESULT: both package paths created SignNow groups successfully.');
+  // Issue 1: selecting Exhibit C once must attach exactly one Exhibit C.
+  const exhibitCOnce = await runCase(
+    '3) Contract + disclosure + Exhibit C selected ONCE',
+    {
+      roles: TEST_ROLES,
+      title: 'CRM TEST — Exhibit C once',
+      sendPackage: {
+        includeMainContract: true,
+        includeAddendum: true,
+        includeDisclosure: true,
+      },
+      supplementalDocumentRefs: ['exhibit_c', 'signnow_disclosure'],
+    },
+    {
+      mustInclude: ['exhibit'],
+      // The duplicate this ticket is about.
+      mustExclude: ['exhibit c (2)'],
+      exactCounts: { 'exhibit c': 1 },
+      canonicalOrder: true,
+    },
+  );
+
+  // Exhibit C x N stays supported when it is genuinely requested twice.
+  const exhibitCTwice = await runCase(
+    '4) Contract + Exhibit C selected TWICE (multi-instance still works)',
+    {
+      roles: TEST_ROLES,
+      title: 'CRM TEST — Exhibit C x2',
+      sendPackage: {
+        includeMainContract: true,
+        includeAddendum: true,
+        includeDisclosure: false,
+      },
+      supplementalDocumentRefs: ['exhibit_c', 'exhibit_c'],
+    },
+    {
+      mustInclude: ['exhibit c', 'exhibit c (2)'],
+      mustExclude: ['exhibit c (3)'],
+      exactCounts: { 'exhibit c': 2 },
+      canonicalOrder: true,
+    },
+  );
+
+  // Issue 3: disclosure first, contract second, addendums after, every time.
+  const multiAddendum = await runCase(
+    '5) Contract + disclosure + multiple addendums (order is deterministic)',
+    {
+      roles: TEST_ROLES,
+      title: 'CRM TEST — multi addendum order',
+      sendPackage: {
+        includeMainContract: true,
+        includeAddendum: true,
+        includeDisclosure: true,
+      },
+      // Disclosure deliberately last in the refs: order must not follow selection order.
+      supplementalDocumentRefs: ['ach_daily', 'exhibit_c', 'monthly_fee', 'signnow_disclosure'],
+    },
+    {
+      mustInclude: ['disclosure', 'exhibit', 'ach'],
+      mustExclude: ['exhibit c (2)'],
+      exactCounts: { 'exhibit c': 1, 'ach daily': 1 },
+      canonicalOrder: true,
+    },
+  );
+
+  console.log('\nRESULT: all package paths created SignNow groups successfully.');
   console.log('  addendum-only docs:', addendum.names.join(' | '));
   console.log('  contract+disclosure docs:', contractDisclosure.names.join(' | '));
+  console.log('  exhibit C once docs:', exhibitCOnce.names.join(' | '));
+  console.log('  exhibit C twice docs:', exhibitCTwice.names.join(' | '));
+  console.log('  multi-addendum docs:', multiAddendum.names.join(' | '));
 }
 
 main()

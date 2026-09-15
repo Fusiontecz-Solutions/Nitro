@@ -96,6 +96,12 @@ import {
   signNowDocumentMatchesSupplemental,
   signNowPackageFingerprintsEqual,
 } from './utils/signnow-package-fingerprint';
+import {
+  orderSignNowGroupDocuments,
+  sameSignNowDocumentOrder,
+  signNowDocumentIdsInOrder,
+  sortSignNowSupplementalsForPackage,
+} from './utils/signnow-document-order';
 
 type SignerRoleInput = {
   roleName?: string;
@@ -1534,7 +1540,7 @@ export class SignNowService {
     );
     // Addenda in the request refs always attach. The disclosure checkbox is the
     // only sendPackage flag that should drop a resolved supplemental.
-    const toAttach = supplementals.filter((row) => {
+    const selected = supplementals.filter((row) => {
       if (row.type === 'disclosure') {
         return options.sendPackage?.includeDisclosure !== false;
       }
@@ -1544,17 +1550,20 @@ export class SignNowService {
     // has no Settings disclosure row, still attach the platform template.
     if (
       options.sendPackage?.includeDisclosure !== false &&
-      !toAttach.some((row) => row.type === 'disclosure')
+      !selected.some((row) => row.type === 'disclosure')
     ) {
       const platformDisclosure = getSignNowDisclosureTemplates()[0];
       if (platformDisclosure) {
-        toAttach.push(platformDisclosure);
+        selected.push(platformDisclosure);
         console.info('[SignNow] attaching platform state disclosure', {
           layoutKey: platformDisclosure.layoutKey,
           templateId: platformDisclosure.templateId,
         });
       }
     }
+    // Disclosure → Contract → Addendums. Sorting here (not at attach time) keeps
+    // the package fingerprint, the copy order, and the live group order aligned.
+    const toAttach = sortSignNowSupplementalsForPackage(selected);
     console.info('[SignNow] package extras', {
       refs: options.supplementalDocumentRefs || [],
       sendPackage: options.sendPackage || null,
@@ -1606,7 +1615,17 @@ export class SignNowService {
     let exhibitCEntitiesRaw: unknown =
       values[EXHIBIT_C_ENTITIES_PREFILL_KEY] || undefined;
     let exhibitCMappingEntities: ExhibitCEntityPrefillRow[] = [];
-    if (Number.isFinite(contractIdNum) && contractIdNum > 0) {
+    // Exhibit C mapping rows survive on the contract after a workflow that no
+    // longer attaches Exhibit C. Only read them when this package really has one,
+    // so yesterday's Exhibit C bank/holder values cannot seed today's documents.
+    const packageHasExhibitC = toAttach.some((row) =>
+      isExhibitCAddendumRow({
+        layoutKey: row.layoutKey,
+        name: row.name,
+        templateId: row.templateId,
+      }),
+    );
+    if (packageHasExhibitC && Number.isFinite(contractIdNum) && contractIdNum > 0) {
       countSignNowDb();
       const [contractRow, mappingRows] = await Promise.all([
         prisma.contract.findUnique({
@@ -4291,7 +4310,7 @@ export class SignNowService {
       options.supplementalDocumentRefs,
       funderRow,
     );
-    const toAttach = supplementals.filter((row) => {
+    const selected = supplementals.filter((row) => {
       if (row.type === 'disclosure') {
         return options.sendPackage?.includeDisclosure !== false;
       }
@@ -4299,11 +4318,12 @@ export class SignNowService {
     });
     if (
       options.sendPackage?.includeDisclosure !== false &&
-      !toAttach.some((row) => row.type === 'disclosure')
+      !selected.some((row) => row.type === 'disclosure')
     ) {
       const platformDisclosure = getSignNowDisclosureTemplates()[0];
-      if (platformDisclosure) toAttach.push(platformDisclosure);
+      if (platformDisclosure) selected.push(platformDisclosure);
     }
+    const toAttach = sortSignNowSupplementalsForPackage(selected);
     const missing = this.missingSupplementals(options.documents, toAttach);
     if (!missing.length) {
       return { groupId: options.groupId, documents: options.documents };
@@ -4325,37 +4345,56 @@ export class SignNowService {
     return combined;
   }
 
+  /**
+   * Copied extra document ids, split by kind so the final group can be ordered
+   * Disclosure → Contract → Addendums regardless of which copy settled first.
+   */
   private collectCopiedAddendumIds(
     addenda: SignNowAddendumTemplate[],
     extraResults: PromiseSettledResult<string[]>[],
-  ): string[] {
-    const extraIds: string[] = [];
+  ): { ids: string[]; disclosureIds: string[]; addendumIds: string[] } {
+    const ids: string[] = [];
+    const disclosureIds: string[] = [];
+    const addendumIds: string[] = [];
     extraResults.forEach((result, index) => {
-      const name = addenda[index]?.name || `extra ${index + 1}`;
+      const row = addenda[index];
+      const name = row?.name || `extra ${index + 1}`;
       if (result.status === 'fulfilled') {
-        extraIds.push(...result.value);
+        ids.push(...result.value);
+        const bucket =
+          String(row?.type || '').toLowerCase() === 'disclosure' ? disclosureIds : addendumIds;
+        bucket.push(...result.value);
         return;
       }
       const detail =
         result.reason instanceof Error ? result.reason.message : String(result.reason || '');
       console.warn('[SignNow] extra template copy skipped', { name, detail: detail.slice(0, 240) });
     });
-    return extraIds;
+    return { ids, disclosureIds, addendumIds };
   }
 
   private async attachCopiedAddenda(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     groupId: string,
     documents: SignNowDocumentRef[],
-    extraIds: string[],
+    copied: { ids: string[]; disclosureIds: string[]; addendumIds: string[] },
     groupName: string,
   ): Promise<{ groupId: string; documents: SignNowDocumentRef[] }> {
-    const uniqueExtra = [...new Set(extraIds.map((id) => String(id || '').trim()).filter(Boolean))];
+    const uniqueExtra = [
+      ...new Set(copied.ids.map((id) => String(id || '').trim()).filter(Boolean)),
+    ];
     if (!uniqueExtra.length) {
       console.warn('[SignNow] no extras copied; opening the contract documents already created');
       return { groupId, documents };
     }
     const existingIds = documents.map((d) => d.id).filter(Boolean);
+    // Hint only the copies we just made. Documents already in the group keep
+    // name-based classification, so a disclosure attached on an earlier pass is
+    // not mistaken for part of the contract template copy.
+    const orderHints = {
+      disclosureIds: copied.disclosureIds,
+      addendumIds: copied.addendumIds,
+    };
     const added = await measureSignNowStep(
       'extra-document-attach',
       { documentCount: uniqueExtra.length },
@@ -4373,28 +4412,89 @@ export class SignNowService {
         missing: missing.length,
       });
       if (!missing.length && merged.length >= existingIds.length + uniqueExtra.length) {
-        return { groupId, documents: merged.length ? merged : documents };
+        return this.enforceCanonicalGroupOrder(
+          client,
+          { groupId, documents: merged.length ? merged : documents },
+          groupName,
+          orderHints,
+        );
       }
     }
     const rebuilt = await measureSignNowStep(
       'group-delete-rebuild',
       { documentCount: existingIds.length + uniqueExtra.length },
       () =>
-        this.rebuildGroupWithDocuments(client, groupId, groupName, [
-          ...existingIds,
-          ...uniqueExtra,
-        ]),
+        this.rebuildGroupWithDocuments(
+          client,
+          groupId,
+          groupName,
+          signNowDocumentIdsInOrder(
+            orderSignNowGroupDocuments(
+              [
+                // Existing docs carry their names, so they classify correctly.
+                ...documents.filter((doc) => existingIds.includes(doc.id)),
+                ...uniqueExtra.map((id) => ({ id })),
+              ],
+              orderHints,
+            ),
+          ),
+        ),
     );
     if (!rebuilt?.groupId) {
       console.warn('[SignNow] combined rebuild failed; opening the contract documents already created');
       return { groupId, documents };
     }
+    const ordered = orderSignNowGroupDocuments(rebuilt.documents, orderHints);
     console.info('[SignNow] combined package documents', {
       groupId: rebuilt.groupId,
-      count: rebuilt.documents.length,
-      names: rebuilt.documents.map((d) => d.document_name || d.name || d.id),
+      count: ordered.length,
+      names: ordered.map((d) => d.document_name || d.name || d.id),
     });
-    return rebuilt;
+    return { groupId: rebuilt.groupId, documents: ordered };
+  }
+
+  /**
+   * Force the live group onto Disclosure → Contract → Addendums.
+   *
+   * SignNow appends documents in whatever order they were POSTed, so the only
+   * reliable reorder primitive is regrouping the same document ids. That copies
+   * nothing, so it does not spend the account's daily document allowance. When
+   * the group is already canonical (the normal case) this is a pure no-op.
+   */
+  private async enforceCanonicalGroupOrder(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    current: { groupId: string; documents: SignNowDocumentRef[] },
+    groupName: string,
+    hints?: {
+      disclosureIds?: Iterable<string>;
+      contractIds?: Iterable<string>;
+      addendumIds?: Iterable<string>;
+    },
+  ): Promise<{ groupId: string; documents: SignNowDocumentRef[] }> {
+    const desired = orderSignNowGroupDocuments(current.documents, hints);
+    const desiredIds = signNowDocumentIdsInOrder(desired);
+    const liveIds = signNowDocumentIdsInOrder(current.documents);
+    if (desiredIds.length < 2 || sameSignNowDocumentOrder(liveIds, desiredIds)) {
+      return { groupId: current.groupId, documents: desired };
+    }
+    const regrouped = await measureSignNowStep(
+      'group-order-normalize',
+      { documentCount: desiredIds.length },
+      () => this.rebuildGroupWithDocuments(client, current.groupId, groupName, desiredIds),
+    );
+    if (!regrouped?.groupId) {
+      // Ordering is cosmetic relative to losing the package — keep the group.
+      console.warn('[SignNow] could not normalize document order; keeping live order', {
+        groupId: current.groupId,
+      });
+      return { groupId: current.groupId, documents: current.documents };
+    }
+    const ordered = orderSignNowGroupDocuments(regrouped.documents, hints);
+    console.info('[SignNow] normalized package order', {
+      groupId: regrouped.groupId,
+      names: ordered.map((d) => d.document_name || d.name || d.id),
+    });
+    return { groupId: regrouped.groupId, documents: ordered };
   }
 
   private async combineGroupWithAddenda(
@@ -5799,6 +5899,14 @@ export class SignNowService {
     }
 
     documents = await this.waitForDocumentsReady(client, documents);
+    // Reused drafts (and any group SignNow returned out of order) converge here.
+    const normalized = await this.enforceCanonicalGroupOrder(
+      client,
+      { groupId, documents },
+      groupName,
+    );
+    groupId = normalized.groupId;
+    documents = normalized.documents;
     if (timing) timing.documentCount = documents.length;
     const ownerRolesPrepared = Boolean(
       appId &&
