@@ -559,7 +559,7 @@ export function TemplateMappingPrefillEditDialog({
                     {!coordinateLayout ? (
                         <p className="text-muted-foreground text-sm font-normal leading-snug">
                             {isAchDailyRow
-                                ? "ACH Daily uses the ACH Authorization field map (same SignNow widgets as Exhibit C). Date, names, and bank fill correctly — edits apply only to this ACH Daily document."
+                                ? "ACH Daily has its own prefilled data, taken from this deal's ACH and bank records. It shares only the SignNow widget names with Exhibit C, so Exhibit C's account holder and bank never appear here. Edits apply only to this ACH Daily document."
                                 : isExhibitCRow
                                   ? "All Exhibit C copies use the same field map. Prefill comes from this copy’s entity (send-order Exhibit C / Exhibit C (2) / …) — not from other copies or stale mapping text."
                                   : "Adjust field values used when prefilling this document. Bank name, routing, and account are stored on the application and auto-filled on every contract document."}

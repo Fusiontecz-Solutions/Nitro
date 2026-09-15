@@ -2358,14 +2358,22 @@ export default function ContractTab({
             throw new Error(message);
         };
 
-        const addendumDocumentRefs = [
-            ...((sendPayload.addendumDocumentRefs || [])
-                .map((r) => String(r || "").trim())
-                .filter(Boolean)),
-            String(
-                sendPayload.addendumDocumentRef ?? sendPayload.addendumBoldSignTemplateId ?? "",
-            ).trim(),
-        ].filter(Boolean);
+        // `addendumDocumentRef` / `addendumBoldSignTemplateId` are the legacy
+        // single-addendum fields and callers still send them alongside the array,
+        // where they repeat `addendumDocumentRefs[0]`. Concatenating both used to
+        // duplicate that first ref; expandAddendumRefsAllowingDuplicates() silently
+        // collapsed the copy for every addendum except Exhibit C, which is allowed
+        // to repeat — so SignNow attached an unrequested "Exhibit C (2)".
+        // The array wins whenever it is present; the legacy field is the fallback.
+        const addendumRefsFromArray = (sendPayload.addendumDocumentRefs || [])
+            .map((r) => String(r || "").trim())
+            .filter(Boolean);
+        const legacyAddendumRef = String(
+            sendPayload.addendumDocumentRef ?? sendPayload.addendumBoldSignTemplateId ?? "",
+        ).trim();
+        const addendumDocumentRefs = addendumRefsFromArray.length
+            ? addendumRefsFromArray
+            : [legacyAddendumRef].filter(Boolean);
         const disclosureDocumentRef = String(sendPayload.disclosureDocumentRef ?? "").trim();
         const achDocumentRef = String(sendPayload.achDocumentRef ?? "").trim();
         const standaloneAchOnly = sendPayload.standaloneAchOnly === true;

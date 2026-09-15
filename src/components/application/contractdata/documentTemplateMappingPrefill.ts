@@ -1385,6 +1385,107 @@ function buildAddendumAchWeeklyComputed(
     });
 }
 
+/**
+ * ACH Daily's own prefilled data.
+ *
+ * The ACH Daily PDF carries the same SignNow widget NAMES as Exhibit C (`*_p1`),
+ * so it keeps the Exhibit C field map for fill — but its VALUES are its own, read
+ * from the deal (application + contract + ACH/bank records) exactly the way
+ * buildAddendumAchWeeklyComputed does. It must never read exhibitCEntities:
+ * doing that made the daily form display Exhibit C's account holder and bank.
+ */
+function buildAddendumAchDailyComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+    application: Record<string, unknown> | null,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const fromApp = buildContractPrefillFieldsFromApplication(application, {
+        agreementDate: sctx.signatureDate || todayUsDate(),
+        contractRecords: { contract: c },
+    });
+    const get = (...ids: string[]) => {
+        const fromFields = fieldValueById(fromApp, ...ids);
+        if (fromFields) return fromFields;
+        for (const id of ids) {
+            const v = str(c[id]);
+            if (v) return v;
+        }
+        return "";
+    };
+    const paymentBank = (c.paymentBank as Record<string, unknown> | null) ?? null;
+    const legalName = dealMerchantLegalName(c, application, sctx);
+    const guarantor =
+        sctx.merchantName ||
+        get("client_name", "owner1_guarantor_name", "merchant_contact_name") ||
+        str(c.clientName);
+    const qa = (questionId: string, answerId: string) => {
+        const q = get(questionId);
+        const a = get(answerId);
+        if (q && a) return `${q} / ${a}`;
+        return q || a;
+    };
+
+    return buildAchDailyContractPrefillFields({
+        agreementDate: todayUsDate(),
+        clientLegalName: legalName,
+        clientName: guarantor,
+        accountHolderName:
+            get("ach_authorization_account_holder_name", "ach_account_holder_name") ||
+            legalName ||
+            guarantor,
+        accountHolderDba: dbaFromContractAndGet(c, get),
+        accountHolderAddress:
+            get(
+                "ach_authorization_account_holder_address",
+                "ach_account_holder_address",
+                "business_address",
+                "business_address_contract",
+            ) || sctx.recipientAddress,
+        bankName:
+            get(
+                "ach_authorization_account_holder_bank_name",
+                "ach_bank_name",
+                "authorization_client_bank_name",
+            ) ||
+            str(c.authorizationClientBankName) ||
+            str(c.achAuthorizationAccountHolderBankName) ||
+            str(c.bankName) ||
+            str(paymentBank?.bankName),
+        bankAccount:
+            get(
+                "ach_authorization_account_holder_bank_account_number",
+                "ach_bank_account",
+                "authorization_client_bank_account",
+            ) ||
+            str(c.authorizationClientBankAccount) ||
+            str(c.achAuthorizationAccountHolderBankAccountNumber) ||
+            str(c.accountNumber) ||
+            str(paymentBank?.accountNumber),
+        bankRouting:
+            get(
+                "ach_authorization_account_holder_bank_routing_number",
+                "ach_bank_routing",
+                "authorization_client_bank_routing",
+            ) ||
+            str(c.authorizationClientBankRouting) ||
+            str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
+            str(c.routingNumber) ||
+            str(paymentBank?.routingNumber),
+        bankPortal: get("ach_authorization_bank_portal_website", "ach_bank_portal"),
+        bankUsername: get("ach_authorization_username", "ach_username"),
+        bankPassword: get("ach_authorization_password", "ach_password"),
+        securityQa1: qa(
+            "ach_authorization_security_question1",
+            "ach_authorization_security_answer1",
+        ),
+        securityQa2: qa(
+            "ach_authorization_security_question2",
+            "ach_authorization_security_answer2",
+        ),
+    });
+}
+
 function buildAddendumExhibitCComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
@@ -2334,20 +2435,10 @@ function addendumComputed(
             return buildAddendumVaComputed(contract, sctx);
         case "ach_weekly":
             return buildAddendumAchWeeklyComputed(contract, sctx, application);
-        case "ach_daily": {
-            // Extra Exhibit C PDF — use Exhibit C widgets with live deal data.
-            const rows = buildAddendumExhibitCComputed(
-                contract,
-                sctx,
-                application,
-                contractRecords,
-                0,
-            );
-            return rows.map((row) => ({
-                ...row,
-                group: row.group ? `ACH Daily — ${row.group}` : "ACH Daily",
-            }));
-        }
+        case "ach_daily":
+            // Own data, like ACH Weekly. Shares only the Exhibit C widget NAMES,
+            // which is a property of the PDF, not a shared field configuration.
+            return buildAddendumAchDailyComputed(contract, sctx, application);
         case "exhibit_c":
             return buildAddendumExhibitCComputed(
                 contract,
@@ -2948,6 +3039,25 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     ]);
     const byId = new Map(args.prefillFieldsPayload.map((f) => [f.id, { ...f }]));
 
+    // Exhibit C and ACH Daily/Weekly are different documents that ride on the
+    // same SignNow widget names (ach_bank_name, ach_account_holder_*, ...). The
+    // flat payload is keyed by those shared ids, so merging Exhibit C's saved
+    // values here also rewrote the ACH Daily document — Exhibit C data showing up
+    // on the daily form. When both are in one package, leave the shared keys to
+    // the ACH row and let SignNow fill every Exhibit C copy from exhibitCEntities
+    // (which already carries copy #1), keeping each document on its own record.
+    const packageHasAchFrequencyDoc = args.templateMappingRows.some((row) => {
+        if (!mappingRowIsInSendPackage(row, mergedSet)) return false;
+        const kind = resolveAddendumKind(
+            String(row.template?.id ?? "").trim() ||
+                String(row.template?.templateId ?? "").trim() ||
+                null,
+            normalizeKey(row.template?.name ?? ""),
+            String(row.template?.layoutKey ?? "").trim() || null,
+        );
+        return kind === "ach_daily" || kind === "ach_weekly";
+    });
+
     let exhibitCEntityIndex = 0;
     for (const row of args.templateMappingRows) {
         const layoutKey = String(row.template?.layoutKey ?? "").trim();
@@ -2963,7 +3073,10 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             addendumKindForIndex === "exhibit_c" ? exhibitCEntityIndex++ : 0;
         // Extra Exhibit C copies share field ids with copy #1. Keep #1 in the
         // flat payload; SignNow fills (2)/(3) from exhibitCEntities by index.
-        if (addendumKindForIndex === "exhibit_c" && thisExhibitIndex > 0) {
+        if (
+            addendumKindForIndex === "exhibit_c" &&
+            (thisExhibitIndex > 0 || packageHasAchFrequencyDoc)
+        ) {
             continue;
         }
         const perMap =
@@ -3264,7 +3377,16 @@ export function mergeSignNowSupplementalPrefillFallback(args: {
 
     const blob = parseDocumentTemplatePrefillByMappingId(args.contractPrefillOverridesRaw);
     const byId = new Map(args.payload.map((f) => [f.id, { ...f }]));
+    const refKind = (ref: string) => resolveAddendumKind(ref, normalizeKey(ref), ref);
+    // Same shared-widget guard as applyDocumentTemplateMappingPrefillOverrides:
+    // when ACH Daily/Weekly is in the package, Exhibit C must not write the shared
+    // ach_* keys of the flat payload. SignNow fills Exhibit C from exhibitCEntities.
+    const packageHasAchFrequencyDoc = refs.some((ref) => {
+        const kind = refKind(ref);
+        return kind === "ach_daily" || kind === "ach_weekly";
+    });
     for (const ref of refs) {
+        if (packageHasAchFrequencyDoc && refKind(ref) === "exhibit_c") continue;
         const saved = savedOverridesForSupplementalRef({
             ref,
             blob,

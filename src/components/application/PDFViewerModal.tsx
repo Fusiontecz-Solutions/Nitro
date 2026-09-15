@@ -5632,7 +5632,12 @@ const PDFViewerModal = ({
                     };
                     const prepared = await onPrepareDocuSignDraft({
                         ccEmails: toSend,
-                        addendumDocumentRef: addendumTemplateId,
+                        // Only the legacy fallback: `addendumTemplateId` is
+                        // `addendumTemplateIds[0]`, so sending both duplicated the
+                        // first addendum (visible as "Exhibit C (2)" in SignNow).
+                        ...(addendumTemplateIds.length
+                            ? {}
+                            : { addendumDocumentRef: addendumTemplateId }),
                         addendumDocumentRefs: [
                             ...addendumTemplateIds,
                             ...extraFunderDisclosureRefs,

@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node server.mjs",
-    "test:disclosure": "tsx src/components/application/contractdata/disclosureGuide.acceptance.test.ts"
+    "test:disclosure": "npx --yes tsx src/components/application/contractdata/disclosureGuide.acceptance.test.ts",
+    "test:ach-daily": "npx --yes tsx src/components/application/contractdata/achDailyPrefill.acceptance.test.ts",
+    "test": "npm run test:ach-daily && npm run test:disclosure"
   },
   "overrides": {
     "vite": "npm:rolldown-vite@7.3.1"

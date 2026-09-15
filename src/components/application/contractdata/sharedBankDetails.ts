@@ -141,19 +141,29 @@ export function sharedBankSlotValue(bank: SharedBankDetails, slot: SharedBankSlo
 export function applySharedBankDetailsToTabValues(
     values: Record<string, string>,
     bank: SharedBankDetails,
+    options?: { emptyOnly?: boolean },
 ): Record<string, string> {
     if (!hasSharedBankDetails(bank)) return { ...values };
     const out = { ...values };
     for (const id of Object.keys(out)) {
         const slot = classifyBankFieldId(id);
         if (!slot) continue;
+        if (options?.emptyOnly && str(out[id])) continue;
         const next = sharedBankSlotValue(bank, slot);
         if (next) out[id] = next;
     }
     return out;
 }
 
-/** Same as tab values, for every saved mapping blob so other documents pick up the bank. */
+/**
+ * Same as tab values, for every saved mapping blob so other documents pick up the
+ * deal's bank.
+ *
+ * Fills empty slots only (like applySharedDbaToMappingBlob). Overwriting was
+ * cross-document contamination: a bank account deliberately entered on one
+ * document — Exhibit C's per-entity account is the whole point of Exhibit C — was
+ * replaced by whatever the document being saved happened to carry.
+ */
 export function applySharedBankDetailsToMappingBlob(
     blob: Record<string, Record<string, string>>,
     bank: SharedBankDetails,
@@ -162,7 +172,9 @@ export function applySharedBankDetailsToMappingBlob(
     const out: Record<string, Record<string, string>> = {};
     for (const [mappingId, row] of Object.entries(blob)) {
         out[mappingId] =
-            row && typeof row === "object" ? applySharedBankDetailsToTabValues(row, bank) : {};
+            row && typeof row === "object"
+                ? applySharedBankDetailsToTabValues(row, bank, { emptyOnly: true })
+                : {};
     }
     return out;
 }
