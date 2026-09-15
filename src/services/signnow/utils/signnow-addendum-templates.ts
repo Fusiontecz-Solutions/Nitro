@@ -17,7 +17,130 @@ export type SignNowAddendumTemplate = {
   type: string;
   frequency?: string;
   templateId: string;
+  /** 1-based when the same layout is attached more than once (Exhibit C × N). */
+  instanceIndex?: number;
 };
+
+export const MULTI_INSTANCE_ADDENDUM_LAYOUT_KEYS = new Set([SIGNNOW_EXHIBIT_C_LAYOUT_KEY]);
+
+export function isMultiInstanceAddendumLayoutKey(value: unknown): boolean {
+  const key = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!key) return false;
+  // ACH Daily/Weekly are never multi-instance Exhibit C copies.
+  if (
+    key === SIGNNOW_ACH_DAILY_LAYOUT_KEY ||
+    key.endsWith('_ach_daily') ||
+    key === signNowAchDailyTemplateId().toLowerCase()
+  ) {
+    return false;
+  }
+  if (
+    key === SIGNNOW_ACH_WEEKLY_LAYOUT_KEY ||
+    key.endsWith('_ach_weekly') ||
+    key === signNowAchWeeklyTemplateId().toLowerCase()
+  ) {
+    return false;
+  }
+  if (MULTI_INSTANCE_ADDENDUM_LAYOUT_KEYS.has(key)) return true;
+  // Canonical SignNow Exhibit C template id (env may remap at resolve time).
+  if (key === '00fcf8fd543d4c4a8323633190a9066959f081a8') return true;
+  return key.endsWith('_exhibit_c') || key.includes('exhibit_c');
+}
+
+/** True for ACH Daily (layout key, catalog hex, or Settings name). */
+export function isAchDailyAddendumRow(row: {
+  layoutKey?: string | null;
+  name?: string | null;
+  templateId?: string | null;
+}): boolean {
+  const key = String(row.layoutKey || '')
+    .trim()
+    .toLowerCase();
+  const tid = String(row.templateId || '')
+    .trim()
+    .toLowerCase();
+  const dailyId = signNowAchDailyTemplateId().toLowerCase();
+  if (key === SIGNNOW_ACH_DAILY_LAYOUT_KEY || key.endsWith('_ach_daily')) return true;
+  if (tid === dailyId || key === dailyId) return true;
+  const name = String(row.name || '');
+  if (/\bach\b/i.test(name) && /daily/i.test(name) && !/weekly/i.test(name)) {
+    return true;
+  }
+  return knownLayoutKeyFromSettingsName(name, 'addendum') === SIGNNOW_ACH_DAILY_LAYOUT_KEY;
+}
+
+export function isExhibitCAddendumRow(row: {
+  layoutKey?: string | null;
+  name?: string | null;
+  templateId?: string | null;
+}): boolean {
+  // ACH Daily PDF may be titled "Extra Exhibit C …" — never number it as Exhibit C (N).
+  if (isAchDailyAddendumRow(row)) return false;
+  if (isMultiInstanceAddendumLayoutKey(row.layoutKey)) return true;
+  const name = String(row.name || '');
+  if (/\bexhibit\s*c\b/i.test(name)) return true;
+  return knownLayoutKeyFromSettingsName(name, 'addendum') === SIGNNOW_EXHIBIT_C_LAYOUT_KEY;
+}
+
+export function expandAddendumRefsAllowingDuplicates(refs: unknown): string[] {
+  const list = Array.isArray(refs) ? refs : [];
+  const out: string[] = [];
+  const seenNonMulti = new Set<string>();
+  for (const raw of list) {
+    const ref = String(raw || '').trim();
+    if (!ref) continue;
+    const match = resolveSignNowAddendumTemplate(ref);
+    const layout = String(match?.layoutKey || '')
+      .trim()
+      .toLowerCase();
+    // Only Exhibit C may repeat. Keep the original funder/template ref (hex id).
+    if (
+      isMultiInstanceAddendumLayoutKey(layout) ||
+      isMultiInstanceAddendumLayoutKey(ref)
+    ) {
+      out.push(ref);
+      continue;
+    }
+    const dedupeKey = (layout || ref).toLowerCase();
+    if (seenNonMulti.has(dedupeKey)) continue;
+    seenNonMulti.add(dedupeKey);
+    out.push(ref);
+  }
+  return out;
+}
+
+function withAddendumInstance(
+  row: SignNowAddendumTemplate,
+  zeroBasedIndex: number,
+): SignNowAddendumTemplate {
+  const n = zeroBasedIndex + 1;
+  const baseName = String(row.name || 'Addendum')
+    .replace(/\s*\(\d+\)\s*$/, '')
+    .trim();
+  return {
+    ...row,
+    instanceIndex: n,
+    name: n <= 1 ? baseName : `${baseName} (${n})`,
+  };
+}
+
+export function exhibitCInstanceIndexFromDocumentName(documentName: unknown): number | null {
+  const n = String(documentName ?? '').trim().toLowerCase();
+  if (!n) return null;
+  // ACH Daily must not consume Exhibit C entity slots.
+  if (/\bach\b/.test(n) && /daily/.test(n) && !/weekly/.test(n)) return null;
+  if (!(n.includes('exhibit') && n.includes('c')) && !n.includes('exhibit_c')) {
+    return null;
+  }
+  const m = n.match(/\((\d+)\)\s*$/);
+  if (m) {
+    const idx = Number(m[1]) - 1;
+    return Number.isFinite(idx) && idx >= 0 ? idx : 0;
+  }
+  return 0;
+}
 
 export function signNowAchDailyTemplateId(): string {
   return String(
@@ -363,7 +486,7 @@ export function resolveSignNowAddendaFromFunderLinks(
   pushRows(funder.signnowDisclosureTemplates, 'disclosure');
   if (!catalog.length) return [];
 
-  const seen = new Set<string>();
+  const instanceCounts = new Map<string, number>();
   const out: SignNowAddendumTemplate[] = [];
   for (const raw of list) {
     const token = String(raw || '').trim().toLowerCase();
@@ -378,9 +501,26 @@ export function resolveSignNowAddendaFromFunderLinks(
           row.name.toLowerCase() === token ||
           slugifyTemplateName(row.name) === token,
       ) || null;
-    if (!match || seen.has(match.templateId)) continue;
-    seen.add(match.templateId);
-    out.push(match);
+    if (!match) continue;
+    const multi = isExhibitCAddendumRow(match);
+    if (multi) {
+      const count = instanceCounts.get(match.templateId) || 0;
+      instanceCounts.set(match.templateId, count + 1);
+      out.push(withAddendumInstance(match, count));
+      continue;
+    }
+    if (instanceCounts.has(match.templateId)) continue;
+    instanceCounts.set(match.templateId, 1);
+    // Always ship as "ACH Daily" so SignNow never shows Exhibit C (3).
+    out.push(
+      isAchDailyAddendumRow(match)
+        ? {
+            ...match,
+            layoutKey: SIGNNOW_ACH_DAILY_LAYOUT_KEY,
+            name: 'ACH Daily',
+          }
+        : match,
+    );
   }
   return out;
 }
@@ -406,25 +546,30 @@ export function resolveSignNowAddendaFromRefs(
     signnowDisclosureTemplates?: unknown;
   } | null,
 ): SignNowAddendumTemplate[] {
-  const list = Array.isArray(refs) ? refs : [];
-  const fromFunder = resolveSignNowAddendaFromFunderLinks(refs, funder);
-  const seen = new Set<string>();
-  const out: SignNowAddendumTemplate[] = [];
-  const remember = (row: SignNowAddendumTemplate) => {
+  const list = expandAddendumRefsAllowingDuplicates(refs);
+  if (!list.length) return [];
+
+  const fromFunder = resolveSignNowAddendaFromFunderLinks(list, funder);
+  if (fromFunder.length === list.length) return fromFunder;
+
+  const instanceCounts = new Map<string, number>();
+  const seenNonMulti = new Set<string>();
+  for (const row of fromFunder) {
     const id = String(row.templateId || row.layoutKey)
       .trim()
       .toLowerCase();
-    const key = String(row.layoutKey || '')
-      .trim()
-      .toLowerCase();
-    if (id) seen.add(id);
-    if (key) seen.add(key);
-    out.push(row);
-  };
-  for (const row of fromFunder) remember(row);
+    if (isExhibitCAddendumRow(row)) {
+      instanceCounts.set(id, (instanceCounts.get(id) || 0) + 1);
+    } else if (id) {
+      seenNonMulti.add(id);
+      const key = String(row.layoutKey || '')
+        .trim()
+        .toLowerCase();
+      if (key) seenNonMulti.add(key);
+    }
+  }
 
-  // Funder Settings may match Monthly Fee (etc.) while the platform disclosure
-  // ref is only in the catalog — keep both instead of dropping unmatched refs.
+  const out = [...fromFunder];
   for (const raw of list) {
     const match = resolveSignNowAddendumTemplate(String(raw || ''));
     if (!match) continue;
@@ -434,8 +579,32 @@ export function resolveSignNowAddendaFromRefs(
     const key = String(match.layoutKey || '')
       .trim()
       .toLowerCase();
-    if ((id && seen.has(id)) || (key && seen.has(key))) continue;
-    remember(match);
+    if (isExhibitCAddendumRow(match)) {
+      const wanted = list.filter((ref) => {
+        const m = resolveSignNowAddendumTemplate(String(ref || ''));
+        return Boolean(
+          m &&
+            (m.templateId === match.templateId || m.layoutKey === match.layoutKey),
+        );
+      }).length;
+      const have = instanceCounts.get(id) || 0;
+      if (have >= wanted) continue;
+      instanceCounts.set(id, have + 1);
+      out.push(withAddendumInstance(match, have));
+      continue;
+    }
+    if ((id && seenNonMulti.has(id)) || (key && seenNonMulti.has(key))) continue;
+    if (id) seenNonMulti.add(id);
+    if (key) seenNonMulti.add(key);
+    out.push(
+      isAchDailyAddendumRow(match)
+        ? {
+            ...match,
+            layoutKey: SIGNNOW_ACH_DAILY_LAYOUT_KEY,
+            name: 'ACH Daily',
+          }
+        : match,
+    );
   }
   return out;
 }

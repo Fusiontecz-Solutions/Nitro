@@ -598,6 +598,9 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
     }
 
     if (shouldUseSignNowForMainContract(req.body)) {
+      const timingRequestId = String(
+        req.header('x-signnow-timing-id') || req.body?.timingRequestId || '',
+      ).trim();
       const result = await signNowService.createContractFromGroupTemplate(userId, {
         roles,
         prefillFields,
@@ -632,6 +635,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
           typeof funderProfileId === 'string' && funderProfileId.trim()
             ? funderProfileId.trim()
             : undefined,
+        timingRequestId: timingRequestId || undefined,
       });
       return res.json(result);
     }

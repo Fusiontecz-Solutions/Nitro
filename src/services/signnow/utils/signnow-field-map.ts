@@ -3,7 +3,7 @@
  */
 
 const STRIP_PAGE_OWNER1 =
-  /_p\d+(?:_s1|_g1|_ach|_rpa|_exc|_exhibit|_disc|_disclosure|_ds)?$/i;
+  /_p\d+(?:_s1|_g1|_achd|_ach|_rpa|_exc|_exhibit|_disc|_disclosure|_ds)?$/i;
 
 const OWNER2_NAME_KEYS = [
   'owner2_guarantor_name',
@@ -25,7 +25,12 @@ const ALIASES: Record<string, string[]> = {
   doing_business_as: ['security_doing_business_as', 'ach_authorization_account_holder_dba', 'dba'],
   client_legal_name: ['legal_name', 'business_legal_name'],
   entity_type: ['type_of_entity', 'form_of_business_entity'],
-  security_tax_ein: ['ein', 'tax_id', 'federal_ein', 'federal_tax_id'],
+  security_tax_ein: ['ein', 'tax_id', 'federal_ein', 'federal_tax_id', 'federal_tax_id_ein', 'authorization_client_tax_id'],
+  federal_tax_id_ein: ['security_tax_ein', 'ein', 'tax_id', 'federal_ein', 'federal_tax_id', 'authorization_client_tax_id'],
+  federal_tax_id_ein_s2: ['federal_tax_id_ein', 'security_tax_ein', 'ein', 'tax_id', 'authorization_client_tax_id'],
+  security_tax_ein_s2: ['security_tax_ein', 'federal_tax_id_ein', 'ein', 'tax_id', 'authorization_client_tax_id'],
+  authorization_client_tax_id: ['security_tax_ein', 'federal_tax_id_ein', 'ein', 'tax_id'],
+  authorization_client_tax_id_s2: ['authorization_client_tax_id', 'security_tax_ein', 'federal_tax_id_ein', 'ein'],
   owner_print_title: ['owner_print_title', 'owner_title', 'guarantor_print_title'],
   owner2_guarantor_name: OWNER2_NAME_KEYS,
   owner2_print_title: ['owner2_print_title'],
@@ -282,6 +287,10 @@ const ALIASES: Record<string, string[]> = {
   weekly_payment: ['remittance'],
   ach_amount: ['remittance'],
   print_name: ['client_name', 'owner1_guarantor_name', 'merchant_contact_name'],
+  printed_name: ['print_name', 'client_name', 'owner1_guarantor_name', 'merchant_contact_name'],
+  printed_names: ['print_name', 'client_name', 'owner1_guarantor_name', 'merchant_contact_name'],
+  print_names: ['print_name', 'client_name', 'owner1_guarantor_name', 'merchant_contact_name'],
+  date: ['agreement_date', 'signature_date', 'disclosure_date', 'remittance_start_date'],
   print_title: ['owner_print_title'],
   // State disclosure — SignNow unique names map back to calculator / PDF ids.
   disclosure_amount_financed: [
@@ -532,6 +541,8 @@ export function isExhibitCDocumentName(value: unknown): boolean {
     .trim()
     .toLowerCase();
   if (!n || isMonthlyFeeDocumentName(n)) return false;
+  // ACH Daily may be titled "Extra Exhibit C …" — treat as ACH Daily, not Exhibit C ×N.
+  if (/\bach\b/.test(n) && /daily/.test(n) && !/weekly/.test(n)) return false;
   return /exhibit[\s_-]*c\b/.test(n) || n.includes('exhibitc');
 }
 
@@ -700,7 +711,7 @@ export function isMerchantRequiredExhibitCField(
   if (isDedicatedExhibitCRequiredField(raw)) return true;
   const n = raw.toLowerCase();
   if (/_p20\b/i.test(n) || pageNumber === 19 || pageNumber === 20) return false;
-  if (/_p1_ach\b|_p\d+_ach\b/i.test(n)) return false;
+  if (/_p1_achd\b|_p\d+_achd\b|_p1_ach\b|_p\d+_ach\b/i.test(n)) return false;
   const canon = canonicalizeSignNowFieldName(raw);
   if (!MERCHANT_REQUIRED_EXHIBIT_C.has(canon)) return false;
   const namedP1 = /_p1(?:_|$)/i.test(n);
@@ -710,7 +721,118 @@ export function isMerchantRequiredExhibitCField(
   return namedP1 || onExhibitCPage || onFirstPages;
 }
 
-/** Page-20 ACH or Exhibit C orange fields the merchant signer must complete. */
+/**
+ * Contract page 22 reference / landlord / emergency slots the merchant must complete.
+ * Unique names match the SignNow template; `Text Field 22` is the biz-ref-1 contact.
+ */
+export const CONTRACT_P22_REQUIRED_UNIQUE_NAMES = [
+  'ref_personal1_name_p22',
+  'ref_personal1_phone_p22',
+  'ref_personal2_name_p22',
+  'ref_personal2_phone_p22',
+  'ref_biz1_company_p22',
+  'ref_biz1_phone_p22',
+  'ref_biz2_company_p22',
+  'ref_biz2_contact_p22',
+  'ref_biz2_phone_p22',
+  'landlord_company_p22',
+  'landlord_contact_p22',
+  'landlord_phone_p22',
+  'emergency_name_p22',
+  'emergency_relationship_p22',
+  'emergency_phone_p22',
+  'emergency_email_p22',
+] as const;
+
+const MERCHANT_REQUIRED_P22_REFERENCES = new Set([
+  'ref_personal1_name',
+  'ref_personal1_phone',
+  'ref_personal2_name',
+  'ref_personal2_phone',
+  'ref_biz1_company',
+  'ref_biz1_contact',
+  'ref_biz1_phone',
+  'ref_biz2_company',
+  'ref_biz2_contact',
+  'ref_biz2_phone',
+  'landlord_company',
+  'landlord_contact',
+  'landlord_phone',
+  'emergency_name',
+  'emergency_relationship',
+  'emergency_phone',
+  'emergency_email',
+]);
+
+export function isDedicatedContractP22RequiredField(fieldName: string): boolean {
+  const n = String(fieldName || '').trim().toLowerCase();
+  return (CONTRACT_P22_REQUIRED_UNIQUE_NAMES as readonly string[]).includes(n);
+}
+
+function isContractPage22TextField22(
+  fieldName: string,
+  pageNumber?: number,
+  options?: SignNowPrefillOptions,
+): boolean {
+  if (
+    options?.documentKind === 'monthly_fee' ||
+    options?.documentKind === 'obsidian_agreement' ||
+    options?.documentKind === 'exhibit_c'
+  ) {
+    return false;
+  }
+  const n = String(fieldName || '').trim().toLowerCase();
+  if (n !== 'text field 22' && n !== 'text_field_22') return false;
+  return pageNumber === 21 || pageNumber === 22;
+}
+
+/**
+ * Agreement page 22 personal/business references, landlord, and emergency contact.
+ * SignNow page_number is 0-based, so the viewer "page 22" is often 21.
+ * `Text Field 22` is scoped to page 22 so Obsidian's dollar-sign widget stays untouched.
+ */
+export function isMerchantRequiredPage22ReferenceField(
+  fieldName: string,
+  pageNumber?: number,
+  options?: SignNowPrefillOptions,
+): boolean {
+  const raw = String(fieldName || '').trim();
+  if (!raw) return false;
+  if (
+    options?.documentKind === 'monthly_fee' ||
+    options?.documentKind === 'obsidian_agreement' ||
+    options?.documentKind === 'exhibit_c'
+  ) {
+    return false;
+  }
+  if (isDedicatedContractP22RequiredField(raw)) return true;
+  if (isContractPage22TextField22(raw, pageNumber, options)) return true;
+  const n = raw.toLowerCase();
+  const canon = canonicalizeSignNowFieldName(raw);
+  const namedP22 = /_p22\b/i.test(n);
+  const onPage22 = pageNumber === 21 || pageNumber === 22;
+  if (MERCHANT_REQUIRED_P22_REFERENCES.has(canon)) {
+    return namedP22 || onPage22;
+  }
+  return false;
+}
+
+/**
+ * Page-20 ACH / Exhibit C orange widgets use the 16pt addendum face.
+ * Page-22 contract references keep the existing contract field size.
+ */
+export function usesAddendumFillableFont(
+  fieldName: string,
+  pageNumber?: number,
+  options?: SignNowPrefillOptions,
+): boolean {
+  if (isMerchantRequiredPage22ReferenceField(fieldName, pageNumber, options)) {
+    return false;
+  }
+  return isMerchantRequiredSignerField(fieldName, pageNumber, options);
+}
+
+/** Page-20 ACH, Exhibit C orange, or contract page-22 reference fields. */
 export function isMerchantRequiredSignerField(
   fieldName: string,
   pageNumber?: number,
@@ -718,7 +840,8 @@ export function isMerchantRequiredSignerField(
 ): boolean {
   return (
     isMerchantRequiredPage20AchField(fieldName, pageNumber) ||
-    isMerchantRequiredExhibitCField(fieldName, pageNumber, options)
+    isMerchantRequiredExhibitCField(fieldName, pageNumber, options) ||
+    isMerchantRequiredPage22ReferenceField(fieldName, pageNumber, options)
   );
 }
 
@@ -746,10 +869,9 @@ export function shouldSkipSignNowPrefill(
     const aliasKey = n.toLowerCase().replace(/\s+/g, ' ').trim();
     return !ALIASES[aliasKey];
   }
+  if (/^date(?:\s+\d+)?$/i.test(n)) return false;
   const lower = n.toLowerCase();
   const canon = canonicalizeSignNowFieldName(n);
-  // Exhibit C orange slots stay empty so the merchant can fill them.
-  if (isMerchantRequiredExhibitCField(n, undefined, options)) return true;
   // Notification of Assignment merchant list stays blank — no business names.
   if (
     /^assignment_merchant_line\d+$/.test(canon) ||
@@ -761,6 +883,85 @@ export function shouldSkipSignNowPrefill(
   if (lower.startsWith('signature_') && !lower.includes('date')) return true;
   if (lower.startsWith('initial_') && !lower.includes('date')) return true;
   return false;
+}
+
+/** Page-3 Date widget (`remittance_start_date_p3`) and Monthly Fee / ACH start dates. */
+export function isRemittanceStartDateField(fieldName: string): boolean {
+  const canon = canonicalizeSignNowFieldName(fieldName);
+  if (canon === 'remittance_start_date') return true;
+  return isSendDayDateField(canon, fieldName);
+}
+
+function isUsDatePrefillValue(value: string): boolean {
+  return /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(String(value || '').trim());
+}
+
+function isMoneyPrefillValue(value: string): boolean {
+  const t = String(value || '').trim();
+  if (!t || isUsDatePrefillValue(t)) return false;
+  return /^\$?-?\d[\d,]*\.\d{2}$/.test(t);
+}
+
+function isSendDayDateField(canon: string, raw: string): boolean {
+  const n = String(canon || raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (!n || n.includes('previous')) return false;
+  if (n === 'date' || /^date_\d+$/.test(n)) return true;
+  return (
+    n === 'agreement_date' ||
+    n === 'signature_date' ||
+    n === 'signature_date2' ||
+    n === 'signature1_date' ||
+    n === 'signature2_date' ||
+    n === 'disclosure_date' ||
+    n === 'disclosure_date2' ||
+    n === 'remittance_start_date' ||
+    /(?:^|_)(agreement_date|signature_date|disclosure_date|signature1_date|signature2_date)(?:_|$)/.test(
+      n,
+    ) ||
+    /_dated(?:_|$)/.test(n)
+  );
+}
+
+function isNameLikeField(canon: string, raw: string): boolean {
+  const n = `${canon} ${raw}`.toLowerCase();
+  return /print(?:ed)?[_ ]?names?|client_name|billing_name|account_holder_name|guarantor_name|merchant_contact_name|recipient_name/.test(
+    n,
+  );
+}
+
+function isBusinessEinField(canon: string, raw: string): boolean {
+  const n = `${canon} ${raw}`.toLowerCase();
+  if (/ssn|social/.test(n)) return false;
+  return /(?:ein|tax_id|federal_tax|authorization_client_tax)/.test(n);
+}
+
+/** US calendar day in Eastern Time — remittance start / agreement date fallback. */
+export function currentSignNowUsDate(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).formatToParts(now);
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? '';
+  return `${get('month')}/${get('day')}/${get('year')}`;
+}
+
+/**
+ * SignNow Date widgets store the day they were placed (e.g. 08/19/2026).
+ * Prefer CRM agreement/signature date, then today — never the template default.
+ */
+function resolveRemittanceStartDate(map: Map<string, string>): string {
+  return (
+    mapGet(map, 'agreement_date') ||
+    mapGet(map, 'signature_date') ||
+    mapGet(map, 'disclosure_date') ||
+    currentSignNowUsDate()
+  );
 }
 
 export function canonicalizeSignNowFieldName(fieldName: string): string {
@@ -1106,6 +1307,23 @@ function isSignNowOwner1FallbackParty2Field(fieldName: string): boolean {
   return /client_email|client_phone|client_name|signature_date/.test(n);
 }
 
+/** Owner 1 CRM keys that must not fill a distinct Owner 2 / `_s2` slot. */
+function isOwner1ContactAlias(key: string): boolean {
+  const k = String(key || '').toLowerCase();
+  if (!k) return false;
+  if (/owner2|guarantor2|merchant2|phone2|email2|_s2$|_g2$/.test(k)) return false;
+  return (
+    k === 'client_phone' ||
+    k === 'guarantor_phone' ||
+    k === 'client_email' ||
+    k === 'guarantor_email' ||
+    k === 'client_name' ||
+    k === 'guarantor_name' ||
+    k.startsWith('merchant_contact_') ||
+    k.startsWith('owner1_')
+  );
+}
+
 export function resolveSignNowPrefillValue(
   fieldName: string,
   prefill: Record<string, string>,
@@ -1114,17 +1332,17 @@ export function resolveSignNowPrefillValue(
   if (shouldSkipSignNowPrefill(fieldName, options)) return '';
   /** Main contract page 14 ACH Program Fee blank — always 0.00, not the monthly addendum fee. */
   if (/ach_program_fee_p13/i.test(String(fieldName || ''))) return '0.00';
-  if (
-    isSignNowParty2Field(fieldName) &&
-    !hasDistinctParty2Prefill(prefill) &&
-    !isSignNowOwner1FallbackParty2Field(fieldName)
-  ) {
-    return '';
-  }
-  const map = lookupMap(prefill);
   const raw = String(fieldName || '').trim();
   const lower = raw.toLowerCase();
   const canon = canonicalizeSignNowFieldName(raw);
+  const party2Field = isSignNowParty2Field(fieldName);
+  const distinctParty2 = hasDistinctParty2Prefill(prefill);
+  const allowOwner1Party2Fallback = isSignNowOwner1FallbackParty2Field(fieldName);
+  const einField = isBusinessEinField(canon, raw);
+  if (party2Field && !distinctParty2 && !allowOwner1Party2Fallback && !einField) {
+    return '';
+  }
+  const map = lookupMap(prefill);
 
   if (options?.documentKind === 'monthly_fee') {
     const numbered = raw.match(/^text field\s*(\d+)$/i);
@@ -1156,6 +1374,10 @@ export function resolveSignNowPrefillValue(
         mapGet(map, 'ach_authorization_reference_number_1');
       if (personal1) return personal1;
     }
+  }
+
+  if (isRemittanceStartDateField(raw)) {
+    return resolveRemittanceStartDate(map);
   }
 
   const securityMatch = canon.match(/^ach_security_q([123])$/);
@@ -1190,28 +1412,57 @@ export function resolveSignNowPrefillValue(
     if (freq) return freq;
   }
 
+  const einCanon = einField ? canon.replace(/_s2$/i, '').replace(/_g2$/i, '') : canon;
+  const aliases = ALIASES[canon] || ALIASES[einCanon] || [];
+  const party2Aliases =
+    party2Field && distinctParty2 && !allowOwner1Party2Fallback && !einField
+      ? aliases.filter((key) => !isOwner1ContactAlias(key))
+      : aliases;
   const tryKeys = [
     raw,
     lower,
     canon,
+    ...(einField && einCanon !== canon ? [einCanon] : []),
+    ...(einField
+      ? ['security_tax_ein', 'federal_tax_id_ein', 'ein', 'tax_id', 'authorization_client_tax_id']
+      : []),
     ...((options?.documentKind === 'monthly_fee' ||
       options?.documentKind === 'obsidian_agreement') &&
     /^text field\s*\d+$/i.test(raw)
       ? []
-      : ALIASES[canon] || []),
+      : party2Aliases),
   ];
+  const nameField = isNameLikeField(canon, raw);
+  const dateField = isSendDayDateField(canon, raw);
+  const valueAllowed = (value: string): boolean => {
+    if (!value || isWeakSignNowPrefillHit(canon, value)) return false;
+    if (dateField && isMoneyPrefillValue(value)) return false;
+    if (nameField && (isMoneyPrefillValue(value) || isUsDatePrefillValue(value))) return false;
+    return true;
+  };
   let hit = '';
   for (const key of tryKeys) {
     const value = mapGet(map, key);
-    if (value && !isWeakSignNowPrefillHit(canon, value)) {
+    if (valueAllowed(value)) {
       hit = value;
       break;
     }
   }
+  if (!hit && dateField) {
+    hit = resolveRemittanceStartDate(map);
+  }
+  if (!hit && nameField) {
+    hit =
+      mapGet(map, 'client_name') ||
+      mapGet(map, 'owner1_guarantor_name') ||
+      mapGet(map, 'merchant_contact_name') ||
+      mapGet(map, 'print_name');
+    if (hit && !valueAllowed(hit)) hit = '';
+  }
   if (!hit) {
     const forcedMoney = resolveForcedContractMoneyField(canon, map);
-    if (forcedMoney && !isWeakSignNowPrefillHit(canon, forcedMoney)) hit = forcedMoney;
-    else if (forcedMoney) hit = forcedMoney;
+    if (forcedMoney && valueAllowed(forcedMoney)) hit = forcedMoney;
+    else if (forcedMoney && !dateField && !nameField) hit = forcedMoney;
   }
   if (!hit) {
     if (/^disclosure_page3_3[abc]$/.test(canon)) return '';
@@ -1261,6 +1512,7 @@ const SIGNNOW_PAGE_SUFFIXES = [
   '_p1_disc',
   '_p1_disclosure',
   '_p1_ach',
+  '_p1_achd',
   '_p1_s1',
 ];
 

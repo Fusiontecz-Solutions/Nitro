@@ -14,6 +14,7 @@ import {
     applyPdfExtractToApplicationFromStoredFile,
     type AuthenticatedUser,
 } from '../services/applicationService';
+import { scheduleAttachBufferAsApplicationFile } from '../services/applicationPdfAttachService';
 import { allocateNextDealId, withAllocatedDealId } from '../services/nextDealIdService';
 import { resolveFinalApprovalUnderwriterTarget } from '../services/finalApprovalTargetService';
 import {
@@ -47,6 +48,10 @@ import {
 import { DashboardCacheKind, withDashboardCache } from '../services/dashboardCache';
 import { executePermanentApplicationDelete } from '../services/applicationDeletionService';
 import applicationKycDocumentService from '../services/applicationKycDocumentService';
+import {
+    ownerHintsFromParsedApplication,
+    resolveAutoCreateBatch,
+} from '../services/autoCreateBatchClassifyService';
 import {
     aggregateOperationsDashboardSummary,
     aggregateOperationsPaymentPerformanceTrend,
@@ -6059,19 +6064,27 @@ class ApplicationController {
         }
     }
 
-    // Auto-create Client + Application from uploaded PDF with SSN-based duplicate handling
+    // Auto-create Client + Application from one or many uploaded PDFs.
+    // Accepts multipart `files` (multi-select) or legacy `pdf` + KYC slot fields.
+    // Classifies application / driver licenses / voided check, maps DL → owner 1 or 2.
     async autoCreateFromPDF(req: Request, res: Response) {
         const startedAt = Date.now();
         try {
             const reqFiles = (req as any).files;
-            if (!reqFiles || !reqFiles.pdf) {
+            let batch;
+            try {
+                batch = resolveAutoCreateBatch(reqFiles);
+            } catch (resolveErr: unknown) {
                 return res.status(400).json({
                     success: false,
-                    message: 'No PDF file uploaded. Please upload a PDF file with field name "pdf"',
+                    message:
+                        resolveErr instanceof Error
+                            ? resolveErr.message
+                            : 'No PDF file uploaded. Select one or more PDFs (application, driver license, voided check).',
                 });
             }
 
-            const pdfFile = reqFiles.pdf;
+            const pdfFile = batch.applicationFile as any;
             const tempFilePath = pdfFile.tempFilePath || pdfFile.filepath || pdfFile.path;
 
             if (!tempFilePath || !fs.existsSync(tempFilePath)) {
@@ -6083,6 +6096,17 @@ class ApplicationController {
 
             const pdfBuffer = fs.readFileSync(tempFilePath);
             const pdfOriginalName = String(pdfFile.name || 'application.pdf').trim() || 'application.pdf';
+
+            const kycFileCount =
+                batch.driverLicenseFiles.length + (batch.voidedCheckFile ? 1 : 0);
+            // Start DL/void Document AI immediately so it overlaps application PDF OCR.
+            const kycOcrPromise =
+                kycFileCount > 0
+                    ? applicationKycDocumentService.extractKycFilesOnly({
+                          driverLicenseFiles: batch.driverLicenseFiles,
+                          voidedCheckFile: batch.voidedCheckFile,
+                      })
+                    : null;
 
             let parsedData: any;
             const extractStartedAt = Date.now();
@@ -6100,6 +6124,10 @@ class ApplicationController {
             const extractMs = Date.now() - extractStartedAt;
 
             if (!parsedData || typeof parsedData !== 'object') {
+                // Still settle KYC OCR so Document AI work isn't left dangling.
+                if (kycOcrPromise) {
+                    void kycOcrPromise.catch(() => undefined);
+                }
                 return res.status(400).json({
                     success: false,
                     message: 'Failed to extract structured data from PDF',
@@ -6108,6 +6136,9 @@ class ApplicationController {
 
             const currentUserId = (req as any).user?.id;
             if (!currentUserId) {
+                if (kycOcrPromise) {
+                    void kycOcrPromise.catch(() => undefined);
+                }
                 return res.status(401).json({
                     success: false,
                     message: 'User authentication required',
@@ -6127,6 +6158,9 @@ class ApplicationController {
                     select: { id: true },
                 });
                 if (!isoRecord) {
+                    if (kycOcrPromise) {
+                        void kycOcrPromise.catch(() => undefined);
+                    }
                     return res.status(404).json({
                         success: false,
                         message: 'ISO not found',
@@ -6140,29 +6174,94 @@ class ApplicationController {
                     : 'New';
 
             const persistStartedAt = Date.now();
+            // Defer application PDF Cloudinary attach when KYC files are present so we do not
+            // race free-tier rate limits (which previously dropped all DL/void uploads).
             const result = await createClientAndApplicationFromPDFBuffer(pdfBuffer, currentUserId, {
                 preParsedData: parsedData,
                 originalFileName: pdfOriginalName,
                 isoId: validatedIsoId,
                 applicationType: applicationTypeForCreate,
+                deferPdfAttach: kycFileCount > 0,
             });
             const persistMs = Date.now() - persistStartedAt;
 
+            let kycDocuments: Array<Record<string, unknown>> = [];
+            let kycExtractions: Array<Record<string, unknown>> = [];
+            let kycMs = 0;
+            if (kycFileCount > 0 && result.application?.id) {
+                const kycStartedAt = Date.now();
+                try {
+                    const ownerHints = ownerHintsFromParsedApplication(parsedData);
+                    // Two DLs ⇒ ensure owner-2 slot exists even when application PDF only named owner 1.
+                    if (
+                        batch.driverLicenseFiles.length >= 2 &&
+                        !ownerHints.some((h) => h.ownerIndex === 2)
+                    ) {
+                        ownerHints.push({ ownerIndex: 2, firstName: '', lastName: '' });
+                    }
+                    const preExtractions = kycOcrPromise ? await kycOcrPromise : undefined;
+                    const kycResult =
+                        await applicationKycDocumentService.uploadExtractAssignOwnersAndSync(
+                            result.application.id,
+                            {
+                                driverLicenseFiles: batch.driverLicenseFiles,
+                                voidedCheckFile: batch.voidedCheckFile,
+                                ownerHints,
+                                preExtractions,
+                            },
+                            currentUserId,
+                        );
+                    kycDocuments = kycResult.documents;
+                    kycExtractions = kycResult.kycExtractions;
+                } catch (kycErr: unknown) {
+                    const msg =
+                        kycErr instanceof Error
+                            ? kycErr.message
+                            : 'Identity/bank document extraction failed';
+                    console.error('[autoCreateFromPDF] KYC batch extract failed:', kycErr);
+                    kycExtractions = [{ error: msg }];
+                }
+                kycMs = Date.now() - kycStartedAt;
+
+                // Attach application PDF after KYC uploads finish.
+                scheduleAttachBufferAsApplicationFile(
+                    result.application.id,
+                    pdfBuffer,
+                    pdfOriginalName,
+                );
+            } else if (kycOcrPromise) {
+                void kycOcrPromise.catch(() => undefined);
+            }
+
             const populatedApplication = mapApplicationToApi(result.application);
             const mappedClient = mapClientToApi(result.client);
+            const kycSyncedCount = kycExtractions.filter((row) => row.synced).length;
             console.log(
-                `[autoCreateFromPDF] done in ${Date.now() - startedAt}ms extract=${extractMs}ms persist=${persistMs}ms existingClient=${result.existingClient} applicationId=${result.application?.id}`,
+                `[autoCreateFromPDF] done in ${Date.now() - startedAt}ms extract=${extractMs}ms persist=${persistMs}ms kyc=${kycMs}ms existingClient=${result.existingClient} applicationId=${result.application?.id} kycFiles=${kycFileCount} kycSynced=${kycSyncedCount} classified=${batch.classifications.map((c) => `${c.kind}:${c.reason}`).join(',')}`,
             );
+
+            const baseMessage = result.existingClient
+                ? 'Client already exists. Application has been created for the existing client.'
+                : 'Client created successfully and application generated.';
+            const kycMessage =
+                kycFileCount > 0
+                    ? ` Extracted ${kycSyncedCount}/${kycFileCount} identity/bank document(s).`
+                    : '';
 
             return res.status(200).json({
                 success: true,
-                message: result.existingClient
-                    ? 'Client already exists. Application has been created for the existing client.'
-                    : 'Client created successfully and application generated.',
+                message: `${baseMessage}${kycMessage}`,
                 data: {
                     client: mappedClient,
                     application: populatedApplication,
                     existingClient: result.existingClient,
+                    kycDocuments,
+                    kycExtractions,
+                    classifications: batch.classifications.map((c) => ({
+                        fileName: c.file?.name || '',
+                        kind: c.kind,
+                        reason: c.reason,
+                    })),
                 },
             });
         } catch (error: any) {

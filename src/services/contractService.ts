@@ -17,14 +17,18 @@ import {
 } from '../utils/fieldEncryption';
 import contractKycDocumentExtractService from './contractKycDocumentExtractService';
 import {
+  EXHIBIT_C_ENTITIES_PREFILL_KEY,
   isKycDocumentType,
   mergeContractPrefillPatch,
   normalizeKycDocumentType,
   resolveKycUploadSlot,
+  upsertExhibitCEntitiesJson,
+  voidCheckAccountHolderDiffersFromBusiness,
   type KycDocumentType,
   type KycExtractionMapped,
   type KycOwnerIndex,
 } from './contractKycPrefillMapper';
+import { expandAddendumRefsAllowingDuplicates } from './signnow/utils/signnow-addendum-templates';
 import {
   loadContractReverseDisbursementConfig,
   normalizeReverseDisbursementScheduleData,
@@ -606,13 +610,10 @@ class ContractService {
       throw new Error('Contract not found');
     }
     const documentType = String(data.documentType || '').trim() || 'other';
-    const nextRefs = [
-      ...new Set(
-        (Array.isArray(data.templateRefs) ? data.templateRefs : [])
-          .map((ref) => String(ref || '').trim())
-          .filter(Boolean),
-      ),
-    ];
+    // Preserve duplicate Exhibit C refs; still collapse other templates.
+    const nextRefs = expandAddendumRefsAllowingDuplicates(
+      Array.isArray(data.templateRefs) ? data.templateRefs : [],
+    );
 
     const contract = await (prisma as any).contract.findUnique({
       where: { id: contractId },
@@ -634,19 +635,40 @@ class ContractService {
         templateId: await this.resolveBoldSignTemplateRowId(templateRef),
       })),
     );
-    const wantedIds = resolved.map((row) => row.templateId);
-    const wantedSet = new Set(wantedIds);
 
-    const seenKeep = new Set<string>();
-    const deleteIds: string[] = [];
-    for (const row of existing) {
+    // Match desired slots to existing rows by templateId (allowing N rows per template).
+    const unusedByTid = new Map<string, Array<{ id: string; order: number }>>();
+    for (const row of existing as Array<{ id: string; templateId: string; order: number }>) {
       const tid = String(row.templateId || '');
-      if (!wantedSet.has(tid) || seenKeep.has(tid)) {
-        deleteIds.push(row.id);
-        continue;
-      }
-      seenKeep.add(tid);
+      if (!tid) continue;
+      const list = unusedByTid.get(tid) || [];
+      list.push({ id: row.id, order: Number(row.order || 0) });
+      unusedByTid.set(tid, list);
     }
+
+    const keepIds = new Set<string>();
+    const orderUpdates: Array<{ id: string; order: number }> = [];
+    const createSlots: Array<{ templateId: string; order: number }> = [];
+
+    for (let index = 0; index < resolved.length; index += 1) {
+      const tid = resolved[index].templateId;
+      const pool = unusedByTid.get(tid) || [];
+      const nextOrder = index + 1;
+      const taken = pool.shift();
+      unusedByTid.set(tid, pool);
+      if (taken) {
+        keepIds.add(taken.id);
+        if (taken.order !== nextOrder) {
+          orderUpdates.push({ id: taken.id, order: nextOrder });
+        }
+      } else {
+        createSlots.push({ templateId: tid, order: nextOrder });
+      }
+    }
+
+    const deleteIds = (existing as Array<{ id: string }>)
+      .map((row) => row.id)
+      .filter((id) => !keepIds.has(id));
 
     if (deleteIds.length) {
       await (prisma as any).contractDocumentTemplateMapping.deleteMany({
@@ -654,30 +676,26 @@ class ContractService {
       });
     }
 
-    const remainingTids = new Set(
-      existing
-        .filter((row: { id: string }) => !deleteIds.includes(row.id))
-        .map((row: { templateId: string }) => row.templateId),
-    );
-    const toCreate = resolved.filter((row) => !remainingTids.has(row.templateId));
-    if (toCreate.length) {
-      const maxOrderRow = await (prisma as any).contractDocumentTemplateMapping.findFirst({
-        where: { contractId },
-        orderBy: { order: 'desc' },
-        select: { order: true },
-      });
-      let nextOrder = Number(maxOrderRow?.order || 0);
+    if (createSlots.length) {
       await (prisma as any).contractDocumentTemplateMapping.createMany({
-        data: toCreate.map((row) => {
-          nextOrder += 1;
-          return {
-            contractId,
-            templateId: row.templateId,
-            documentType,
-            order: nextOrder,
-          };
-        }),
+        data: createSlots.map((row) => ({
+          contractId,
+          templateId: row.templateId,
+          documentType,
+          order: row.order,
+        })),
       });
+    }
+
+    if (orderUpdates.length) {
+      await (prisma as any).$transaction(
+        orderUpdates.map((row) =>
+          (prisma as any).contractDocumentTemplateMapping.update({
+            where: { id: row.id },
+            data: { order: row.order },
+          }),
+        ),
+      );
     }
 
     return this.getAllContractDocumentTemplateMappings(contractId);
@@ -693,20 +711,100 @@ class ContractService {
   ): Promise<Record<string, unknown>> {
     const contractRow = await (prisma as any).contract.findUnique({
       where: { id: contractId },
-      select: { id: true, clientId: true, contractPrefillOverrides: true },
+      select: {
+        id: true,
+        clientId: true,
+        legalName: true,
+        contractPrefillOverrides: true,
+        client: { select: { businessName: true } },
+      },
     });
     if (!contractRow) {
       throw new Error('Contract not found');
     }
 
+    const existingOverrides =
+      contractRow.contractPrefillOverrides &&
+      typeof contractRow.contractPrefillOverrides === 'object' &&
+      !Array.isArray(contractRow.contractPrefillOverrides)
+        ? { ...(contractRow.contractPrefillOverrides as Record<string, unknown>) }
+        : {};
+
+    const clientBusinessName =
+      firstNonEmptyString(
+        (contractRow.client as { businessName?: string } | null)?.businessName,
+      ) || '';
+
+    /** Prefer live Client.businessName over stale Contract / override snapshots (e.g. void-check OCR). */
+    const businessLegalName =
+      firstNonEmptyString(
+        clientBusinessName,
+        contractRow.legalName,
+        existingOverrides.legalName,
+      ) || '';
+
+    let prefillPatch: Record<string, string> = { ...mapped.contractPrefill };
+
+    if (mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
+      const ach = mapped.panels.ach;
+      const holderOnCheck = firstNonEmptyString(ach.fullNameOnAccount) || '';
+      if (
+        holderOnCheck &&
+        voidCheckAccountHolderDiffersFromBusiness(holderOnCheck, businessLegalName)
+      ) {
+        // Keep merchant legal name; park the check's entity on Exhibit C.
+        delete prefillPatch.legalName;
+        delete prefillPatch.authorizationClientName;
+        delete prefillPatch.authorizationClientNamePrint;
+        delete prefillPatch.authorizationApplication;
+        delete prefillPatch.securityBusinessName;
+        delete prefillPatch.achAuthorizationConcentAccountHolderName;
+        // Main ACH holder stays the merchant business name (re-applied on prefill build).
+        delete prefillPatch.achAuthorizationAccountHolderName;
+
+        const entities = upsertExhibitCEntitiesJson(
+          existingOverrides[EXHIBIT_C_ENTITIES_PREFILL_KEY],
+          {
+            accountHolderName: holderOnCheck,
+            dba: firstNonEmptyString(ach.dba) || undefined,
+            bankName: firstNonEmptyString(ach.bankName) || undefined,
+            accountNumber: firstNonEmptyString(ach.accountNumber) || undefined,
+            routingNumber: firstNonEmptyString(ach.routingNumber) || undefined,
+            address: firstNonEmptyString(ach.address) || undefined,
+            city: firstNonEmptyString(ach.city) || undefined,
+            state: firstNonEmptyString(ach.state) || undefined,
+            zip: firstNonEmptyString(ach.zip) || undefined,
+          },
+        );
+        if (entities) {
+          prefillPatch[EXHIBIT_C_ENTITIES_PREFILL_KEY] = entities;
+        }
+      }
+
+      // Heal merchant legal name if an older OCR write poisoned Contract.legalName / overrides.
+      if (
+        clientBusinessName &&
+        voidCheckAccountHolderDiffersFromBusiness(
+          firstNonEmptyString(contractRow.legalName, existingOverrides.legalName) || '',
+          clientBusinessName,
+        )
+      ) {
+        prefillPatch.legalName = clientBusinessName;
+        prefillPatch.securityBusinessName = clientBusinessName;
+        prefillPatch.authorizationApplication = clientBusinessName;
+        prefillPatch.authorizationClientName = clientBusinessName;
+        prefillPatch.authorizationClientSignerName = clientBusinessName;
+      }
+    }
+
     const mergedContractPrefillOverrides = mergeContractPrefillPatch(
-      contractRow.contractPrefillOverrides,
-      mapped.contractPrefill,
+      existingOverrides,
+      prefillPatch,
     );
 
     const scalarUpdate: ContractExtraFields = {};
     for (const key of CONTRACT_EXTRA_STRING_FIELDS) {
-      const val = mapped.contractPrefill[key];
+      const val = prefillPatch[key];
       if (firstNonEmptyString(val)) {
         scalarUpdate[key] = String(val).trim();
       }

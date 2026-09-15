@@ -1,4 +1,9 @@
 import axios, { type AxiosInstance } from '../../../types/http';
+import {
+  countSignNowApiCall,
+  getSignNowTiming,
+  logSignNowTiming,
+} from './signnow-timing';
 
 export const SIGNNOW_API_BASE = (
   process.env.SIGNNOW_API_BASE_URL ||
@@ -90,6 +95,7 @@ async function fetchOAuthAccessToken(): Promise<string> {
     password,
     scope: '*',
   });
+  if (getSignNowTiming()) countSignNowApiCall();
   const res = await axios.post(`${SIGNNOW_API_BASE}/oauth2/token`, body.toString(), {
     headers: {
       Authorization: `Basic ${basic}`,
@@ -118,19 +124,30 @@ async function fetchOAuthAccessToken(): Promise<string> {
  * API key is a last-resort fallback only.
  */
 export async function getSignNowAccessToken(): Promise<string> {
-  const username = String(process.env.SIGNNOW_USERNAME || '').trim();
-  const password = String(process.env.SIGNNOW_PASSWORD || '');
-  if (username && password && signNowBasicToken()) {
-    if (!inflightToken) {
-      inflightToken = fetchOAuthAccessToken().finally(() => {
-        inflightToken = null;
-      });
+  const timing = getSignNowTiming();
+  const started = timing ? Date.now() : 0;
+  const cacheHit = Boolean(
+    cachedToken && cachedToken.expiresAt - TOKEN_SKEW_MS > Date.now(),
+  );
+  try {
+    const username = String(process.env.SIGNNOW_USERNAME || '').trim();
+    const password = String(process.env.SIGNNOW_PASSWORD || '');
+    if (username && password && signNowBasicToken()) {
+      if (!inflightToken) {
+        inflightToken = fetchOAuthAccessToken().finally(() => {
+          inflightToken = null;
+        });
+      }
+      return await inflightToken;
     }
-    return inflightToken;
+    const apiKey = signNowApiKey();
+    if (apiKey) return apiKey;
+    throw new Error('SignNow credentials are not configured in .env');
+  } finally {
+    if (timing) {
+      logSignNowTiming('getSignNowAccessToken', Date.now() - started, { cacheHit });
+    }
   }
-  const apiKey = signNowApiKey();
-  if (apiKey) return apiKey;
-  throw new Error('SignNow credentials are not configured in .env');
 }
 
 export function isTransientSignNowFailure(
@@ -164,6 +181,10 @@ export async function createSignNowApiClient(): Promise<AxiosInstance> {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json',
     },
+  });
+  client.interceptors.request.use((config) => {
+    if (getSignNowTiming()) countSignNowApiCall();
+    return config;
   });
   client.interceptors.response.use(
     async (res) => {

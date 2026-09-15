@@ -11,6 +11,7 @@ import {
   splitPrefillPutPayload,
   toSignNowCompletedText,
 } from './signnow-prefill-put';
+import { CONTRACT_P22_REQUIRED_UNIQUE_NAMES } from './signnow-field-map';
 
 describe('signnow-prefill-put', () => {
   it('parses the field name from SignNow prefill validation errors', () => {
@@ -341,6 +342,107 @@ describe('signnow-prefill-put', () => {
     expect(split.fields.every((field) => field.required === true)).toBe(true);
     expect(split.fields.every((field) => field.font === 'Times New Roman')).toBe(true);
     expect(split.fields.every((field) => field.size === FILLABLE_FONT_SIZE)).toBe(true);
+  });
+
+  it('keeps empty page 22 reference fields fillable without enlarging the contract face', () => {
+    const split = splitPrefillPutPayload(
+      [
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'ref_personal1_name_p22',
+          page_number: 21,
+          required: true,
+          size: 8,
+          font_size: 8,
+          height: 12,
+          width: 180,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'Text Field 22',
+          page_number: 21,
+          required: true,
+          size: 8,
+          font_size: 8,
+          height: 12,
+          width: 140,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'emergency_email_p22',
+          page_number: 21,
+          required: true,
+          size: 8,
+          height: 12,
+        },
+        {
+          type: 'text',
+          role: 'Recipient 1',
+          name: 'landlord_company_p22',
+          prefilled_text: 'Main Street LLC',
+          page_number: 21,
+        },
+        {
+          type: 'signature',
+          role: 'Recipient 1',
+          name: 'signature_seller1_p22',
+          page_number: 21,
+        },
+      ],
+      true,
+      { keepEmptyMerchantRequired: true },
+    );
+    expect(split.texts).toEqual([
+      expect.objectContaining({
+        data: 'Main Street LLC',
+        name: 'landlord_company_p22',
+      }),
+    ]);
+    expect(split.fields.map((field) => field.name)).toEqual([
+      'ref_personal1_name_p22',
+      'Text Field 22',
+      'emergency_email_p22',
+      'signature_seller1_p22',
+    ]);
+    expect(split.fields.filter((field) => field.required === true)).toHaveLength(3);
+    const personal = split.fields.find((field) => field.name === 'ref_personal1_name_p22');
+    expect(personal?.size).toBe(8);
+    expect(personal?.font_size).toBe(8);
+    expect(personal?.height).toBe(12);
+    expect(personal?.width).toBe(180);
+    const textField22 = split.fields.find((field) => field.name === 'Text Field 22');
+    expect(textField22?.size).toBe(8);
+    expect(textField22?.height).toBe(12);
+  });
+
+  it('keeps every dedicated page 22 unique name fillable and required for Signer 1', () => {
+    const names = [
+      ...CONTRACT_P22_REQUIRED_UNIQUE_NAMES,
+      'Text Field 22',
+    ];
+    const split = splitPrefillPutPayload(
+      names.map((name) => ({
+        type: 'text',
+        role: 'Recipient 1',
+        name,
+        page_number: 21,
+        required: true,
+        size: 8,
+        height: 14,
+        width: 160,
+      })),
+      true,
+      { keepEmptyMerchantRequired: true },
+    );
+    expect(split.texts).toEqual([]);
+    expect(split.fields.map((field) => field.name)).toEqual(names);
+    expect(split.fields.every((field) => field.required === true)).toBe(true);
+    expect(split.fields.every((field) => field.size === 8)).toBe(true);
+    expect(split.fields.every((field) => field.height === 14)).toBe(true);
+    expect(split.fields.every((field) => field.width === 160)).toBe(true);
   });
 
   it('uses Times New Roman 10pt for contract prefill fonts', () => {

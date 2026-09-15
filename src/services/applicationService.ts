@@ -520,6 +520,11 @@ export interface CreatePdfApplicationOptions {
     skipClaudeBusinessNameRetry?: boolean;
     /** Manual create / OPERATIONS bypass. */
     applicationType?: string | null;
+    /**
+     * When true, skip scheduling Cloudinary attach of the application PDF.
+     * Used by multi-file auto-create so KYC uploads are not rate-limited against it.
+     */
+    deferPdfAttach?: boolean;
 }
 
 /** Thrown when parsed PDF data cannot satisfy Prisma for a *new* client (e.g. missing business name). */
@@ -678,7 +683,7 @@ export async function createClientAndApplicationFromPDFBuffer(
             }),
         );
 
-        if (Buffer.isBuffer(pdfBuffer)) {
+        if (Buffer.isBuffer(pdfBuffer) && !options?.deferPdfAttach) {
             scheduleAttachBufferAsApplicationFile(createdApplication.id, pdfBuffer, storedPdfName);
         }
         const applicationWithFiles = createdApplication;
@@ -748,6 +753,30 @@ export async function createClientAndApplicationFromPDFBuffer(
                 ownerState: owner.owner_state || null,
                 ownerZipCode: owner.owner_zip_code || null,
                 createdById: userId,
+                // Persist owner 1 from application PDF so later DL sync can merge (not replace).
+                owners: {
+                    create: [
+                        {
+                            sortOrder: 0,
+                            firstName: String(owner.owner_first_name || '').trim() || 'Owner',
+                            middleName: owner.owner_middle_name || null,
+                            lastName: String(owner.owner_last_name || '').trim() || '—',
+                            email: owner.owner_email || null,
+                            mobileNumber: owner.owner_mobile_number || null,
+                            dateOfBirth: parseDateForClientFields(owner.owner_date_of_birth),
+                            ssn: ownerSsnNorm || null,
+                            ficoScore: owner.owner_fico_score ? Number(owner.owner_fico_score) : null,
+                            ownershipPercentage: owner.owner_ownership_percentage
+                                ? Number(owner.owner_ownership_percentage)
+                                : null,
+                            address1: owner.owner_address1 || null,
+                            address2: null,
+                            city: owner.owner_city || null,
+                            state: owner.owner_state || null,
+                            zipCode: owner.owner_zip_code || null,
+                        },
+                    ],
+                },
             },
         });
 
@@ -773,7 +802,7 @@ export async function createClientAndApplicationFromPDFBuffer(
         return { newClient, newApplication };
     }, { maxWait: 20_000, timeout: 120_000 });
 
-    if (Buffer.isBuffer(pdfBuffer)) {
+    if (Buffer.isBuffer(pdfBuffer) && !options?.deferPdfAttach) {
         scheduleAttachBufferAsApplicationFile(result.newApplication.id, pdfBuffer, storedPdfName);
     }
     const applicationWithFiles = result.newApplication;

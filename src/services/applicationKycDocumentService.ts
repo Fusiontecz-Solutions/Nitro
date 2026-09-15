@@ -7,9 +7,16 @@ import {
   type KycExtractionMapped,
   type KycOwnerIndex,
   type KycUploadSlot,
+  mapKycKeyDataToPrefill,
   resolveKycUploadSlot,
   slugFromKycSlot,
 } from './contractKycPrefillMapper';
+import {
+  assignDriverLicenseOwnerSlots,
+  scoreOwnerNameMatch,
+  type OwnerNameHint,
+  type UploadedFileLike,
+} from './autoCreateBatchClassifyService';
 
 export type ApplicationKycSlotRecord = {
   documentType: KycDocumentType;
@@ -28,8 +35,23 @@ export type ApplicationKycPrefill = {
   slots?: Partial<Record<KycUploadSlot, ApplicationKycSlotRecord>>;
 };
 
+/** OCR-only KYC result used to overlap Document AI with application PDF extraction. */
+export type KycPreExtraction = {
+  kind: 'driverLicense' | 'voidedCheck';
+  file: UploadedFileLike;
+  mapped: KycExtractionMapped | null;
+  error: string | null;
+};
+
 function str(v: unknown): string {
   return v == null ? '' : String(v).trim();
+}
+
+/** Keep application-PDF value when present; otherwise take DL/incoming. */
+function mergePreferExisting(existing: unknown, incoming: unknown): string {
+  const e = str(existing);
+  if (e) return e;
+  return str(incoming);
 }
 
 function parseKycPrefill(raw: unknown): ApplicationKycPrefill {
@@ -70,9 +92,44 @@ async function persistKycToClientAndBank(
       client: {
         select: {
           id: true,
+          ownerFirstName: true,
+          ownerMiddleName: true,
+          ownerLastName: true,
+          ownerEmail: true,
+          ownerMobileNumber: true,
+          ownerDateOfBirth: true,
+          ownerSsn: true,
+          ownerFicoScore: true,
+          ownerOwnershipStartDate: true,
+          ownerOwnershipPercentage: true,
+          ownerAddress1: true,
+          ownerAddress2: true,
+          ownerCity: true,
+          ownerState: true,
+          ownerZipCode: true,
+          driverLicense: true,
           owners: {
             orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-            select: { id: true, sortOrder: true },
+            select: {
+              id: true,
+              sortOrder: true,
+              firstName: true,
+              middleName: true,
+              lastName: true,
+              email: true,
+              mobileNumber: true,
+              dateOfBirth: true,
+              ssn: true,
+              ficoScore: true,
+              ownershipStartDate: true,
+              ownershipPercentage: true,
+              address1: true,
+              address2: true,
+              city: true,
+              state: true,
+              zipCode: true,
+              driverLicense: true,
+            },
           },
         },
       },
@@ -83,59 +140,168 @@ async function persistKycToClientAndBank(
   if (mapped.documentType === 'driverLicense' && mapped.panels?.owner) {
     const owner = mapped.panels.owner;
     const guarantor = mapped.panels.guarantor;
-    const firstName = str(owner.firstName);
-    const lastName = str(owner.lastName);
-    const address1 = str(owner.address);
-    const city = str(owner.city);
-    const state = str(owner.state);
-    const zipCode = str(owner.zipCode);
+    const dlFirstName = str(owner.firstName);
+    const dlLastName = str(owner.lastName);
+    const dlAddress1 = str(owner.address);
+    const dlCity = str(owner.city);
+    const dlState = str(owner.state);
+    const dlZipCode = str(owner.zipCode);
     const driverLicense = str(guarantor?.driverLicenseNumber);
     const ownerIndex = mapped.ownerIndex ?? 1;
     const existingOwners = Array.isArray(application.client?.owners)
       ? application.client.owners
       : [];
-    const target = existingOwners[ownerIndex - 1];
+    const client = application.client;
 
-    const ownerPatch: Record<string, unknown> = {};
-    if (firstName) ownerPatch.firstName = firstName;
-    if (lastName) ownerPatch.lastName = lastName;
-    if (address1) ownerPatch.address1 = address1;
-    if (city) ownerPatch.city = city;
-    if (state) ownerPatch.state = state;
-    if (zipCode) ownerPatch.zipCode = zipCode;
-    if (driverLicense) ownerPatch.driverLicense = driverLicense;
+    // Prefer matching ClientOwner by DL name when possible (owner 1 especially).
+    let target =
+      existingOwners.find((row: any) => {
+        const score = scoreOwnerNameMatch(
+          { firstName: dlFirstName, lastName: dlLastName },
+          { firstName: str(row.firstName), lastName: str(row.lastName) },
+        );
+        return score >= 40;
+      }) || existingOwners[ownerIndex - 1];
 
-    if (Object.keys(ownerPatch).length > 0) {
-      if (target?.id) {
+    // Seed from application-PDF flat client fields for owner 1 when no ClientOwner row yet.
+    const appSeed =
+      ownerIndex === 1
+        ? {
+            firstName: str(client?.ownerFirstName),
+            middleName: str(client?.ownerMiddleName),
+            lastName: str(client?.ownerLastName),
+            email: str(client?.ownerEmail),
+            mobileNumber: str(client?.ownerMobileNumber),
+            dateOfBirth: client?.ownerDateOfBirth ?? null,
+            ssn: str(client?.ownerSsn),
+            ficoScore: client?.ownerFicoScore ?? null,
+            ownershipStartDate: client?.ownerOwnershipStartDate ?? null,
+            ownershipPercentage: client?.ownerOwnershipPercentage ?? null,
+            address1: str(client?.ownerAddress1),
+            address2: str(client?.ownerAddress2),
+            city: str(client?.ownerCity),
+            state: str(client?.ownerState),
+            zipCode: str(client?.ownerZipCode),
+            driverLicense: str(client?.driverLicense),
+          }
+        : null;
+
+    const existing = {
+      firstName: str(target?.firstName) || str(appSeed?.firstName),
+      middleName: str(target?.middleName) || str(appSeed?.middleName),
+      lastName: str(target?.lastName) || str(appSeed?.lastName),
+      email: str(target?.email) || str(appSeed?.email),
+      mobileNumber: str(target?.mobileNumber) || str(appSeed?.mobileNumber),
+      dateOfBirth: target?.dateOfBirth ?? appSeed?.dateOfBirth ?? null,
+      ssn: str(target?.ssn) || str(appSeed?.ssn),
+      ficoScore: target?.ficoScore ?? appSeed?.ficoScore ?? null,
+      ownershipStartDate:
+        target?.ownershipStartDate ?? appSeed?.ownershipStartDate ?? null,
+      ownershipPercentage:
+        target?.ownershipPercentage ?? appSeed?.ownershipPercentage ?? null,
+      address1: str(target?.address1) || str(appSeed?.address1),
+      address2: str(target?.address2) || str(appSeed?.address2),
+      city: str(target?.city) || str(appSeed?.city),
+      state: str(target?.state) || str(appSeed?.state),
+      zipCode: str(target?.zipCode) || str(appSeed?.zipCode),
+      driverLicense: str(target?.driverLicense) || str(appSeed?.driverLicense),
+    };
+
+    // Merge: keep application-PDF values; only fill blanks from DL; DL# always from license when present.
+    const merged = {
+      firstName: mergePreferExisting(existing.firstName, dlFirstName) || 'Owner',
+      middleName: mergePreferExisting(existing.middleName, '') || null,
+      lastName: mergePreferExisting(existing.lastName, dlLastName) || '—',
+      email: mergePreferExisting(existing.email, '') || null,
+      mobileNumber: mergePreferExisting(existing.mobileNumber, '') || null,
+      dateOfBirth: existing.dateOfBirth ?? null,
+      ssn: mergePreferExisting(existing.ssn, '') || null,
+      ficoScore: existing.ficoScore ?? null,
+      ownershipStartDate: existing.ownershipStartDate ?? null,
+      ownershipPercentage: existing.ownershipPercentage ?? null,
+      address1: mergePreferExisting(existing.address1, dlAddress1) || null,
+      address2: mergePreferExisting(existing.address2, '') || null,
+      city: mergePreferExisting(existing.city, dlCity) || null,
+      state: mergePreferExisting(existing.state, dlState) || null,
+      zipCode: mergePreferExisting(existing.zipCode, dlZipCode) || null,
+      driverLicense: driverLicense || mergePreferExisting(existing.driverLicense, '') || null,
+    };
+
+    if (target?.id) {
+      const ownerPatch: Record<string, unknown> = {};
+      // Fill gaps only — never wipe application-PDF fields with DL values.
+      if (!str(target.firstName) && merged.firstName) ownerPatch.firstName = merged.firstName;
+      if (!str(target.middleName) && merged.middleName) ownerPatch.middleName = merged.middleName;
+      if (!str(target.lastName) && merged.lastName) ownerPatch.lastName = merged.lastName;
+      if (!str(target.email) && merged.email) ownerPatch.email = merged.email;
+      if (!str(target.mobileNumber) && merged.mobileNumber) {
+        ownerPatch.mobileNumber = merged.mobileNumber;
+      }
+      if (!target.dateOfBirth && merged.dateOfBirth) ownerPatch.dateOfBirth = merged.dateOfBirth;
+      if (!str(target.ssn) && merged.ssn) ownerPatch.ssn = merged.ssn;
+      if (target.ficoScore == null && merged.ficoScore != null) {
+        ownerPatch.ficoScore = merged.ficoScore;
+      }
+      if (!target.ownershipStartDate && merged.ownershipStartDate) {
+        ownerPatch.ownershipStartDate = merged.ownershipStartDate;
+      }
+      if (target.ownershipPercentage == null && merged.ownershipPercentage != null) {
+        ownerPatch.ownershipPercentage = merged.ownershipPercentage;
+      }
+      if (!str(target.address1) && merged.address1) ownerPatch.address1 = merged.address1;
+      if (!str(target.address2) && merged.address2) ownerPatch.address2 = merged.address2;
+      if (!str(target.city) && merged.city) ownerPatch.city = merged.city;
+      if (!str(target.state) && merged.state) ownerPatch.state = merged.state;
+      if (!str(target.zipCode) && merged.zipCode) ownerPatch.zipCode = merged.zipCode;
+      if (driverLicense) ownerPatch.driverLicense = driverLicense;
+      if (Object.keys(ownerPatch).length > 0) {
         await (prisma as any).clientOwner.update({
           where: { id: target.id },
           data: ownerPatch,
         });
-      } else {
-        await (prisma as any).clientOwner.create({
-          data: {
-            clientId: application.clientId,
-            sortOrder: ownerIndex - 1,
-            firstName: firstName || 'Owner',
-            lastName: lastName || '—',
-            address1: address1 || null,
-            city: city || null,
-            state: state || null,
-            zipCode: zipCode || null,
-            driverLicense: driverLicense || null,
-          },
-        });
       }
+    } else {
+      await (prisma as any).clientOwner.create({
+        data: {
+          clientId: application.clientId,
+          sortOrder: ownerIndex - 1,
+          firstName: merged.firstName,
+          middleName: merged.middleName,
+          lastName: merged.lastName,
+          email: merged.email,
+          mobileNumber: merged.mobileNumber,
+          dateOfBirth: merged.dateOfBirth,
+          ssn: merged.ssn,
+          ficoScore: merged.ficoScore,
+          ownershipStartDate: merged.ownershipStartDate,
+          ownershipPercentage: merged.ownershipPercentage,
+          address1: merged.address1,
+          address2: merged.address2,
+          city: merged.city,
+          state: merged.state,
+          zipCode: merged.zipCode,
+          driverLicense: merged.driverLicense,
+        },
+      });
     }
 
     if (ownerIndex === 1) {
       const clientPatch: Record<string, unknown> = {};
-      if (firstName) clientPatch.ownerFirstName = firstName;
-      if (lastName) clientPatch.ownerLastName = lastName;
-      if (address1) clientPatch.ownerAddress1 = address1;
-      if (city) clientPatch.ownerCity = city;
-      if (state) clientPatch.ownerState = state;
-      if (zipCode) clientPatch.ownerZipCode = zipCode;
+      // Fill blanks only — keep application-PDF owner email/phone/ssn/dob/fico/name/address.
+      if (!str(client?.ownerFirstName) && merged.firstName) {
+        clientPatch.ownerFirstName = merged.firstName;
+      }
+      if (!str(client?.ownerLastName) && merged.lastName) {
+        clientPatch.ownerLastName = merged.lastName;
+      }
+      if (!str(client?.ownerAddress1) && merged.address1) {
+        clientPatch.ownerAddress1 = merged.address1;
+      }
+      if (!str(client?.ownerCity) && merged.city) clientPatch.ownerCity = merged.city;
+      if (!str(client?.ownerState) && merged.state) clientPatch.ownerState = merged.state;
+      if (!str(client?.ownerZipCode) && merged.zipCode) {
+        clientPatch.ownerZipCode = merged.zipCode;
+      }
       if (driverLicense) clientPatch.driverLicense = driverLicense;
       if (Object.keys(clientPatch).length > 0) {
         await (prisma as any).client.update({
@@ -302,75 +468,492 @@ class ApplicationKycDocumentService {
     }
 
     const folder = `ih-crm/applications/${application.applicationId || application.id}`;
-    const savedDocuments: Array<Record<string, unknown>> = [];
-    const kycExtractions: Array<Record<string, unknown>> = [];
 
-    for (const { file, resolved } of entries) {
-      const slot = resolved!;
-      const uploadResult = await uploadService.uploadFile(file, folder, file?.name);
+    // Cloudinary + Document AI in parallel per file; all files in one pass.
+    const results = await Promise.all(
+      entries.map(async ({ file, resolved }) => {
+        const slot = resolved!;
+        const [uploadResult, extractOutcome] = await Promise.all([
+          uploadService.uploadFile(file, folder, file?.name),
+          contractKycDocumentExtractService
+            .extractFromUploadedFile(file, slot.documentType, slot.ownerIndex)
+            .then((mapped) => ({ mapped, error: null as string | null }))
+            .catch((extractErr: unknown) => {
+              const msg =
+                extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
+              console.error(
+                `[uploadApplicationKycDocuments] extraction failed for ${slot.slot}:`,
+                extractErr,
+              );
+              return { mapped: null, error: msg };
+            }),
+        ]);
+
+        if (!uploadResult.success || !uploadResult.data) {
+          throw new Error(uploadResult.error || `Failed to upload ${slot.slot}`);
+        }
+
+        const secureUrl = uploadResult.data.secure_url as string;
+        const publicId = uploadResult.data.public_id as string;
+        const originalName = file?.name || uploadResult.fileName || `${slot.slot}`;
+        const created = await (prisma as any).applicationFile.create({
+          data: {
+            applicationId,
+            url: secureUrl,
+            publicId,
+            originalName,
+            mimeType: file?.mimetype || 'application/octet-stream',
+            size: Number(file?.size || uploadResult.data.bytes || 0),
+            requestedDocumentSlug: slugFromKycSlot(slot.slot),
+          },
+        });
+
+        const document = {
+          _id: created.id,
+          id: created.id,
+          url: created.url,
+          originalName: created.originalName,
+          requestedDocumentSlug: created.requestedDocumentSlug,
+          documentType: created.requestedDocumentSlug,
+          slot: slot.slot,
+        };
+
+        if (extractOutcome.error || !extractOutcome.mapped) {
+          return {
+            document,
+            extraction: {
+              documentType: slot.documentType,
+              ownerIndex: slot.ownerIndex,
+              slot: slot.slot,
+              fileId: created.id,
+              fileName: originalName,
+              fileUrl: secureUrl,
+              error: extractOutcome.error || 'KYC extraction failed',
+            } as Record<string, unknown>,
+          };
+        }
+
+        const mapped = extractOutcome.mapped;
+        return {
+          document,
+          extraction: {
+            documentType: mapped.documentType,
+            ownerIndex: mapped.ownerIndex,
+            slot: mapped.slot,
+            keyData: mapped.keyData,
+            contractPrefill: mapped.contractPrefill,
+            panels: mapped.panels,
+            fileId: created.id,
+            fileName: originalName,
+            fileUrl: secureUrl,
+          } as Record<string, unknown>,
+        };
+      }),
+    );
+
+    return {
+      documents: results.map((row) => row.document),
+      kycExtractions: results.map((row) => row.extraction),
+    };
+  }
+
+  /**
+   * Upload + extract KYC docs in parallel, then auto-sync successful extractions into
+   * application.kycPrefill / client / bank (used by auto-create-from-pdf).
+   */
+  async uploadExtractAndAutoSync(
+    applicationId: string,
+    filesByType: Record<string, any>,
+    createdById?: string | null,
+  ): Promise<{
+    documents: Array<Record<string, unknown>>;
+    kycExtractions: Array<Record<string, unknown>>;
+  }> {
+    const { documents, kycExtractions } = await this.uploadAndExtract(
+      applicationId,
+      filesByType,
+    );
+
+    const syncedExtractions = await Promise.all(
+      kycExtractions.map(async (ext) => {
+        if (ext.error) return { ...ext, synced: false };
+        try {
+          const synced = await this.syncKycPrefill(
+            applicationId,
+            {
+              documentType: String(ext.documentType || ''),
+              slot: String(ext.slot || ''),
+              ownerIndex: Number(ext.ownerIndex) === 2 ? 2 : 1,
+              contractPrefill: (ext.contractPrefill as Record<string, string>) || {},
+              panels: (ext.panels as KycExtractionMapped['panels']) || {},
+              keyData: (ext.keyData as Record<string, string>) || {},
+              fileId: ext.fileId ? String(ext.fileId) : undefined,
+              fileName: ext.fileName ? String(ext.fileName) : undefined,
+              fileUrl: ext.fileUrl ? String(ext.fileUrl) : undefined,
+            },
+            createdById,
+          );
+          return {
+            ...ext,
+            synced: true,
+            kycPrefill: synced.kycPrefill,
+          };
+        } catch (syncErr: unknown) {
+          const msg =
+            syncErr instanceof Error ? syncErr.message : 'KYC sync failed';
+          console.error('[uploadExtractAndAutoSync] sync failed:', syncErr);
+          return { ...ext, synced: false, syncError: msg };
+        }
+      }),
+    );
+
+    return { documents, kycExtractions: syncedExtractions };
+  }
+
+  /**
+   * Document AI only (no Cloudinary / DB). Used to overlap KYC OCR with application PDF OCR.
+   */
+  async extractKycFilesOnly(input: {
+    driverLicenseFiles: UploadedFileLike[];
+    voidedCheckFile?: UploadedFileLike | null;
+  }): Promise<KycPreExtraction[]> {
+    const licenseFiles = Array.isArray(input.driverLicenseFiles)
+      ? input.driverLicenseFiles.filter(Boolean)
+      : [];
+    const voidFile = input.voidedCheckFile || null;
+    const work: Array<{ kind: 'driverLicense' | 'voidedCheck'; file: UploadedFileLike }> = [
+      ...licenseFiles.map((file) => ({ kind: 'driverLicense' as const, file })),
+      ...(voidFile ? [{ kind: 'voidedCheck' as const, file: voidFile }] : []),
+    ];
+    if (!work.length) return [];
+
+    return Promise.all(
+      work.map(async (row) => {
+        try {
+          const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
+            row.file as any,
+            row.kind,
+            1,
+          );
+          return { kind: row.kind, file: row.file, mapped, error: null };
+        } catch (extractErr: unknown) {
+          const msg =
+            extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
+          console.error(
+            `[extractKycFilesOnly] extraction failed for ${row.file?.name || row.kind}:`,
+            extractErr,
+          );
+          return { kind: row.kind, file: row.file, mapped: null, error: msg };
+        }
+      }),
+    );
+  }
+
+  /**
+   * Batch path for multi-PDF auto-create: upload + extract DL/void check files in parallel,
+   * map each driver's license to owner 1 or 2 by name match, then auto-sync.
+   * When `preExtractions` is provided (OCR already done), only Cloudinary upload + sync run.
+   */
+  async uploadExtractAssignOwnersAndSync(
+    applicationId: string,
+    input: {
+      driverLicenseFiles: UploadedFileLike[];
+      voidedCheckFile?: UploadedFileLike | null;
+      ownerHints?: OwnerNameHint[];
+      /** Optional OCR results from extractKycFilesOnly (overlap with app PDF OCR). */
+      preExtractions?: KycPreExtraction[];
+    },
+    createdById?: string | null,
+  ): Promise<{
+    documents: Array<Record<string, unknown>>;
+    kycExtractions: Array<Record<string, unknown>>;
+  }> {
+    const application = await (prisma as any).application.findUnique({
+      where: { id: applicationId },
+      select: { id: true, applicationId: true },
+    });
+    if (!application) {
+      throw new Error('Application not found');
+    }
+
+    const folder = `ih-crm/applications/${application.applicationId || application.id}`;
+    const licenseFiles = Array.isArray(input.driverLicenseFiles)
+      ? input.driverLicenseFiles.filter(Boolean)
+      : [];
+    const voidFile = input.voidedCheckFile || null;
+
+    type WorkRow = {
+      kind: 'driverLicense' | 'voidedCheck';
+      file: UploadedFileLike;
+      preMapped?: KycExtractionMapped | null;
+      preError?: string | null;
+    };
+    const preByFile = new Map<UploadedFileLike, KycPreExtraction>();
+    for (const row of input.preExtractions || []) {
+      if (row?.file) preByFile.set(row.file, row);
+    }
+
+    const work: WorkRow[] = [
+      ...licenseFiles.map((file) => {
+        const pre = preByFile.get(file);
+        return {
+          kind: 'driverLicense' as const,
+          file,
+          preMapped: pre?.mapped,
+          preError: pre?.error,
+        };
+      }),
+      ...(voidFile
+        ? [
+            (() => {
+              const pre = preByFile.get(voidFile);
+              return {
+                kind: 'voidedCheck' as const,
+                file: voidFile,
+                preMapped: pre?.mapped,
+                preError: pre?.error,
+              };
+            })(),
+          ]
+        : []),
+    ];
+
+    if (!work.length) {
+      return { documents: [], kycExtractions: [] };
+    }
+
+    // Sequential Cloudinary uploads (with service-level 429 retries) — parallel uploads
+    // were rate-limited and aborted the whole KYC batch, leaving only the application PDF.
+    const rawResults: Array<{
+      kind: 'driverLicense' | 'voidedCheck';
+      file: UploadedFileLike;
+      document: Record<string, unknown>;
+      mapped: KycExtractionMapped | null;
+      fileMeta: { fileId?: string; fileName: string; fileUrl?: string };
+      error: string | null;
+    }> = [];
+
+    for (const row of work) {
+      const originalName = row.file?.name || String(row.kind);
+      const tempSlug =
+        row.kind === 'voidedCheck' ? 'voided-check' : 'driver-license';
+
+      let mapped: KycExtractionMapped | null = null;
+      let extractError: string | null = null;
+
+      if (row.preMapped !== undefined || row.preError) {
+        mapped = row.preMapped ?? null;
+        extractError = row.preError ?? null;
+      } else {
+        try {
+          mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
+            row.file as any,
+            row.kind,
+            1,
+          );
+        } catch (extractErr: unknown) {
+          extractError =
+            extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
+          console.error(
+            `[uploadExtractAssignOwnersAndSync] extraction failed for ${originalName}:`,
+            extractErr,
+          );
+        }
+      }
+
+      const uploadResult = await uploadService.uploadFile(
+        row.file as any,
+        folder,
+        row.file?.name,
+      );
+
       if (!uploadResult.success || !uploadResult.data) {
-        throw new Error(uploadResult.error || `Failed to upload ${slot.slot}`);
+        const uploadErr =
+          uploadResult.error || `Failed to upload ${row.file?.name || row.kind}`;
+        console.error(
+          `[uploadExtractAssignOwnersAndSync] upload failed for ${originalName}:`,
+          uploadErr,
+        );
+        // Still sync owner/bank data from OCR even when Cloudinary fails — file row omitted.
+        rawResults.push({
+          kind: row.kind,
+          file: row.file,
+          document: {
+            originalName,
+            requestedDocumentSlug: tempSlug,
+            documentType: tempSlug,
+            uploadError: uploadErr,
+          },
+          mapped,
+          fileMeta: {
+            fileName: originalName,
+          },
+          error: mapped ? null : extractError || uploadErr,
+        });
+        continue;
       }
 
       const secureUrl = uploadResult.data.secure_url as string;
       const publicId = uploadResult.data.public_id as string;
-      const originalName = file?.name || uploadResult.fileName || `${slot.slot}`;
       const created = await (prisma as any).applicationFile.create({
         data: {
           applicationId,
           url: secureUrl,
           publicId,
-          originalName,
-          mimeType: file?.mimetype || 'application/octet-stream',
-          size: Number(file?.size || uploadResult.data.bytes || 0),
-          requestedDocumentSlug: slugFromKycSlot(slot.slot),
+          originalName:
+            row.file?.name || uploadResult.fileName || String(row.kind),
+          mimeType: (row.file as any)?.mimetype || 'application/octet-stream',
+          size: Number((row.file as any)?.size || uploadResult.data.bytes || 0),
+          requestedDocumentSlug: tempSlug,
         },
       });
 
-      savedDocuments.push({
-        _id: created.id,
-        id: created.id,
-        url: created.url,
-        originalName: created.originalName,
-        requestedDocumentSlug: created.requestedDocumentSlug,
-        documentType: created.requestedDocumentSlug,
-        slot: slot.slot,
+      rawResults.push({
+        kind: row.kind,
+        file: row.file,
+        document: {
+          _id: created.id,
+          id: created.id,
+          url: created.url,
+          originalName: created.originalName,
+          requestedDocumentSlug: created.requestedDocumentSlug,
+          documentType: created.requestedDocumentSlug,
+        },
+        mapped,
+        fileMeta: {
+          fileId: created.id,
+          fileName: created.originalName,
+          fileUrl: secureUrl,
+        },
+        error: extractError,
       });
 
-      try {
-        const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
-          file,
-          slot.documentType,
-          slot.ownerIndex,
-        );
-        kycExtractions.push({
-          documentType: mapped.documentType,
-          ownerIndex: mapped.ownerIndex,
-          slot: mapped.slot,
-          keyData: mapped.keyData,
-          contractPrefill: mapped.contractPrefill,
-          panels: mapped.panels,
-          fileId: created.id,
-          fileName: originalName,
-          fileUrl: secureUrl,
+      // Stagger uploads so Cloudinary free-tier rate limits are less likely.
+      await new Promise((r) => setTimeout(r, 600));
+    }
+
+    const licenseRows = rawResults.filter((r) => r.kind === 'driverLicense' && r.mapped);
+    const assignments = assignDriverLicenseOwnerSlots(
+      licenseRows.map((r) => ({
+        file: r.file,
+        firstName: r.mapped?.panels?.owner?.firstName,
+        lastName: r.mapped?.panels?.owner?.lastName,
+      })),
+      input.ownerHints || [],
+    );
+
+    const assignmentByFile = new Map(
+      assignments.map((a) => [a.file, a] as const),
+    );
+
+    const finalized: Array<{
+      document: Record<string, unknown>;
+      extraction: Record<string, unknown>;
+    }> = [];
+
+    for (const row of rawResults) {
+      if (row.error || !row.mapped) {
+        finalized.push({
+          document: row.document,
+          extraction: {
+            documentType: row.kind,
+            ownerIndex: 1,
+            slot: row.kind === 'voidedCheck' ? 'voidedCheck' : 'driverLicense',
+            fileId: row.fileMeta.fileId,
+            fileName: row.fileMeta.fileName,
+            fileUrl: row.fileMeta.fileUrl,
+            error: row.error || 'KYC extraction failed',
+            synced: false,
+          },
         });
-      } catch (extractErr: unknown) {
+        continue;
+      }
+
+      let mapped = row.mapped;
+      if (row.kind === 'driverLicense') {
+        const assignment = assignmentByFile.get(row.file);
+        const ownerIndex = assignment?.ownerIndex ?? 1;
+        const slot = assignment?.slot ?? 'driverLicense';
+        mapped = mapKycKeyDataToPrefill(
+          'driverLicense',
+          mapped.keyData || {},
+          ownerIndex,
+        );
+        // Keep slot explicit when mapper defaults by ownerIndex.
+        mapped = { ...mapped, slot, ownerIndex };
+
+        if (row.fileMeta.fileId) {
+          await (prisma as any).applicationFile.update({
+            where: { id: row.fileMeta.fileId },
+            data: { requestedDocumentSlug: slugFromKycSlot(slot) },
+          });
+          row.document.requestedDocumentSlug = slugFromKycSlot(slot);
+          row.document.documentType = slugFromKycSlot(slot);
+          row.document.slot = slot;
+        }
+      } else {
+        row.document.slot = 'voidedCheck';
+      }
+
+      try {
+        const synced = await this.syncKycPrefill(
+          applicationId,
+          {
+            documentType: mapped.documentType,
+            slot: mapped.slot,
+            ownerIndex: mapped.ownerIndex,
+            contractPrefill: mapped.contractPrefill,
+            panels: mapped.panels,
+            keyData: mapped.keyData,
+            fileId: row.fileMeta.fileId,
+            fileName: row.fileMeta.fileName,
+            fileUrl: row.fileMeta.fileUrl,
+          },
+          createdById,
+        );
+        finalized.push({
+          document: row.document,
+          extraction: {
+            documentType: mapped.documentType,
+            ownerIndex: mapped.ownerIndex,
+            slot: mapped.slot,
+            keyData: mapped.keyData,
+            contractPrefill: mapped.contractPrefill,
+            panels: mapped.panels,
+            fileId: row.fileMeta.fileId,
+            fileName: row.fileMeta.fileName,
+            fileUrl: row.fileMeta.fileUrl,
+            synced: true,
+            kycPrefill: synced.kycPrefill,
+          },
+        });
+      } catch (syncErr: unknown) {
         const msg =
-          extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
-        console.error(`[uploadApplicationKycDocuments] extraction failed for ${slot.slot}:`, extractErr);
-        kycExtractions.push({
-          documentType: slot.documentType,
-          ownerIndex: slot.ownerIndex,
-          slot: slot.slot,
-          fileId: created.id,
-          fileName: originalName,
-          fileUrl: secureUrl,
-          error: msg,
+          syncErr instanceof Error ? syncErr.message : 'KYC sync failed';
+        console.error('[uploadExtractAssignOwnersAndSync] sync failed:', syncErr);
+        finalized.push({
+          document: row.document,
+          extraction: {
+            documentType: mapped.documentType,
+            ownerIndex: mapped.ownerIndex,
+            slot: mapped.slot,
+            keyData: mapped.keyData,
+            contractPrefill: mapped.contractPrefill,
+            panels: mapped.panels,
+            fileId: row.fileMeta.fileId,
+            fileName: row.fileMeta.fileName,
+            fileUrl: row.fileMeta.fileUrl,
+            synced: false,
+            syncError: msg,
+          },
         });
       }
     }
 
-    return { documents: savedDocuments, kycExtractions };
+    return {
+      documents: finalized.map((r) => r.document),
+      kycExtractions: finalized.map((r) => r.extraction),
+    };
   }
 
   async syncKycPrefill(

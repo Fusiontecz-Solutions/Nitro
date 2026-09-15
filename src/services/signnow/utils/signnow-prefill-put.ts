@@ -1,6 +1,7 @@
 import {
   isDedicatedExhibitCRequiredField,
   isMerchantRequiredSignerField,
+  usesAddendumFillableFont,
   type SignNowPrefillDocumentKind,
 } from './signnow-field-map';
 
@@ -203,8 +204,8 @@ export function toSignNowCompletedText(
 /**
  * Merchant view-only shows committed text elements, not locked prefilled fields.
  * Keep signatures/initials as fillable; stamp CRM values onto the page as texts.
- * Empty merchant-required slots (page-20 ACH, Exhibit C orange) stay fillable
- * only when sending to the merchant.
+ * Empty merchant-required slots (page-20 ACH, Exhibit C orange, page-22
+ * references) stay fillable only when sending to the merchant.
  */
 export function splitPrefillPutPayload(
   fields: Record<string, unknown>[],
@@ -226,17 +227,30 @@ export function splitPrefillPutPayload(
       fillable.push(field);
       continue;
     }
+    const prefillOpts = options?.documentKind
+      ? { documentKind: options.documentKind }
+      : undefined;
     const isMerchantRequired =
       isDedicatedExhibitCRequiredField(String(field.name || '')) ||
       isMerchantRequiredSignerField(
         String(field.name || ''),
         Number(field.page_number),
-        options?.documentKind ? { documentKind: options.documentKind } : undefined,
+        prefillOpts,
       );
     const value = String(field.prefilled_text || field.data || '').trim();
     const empty = !value || /^enter text$/i.test(value);
     if (isMerchantRequired && empty && options?.keepEmptyMerchantRequired) {
-      fillable.push(applyContractFillableFont({ ...field }, options));
+      const next = { ...field };
+      if (
+        usesAddendumFillableFont(
+          String(field.name || ''),
+          Number(field.page_number),
+          prefillOpts,
+        )
+      ) {
+        applyContractFillableFont(next, options);
+      }
+      fillable.push(next);
       continue;
     }
     const text = toSignNowCompletedText(field, options);
