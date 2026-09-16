@@ -80,11 +80,26 @@ const newOwnerFormKey = () =>
         ? crypto.randomUUID()
         : `owner-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-const mapOwnerToForm = (owner: any): OwnerForm => {
+/**
+ * `slotIndex` is passed when hydrating from fetched owner records so the React key
+ * is derived from the owner's slot instead of a fresh random id.
+ *
+ * Owners loaded from the flat client columns carry no `id`, so the random fallback
+ * produced a different `formKey` on every hydration. React saw new keys, unmounted
+ * and remounted every owner row on each refresh, which collapsed the accordion and
+ * dropped focus mid-edit — the section visibly "changing" on its own. Omit it only
+ * for genuinely new rows added from the UI, which do need a unique random key.
+ */
+const mapOwnerToForm = (owner: any, slotIndex?: number): OwnerForm => {
     const addr =
         owner?.address && typeof owner.address === "object" ? owner.address : {};
     return {
-        formKey: String(owner?.formKey || owner?.id || owner?._id || newOwnerFormKey()),
+        formKey: String(
+            owner?.formKey ||
+                owner?.id ||
+                owner?._id ||
+                (slotIndex != null ? `owner-slot-${slotIndex}` : newOwnerFormKey()),
+        ),
         firstName: String(owner?.firstName ?? ""),
         lastName: String(owner?.lastName ?? ""),
         email: String(owner?.email ?? ""),
@@ -223,8 +238,8 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         const app = applicationData as any;
         setForm(buildBusinessForm(app, ownerSourceClient));
         const nextOwners = resolvedOwnerRecords.length
-            ? resolvedOwnerRecords.map(mapOwnerToForm)
-            : [createEmptyOwnerForm()];
+            ? resolvedOwnerRecords.map((record, index) => mapOwnerToForm(record, index))
+            : [mapOwnerToForm({}, 0)];
         setOwners(nextOwners);
         if (options?.collapseOwners) {
             setExpandedOwnerIndex(0);

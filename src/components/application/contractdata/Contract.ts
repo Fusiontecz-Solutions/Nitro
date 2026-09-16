@@ -3070,8 +3070,20 @@ const PREFILL_ID_TO_CAMEL_KEY: Record<string, keyof BuildContractPrefillFieldsAr
 /** Reverse map DocuSign prefill ids → camelCase contract prefill keys. */
 export function contractPrefillFieldsToPartial(
     fields: Array<{ id: string; value: string }>,
+    options?: {
+        /**
+         * Document ids carry no `includeWireFee`, so an unchecked $25 wire fee has to be
+         * passed in. Without it origination is un-grossed by $25 that was never added,
+         * which then gets persisted and shifts the net on every send.
+         */
+        includeWireFee?: unknown;
+    },
 ): Partial<BuildContractPrefillFieldsArgs> {
     const partial: Partial<BuildContractPrefillFieldsArgs> = {};
+    const wireFeePreference = str(options?.includeWireFee);
+    if (wireFeePreference) {
+        partial.includeWireFee = resolveIncludeWireFee(wireFeePreference) ? "true" : "false";
+    }
     for (const field of fields) {
         const key = PREFILL_ID_TO_CAMEL_KEY[String(field.id || "").trim().toLowerCase()];
         const value = str(field.value);
@@ -3092,8 +3104,10 @@ export function contractPrefillFieldsToPartial(
             const withPlatform = coerceToFiniteNumber(value);
             if (withPlatform !== undefined) {
                 const includeWireFee = resolveIncludeWireFee(
-                    fields.find((f) => String(f.id).toLowerCase() === "includewirefee")?.value ??
-                        partial.includeWireFee,
+                    wireFeePreference ||
+                        (fields.find((f) => String(f.id).toLowerCase() === "includewirefee")
+                            ?.value ??
+                            partial.includeWireFee),
                 );
                 (partial as Record<string, string>)[key] = truncateDecimalPrefill(
                     Math.max(0, withPlatform - resolveDisclosureWireFeeUsd(includeWireFee)),
@@ -4963,6 +4977,7 @@ export function stripStaleOfferOverridesFromPersisted(
     const live = getLiveOfferPrefillArgs(anyApp, {
         offerDecision: offerDecision ?? null,
         contract: contract ?? null,
+        includeWireFee: out.includeWireFee,
     });
     const savedOffer = coerceToFiniteNumber(out.purchaseAmount);
     const liveOffer = coerceToFiniteNumber(live.purchaseAmount);
@@ -5006,11 +5021,35 @@ export function omitLiveOfferMoneyPrefillKeys(
     return out;
 }
 
+/**
+ * Resolve the "$25 wire fee" preference for a deal.
+ * Order: explicit value (live form) → saved `contractPrefillOverrides` → Contract column → on.
+ * Must never read a stripped contract copy, or unchecking the box silently re-adds the fee.
+ */
+export function resolveIncludeWireFeePreference(
+    explicit: unknown,
+    contract?: Record<string, unknown> | null,
+): boolean {
+    const fromExplicit = str(explicit);
+    if (fromExplicit) return resolveIncludeWireFee(fromExplicit);
+    if (explicit === false || explicit === true) return resolveIncludeWireFee(explicit);
+    const overrides = normalizeContractPrefillOverrides(
+        contract?.contractPrefillOverrides,
+    ) as Partial<BuildContractPrefillFieldsArgs> | null;
+    const fromOverrides = str(overrides?.includeWireFee);
+    if (fromOverrides) return resolveIncludeWireFee(fromOverrides);
+    const fromColumn = str(contract?.includeWireFee);
+    if (fromColumn) return resolveIncludeWireFee(fromColumn);
+    return true;
+}
+
 function getLiveOfferPrefillArgs(
     anyApp: unknown,
     options?: {
         offerDecision?: Record<string, unknown> | null;
         contract?: Record<string, unknown> | null;
+        /** Live "$25 wire fee" preference (form value wins over the persisted contract). */
+        includeWireFee?: unknown;
     },
 ): Partial<BuildContractPrefillFieldsArgs> {
     const app = (anyApp ?? null) as Record<string, unknown> | null;
@@ -5073,7 +5112,25 @@ function getLiveOfferPrefillArgs(
         frequency: resolveOfferFrequencyLabel(sources),
         remittance,
         refinanceAmount,
-        netToMerchant: formatNetToMerchantPrefillValue(computeNetToMerchantDollars(sources)),
+        /**
+         * `liveContract` has `contractPrefillOverrides` stripped above, so the wire-fee
+         * preference is resolved from the untouched contract / caller instead. Without it
+         * the live overlay always re-added $25 and then looked "stale" against the saved
+         * net, wiping an unchecked-wire-fee edit on every reload and contract build.
+         */
+        netToMerchant: formatNetToMerchantPrefillValue(
+            computeNetToMerchantDollars({
+                ...sources,
+                prefill: {
+                    includeWireFee: resolveIncludeWireFeePreference(
+                        options?.includeWireFee,
+                        options?.contract ?? null,
+                    )
+                        ? "true"
+                        : "false",
+                },
+            }),
+        ),
         appendixUnderwritingFees: str(appendixPartial.appendixUnderwritingFees),
         achAuthorizationAccountHolderBankTransactionFee: remittance,
         achAuthorizationAccountHolderBankNumberOfTransactions:
@@ -5110,12 +5167,15 @@ export function applyLiveOfferSyncToPrefillPartial(
     options?: {
         forceLiveOfferMoney?: boolean;
         contract?: Record<string, unknown> | null;
+        /** Live "$25 wire fee" preference; defaults to `partial.includeWireFee`. */
+        includeWireFee?: unknown;
     },
 ): Partial<BuildContractPrefillFieldsArgs> {
     if (!hasLiveOfferPrefillSource(anyApp, offerDecision)) return partial;
     const liveArgs = getLiveOfferPrefillArgs(anyApp, {
         offerDecision: offerDecision ?? null,
         contract: options?.contract ?? null,
+        includeWireFee: options?.includeWireFee ?? partial.includeWireFee,
     });
     const force =
         Boolean(options?.forceLiveOfferMoney) || liveOfferMoneyDiffersFromPartial(liveArgs, partial);

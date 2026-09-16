@@ -9,6 +9,7 @@ import { createContractGuarantor } from "@/redux/actions/contractActions";
 import type { AppDispatch } from "@/redux/store";
 import { toast } from "react-toastify";
 import { US_STATES } from "@/constants/usStates";
+import { formatSSN, handleSSNInputChange } from "@/utils/formatSSN";
 
 export interface GuarantorEntry {
   guarantorName: string;
@@ -183,10 +184,11 @@ export default function GuarantorModal({
           <div className="space-y-1.5">
             <Label className={`text-sm ${isDark ? "text-gray-300" : "text-[#374151]"}`}>SSN Number</Label>
             <Input
-              value={form.ssnNumber}
-              onChange={(e) => update("ssnNumber", e.target.value)}
+              value={formatSSN(form.ssnNumber)}
+              onChange={(e) => handleSSNInputChange(e, (v) => update("ssnNumber", v))}
               className={inputClass}
-              placeholder="Enter SSN (123-45-6789)"
+              inputMode="numeric"
+              placeholder="XXX-XX-XXXX"
             />
           </div>
           <div className="space-y-1.5">

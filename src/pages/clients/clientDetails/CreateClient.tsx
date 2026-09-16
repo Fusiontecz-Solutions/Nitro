@@ -11,7 +11,7 @@ import type { AppDispatch, RootState } from '@/redux/store'
 import { createClient, updateClient, getClientByClientId } from '@/redux/actions/clientActions'
 import { resetCreateClient, resetUpdateClient, clearClientDetail } from '@/redux/slices/clientSlice'
 import { toast } from 'react-toastify'
-import { DateField, EmailField, NumberField, PhoneField, SelectField, TextField } from '@/components/inputFields/InputFields'
+import { DateField, EmailField, NumberField, PhoneField, SSNField, SelectField, TextField } from '@/components/inputFields/InputFields'
 import { useTheme } from '@/context/ThemeContext'
 import type { OwnerDetail as ApiOwnerDetail } from '@/types/clientTypes'
 
@@ -521,9 +521,9 @@ const CreateClient = () => {
 			<TextField control={control} name={`owners.${index}.middleName`} label="Middle Name" placeholder="Enter middle name" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} disabled={isViewMode} />
 			<TextField control={control} name={`owners.${index}.lastName`} label="Last Name" placeholder="Enter last name" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} required disabled={isViewMode} />
 			<EmailField control={control} name={`owners.${index}.email`} label="Email" placeholder="Enter email address" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} disabled={isViewMode} />
-			<PhoneField control={control} name={`owners.${index}.mobileNumber`} label="Mobile Number" placeholder="(XXX) XXX-XXXX" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} disabled={isViewMode} />
+			<PhoneField control={control} name={`owners.${index}.mobileNumber`} label="Mobile Number" placeholder="XXX-XXX-XXXX" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} disabled={isViewMode} />
 			<DateField control={control} name={`owners.${index}.dateOfBirth`} label="Date of Birth" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />
-			<TextField control={control} name={`owners.${index}.ssn`} label="Social Security Number (SSN)" placeholder="XXX-XX-XXXX" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} required disabled={isViewMode} />
+			<SSNField control={control} name={`owners.${index}.ssn`} label="Social Security Number (SSN)" placeholder="XXX-XX-XXXX" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} required disabled={isViewMode} />
 			<NumberField
 				control={control}
 				name={`owners.${index}.ficoScore`}
@@ -590,7 +590,7 @@ const CreateClient = () => {
 							<Section title="Business Profile">
 								<TextField control={control} name="business.name" label="Business Name" placeholder="Enter business name" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} required />
 								<EmailField control={control} name="business.email" label="Email" placeholder="Enter email address" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />
-								<PhoneField control={control} name="business.number" label="Phone Number" placeholder="(XXX) XXX-XXXX" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />
+								<PhoneField control={control} name="business.number" label="Phone Number" placeholder="XXX-XXX-XXXX" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />
 								<TextField control={control} name="business.website" label="Website" placeholder="https://example.com" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />
 								<DateField control={control} name="business.incorporationDate" label="Incorporation Date" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />
 								<TextField control={control} name="business.incorporationState" label="Incorporation State" placeholder="e.g., FL, NY" labelClassName={isDark ? 'text-white' : 'text-[#374151]'} />

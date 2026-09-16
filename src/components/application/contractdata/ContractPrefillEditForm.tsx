@@ -45,6 +45,7 @@ import {
     contractPrefillToContractColumnUpdate,
     finalCalculationPrefillSyncKey,
     finalizeContractPrefillMoneyFields,
+    formatNetToMerchantPrefillValue,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
     omitLiveOfferMoneyPrefillKeys,
@@ -82,6 +83,8 @@ import {
 import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
+import { getApplicationById } from "@/redux/actions/applicationActions";
+import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
 import { syncContractPrefillToSourceRecords } from "./contractPrefillSourceSync";
@@ -94,6 +97,7 @@ import {
     parseContractSignerOverridesFromPrefill,
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
+import { DISCLOSURE_WIRE_FEE_USD, resolveIncludeWireFee } from "./platformDocumentConfig";
 import { isSignNowContractUiEnabled } from "./contractTemplatePreview";
 import { isSignNowDisclosureLayoutKey } from "./signnowAddendumTemplates";
 import {
@@ -111,6 +115,8 @@ import {
     type ExhibitCEntityPrefill,
 } from "./exhibitCEntityPrefill";
 import { isMultiInstanceAddendumRef } from "./multiInstanceAddendum";
+import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
+import { formatSSN } from "@/utils/formatSSN";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -1127,6 +1133,192 @@ const US_STATE_ABBR_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "achAuthorizationAccountHolderBankState",
 ];
 
+/**
+ * Fields the application / CRM owns. When the live application value differs from what was
+ * saved earlier (merchant changed their email, phone, address, DBA…), the saved override is a
+ * stale snapshot, so it is dropped and the live value wins. Bank, portal, reference and
+ * disclosure fields are not listed here — those are typed by hand and must survive a reload.
+ */
+const LIVE_APPLICATION_OWNED_PREFILL_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
+    "customerName",
+    "clientName",
+    "legalName",
+    "doingBusinessAs",
+    "entityType",
+    "federalTaxIdEin",
+    "securityTaxEin",
+    "authorizationClientTaxId",
+    "clientEmail",
+    "guarantorEmail",
+    "owner2Email",
+    "clientEmail2",
+    "clientPhone",
+    "guarantorPhone",
+    "authorizedBusinessPhone",
+    "achAuthorizationAccountHolderPhone",
+    "owner2Phone",
+    "guarantor2Phone",
+    "clientPhone2",
+    "owner1GuarantorName",
+    "guarantyGuarantor1Name",
+    "guarantyOwner1Name",
+    "owner2GuarantorName",
+    "guarantyGuarantor2Name",
+    "guarantyOwner2Name",
+    "achAuthorizationConcentAccountHolderName",
+    "achAuthorizationAccountHolderName",
+    "achAuthorizationAccountHolderDba",
+    "businessAddress",
+    "businessAddressCity",
+    "businessAddressState",
+    "businessAddressZip",
+    "businessAddressContract",
+    "businessAddressContractCity",
+    "businessAddressContractState",
+    "businessAddressContractZip",
+    "guarantorAddress",
+    "guarantorAddressCity",
+    "guarantorAddressState",
+    "guarantorAddressZip",
+    "achAuthorizationAccountHolderAddress",
+    "achAuthorizationAccountHolderCity",
+    "achAuthorizationAccountHolderState",
+    "achAuthorizationAccountHolderZip",
+    "state",
+];
+
+const EMAIL_PREFILL_KEY_SET = new Set<string>([
+    "clientEmail",
+    "guarantorEmail",
+    "owner2Email",
+    "clientEmail2",
+]);
+const PHONE_PREFILL_KEY_SET = new Set<string>([
+    "clientPhone",
+    "guarantorPhone",
+    "authorizedBusinessPhone",
+    "achAuthorizationAccountHolderPhone",
+    "owner2Phone",
+    "guarantor2Phone",
+    "clientPhone2",
+]);
+
+/** Normalized compare so formatting alone (case, dashes, spacing) never looks like a change. */
+function prefillValuesMatch(key: string, a: string, b: string): boolean {
+    const left = String(a ?? "").trim();
+    const right = String(b ?? "").trim();
+    if (EMAIL_PREFILL_KEY_SET.has(key)) return left.toLowerCase() === right.toLowerCase();
+    if (PHONE_PREFILL_KEY_SET.has(key)) {
+        return left.replace(/\D/g, "") === right.replace(/\D/g, "");
+    }
+    return left.replace(/\s+/g, " ").toLowerCase() === right.replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Drop saved overrides for application-owned fields whose live value has since changed, so the
+ * editor shows current contact / business details instead of the snapshot saved on an earlier open.
+ */
+function stripStaleApplicationOverrides(
+    persisted: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
+    liveDefaults: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const out = { ...(persisted ?? {}) } as Record<string, unknown>;
+    for (const key of LIVE_APPLICATION_OWNED_PREFILL_KEYS) {
+        const live = String((liveDefaults as Record<string, unknown> | null)?.[key] ?? "").trim();
+        const saved = String(out[key] ?? "").trim();
+        if (!live || !saved) continue;
+        if (!prefillValuesMatch(key, live, saved)) delete out[key];
+    }
+    return out as Partial<BuildContractPrefillFieldsArgs>;
+}
+
+/** Scalar application fields the prefill defaults are built from. */
+const APPLICATION_PREFILL_FINGERPRINT_KEYS = new Set([
+    "updatedAt",
+    "businessName",
+    "legalName",
+    "businessLegalName",
+    "dba",
+    "doingBusinessAs",
+    "ein",
+    "federalTaxId",
+    "federalTaxIdEin",
+    "entityType",
+    "businessType",
+    "email",
+    "businessEmail",
+    "phone",
+    "businessPhone",
+    "mobileNumber",
+    "address",
+    "businessAddress",
+    "city",
+    "state",
+    "zip",
+    "zipCode",
+    "firstName",
+    "lastName",
+    "ownerFirstName",
+    "ownerLastName",
+    "ownerEmail",
+    "ownerPhone",
+    "ownerAddress",
+    "ownershipPercentage",
+    "title",
+    "ssn",
+    "ssnNumber",
+    "driverLicense",
+    "driverLicenseNumber",
+]);
+
+/** Objects worth descending into when fingerprinting the application. */
+const APPLICATION_PREFILL_CONTAINER_KEYS = new Set([
+    "client",
+    "owner",
+    "owners",
+    "clientOwners",
+    "applicationOwners",
+    "guarantor",
+    "guarantors",
+    "business",
+    "businessDetails",
+    "basicDetails",
+    "contactDetails",
+]);
+
+/**
+ * Content fingerprint of the application fields the prefill form reads.
+ *
+ * Without this, the hydration key only watched the contract records, so editing a business
+ * owner's name, email, phone or address on the application left the open prefill form (and
+ * the values it later saves onto the contract) showing the snapshot from when it first
+ * hydrated. Stringifying the whole application is not an option — it carries bank statement
+ * and document arrays — so only the fields that feed prefill defaults are hashed.
+ */
+function applicationPrefillFingerprint(application: unknown): string {
+    const parts: string[] = [];
+    const seen = new Set<unknown>();
+    const walk = (node: unknown, depth: number, path: string) => {
+        if (!node || typeof node !== "object" || depth > 4 || seen.has(node)) return;
+        seen.add(node);
+        if (Array.isArray(node)) {
+            node.slice(0, 6).forEach((row, i) => walk(row, depth + 1, `${path}[${i}]`));
+            return;
+        }
+        for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+            if (value === null || typeof value !== "object") {
+                if (APPLICATION_PREFILL_FINGERPRINT_KEYS.has(key)) {
+                    parts.push(`${path}.${key}=${String(value ?? "")}`);
+                }
+                continue;
+            }
+            if (APPLICATION_PREFILL_CONTAINER_KEYS.has(key)) walk(value, depth + 1, `${path}.${key}`);
+        }
+    };
+    walk(application, 0, "app");
+    return parts.sort().join("|");
+}
+
 function trimField(values: Record<keyof BuildContractPrefillFieldsArgs, string>, key: keyof BuildContractPrefillFieldsArgs) {
     return String(values[key] ?? "").trim();
 }
@@ -1135,6 +1327,24 @@ function validateEmail(value: string): string | null {
     if (!value) return null;
     const simple = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return simple.test(value) ? null : "Enter a valid email address.";
+}
+
+/** Prefill keys holding a phone number, formatted for display as XXX-XXX-XXXX. */
+function isPhonePrefillKey(key: string): boolean {
+    return /phone|mobile|fax/i.test(key);
+}
+
+/** Prefill keys holding an SSN, formatted for display as XXX-XX-XXXX. */
+function isSsnPrefillKey(key: string): boolean {
+    return /ssn/i.test(key) || /Ss$/.test(key) || /socialSecurity/i.test(key);
+}
+
+/** Canonical dashed display for phone / SSN prefill values; other keys pass through. */
+function formatPrefillDisplayValue(key: string, value: string): string {
+    if (!value) return value;
+    if (isPhonePrefillKey(key)) return formatUSPhoneNumber(value);
+    if (isSsnPrefillKey(key)) return formatSSN(value);
+    return value;
 }
 
 function validatePhone(value: string): string | null {
@@ -1528,6 +1738,11 @@ export function ContractPrefillEditForm({
     const [saveErrorSections, setSaveErrorSections] = useState<PrefillErrorSectionHint[]>([]);
     const [activeSectionId, setActiveSectionId] = useState(CONTRACT_PREFILL_SECTIONS[0]?.id ?? "merchant");
     const purchasePercentTouchedRef = useRef(false);
+    /** Fields the user edited in this session — kept when live sources re-hydrate the form. */
+    const dirtyFieldKeysRef = useRef(new Set<keyof BuildContractPrefillFieldsArgs>());
+    /** Edit order per field — "Sync to all" copies from the most recently edited copy. */
+    const fieldEditedAtRef = useRef(new Map<keyof BuildContractPrefillFieldsArgs, number>());
+    const fieldEditSeqRef = useRef(0);
     const pendingFocusFieldKeyRef = useRef<keyof BuildContractPrefillFieldsArgs | null>(null);
     const [spaModalOpen, setSpaModalOpen] = useState(false);
     const [savingSpaCalculation, setSavingSpaCalculation] = useState(false);
@@ -1540,6 +1755,31 @@ export function ContractPrefillEditForm({
             purchasePercentTouchedRef.current = false;
         }
     }, [open]);
+
+    /**
+     * Application detail is served from a 5-minute IndexedDB cache, and owner / client edits
+     * made elsewhere do not invalidate it. Opening this form therefore has to force a fresh
+     * read, or the prefill (and the values it saves onto the contract) keeps showing the
+     * business owner details as they were when the cache entry was written.
+     */
+    const refreshedApplicationKeyRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!open) {
+            refreshedApplicationKeyRef.current = null;
+            return;
+        }
+        const app = applicationData as
+            | { _id?: string; id?: string; applicationId?: number }
+            | null;
+        const uuid = String(applicationUuid || app?._id || app?.id || "").trim();
+        if (!uuid || refreshedApplicationKeyRef.current === uuid) return;
+        refreshedApplicationKeyRef.current = uuid;
+        invalidateApplicationDetailCache(uuid);
+        if (app?.applicationId != null) {
+            invalidateApplicationDetailCache(String(app.applicationId));
+        }
+        void dispatch(getApplicationById(uuid));
+    }, [open, applicationUuid, applicationData, dispatch]);
 
     const documentTemplatePrefillByMappingId = useMemo(() => {
         const raw = additionalContractPrefillJson?.[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
@@ -1864,6 +2104,8 @@ export function ContractPrefillEditForm({
         let persistedForMerge = forceLiveOfferMoney
             ? omitLiveOfferMoneyPrefillKeys(persistedRaw)
             : persistedRaw;
+        /** Live application contact / business details always beat an older saved snapshot. */
+        persistedForMerge = stripStaleApplicationOverrides(persistedForMerge, defaults);
         const defaultsForMerge = forceLiveOfferMoney
             ? omitLiveOfferMoneyPrefillKeys(defaults)
             : defaults;
@@ -1893,9 +2135,23 @@ export function ContractPrefillEditForm({
             }),
             applicationData,
         );
+        /**
+         * An unchecked "$25 wire fee" that has not been saved yet still has to drive the
+         * recomputed money here. Without it the overlay resolves the preference from the
+         * persisted snapshot ("on"), re-adds $25 to recipient funds, and the box appears
+         * to do nothing until a save + reload round trip.
+         */
+        const liveIncludeWireFee =
+            !forceLiveOfferMoney && dirtyFieldKeysRef.current.has("includeWireFee")
+                ? String(valuesRef.current.includeWireFee ?? "").trim()
+                : String((merged as Record<string, unknown>).includeWireFee ?? "").trim();
+        if (liveIncludeWireFee) {
+            (merged as Record<string, unknown>).includeWireFee = liveIncludeWireFee;
+        }
         merged = applyLiveOfferSyncToPrefillPartial(merged, applicationData, offerDecision, {
             forceLiveOfferMoney: forceLiveOfferMoney || undefined,
             contract: contractRecords?.contract ?? null,
+            includeWireFee: liveIncludeWireFee || undefined,
         });
 
         const ownerCount = Math.min(
@@ -2007,26 +2263,131 @@ export function ContractPrefillEditForm({
     const resetDisclosureFromSourcesRef = useRef(resetDisclosureFromSources);
     resetDisclosureFromSourcesRef.current = resetDisclosureFromSources;
 
-    const openedHydratedRef = useRef(false);
+    const offerDecisionSyncKey = useMemo(() => {
+        const root =
+            offerDecision && typeof offerDecision === "object"
+                ? offerDecision
+                : (() => {
+                      const app = applicationData as Record<string, unknown> | null;
+                      const embedded =
+                          (app?.offerDecision as Record<string, unknown> | undefined) ??
+                          (app?.OfferDecision as Record<string, unknown> | undefined) ??
+                          null;
+                      if (embedded && typeof embedded === "object" && !Array.isArray(embedded)) {
+                          return embedded;
+                      }
+                      const termsRaw = app?.termsOffers;
+                      if (Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object") {
+                          return termsRaw[0] as Record<string, unknown>;
+                      }
+                      if (termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)) {
+                          return termsRaw as Record<string, unknown>;
+                      }
+                      return null;
+                  })();
+        const offerKey = (() => {
+            if (!root || typeof root !== "object") return "";
+            const inner =
+                root.offer != null && typeof root.offer === "object" && !Array.isArray(root.offer)
+                    ? (root.offer as Record<string, unknown>)
+                    : root;
+            return [
+                inner.offer,
+                inner.approvedAmount,
+                inner.totalRemit,
+                inner.fees,
+                inner.rate,
+                inner.term,
+                inner.termLength,
+                inner.numberOfPayments,
+                inner.paymentsTerms,
+                inner.frequency,
+                inner.paymentFrequency,
+                inner.monthlyPayment,
+                inner.dailyPayment,
+                inner.repayPerPeriod,
+                inner.paymentAmount,
+                inner.ourRemit,
+                inner.refinanceAmount,
+                inner.updatedAt,
+            ]
+                .map((v) => String(v ?? ""))
+                .join("|");
+        })();
+        const finalCalcKey = finalCalculationPrefillSyncKey(applicationData);
+        return [offerKey, finalCalcKey].filter(Boolean).join("||");
+    }, [offerDecision, applicationData]);
+
+    const hydratedSourceKeyRef = useRef<string | null>(null);
     const prevActiveOwnerCountRef = useRef(activeOwnerCount);
     const prevOfferDecisionSyncKeyRef = useRef("");
     const formReady = prefillOverridesReady && persistedPrefillOverrides !== undefined;
 
+    /**
+     * Content fingerprint of every source the form hydrates from. Parent panels load the
+     * contract, bank details, owners and offer asynchronously, so hydrating only once on
+     * open left the form showing the first (often empty/stale) snapshot. Re-hydrating on
+     * this key pulls the live values whenever the data actually changes, while identical
+     * re-renders are no-ops.
+     */
+    const prefillSourceKey = useMemo(() => {
+        try {
+            return JSON.stringify([
+                applicationPrefillFingerprint(applicationData),
+                strippedMainPrefillOverrides ?? null,
+                contractRecords?.contract ?? null,
+                contractRecords?.bankDetail ?? null,
+                contractRecords?.owners ?? null,
+                contractRecords?.guarantors ?? null,
+                contractRecords?.ach ?? null,
+                offerDecisionSyncKey,
+                agreementDateForDefaults,
+                documentTemplatePrefillByMappingId,
+            ]);
+        } catch {
+            return String(Date.now());
+        }
+    }, [
+        applicationData,
+        strippedMainPrefillOverrides,
+        contractRecords?.contract,
+        contractRecords?.bankDetail,
+        contractRecords?.owners,
+        contractRecords?.guarantors,
+        contractRecords?.ach,
+        offerDecisionSyncKey,
+        agreementDateForDefaults,
+        documentTemplatePrefillByMappingId,
+    ]);
+
     useEffect(() => {
         if (!open) {
-            openedHydratedRef.current = false;
+            hydratedSourceKeyRef.current = null;
+            dirtyFieldKeysRef.current = new Set();
+            fieldEditedAtRef.current = new Map();
             prevActiveOwnerCountRef.current = activeOwnerCount;
             return;
         }
         if (!formReady) return;
-        if (openedHydratedRef.current) return;
-        openedHydratedRef.current = true;
-        const nextMain = resetFromSourcesRef.current();
+        if (hydratedSourceKeyRef.current === prefillSourceKey) return;
+        const firstHydration = hydratedSourceKeyRef.current === null;
+        hydratedSourceKeyRef.current = prefillSourceKey;
+        const preserved = firstHydration
+            ? null
+            : // Keep what the user typed; everything else follows the live sources.
+              Object.fromEntries(
+                  [...dirtyFieldKeysRef.current].map((key) => [key, valuesRef.current[key] ?? ""]),
+              );
+        const fresh = resetFromSourcesRef.current();
+        const nextMain =
+            preserved && Object.keys(preserved).length > 0
+                ? { ...fresh, ...(preserved as Partial<typeof fresh>) }
+                : fresh;
+        if (nextMain !== fresh) setValues(nextMain);
         resetAddendumFromSourcesRef.current(nextMain);
         resetDisclosureFromSourcesRef.current();
         prevActiveOwnerCountRef.current = activeOwnerCount;
-        // Intentionally omit persistedPrefillOverrides — re-hydrating on parent updates resets in-progress edits.
-    }, [open, formReady, activeOwnerCount]);
+    }, [open, formReady, activeOwnerCount, prefillSourceKey]);
 
     const seededDisclosureMappingIdRef = useRef<string | null>(null);
     const disclosureSavedFingerprint = JSON.stringify(
@@ -2214,60 +2575,6 @@ export function ContractPrefillEditForm({
         return PREFILL_SYNC_GROUPS.filter((group) => group.keys.some((k) => keysInSection.has(k)));
     }, [activeSection, isLinkedAddendumSection, isLinkedDisclosureSection, isExhibitCEntitySection]);
 
-    const offerDecisionSyncKey = useMemo(() => {
-        const root =
-            offerDecision && typeof offerDecision === "object"
-                ? offerDecision
-                : (() => {
-                      const app = applicationData as Record<string, unknown> | null;
-                      const embedded =
-                          (app?.offerDecision as Record<string, unknown> | undefined) ??
-                          (app?.OfferDecision as Record<string, unknown> | undefined) ??
-                          null;
-                      if (embedded && typeof embedded === "object" && !Array.isArray(embedded)) {
-                          return embedded;
-                      }
-                      const termsRaw = app?.termsOffers;
-                      if (Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object") {
-                          return termsRaw[0] as Record<string, unknown>;
-                      }
-                      if (termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)) {
-                          return termsRaw as Record<string, unknown>;
-                      }
-                      return null;
-                  })();
-        const offerKey = (() => {
-            if (!root || typeof root !== "object") return "";
-            const inner =
-                root.offer != null && typeof root.offer === "object" && !Array.isArray(root.offer)
-                    ? (root.offer as Record<string, unknown>)
-                    : root;
-            return [
-                inner.offer,
-                inner.approvedAmount,
-                inner.totalRemit,
-                inner.fees,
-                inner.rate,
-                inner.term,
-                inner.termLength,
-                inner.numberOfPayments,
-                inner.paymentsTerms,
-                inner.frequency,
-                inner.paymentFrequency,
-                inner.monthlyPayment,
-                inner.dailyPayment,
-                inner.repayPerPeriod,
-                inner.paymentAmount,
-                inner.ourRemit,
-                inner.refinanceAmount,
-                inner.updatedAt,
-            ]
-                .map((v) => String(v ?? ""))
-                .join("|");
-        })();
-        const finalCalcKey = finalCalculationPrefillSyncKey(applicationData);
-        return [offerKey, finalCalcKey].filter(Boolean).join("||");
-    }, [offerDecision, applicationData]);
 
     useEffect(() => {
         if (!open) {
@@ -2298,13 +2605,34 @@ export function ContractPrefillEditForm({
         const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {};
         const syncedLabels: string[] = [];
         let foundFilledSharedField = false;
-        // Prefer groups that appear on this stage so we always copy from the visible fields.
-        const groupsToSync =
-            activeSectionSyncGroups.length > 0 ? activeSectionSyncGroups : PREFILL_SYNC_GROUPS;
-        for (const group of groupsToSync) {
-            const sourceKey = group.keys.find(
-                (k) => keysInSection.has(k) && String(values[k] ?? "").trim() !== "",
+        /**
+         * Source of truth for a shared value, in order: the field the user edited most
+         * recently, then a filled field on this stage, then any filled field in the group.
+         * The last two fallbacks are what make the button work for a value the user changed
+         * on an earlier stage — previously only fields on the current stage could be a
+         * source, so the edit never reached the other copies.
+         */
+        const resolveSyncSourceKey = (group: PrefillSyncGroup) => {
+            let recentKey: keyof BuildContractPrefillFieldsArgs | null = null;
+            let recentAt = -1;
+            for (const k of group.keys) {
+                if (!String(values[k] ?? "").trim()) continue;
+                const editedAt = fieldEditedAtRef.current.get(k) ?? -1;
+                if (editedAt > recentAt) {
+                    recentAt = editedAt;
+                    recentKey = k;
+                }
+            }
+            if (recentKey && recentAt >= 0) return recentKey;
+            return (
+                group.keys.find((k) => keysInSection.has(k) && String(values[k] ?? "").trim()) ??
+                group.keys.find((k) => String(values[k] ?? "").trim()) ??
+                null
             );
+        };
+        // Every shared value is levelled, not just the ones visible on this stage.
+        for (const group of PREFILL_SYNC_GROUPS) {
+            const sourceKey = resolveSyncSourceKey(group);
             if (!sourceKey) continue;
             foundFilledSharedField = true;
             const value = String(values[sourceKey] ?? "").trim();
@@ -2319,14 +2647,17 @@ export function ContractPrefillEditForm({
             if (changed) syncedLabels.push(group.label);
         }
         if (!foundFilledSharedField) {
-            toast.info("Fill a shared field on this stage first, then sync.");
+            toast.info("Fill a shared field first, then sync.");
             return;
         }
         if (!syncedLabels.length) {
-            toast.info("Shared fields on this stage already match every other stage.");
+            toast.info("Shared fields already match on every stage.");
             return;
         }
         const nextMain = { ...values, ...updates };
+        for (const k of Object.keys(updates) as (keyof BuildContractPrefillFieldsArgs)[]) {
+            dirtyFieldKeysRef.current.add(k);
+        }
         setValues(nextMain);
         setAddendumFieldValues((linked) =>
             overlayLinkedDocFieldsFromMain(linked, nextMain, {
@@ -2626,6 +2957,9 @@ export function ContractPrefillEditForm({
                         : {},
                 );
             }
+            dirtyFieldKeysRef.current = new Set();
+            fieldEditedAtRef.current = new Map();
+            hydratedSourceKeyRef.current = null;
             resetFromSources();
             resetAddendumFromSources();
             resetDisclosureFromSources();
@@ -2645,6 +2979,7 @@ export function ContractPrefillEditForm({
     const handleApplyCalculatedSpa = useCallback(
         async (spa: string) => {
             purchasePercentTouchedRef.current = false;
+            dirtyFieldKeysRef.current.add("purchasePercent");
             setValues((prev) => ({ ...prev, purchasePercent: spa }));
             setSaveError(null);
             setFieldErrors((prev) => {
@@ -2712,6 +3047,9 @@ export function ContractPrefillEditForm({
             if (key === "purchasePercent") {
                 purchasePercentTouchedRef.current = true;
             }
+            dirtyFieldKeysRef.current.add(key);
+            fieldEditSeqRef.current += 1;
+            fieldEditedAtRef.current.set(key, fieldEditSeqRef.current);
             const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {
                 [key]: v,
             };
@@ -2727,6 +3065,31 @@ export function ContractPrefillEditForm({
                     }
                     updates[mirrorKey] = v;
                 }
+            }
+            if (key === "includeWireFee") {
+                /**
+                 * Recipient funds = advance − fees − $25 wire − refinance. The field is a
+                 * plain text input, so toggling the checkbox must shift it here or the old
+                 * (fee-included) amount is saved and the contract keeps the $25.
+                 */
+                const turningOn = resolveIncludeWireFee(v);
+                const current = Number(
+                    String(valuesRef.current.netToMerchant ?? "").replace(/[$,\s]/g, ""),
+                );
+                if (Number.isFinite(current) && String(valuesRef.current.netToMerchant ?? "").trim()) {
+                    const delta = turningOn
+                        ? -DISCLOSURE_WIRE_FEE_USD
+                        : DISCLOSURE_WIRE_FEE_USD;
+                    updates.netToMerchant = formatNetToMerchantPrefillValue(
+                        Math.max(0, Math.round((current + delta) * 100) / 100),
+                    );
+                }
+            }
+            // Every key this edit writes (mirrors, and the wire-fee-adjusted recipient funds)
+            // must count as user-edited, or the next re-hydration recomputes it from the
+            // saved sources and silently puts the $25 back into Recipient funds.
+            for (const touched of Object.keys(updates) as (keyof BuildContractPrefillFieldsArgs)[]) {
+                dirtyFieldKeysRef.current.add(touched);
             }
             const nextMain = { ...valuesRef.current, ...updates };
             setValues(nextMain);
@@ -3280,8 +3643,13 @@ export function ContractPrefillEditForm({
                                                                             ? "new-password"
                                                                             : undefined
                                                                     }
-                                                                    value={values[key] ?? ""}
-                                                                    onChange={(e) => setField(key, e.target.value)}
+                                                                    value={formatPrefillDisplayValue(key, values[key] ?? "")}
+                                                                    onChange={(e) =>
+                                                                        setField(
+                                                                            key,
+                                                                            formatPrefillDisplayValue(key, e.target.value),
+                                                                        )
+                                                                    }
                                                                     disabled={readOnly}
                                                                     aria-invalid={Boolean(fieldErrors[key])}
                                                                     className={cn(
@@ -3333,7 +3701,11 @@ export function ContractPrefillEditForm({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => resetFromSources({ forceLiveOfferMoney: true })}
+                                onClick={() => {
+                                    dirtyFieldKeysRef.current = new Set();
+                                    fieldEditedAtRef.current = new Map();
+                                    resetFromSources({ forceLiveOfferMoney: true });
+                                }}
                                 disabled={saving}
                             >
                                 Reload from application

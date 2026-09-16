@@ -23,6 +23,7 @@ const CreatePosition = lazy(
 );
 const UserSetting = lazy(() => import('../pages/Userssettings/UserSetting'));
 const PublicApprovalPage = lazy(() => import('../pages/public/PublicApprovalPage'));
+const SigningPortalPage = lazy(() => import('../pages/public/SigningPortalPage'));
 const PublicDocumentRequestPage = lazy(
     () => import('../pages/public/PublicDocumentRequestPage'),
 );
@@ -114,6 +115,11 @@ const Routes: RouteObject[] = [
     createRoute({
         path: '/public/application/documents/:token',
         element: <PublicDocumentRequestPage />,
+    }),
+    // Merchant signing portal for contracts emailed via SendGrid (token in the link)
+    createRoute({
+        path: '/sign/:envelopeId',
+        element: <SigningPortalPage />,
     }),
     createRoute({
         path: '/embedded-complete',

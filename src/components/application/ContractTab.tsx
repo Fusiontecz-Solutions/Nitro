@@ -102,6 +102,7 @@ import {
     applyLiveOfferSyncToPrefillPartial,
     applyTexasContractUsdMoneyToPrefillFields,
     computeNetToMerchantDollars,
+    resolveIncludeWireFeePreference,
     contractPrefillFieldsToPartial,
     contractPrefillToContractColumnUpdate,
     mergeSyncedPartialIntoPrefillFields,
@@ -1213,6 +1214,18 @@ export default function ContractTab({
         computeNetToMerchantDollars({
             application: applicationData as unknown as Record<string, unknown> | undefined,
             offerDecision: offerRecord,
+            /**
+             * Only the wire-fee preference — passing the whole contract would also let its
+             * stored amounts outrank the live offer this tab is built from.
+             */
+            prefill: {
+                includeWireFee: resolveIncludeWireFeePreference(
+                    undefined,
+                    contractRecordForActions,
+                )
+                    ? "true"
+                    : "false",
+            },
         }) ?? Math.max(0, approvedAmount - commissionAmount - refinanceAmountNum);
     const feeAmount = commissionAmount;
     const estimatedTotalPayment = repaymentStack?.payback ?? paybackAmount;
@@ -2341,6 +2354,12 @@ export default function ContractTab({
             mainContractLayoutKey?: string | null;
             /** Deal Review values from the contract modal (latest UI state). */
             prefillFields?: Array<{ id: string; value: string }>;
+            /**
+             * Live "$25 wire fee" preference from the contract modal. It is not a
+             * document field, so it cannot ride along in `prefillFields`; without it the
+             * money re-sync below falls back to the contract row and silently re-adds $25.
+             */
+            includeWireFee?: unknown;
             /** Correlation id for SignNow Review timing logs only. */
             timingRequestId?: string;
         },
@@ -2488,19 +2507,28 @@ export default function ContractTab({
             let latestContract: any = fetchedContract;
             const openSignNowFast =
                 isSignNowContractUiEnabled() && !standaloneAchOnly;
-            if (!openSignNowFast) {
-                try {
-                    const refreshed = await dispatch(
-                        getByApplicationIdContract(String(applicationUuid)),
-                    ).unwrap();
-                    const c = (refreshed as any)?.data ?? refreshed;
-                    if (c) {
-                        latestContract = c;
-                        setFetchedContract(c);
-                    }
-                } catch {
-                    /* use fetchedContract */
+            /**
+             * Always re-read the contract row before building the send payload.
+             *
+             * `fetchedContract` is ContractTab state; saving Verify Prefill happens inside
+             * PDFViewerModal and only refreshes that modal's copy, so this row can be an
+             * older snapshot. Everything below (prefill build, the live-offer money
+             * re-sync, signer overrides) keys off it, which is how an unchecked $25 wire
+             * fee and a corrected Net Amount came back as the pre-edit values in SignNow.
+             * The SignNow fast path used to skip this GET for latency; the DB row is the
+             * source of truth for contract generation, so it pays the one request.
+             */
+            try {
+                const refreshed = await dispatch(
+                    getByApplicationIdContract(String(applicationUuid)),
+                ).unwrap();
+                const c = (refreshed as any)?.data ?? refreshed;
+                if (c) {
+                    latestContract = c;
+                    setFetchedContract(c);
                 }
+            } catch {
+                /* use fetchedContract */
             }
 
             const contractNumericIdForPersist = Number((latestContract as { id?: unknown })?.id);
@@ -2627,13 +2655,29 @@ export default function ContractTab({
              * DocuSign data label — re-sync after modal overlay in case base rebuild was stale.
              */
             {
+                const includeWireFeeForSend = resolveIncludeWireFeePreference(
+                    sendPayload.includeWireFee,
+                    (latestContract as Record<string, unknown> | null | undefined) ?? null,
+                )
+                    ? "true"
+                    : "false";
                 const moneySynced = applyLiveOfferSyncToPrefillPartial(
-                    contractPrefillFieldsToPartial(prefillFieldsPayload),
+                    contractPrefillFieldsToPartial(prefillFieldsPayload, {
+                        includeWireFee: includeWireFeeForSend,
+                    }),
                     applicationData,
                     (offerDecision as Record<string, unknown> | null) ?? null,
                     {
                         contract:
                             (latestContract as Record<string, unknown> | null | undefined) ?? null,
+                        /**
+                         * `prefillFields` carries document ids only, so the partial never has
+                         * `includeWireFee`. Left unset this overlay resolved the preference as
+                         * "on", re-added $25 to origination, and — because the result then
+                         * differed from the saved Net Amount — force-overwrote the corrected
+                         * net that Verify Prefill had just persisted.
+                         */
+                        includeWireFee: includeWireFeeForSend,
                     },
                 );
                 prefillFieldsPayload = mergeSyncedPartialIntoPrefillFields(
@@ -2986,7 +3030,17 @@ export default function ContractTab({
 
                 const syncedPartial = applySeparatedAddressPrefillFields(
                     applyClientPersonNamePrefillFields(
-                        contractPrefillFieldsToPartial(prefillFieldsPayload),
+                        // Keep the saved "$25 wire fee" preference: this partial is persisted
+                        // back onto the contract, so a wrong un-grossing sticks.
+                        contractPrefillFieldsToPartial(prefillFieldsPayload, {
+                            includeWireFee: resolveIncludeWireFeePreference(
+                                sendPayload.includeWireFee,
+                                (latestContract as Record<string, unknown> | null | undefined) ??
+                                    null,
+                            )
+                                ? "true"
+                                : "false",
+                        }),
                         applicationData,
                     ),
                     applicationData,

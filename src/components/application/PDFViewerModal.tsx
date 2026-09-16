@@ -485,6 +485,8 @@ interface PDFViewerModalProps {
         mainContractLayoutKey?: string | null;
         /** Current Deal Review values — always applied on each Review & send open. */
         prefillFields?: Array<{ id: string; value: string }>;
+        /** Live "$25 wire fee" preference — not a document field, so it is passed separately. */
+        includeWireFee?: unknown;
         /** SignNow: false opens an in-CRM review iframe; true emails signers immediately. */
         autoSend?: boolean;
         /** Correlation id for SignNow Review timing logs only. */
@@ -2002,6 +2004,8 @@ const PDFViewerModal = ({
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
     const [isSending, setIsSending] = useState(false);
+    /** "Send via SendGrid" — CRM signing portal, independent of the SignNow invite. */
+    const [isSendingViaSendGrid, setIsSendingViaSendGrid] = useState(false);
     const sendingLockRef = useRef(false);
     const [isCancellingContract, setIsCancellingContract] = useState(false);
     /** Set when the browser blocks `window.open` after the draft URL is ready — user opens via button click. */
@@ -2861,6 +2865,17 @@ const PDFViewerModal = ({
     ]);
 
     const hasSavedSignerOverrides = Boolean(contractSignerOverrides?.length);
+
+    /**
+     * `contractOwnerList` is shared redux state, so before this contract's fetch
+     * lands it still holds the previous contract's rows (or none). Rendering the
+     * Summary signers off that stale list is what made the names/emails flip a
+     * moment after the step opened, so hold the list until both the saved signer
+     * overrides (prefill) and this contract's owner rows are in.
+     */
+    const [signerOwnersLoadedForContractId, setSignerOwnersLoadedForContractId] =
+        useState<number | null>(null);
+
     const uploadedDocs = Array.isArray(uploadedDocsState.data)
         ? uploadedDocsState.data
         : EMPTY_LIST;
@@ -3675,6 +3690,7 @@ const PDFViewerModal = ({
             setSessionEnvelopeId(null);
             setDocuSignOpenUrl(null);
             setContractSignerOverrides(null);
+            setSignerOwnersLoadedForContractId(null);
             setShowRecipientEditor(false);
             autoSeededSignersKeyRef.current = "";
             draftPreparedAddendumIdRef.current = undefined;
@@ -3854,6 +3870,12 @@ const PDFViewerModal = ({
         const n = Number(contractId);
         return Number.isFinite(n) && n > 0 ? n : null;
     }, [resolvedContractId, contractId]);
+
+    /** Summary signers are only trustworthy once prefill + this contract's owners are in. */
+    const summarySignersReady =
+        contractPrefillLoaded &&
+        (effectiveContractId == null ||
+            signerOwnersLoadedForContractId === Number(effectiveContractId));
 
     const linkedEnvelopeId = useMemo(() => {
         const session = String(sessionEnvelopeId || "").trim();
@@ -5298,6 +5320,70 @@ const PDFViewerModal = ({
         }
     };
 
+    /**
+     * Email the merchant a CRM signing-portal link through SendGrid instead of
+     * letting SignNow send the invite. The package must already exist (Review
+     * completed) — the portal remints a session from that same embedded invite.
+     */
+    const handleSendViaSendGrid = async () => {
+        const envelopeId = String(
+            sessionEnvelopeId || linkedEnvelopeIdRef.current || "",
+        ).trim();
+        if (!envelopeId) {
+            toast.error(
+                "Finish Review in SignNow first — there is no contract package to send yet.",
+            );
+            return;
+        }
+        const roles = buildDocuSignRolesForSync();
+        const validation = validateDocuSignSignerRoles(roles);
+        if (!validation.valid) {
+            toast.error(
+                validation.message ||
+                    "Add signer role names and emails in Contract Signers before sending.",
+            );
+            return;
+        }
+        const merchantLabel =
+            String(
+                resolveContractBusinessLegalNameForPrefill(
+                    (resolvedContract as Record<string, unknown> | null) ?? {},
+                    applicationData,
+                ) || "",
+            ).trim() || "Your funding agreement";
+        setIsSendingViaSendGrid(true);
+        try {
+            await axiosPost("/docusign/send-contract-portal", {
+                envelopeId,
+                roles,
+                contractLabel: merchantLabel,
+                funderName: String(selectedFunderRef.current || selectedFunder || "").trim(),
+                // Build the values at click time, exactly as the SignNow send
+                // does. Without them the portal re-published the document using
+                // whatever Owner review had written, so a contract edited after
+                // review still emailed its previous amounts.
+                prefillFields: buildDocuSignPrefillFieldsPayload(),
+            });
+            contractWasSentRef.current = true;
+            setSentStepUnlocked(true);
+            setSentAt(new Date());
+            setActiveStep("sent");
+            onContractDocumentsChanged?.();
+            toast.success(
+                "Signing link emailed to the merchant. They can sign from that link — no SignNow account needed.",
+            );
+        } catch (error) {
+            const message =
+                (error as { response?: { data?: { message?: string } } })?.response?.data
+                    ?.message ||
+                (error as Error)?.message ||
+                "Could not email the signing link.";
+            toast.error(String(message));
+        } finally {
+            setIsSendingViaSendGrid(false);
+        }
+    };
+
     const handleSend = async () => {
         const clickAt = Date.now();
         if (sendingLockRef.current || isSending) return;
@@ -5664,6 +5750,13 @@ const PDFViewerModal = ({
                             selectedFunderProfile?.id,
                         ),
                         prefillFields: prefillFieldsForDraft,
+                        // Not a document field, so it cannot ride along in prefillFields.
+                        // Without it the send path re-resolves the wire fee from the
+                        // contract row and re-adds $25 after the box was unchecked.
+                        includeWireFee: mergeContractPrefillOverrideLayers(
+                            contractPrefillOverrides,
+                            contractPrefillLoaded ? contractPrefillFromDb : null,
+                        ).includeWireFee,
                         autoSend: false,
                         ...(signNowTimingRequestId
                             ? { timingRequestId: signNowTimingRequestId }
@@ -8907,7 +9000,10 @@ const PDFViewerModal = ({
         dispatch(getAllAddendum({ contractId: id }));
         dispatch(getAllACH({ contractId: id }));
         dispatch(getAllEPO({ contractId: id }));
-        dispatch(getAllContractOwners({ contractId: id }));
+        void dispatch(getAllContractOwners({ contractId: id }))
+            .unwrap()
+            .catch(() => null)
+            .finally(() => setSignerOwnersLoadedForContractId(id));
         dispatch(getAllContractGuarantors({ contractId: id }));
     }, [isOpen, activeStep, effectiveContractId, dispatch]);
 
@@ -9972,7 +10068,7 @@ const PDFViewerModal = ({
                                                     Info Required
                                                 </h2>
                                                 <p className="mt-0.5 text-xs leading-snug text-slate-600 dark:text-slate-400">
-                                                    Link DocuSign templates, set contract state and funder, then capture
+                                                    Link Signnow  templates, set contract state and funder, then capture
                                                     addendum and ACH details for sending.
                                                 </p>
                                             </div>
@@ -12160,12 +12256,27 @@ const PDFViewerModal = ({
                                             <div className="flex items-center justify-between px-1">
                                                 <h3 className="text-sm font-bold text-slate-800 tracking-tight">Contract Signers</h3>
                                                 <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-                                                    {summaryTemplateRoles.length} Total Recipients
+                                                    {summarySignersReady
+                                                        ? `${summaryTemplateRoles.length} Total Recipients`
+                                                        : "Loading recipients…"}
                                                 </span>
                                             </div>
 
                                             <div className="grid gap-3">
-                                                {summaryTemplateRoles.map((r, index) => {
+                                                {!summarySignersReady
+                                                    ? Array.from({ length: 2 }).map((_, i) => (
+                                                          <div
+                                                              key={`signer-skeleton-${i}`}
+                                                              className="flex items-center gap-4 rounded-xl border border-[var(--brand)]/10 bg-[var(--brand)]/5 p-3"
+                                                          >
+                                                              <div className="h-10 w-10 shrink-0 animate-pulse rounded-full bg-slate-200" />
+                                                              <div className="flex-1 space-y-2">
+                                                                  <div className="h-2.5 w-24 animate-pulse rounded bg-slate-200" />
+                                                                  <div className="h-3 w-56 max-w-full animate-pulse rounded bg-slate-100" />
+                                                              </div>
+                                                          </div>
+                                                      ))
+                                                    : summaryTemplateRoles.map((r, index) => {
                                                     const roleRow = r as Record<string, unknown>;
                                                     const roleLabel =
                                                         String(roleRow.roleName || "").trim() ||
@@ -12216,20 +12327,17 @@ const PDFViewerModal = ({
 
                                                                 <div className="mt-0.5 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
                                                                     <span className="text-sm font-semibold text-slate-900 truncate">
-                                                                        {(
-                                                                            !hasSavedSignerOverrides &&
-                                                                            signer.role === "Client"
-                                                                                ? (
-                                                                                    ownerEntries
-                                                                                        .map((entry) =>
-                                                                                            `${String(entry.ownerFirstName || "").trim()} ${String(entry.ownerLastName || "").trim()}`.trim(),
-                                                                                        )
-                                                                                        .find(Boolean) ||
-                                                                                    `${String((applicationData as any)?.client?.ownerFirstName || (applicationData as any)?.client?.owner?.firstName || "").trim()} ${String((applicationData as any)?.client?.ownerLastName || (applicationData as any)?.client?.owner?.lastName || "").trim()}`.trim() ||
-                                                                                    signer.name
-                                                                                )
-                                                                                : signer.name
-                                                                        ) || "Awaiting Name..."}
+                                                                        {/* Same name source whether or not signers were saved — switching
+                                                                            sources on save is what made this row change under the user. */}
+                                                                        {signer.name ||
+                                                                            (signer.role === "Client"
+                                                                                ? ownerEntries
+                                                                                      .map((entry) =>
+                                                                                          `${String(entry.ownerFirstName || "").trim()} ${String(entry.ownerLastName || "").trim()}`.trim(),
+                                                                                      )
+                                                                                      .find(Boolean) || ""
+                                                                                : "") ||
+                                                                            "Awaiting Name..."}
                                                                     </span>
                                                                     <span className="hidden sm:block text-slate-300">•</span>
                                                                     <span className="text-xs text-slate-600 truncate break-all">
@@ -13484,10 +13592,14 @@ const PDFViewerModal = ({
                                                             type="button"
                                                             variant="default"
                                                             className="mt-6 h-12 w-full cursor-pointer border-0 bg-[image:var(--brand-gradient)] px-8 text-base font-semibold text-white shadow-lg hover:opacity-90"
-                                                            onClick={handleSend}
-                                                            disabled={isSending || isCancellingContract}
+                                                            onClick={() => void handleSendViaSendGrid()}
+                                                            disabled={
+                                                                isSending ||
+                                                                isSendingViaSendGrid ||
+                                                                isCancellingContract
+                                                            }
                                                         >
-                                                            {isSending ? (
+                                                            {isSendingViaSendGrid ? (
                                                                 <Loader2
                                                                     className="mr-2 h-4 w-4 animate-spin"
                                                                     aria-hidden
@@ -13495,7 +13607,7 @@ const PDFViewerModal = ({
                                                             ) : (
                                                                 <Send className="mr-2 h-4 w-4" aria-hidden />
                                                             )}
-                                                            {isSending
+                                                            {isSendingViaSendGrid
                                                                 ? "Sending via SignNow…"
                                                                 : "Send via SignNow"}
                                                         </Button>
@@ -13504,7 +13616,11 @@ const PDFViewerModal = ({
                                                             variant="outline"
                                                             className="mt-3 h-10 w-full cursor-pointer text-sm font-medium"
                                                             onClick={handleBackToSignNow}
-                                                            disabled={isSending || isCancellingContract}
+                                                            disabled={
+                                                                isSending ||
+                                                                isSendingViaSendGrid ||
+                                                                isCancellingContract
+                                                            }
                                                         >
                                                             Back to SignNow
                                                         </Button>
@@ -13512,7 +13628,11 @@ const PDFViewerModal = ({
                                                             type="button"
                                                             className="mt-3 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline"
                                                             onClick={handleChangeDetailsBeforeSend}
-                                                            disabled={isSending || isCancellingContract}
+                                                            disabled={
+                                                                isSending ||
+                                                                isSendingViaSendGrid ||
+                                                                isCancellingContract
+                                                            }
                                                         >
                                                             Change details first
                                                         </button>
@@ -13589,7 +13709,7 @@ const PDFViewerModal = ({
                             ) : signNowReviewOpen ? (
                                 <p className="text-xs text-slate-600 dark:text-slate-300">
                                     If SignNow shows &quot;Document signed&quot;, click{" "}
-                                    <span className="font-semibold">I&apos;ve clicked Finish</span>{" "}
+                                    {/* <span className="font-semibold">I&apos;ve clicked Finish</span>{" "} */}
                                     or <span className="font-semibold">Send via SignNow</span> to
                                     email the merchant. They will only need to sign.
                                 </p>
@@ -13763,14 +13883,20 @@ const PDFViewerModal = ({
                             {isSignNowContractUiEnabled() &&
                             (signNowReviewOpen || signNowReviewComplete) &&
                             !(signNowReviewOpen && signNowReviewComplete) ? (
+                                /* One send action only. Label stays SignNow for the user;
+                                   delivery goes out through SendGrid (CRM signing portal). */
                                 <Button
                                     type="button"
                                     variant="default"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
-                                    onClick={handleSend}
-                                    disabled={isSending || isCancellingContract}
+                                    onClick={() => void handleSendViaSendGrid()}
+                                    disabled={
+                                        isSending || isSendingViaSendGrid || isCancellingContract
+                                    }
                                 >
-                                    {isSending ? "Sending via SignNow…" : "Send via SignNow"}
+                                    {isSendingViaSendGrid
+                                        ? "Sending via SignNow…"
+                                        : "Send via SignNow"}
                                 </Button>
                             ) : isSignNowContractUiEnabled() &&
                               signNowReviewOpen &&

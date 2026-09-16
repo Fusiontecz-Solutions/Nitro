@@ -2,6 +2,7 @@ import { Controller, type Control, type FieldValues, type Path } from "react-hoo
 import { Input } from "../ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from "@/utils/formatPhoneNumber"
+import { formatSSN, handleSSNInputChange } from "@/utils/formatSSN"
 
 
 // Text Field Component
@@ -209,7 +210,47 @@ export const PhoneField = <T extends FieldValues>({
                         onChange={(e) => handleUSPhoneInputChange(e, field.onChange)}
                         disabled={disabled}
                         aria-invalid={!!fieldState.error}
-                        placeholder={placeholder || '(XXX) XXX-XXXX'}
+                        placeholder={placeholder || 'XXX-XXX-XXXX'}
+                        inputMode="numeric"
+                        className="w-full rounded-[5px] bg-background border border-[#E5E7EB] disabled:cursor-not-allowed disabled:opacity-100"
+                    />
+                    {fieldState.error && (
+                        <p className="text-[13px] text-red-500 mt-1">{fieldState.error.message}</p>
+                    )}
+                </>
+            )}
+        />
+    </div>
+)
+
+// SSN Field Component
+export const SSNField = <T extends FieldValues>({
+    name,
+    label,
+    placeholder,
+    required = false,
+    disabled = false,
+    control,
+    labelClassName,
+}: BaseFieldProps<T> & {
+    placeholder?: string
+    disabled?: boolean
+}) => (
+    <div className="space-y-1.5 flex flex-col">
+        <label className={`text-sm font-[400] font-roboto ${labelClassName || 'text-foreground'}`}>{label}{required && <span className="text-red-500">*</span>}</label>
+        <Controller
+            control={control}
+            name={name}
+            render={({ field, fieldState }) => (
+                <>
+                    <Input
+                        {...field}
+                        type="text"
+                        value={formatSSN(field.value)}
+                        onChange={(e) => handleSSNInputChange(e, field.onChange)}
+                        disabled={disabled}
+                        aria-invalid={!!fieldState.error}
+                        placeholder={placeholder || 'XXX-XX-XXXX'}
                         inputMode="numeric"
                         className="w-full rounded-[5px] bg-background border border-[#E5E7EB] disabled:cursor-not-allowed disabled:opacity-100"
                     />

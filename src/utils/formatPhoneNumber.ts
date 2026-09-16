@@ -8,14 +8,16 @@ export function getPhoneDigits(value: PhoneInput): string {
 }
 
 /**
- * Formats a phone-like value into US format: (XXX) XXX-XXXX.
+ * Formats a phone-like value into US format: XXX-XXX-XXXX.
  * - Non-digits are stripped.
+ * - A leading US country code (1) on an 11-digit value is dropped.
  * - Uses only the first 10 digits.
  * - Returns progressive formatting for fewer than 10 digits.
  */
 export function formatUSPhoneNumber(value: PhoneInput): string {
-  const digits = getPhoneDigits(value)
+  let digits = getPhoneDigits(value)
   if (!digits) return ''
+  if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1)
 
   const limited = digits.slice(0, 10)
   const area = limited.slice(0, 3)
@@ -23,15 +25,15 @@ export function formatUSPhoneNumber(value: PhoneInput): string {
   const line = limited.slice(6, 10)
 
   if (limited.length < 4) return area
-  if (limited.length < 7) return `(${area}) ${prefix}`
-  return `(${area}) ${prefix}-${line}`
+  if (limited.length < 7) return `${area}-${prefix}`
+  return `${area}-${prefix}-${line}`
 }
 
-function getDigitsBeforeCaret(value: string, caret: number): number {
+export function getDigitsBeforeCaret(value: string, caret: number): number {
   return getPhoneDigits(value.slice(0, Math.max(caret, 0))).length
 }
 
-function getCaretFromDigitIndex(formattedValue: string, digitIndex: number): number {
+export function getCaretFromDigitIndex(formattedValue: string, digitIndex: number): number {
   if (digitIndex <= 0) return 0
   let digitCount = 0
 
