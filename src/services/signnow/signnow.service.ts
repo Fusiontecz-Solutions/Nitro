@@ -50,7 +50,17 @@ import {
   markSignNowInviteSent,
 } from './utils/signnow-invite-send';
 import { postGroupInviteSafely } from './utils/signnow-groupinvite-post';
+import { resolveSignNowGroupStatus } from './utils/signnow-group-status';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
+import {
+  digitsOnlyPhone,
+  digitsOnlySsn,
+  formatSsn,
+  formatUsPhone,
+  isPhoneFieldName,
+  isSsnFieldName,
+  type SigningWidgetInfo,
+} from '../../utils/contactFormat';
 import {
   buildSignNowDocumentPrefillTexts,
   canonicalizeSignNowFieldName,
@@ -96,6 +106,14 @@ import {
   signNowDocumentMatchesSupplemental,
   signNowPackageFingerprintsEqual,
 } from './utils/signnow-package-fingerprint';
+import {
+  buildSignNowPrefillFingerprint,
+  resolveSignNowPrefillReuse,
+} from './utils/signnow-prefill-fingerprint';
+import {
+  readStoredTemplateDocument,
+  writeStoredTemplateDocument,
+} from './utils/signnow-template-store';
 import {
   orderSignNowGroupDocuments,
   sameSignNowDocumentOrder,
@@ -1249,15 +1267,6 @@ function fillSignersForTemplateRoles(
   return out.length ? out : crmSigners;
 }
 
-function mapGroupState(state: string | undefined): string {
-  const s = String(state || '').trim().toLowerCase();
-  if (s === 'completed' || s === 'fulfilled') return 'completed';
-  if (s === 'declined' || s === 'canceled' || s === 'cancelled' || s === 'voided') return 'voided';
-  // pending / in_progress is SignNow's state for both Owner embedded review and
-  // merchant signing. CRM "sent" is applied only by sendEnvelope → markGroupSent.
-  if (s === 'sent') return 'sent';
-  return 'draft';
-}
 
 function hasActiveEmbeddedInvites(payload: unknown): boolean {
   const root = (payload || {}) as Record<string, unknown>;
@@ -1448,10 +1457,21 @@ export class SignNowService {
       return inflight;
     }
     const started = Date.now();
+    let fromStore = false;
     const work = (async () => {
+      // Persisted copy first: the in-process cache is cold on every restart and
+      // on each additional instance, but the template itself rarely changes.
+      const stored = await readStoredTemplateDocument(id);
+      if (stored) {
+        fromStore = true;
+        templateDocumentCache.set(id, { data: stored, at: Date.now() });
+        return stored;
+      }
       const res = await client.get(`/document/${id}`, { validateStatus: () => true });
       if (res.status >= 400) return null;
       templateDocumentCache.set(id, { data: res.data, at: Date.now() });
+      // Write-through is best-effort and must not delay the caller.
+      void writeStoredTemplateDocument(id, res.data);
       return res.data;
     })()
       .finally(() => {
@@ -1459,6 +1479,7 @@ export class SignNowService {
         logSignNowTiming('template-origin-field-overlay-get', Date.now() - started, {
           documentId: id,
           cached: false,
+          fromStore,
         });
       });
     templateDocumentInflight.set(id, work);
@@ -1645,6 +1666,19 @@ export class SignNowService {
       timing.monthlyFeeEnabled = wantsMonthlyFee;
     }
 
+    // Built before the group is ensured: reuse of an existing draft group is
+    // gated on these values, not just on the package structure.
+    const values = prefillRecord(options.prefillFields);
+    if (options.applicationId && !values.application_id) {
+      values.application_id = options.applicationId;
+      values.case_id = options.applicationId;
+    }
+    applyMerchantSignerPrefill(values, signers);
+    const prefillFingerprint = buildSignNowPrefillFingerprint({
+      packageFingerprint,
+      values,
+    });
+
     const ensured = await measureSignNowStep(
       'ensure-review-group',
       { extras: toAttach.length, includeMainContract },
@@ -1657,19 +1691,13 @@ export class SignNowService {
       funderProfileId: funderRow?.id || null,
       funderName: funderRow?.name || options.funderName || null,
       packageFingerprint,
+      prefillFingerprint,
       allowReuse: options.autoSend !== true,
       }),
     );
     let groupId = ensured.groupId;
     let documents = ensured.documents;
     const reusedExisting = ensured.reusedExisting;
-
-    const values = prefillRecord(options.prefillFields);
-    if (options.applicationId && !values.application_id) {
-      values.application_id = options.applicationId;
-      values.case_id = options.applicationId;
-    }
-    applyMerchantSignerPrefill(values, signers);
 
     const contractIdNum = Number(options.contractId);
     let exhibitCEntitiesRaw: unknown =
@@ -1759,7 +1787,7 @@ export class SignNowService {
         return;
       }
       await Promise.all([
-        this.linkGroupToApplication(userId, appId, groupId),
+        this.linkGroupToApplication(userId, appId, groupId, prefillFingerprint),
         persistMainContractSendPackage(
           appId,
           groupId,
@@ -2333,9 +2361,15 @@ export class SignNowService {
       }> = [];
       const pushDoc = (signer: EmbedSigner, doc: InviteDoc) => {
         if (!doc.id || skippedAssignments.has(assignmentKey(doc.id, doc.role))) return;
+        // Bucket by the DOCUMENT role, not the signer's own role name: one CRM
+        // signer often covers Recipient 1 and Recipient 2, and keying on the
+        // signer collapsed both onto one bucket where the second role was
+        // dropped ("Role Recipient 2 … was not specified").
         const tag = signer.preparer
           ? 'preparer'
-          : signer.roleName.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'signer';
+          : doc.role.replace(/[^a-z0-9]/gi, '').toLowerCase() ||
+            signer.roleName.replace(/[^a-z0-9]/gi, '').toLowerCase() ||
+            'signer';
         // One bucket per role — not per email. Recipient 1 and Recipient 2 often
         // share a CRM email; SignNow still requires unique document ids per signer.
         const existing = buckets.find((bucket) => bucket.tag === tag);
@@ -2359,12 +2393,18 @@ export class SignNowService {
           documents: [doc],
         });
       };
-      const signerForRole = (role: string): EmbedSigner | undefined =>
-        source.find((s) => s.roleName.toLowerCase() === role.toLowerCase()) ||
-        (/^owner$/i.test(role) || isPreparerRole(role, nitroStyle)
-          ? source.find((s) => s.preparer)
-          : undefined) ||
-        source[0];
+      const signerForRole = (role: string): EmbedSigner | undefined => {
+        const exact = source.find((s) => s.roleName.toLowerCase() === role.toLowerCase());
+        if (exact) return exact;
+        if (/^owner$/i.test(role) || isPreparerRole(role, nitroStyle)) {
+          return source.find((s) => s.preparer) || source[0];
+        }
+        // A merchant role (Recipient 1/2) must not fall back to the preparer:
+        // pushDoc buckets by tag, so the preparer bucket already holds this
+        // document under the Owner role and the assignment would be dropped —
+        // SignNow then rejects the invite with "Role … was not specified".
+        return source.find((s) => !s.preparer) || source[0];
+      };
 
       for (const doc of documents) {
         // Use the document's exact role spelling. Group listings often omit roles
@@ -2435,9 +2475,15 @@ export class SignNowService {
                 return bucket.email;
               })()
             : uniqueEmailAlias(bucket.email, usedEmails, bucket.tag);
+        /**
+         * The preparer signs first; every merchant shares the next slot so they
+         * can sign in parallel. A distinct order per merchant made SignNow hold
+         * each signer until the one before them finished, which is what left
+         * Recipient 2 on "Waiting For Others" with no way to open the document.
+         */
         const row: Record<string, unknown> = {
           email,
-          order: idx + 1,
+          order: bucket.tag === 'preparer' ? 1 : 2,
           auth_method: 'none',
           first_name,
           last_name,
@@ -2505,25 +2551,53 @@ export class SignNowService {
     // agreement + addenda package needs enough retries to cover every role.
     const maxRoleRetries = Math.max(24, documents.length * 4);
     let emptyFieldsRetries = 0;
+    let lastRoleRepairDetail = '';
     for (
       let attempt = 0;
       attempt < maxRoleRetries && (created.res.status >= 400 || !inviteId);
       attempt += 1
     ) {
       const detail = this.signNowErrorDetail(created.res);
+      // Identical error twice in a row means the repair changed nothing —
+      // keep retrying and the merchant just waits for 24 round trips.
+      if (detail && detail === lastRoleRepairDetail) {
+        console.warn('[SignNow] embedded-invite repair made no progress', { detail });
+        break;
+      }
+      lastRoleRepairDetail = detail;
       const unknown = parseUnknownInviteRole(detail);
       const omitted = parseMissingInviteRole(detail);
       const emptyFields = /must contain fields/i.test(detail);
       if (unknown) {
-        skippedAssignments.add(assignmentKey(unknown.documentId, unknown.role));
+        const unknownKey = assignmentKey(unknown.documentId, unknown.role);
+        skippedAssignments.add(unknownKey);
+        // Drop any earlier repair for the same doc+role, otherwise the two
+        // branches fight each other on every retry.
+        for (let i = extraAssignments.length - 1; i >= 0; i -= 1) {
+          if (assignmentKey(extraAssignments[i].id, extraAssignments[i].role) === unknownKey) {
+            extraAssignments.splice(i, 1);
+          }
+        }
         console.warn('[SignNow] dropping unknown embedded role', unknown);
       } else if (omitted) {
-        exactRoleByDoc.set(assignmentKey(omitted.documentId, omitted.role), omitted.role);
-        extraAssignments.push({
-          id: omitted.documentId,
-          role: omitted.role,
-          action: 'sign',
-        });
+        const omittedKey = assignmentKey(omitted.documentId, omitted.role);
+        // SignNow sometimes first reports a role as "not found" and then, once
+        // it is omitted, as "was not specified". Without clearing the skip the
+        // repair below is dropped by pushDoc and every retry repeats verbatim
+        // until the loop gives up ("Role Recipient 1 … was not specified").
+        skippedAssignments.delete(omittedKey);
+        exactRoleByDoc.set(omittedKey, omitted.role);
+        if (
+          !extraAssignments.some(
+            (row) => assignmentKey(row.id, row.role) === omittedKey,
+          )
+        ) {
+          extraAssignments.push({
+            id: omitted.documentId,
+            role: omitted.role,
+            action: 'sign',
+          });
+        }
         const doc = documents.find((d) => d.id === omitted.documentId);
         if (doc) {
           doc.roles = uniqueRoleNames([
@@ -2537,7 +2611,16 @@ export class SignNowService {
           const fallback =
             inviteSigners.find((s) => s.preparer || isPreparerRole(s.roleName, nitroStyle)) ||
             inviteSigners[0];
-          if (fallback) embedSigners.push({ ...fallback, roleName: omitted.role });
+          if (fallback) {
+            // Keep `preparer` false so this role forms its own signer bucket;
+            // reusing the preparer tag put the document back in a bucket that
+            // already had it and the role was silently dropped again.
+            embedSigners.push({
+              ...fallback,
+              roleName: omitted.role,
+              preparer: false,
+            });
+          }
         }
         console.warn('[SignNow] adding omitted embedded role', omitted);
       } else if (emptyFields && emptyFieldsRetries < 3) {
@@ -3100,7 +3183,7 @@ export class SignNowService {
         groupRes.data?.errors?.[0]?.message || 'SignNow document group not found',
       );
     }
-    const currentStatus = mapGroupState(groupRes.data?.state);
+    const currentStatus = await this.resolveRemoteGroupStatus(client, id, groupRes.data);
     if (currentStatus === 'completed') {
       throw new BadRequestException(
         'This document is already completed in SignNow and cannot be voided. Send a new package instead.',
@@ -3260,7 +3343,7 @@ export class SignNowService {
 
     const client = await createSignNowApiClient();
     const res = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
-    const status = mapGroupState(res.data?.state);
+    const status = await this.resolveRemoteGroupStatus(client, id, res.data);
     const documentStatus = status === 'voided' ? 'revoked' : status;
     const mappedInternal = status === 'voided' ? 'revoked' : status;
 
@@ -3291,8 +3374,53 @@ export class SignNowService {
       return { envelopeId: id, status };
     }
 
-    await this.revertPrematureSentIfOwnerReview(client, id, applicationId, res.data);
+    const reverted = await this.revertPrematureSentIfOwnerReview(
+      client,
+      id,
+      applicationId,
+      res.data,
+    );
+
+    /**
+     * SignNow has no webhook, so this refresh is the only moment CRM learns the
+     * group is genuinely out for signature. Mirror it onto Contract /
+     * Application so the summary header reads Contract Sent instead of sitting
+     * on Contract Generated until completion. Skipped when the revert above
+     * just decided this is still an unfinished Owner review.
+     */
+    if (status === 'sent' && !reverted) {
+      await prisma.document.updateMany({
+        where: { envelopeId: id, sentAt: null },
+        data: { status: 'sent', sentAt: new Date() } as any,
+      });
+      await this.syncContractSigningFromGroupStatus(id, 'sent', applicationId);
+    }
+
     return { envelopeId: id, status };
+  }
+
+  /**
+   * Widget type + validator per field name, so phone / SSN values can be sent
+   * dashed on plain text widgets and digits-only on Number-validated ones.
+   */
+  private collectPrefillableFieldWidgets(remote: any): Map<string, SigningWidgetInfo> {
+    const widgets = new Map<string, SigningWidgetInfo>();
+    for (const container of ['texts', 'fields', 'fillable_fields'] as const) {
+      const rows = Array.isArray(remote?.[container]) ? remote[container] : [];
+      for (const field of rows) {
+        if (!field || typeof field !== 'object') continue;
+        const attrs = parseSignNowFieldAttrs(field);
+        const name = String(
+          attrs.name || field.name || field.field_name || attrs.label || field.label || '',
+        ).trim();
+        if (!name || widgets.has(name)) continue;
+        widgets.set(name, {
+          type: signNowFieldType(field, container),
+          validatorId: String(attrs.validator_id || field.validator_id || '').trim(),
+        });
+      }
+    }
+    return widgets;
   }
 
   private collectPrefillableFieldNames(remote: any): string[] {
@@ -3411,8 +3539,12 @@ export class SignNowService {
           docRes.data?.document_name ||
           docRes.data?.name;
         const prefillOpts = signNowPrefillOptionsForDocument(documentName, fieldNames);
+        const widgets =
+          docRes.status < 400
+            ? this.collectPrefillableFieldWidgets(docRes.data)
+            : undefined;
         const fields = fieldNames.length
-          ? buildSignNowDocumentPrefillTexts(fieldNames, values, prefillOpts)
+          ? buildSignNowDocumentPrefillTexts(fieldNames, values, prefillOpts, widgets)
           : fallbackFields;
         if (!fields.length) return 0;
         const first = await client.put(
@@ -3628,18 +3760,14 @@ export class SignNowService {
       try {
         const templateId = await this.resolveAgreementDocumentId(client);
         if (templateId && templateId !== documentId) {
-          const overlayStarted = Date.now();
-          const templateRes = await client.get(`/document/${templateId}`, {
-            validateStatus: () => true,
-          });
-          logSignNowTiming('template-origin-field-overlay-get', Date.now() - overlayStarted, {
-            documentId: templateId,
-          });
-          if (templateRes.status < 400) {
-            const templatePages = signNowDocumentPageCount(templateRes.data);
+          // Same origin template the field-face overlay above reads — go through
+          // the shared cache instead of a second full GET of the same document.
+          const templateData = await this.fetchTemplateDocumentCached(client, templateId);
+          if (templateData) {
+            const templatePages = signNowDocumentPageCount(templateData);
             if (!pageCount || !templatePages || templatePages === pageCount) {
               const fromTemplate = fieldsOnExistingPages(
-                collectSignNowPutFields(templateRes.data).filter((field) =>
+                collectSignNowPutFields(templateData).filter((field) =>
                   SIGN_FIELD_TYPES.has(String(field.type || '')),
                 ),
                 pageCount,
@@ -3693,6 +3821,12 @@ export class SignNowService {
               currentSignNowUsDate()
           : resolved,
         fieldName,
+        {
+          type,
+          validatorId: String(
+            parseSignNowFieldAttrs(field).validator_id || (field as any).validator_id || '',
+          ).trim(),
+        },
       );
       if (!SIGN_FIELD_TYPES.has(type) && crmValue) {
         next.prefilled_text = crmValue;
@@ -3828,6 +3962,31 @@ export class SignNowService {
         }
         if (wrote) break;
         if (!dropField) break;
+        // A dashed phone / SSN on a validated widget is recoverable: strip to
+        // digits and retry rather than dropping the value off the agreement.
+        const matchesDropField = (name: string) =>
+          name.toLowerCase() === dropField.toLowerCase() ||
+          canonicalizeSignNowFieldName(name) === canonicalizeSignNowFieldName(dropField);
+        const dashedRow = textPrefills.find(
+          (row) =>
+            matchesDropField(row.field_name) &&
+            /-/.test(row.prefilled_text) &&
+            (isPhoneFieldName(row.field_name) || isSsnFieldName(row.field_name)),
+        );
+        if (dashedRow) {
+          const digits = isPhoneFieldName(dashedRow.field_name)
+            ? digitsOnlyPhone(dashedRow.prefilled_text)
+            : digitsOnlySsn(dashedRow.prefilled_text);
+          console.warn('[SignNow] validator rejected dashed value; retrying digits-only', {
+            documentId,
+            dropField,
+          });
+          dashedRow.prefilled_text = digits;
+          for (const field of putFields) {
+            if (matchesDropField(String(field.name || ''))) field.prefilled_text = digits;
+          }
+          continue;
+        }
         const before = textPrefills.length;
         textPrefills = textPrefills.filter(
           (row) =>
@@ -3862,6 +4021,22 @@ export class SignNowService {
         { documentId, textsApplied, applied },
       );
       return textsApplied || applied;
+    }
+
+    // prefill-texts has already landed digits-only, so the batch could not be
+    // rejected. The field PUT now drops the Number validation the template put on
+    // phone / SSN widgets and rewrites the value dashed, so both the committed
+    // page text and anything the merchant types read 561-577-8267 / 366-96-0737.
+    for (const field of putFields) {
+      const fieldName = String(field.name || '');
+      const isPhone = isPhoneFieldName(fieldName);
+      if (!isPhone && !isSsnFieldName(fieldName)) continue;
+      if (SIGN_FIELD_TYPES.has(String(field.type || '').toLowerCase())) continue;
+      delete field.validator_id;
+      const current = String(field.prefilled_text || '').trim();
+      if (!current) continue;
+      const dashed = isPhone ? formatUsPhone(current) : formatSsn(current);
+      if (dashed !== current) field.prefilled_text = dashed;
     }
 
     // Signer (merchant) view: stamp filled CRM values as 10pt page text so the
@@ -4704,13 +4879,21 @@ export class SignNowService {
     groupId: string,
     applicationId?: string,
     groupPayload?: unknown,
-  ) {
+  ): Promise<boolean> {
     const existingDoc = await prisma.document.findUnique({
       where: { envelopeId: groupId },
-      select: { applicationId: true, status: true, sentAt: true },
+      select: { applicationId: true, status: true, sentAt: true, portalSentAt: true },
     });
     const appId = String(applicationId || existingDoc?.applicationId || '').trim();
-    if (!appId) return;
+    if (!appId) return false;
+
+    /**
+     * A signing-portal (SendGrid) send deliberately has no SignNow group invite:
+     * merchants remint a session from the preparer's embedded invite. That looks
+     * identical to an unfinished owner review below, so the explicit portal marker
+     * is what keeps a genuinely sent contract from being reverted to draft.
+     */
+    if (existingDoc?.portalSentAt) return false;
 
     const docLooksSent =
       String(existingDoc?.status || '').trim().toLowerCase() === 'sent' ||
@@ -4721,7 +4904,7 @@ export class SignNowService {
       orderBy: { updatedAt: 'desc' },
     });
     const contractStatus = String(contract?.status || '').trim().toUpperCase();
-    if (['COMPLETED', 'DECLINED', 'REVOKED', 'EXPIRED'].includes(contractStatus)) return;
+    if (['COMPLETED', 'DECLINED', 'REVOKED', 'EXPIRED'].includes(contractStatus)) return false;
 
     const application = await prisma.application.findUnique({
       where: { id: appId },
@@ -4740,7 +4923,7 @@ export class SignNowService {
       queueNorm === 'contractout' ||
       queueNorm === 'contractsout' ||
       stateNorm === 'contractsent';
-    if (!docLooksSent && contractStatus !== 'SENT' && !appLooksSent) return;
+    if (!docLooksSent && contractStatus !== 'SENT' && !appLooksSent) return false;
 
     const embeddedRes = await client.get(`/v2/document-groups/${groupId}/embedded-invites`, {
       validateStatus: () => true,
@@ -4749,7 +4932,7 @@ export class SignNowService {
     const hasEmailGroupInvite = Boolean(this.extractGroupInviteId(groupPayload));
     // Email groupinvite is created only by sendEnvelope. Keep Contract Sent in
     // that case. Otherwise this is still Owner review — roll back.
-    if (!hasEmbeddedReview && hasEmailGroupInvite) return;
+    if (!hasEmbeddedReview && hasEmailGroupInvite) return false;
 
     if (docLooksSent) {
       await prisma.document.updateMany({
@@ -4778,9 +4961,11 @@ export class SignNowService {
         },
         { revertFromSent: true },
       );
+      return true;
     } catch (err) {
       console.warn('[SignNow] premature Contract Sent revert skipped', err);
     }
+    return false;
   }
 
   /**
@@ -5015,6 +5200,37 @@ export class SignNowService {
     }
   }
 
+  /**
+   * Live status of a SignNow document group.
+   *
+   * `GET /documentgroup/{id}` carries no top-level `state`, so the group invite
+   * is what actually reports whether every signer has finished. Fetching it is
+   * one extra call and only happens while the group is still non-terminal —
+   * `readTerminalGroupStatusFromCrm` short-circuits every later poll.
+   */
+  private async resolveRemoteGroupStatus(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    groupId: string,
+    groupPayload: unknown,
+  ): Promise<string> {
+    let invitePayload: unknown = null;
+    const inviteId = this.extractGroupInviteId(groupPayload);
+    if (inviteId) {
+      const inviteRes = await client.get(
+        `/documentgroup/${groupId}/groupinvite/${inviteId}`,
+        { validateStatus: () => true },
+      );
+      if (inviteRes.status < 400) invitePayload = inviteRes.data;
+    }
+    const status = resolveSignNowGroupStatus(groupPayload, invitePayload);
+    console.info('[SignNow] group status resolved', {
+      groupId,
+      inviteId: inviteId || null,
+      status,
+    });
+    return status;
+  }
+
   private extractGroupInviteId(payload: unknown): string {
     const root = (payload || {}) as Record<string, unknown>;
     const nested = (root.data || root) as Record<string, unknown>;
@@ -5022,8 +5238,10 @@ export class SignNowService {
     return String(
       nested.invite_id ||
         nested.inviteId ||
+        (nested as { document_group_invite_id?: string }).document_group_invite_id ||
         root.invite_id ||
         root.inviteId ||
+        (root as { document_group_invite_id?: string }).document_group_invite_id ||
         invites?.[0]?.id ||
         invites?.[0]?.unique_id ||
         '',
@@ -5613,6 +5831,84 @@ export class SignNowService {
    * Reassign merchant-required ACH/Exhibit C fields to Owner so the later Review
    * click can skip the ~4s field PUT and only write prefill-texts.
    */
+  /**
+   * Hand every document in the group over to the merchant: reassign the fields
+   * off Owner, mark the merchant-required slots required, and bake the current
+   * CRM values onto the page as text.
+   *
+   * `sendEnvelope` does exactly this inline before posting a SignNow group
+   * invite, which is why the SignNow send showed the merchant their fields and
+   * their latest amounts. The SendGrid portal reuses the embedded invite minted
+   * during Owner review, so without this step merchants opened a document whose
+   * fields were still Owner-assigned and whose values were whatever review had
+   * written.
+   *
+   * `values` must be the caller's freshly built CRM prefill map. Passing an
+   * empty map leaves each field's existing `prefilled_text` in place, which is
+   * how a contract edited after review still emailed its previous numbers —
+   * `exposeToMerchant` rewrites `fields` *and* `texts` in one PUT, so supplying
+   * current values replaces the baked page text rather than layering over it.
+   */
+  async publishGroupFieldsToMerchant(
+    groupId: string,
+    options?: {
+      keepParty2?: boolean;
+      /** Raw CRM prefill payload, exactly as `/send-envelope` receives it. */
+      prefillFields?: PrefillField[];
+      roles?: SignerRoleInput[];
+    },
+  ): Promise<{ documentCount: number; failed: string[]; valueCount: number }> {
+    const id = String(groupId || '').trim();
+    if (!id) return { documentCount: 0, failed: [], valueCount: 0 };
+    const client = await createSignNowApiClient();
+    const groupRes = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
+    if (groupRes.status >= 400) {
+      throw new BadRequestException(
+        `Could not read SignNow document group: ${this.signNowErrorDetail(groupRes)}`,
+      );
+    }
+    const documents = await this.waitForDocumentsReady(
+      client,
+      this.normalizeGroupDocuments(groupRes.data?.documents),
+    );
+    // Same shaping the SignNow invite applies, so both paths bake identical text.
+    const values = prefillRecord(options?.prefillFields);
+    if (options?.roles?.length) {
+      applyMerchantSignerPrefill(values, orderedSigners(options.roles));
+    }
+    const valueCount = Object.keys(values).filter((key) => values[key]).length;
+    const failed: string[] = [];
+    const PUBLISH_BATCH = 6;
+    for (let i = 0; i < documents.length; i += PUBLISH_BATCH) {
+      const batch = documents.slice(i, i + PUBLISH_BATCH);
+      await Promise.all(
+        batch.map(async (doc) => {
+          try {
+            await this.prefillDocument(client, doc.id, values, {
+              exposeToMerchant: true,
+              keepParty2: options?.keepParty2 !== false,
+              remote: doc.remote,
+            });
+          } catch (err) {
+            failed.push(doc.id);
+            console.warn('[SignNow] merchant field publish failed for document', {
+              groupId: id,
+              documentId: doc.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }),
+      );
+    }
+    console.info('[SignNow] published fields to merchant', {
+      groupId: id,
+      documentCount: documents.length,
+      valueCount,
+      failed,
+    });
+    return { documentCount: documents.length, failed, valueCount };
+  }
+
   private async prepareOwnerReviewFieldRoles(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     documents: SignNowDocumentRef[],
@@ -5704,6 +6000,8 @@ export class SignNowService {
       funderProfileId?: string | null;
       funderName?: string | null;
       packageFingerprint: string;
+      /** Value fingerprint — reuse is refused when it differs from the stored one. */
+      prefillFingerprint?: string;
       allowReuse: boolean;
     },
   ): Promise<{
@@ -5744,6 +6042,8 @@ export class SignNowService {
       funderProfileId?: string | null;
       funderName?: string | null;
       packageFingerprint: string;
+      /** Value fingerprint — reuse is refused when it differs from the stored one. */
+      prefillFingerprint?: string;
       allowReuse: boolean;
     },
   ): Promise<{
@@ -5763,6 +6063,7 @@ export class SignNowService {
     const timing = getSignNowTiming();
     const reuseMatch = {
       fingerprint: packageFingerprint,
+      prefillFingerprint: options.prefillFingerprint,
       includeMainContract,
       extras: toAttach,
     };
@@ -6067,11 +6368,13 @@ export class SignNowService {
     applicationId: string,
     match?: {
       fingerprint?: string;
+      prefillFingerprint?: string;
       includeMainContract?: boolean;
       extras?: SignNowAddendumTemplate[];
     },
   ): Promise<{ groupId: string; documents: SignNowDocumentRef[] } | null> {
     const fingerprint = String(match?.fingerprint || '').trim();
+    const wantedPrefillFingerprint = String(match?.prefillFingerprint || '').trim();
     const extras = match?.extras;
     const includeMainContract = match?.includeMainContract !== false;
     const matchesPackage = (documents: SignNowDocumentRef[]) => {
@@ -6086,6 +6389,10 @@ export class SignNowService {
     const cached = draftGroupCache.get(applicationId);
     if (
       cached &&
+      // The in-process cache only knows package structure. When a value
+      // fingerprint is in play the stored one on Document is authoritative, so
+      // fall through to the DB read below rather than short-circuiting past it.
+      !wantedPrefillFingerprint &&
       Date.now() - cached.at <= DRAFT_GROUP_CACHE_TTL_MS &&
       cached.documents.length &&
       (!fingerprint || signNowPackageFingerprintsEqual(cached.fingerprint, fingerprint))
@@ -6098,7 +6405,7 @@ export class SignNowService {
 
     const existing = await prisma.document.findUnique({
       where: { applicationId },
-      select: { envelopeId: true, status: true },
+      select: { envelopeId: true, status: true, prefillFingerprint: true },
     });
     countSignNowDb();
     const status = String(existing?.status || '').toLowerCase();
@@ -6109,6 +6416,32 @@ export class SignNowService {
       status === 'cancelled'
     ) {
       return null;
+    }
+    /**
+     * Values behind the stored group must still match the values about to be
+     * written. Re-prefill alone is not enough to make a reused group current:
+     * a group that was already sent carries CRM values baked onto the page as
+     * `texts[]`, and `prefill-texts` only rewrites `prefilled_text`. Reusing it
+     * after an edit is exactly how an updated contract came back showing its
+     * previous amounts. On a mismatch, fall through and build a fresh group.
+     */
+    if (wantedPrefillFingerprint) {
+      const decision = resolveSignNowPrefillReuse({
+        previousFingerprint: existing?.prefillFingerprint,
+        currentFingerprint: wantedPrefillFingerprint,
+      });
+      if (!decision.reuse) {
+        console.info('[SignNow] not reusing draft group — contract values changed', {
+          applicationId,
+          reason: decision.reason,
+        });
+        const timing = getSignNowTiming();
+        if (timing) {
+          timing.draftReuseSkipped = true;
+          timing.draftReuseSkipReason = decision.reason;
+        }
+        return null;
+      }
     }
     const live = await this.loadLiveDocumentGroup(
       client,
@@ -6121,7 +6454,13 @@ export class SignNowService {
     return null;
   }
 
-  private async linkGroupToApplication(userId: string, applicationId: string, groupId: string) {
+  private async linkGroupToApplication(
+    userId: string,
+    applicationId: string,
+    groupId: string,
+    /** Values this group was built/prefilled with — gates reuse on the next send. */
+    prefillFingerprint?: string,
+  ) {
     const existingDoc = await prisma.document.findUnique({
       where: { applicationId },
       select: { envelopeId: true, userId: true },
@@ -6144,6 +6483,7 @@ export class SignNowService {
         envelopeId: groupId,
         status: 'draft',
         userId: documentOwnerUserId,
+        prefillFingerprint: prefillFingerprint || null,
       },
       update: {
         envelopeId: groupId,
@@ -6152,6 +6492,7 @@ export class SignNowService {
         completedAt: null,
         signedPdfUrl: null,
         signedPdfPublicId: null,
+        prefillFingerprint: prefillFingerprint || null,
       },
     });
     countSignNowDb();

@@ -2,6 +2,17 @@
  * Map SignNow unique field names (often `{crmId}_p{page}`) back to CRM prefill ids.
  */
 
+import {
+  digitsOnlyPhone,
+  digitsOnlySsn,
+  formatSsn,
+  formatUsPhone,
+  isPhoneFieldName,
+  isSsnFieldName,
+  widgetAcceptsDashes,
+  type SigningWidgetInfo,
+} from '../../../utils/contactFormat';
+
 const STRIP_PAGE_OWNER1 =
   /_p\d+(?:_s1|_g1|_achd|_ach|_rpa|_exc|_exhibit|_disc|_disclosure|_ds)?$/i;
 
@@ -1546,6 +1557,7 @@ export function buildSignNowDocumentPrefillTexts(
   fieldNames: string[],
   prefill: Record<string, string>,
   options?: SignNowPrefillOptions,
+  widgets?: Map<string, SigningWidgetInfo>,
 ): Array<{ field_name: string; prefilled_text: string }> {
   options = options?.documentKind
     ? options
@@ -1560,6 +1572,7 @@ export function buildSignNowDocumentPrefillTexts(
     const value = formatSignNowPrefillValue(
       resolveSignNowPrefillValue(fieldName, prefill, options),
       fieldName,
+      widgets?.get(fieldName),
     );
     if (!value || /^enter text$/i.test(value)) continue;
     seen.add(fieldName);
@@ -1663,7 +1676,11 @@ function stripInstallmentFrequencyFromAmount(amount: string): string {
   return String(amount || '').replace(INSTALLMENT_FREQUENCY_SUFFIX, '').trim();
 }
 
-export function formatSignNowPrefillValue(value: string, fieldName?: string): string {
+export function formatSignNowPrefillValue(
+  value: string,
+  fieldName?: string,
+  widget?: SigningWidgetInfo,
+): string {
   const v = String(value || '').trim();
   if (!v) return '';
   if (isPage1InitialInstallmentAmountField(fieldName || '')) {
@@ -1682,13 +1699,15 @@ export function formatSignNowPrefillValue(value: string, fieldName?: string): st
     }
   }
   const name = String(fieldName || '').toLowerCase();
-  // SignNow phone widgets often use a Number/phone regex that rejects dashes
-  // (e.g. "561-577-8267" → whole prefill-texts batch fails → agreement stays empty).
-  if (/(?:^|_)(?:phone|mobile|fax)(?:_|$)/i.test(name) || /phone_number/i.test(name)) {
-    const digits = v.replace(/\D/g, '');
-    if (!digits) return '';
-    if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
-    return digits;
+  // Phone / SSN print in the CRM's canonical dashed format, but only on widgets
+  // that accept dashes. A Number validator rejects "561-577-8267" and takes the
+  // whole prefill-texts batch down with it, leaving the agreement blank — so an
+  // unknown or validated widget falls back to digits.
+  if (isPhoneFieldName(name)) {
+    return widgetAcceptsDashes(widget) ? formatUsPhone(v) : digitsOnlyPhone(v);
+  }
+  if (isSsnFieldName(name)) {
+    return widgetAcceptsDashes(widget) ? formatSsn(v) : digitsOnlySsn(v);
   }
   // PDF already prints `$` before origination / ACH program fee blanks.
   if (
@@ -1700,3 +1719,4 @@ export function formatSignNowPrefillValue(value: string, fieldName?: string): st
   }
   return v;
 }
+

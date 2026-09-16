@@ -482,8 +482,42 @@ function queueLooksLikeAwaitingSignature(queue: string | null | undefined): bool
     q === 'contract sent' ||
     q === 'contract out' ||
     q === 'contracts out' ||
-    q === 'contracted'
+    q === 'contracted' ||
+    // A SignNow signing-portal send used to leave the deal on Contract
+    // Generated, so a contract signed from that state must self-heal too —
+    // otherwise it stays stuck behind this guard forever.
+    q === 'contract generated'
   );
+}
+
+/** Document statuses that mean the envelope is out for signature but unfinished. */
+function isSigningSentDocumentStatus(status: unknown): boolean {
+  const s = String(status || '')
+    .trim()
+    .toLowerCase();
+  return s === 'sent' || s === 'viewed' || s === 'delivered';
+}
+
+/** Move to Contract Sent and mirror the new stage onto the in-memory record. */
+async function syncApplicationToContractSentFromRecord(
+  prismaClient: PrismaLike,
+  applicationRecord: {
+    id: string;
+    currentQueue?: string | null;
+    currentState?: string | null;
+  },
+  source: string,
+): Promise<boolean> {
+  const synced = await syncApplicationToContractSent(prismaClient, applicationRecord.id, {
+    source: `${source}:envelope-sent-backfill`,
+    contractStatusPrevious: applicationRecord.currentQueue ?? null,
+    contractStatusNew: 'SENT',
+  });
+  if (synced) {
+    applicationRecord.currentQueue = APPLICATION_QUEUE_CONTRACT_SENT;
+    applicationRecord.currentState = APPLICATION_STATE_CONTRACT_SENT;
+  }
+  return synced;
 }
 
 export async function applyContractCompletedSyncToApplicationRecord(
@@ -512,11 +546,26 @@ export async function applyContractCompletedSyncToApplicationRecord(
     }),
     prismaClient.document.findUnique({
       where: { applicationId: applicationRecord.id },
-      select: { status: true },
+      select: { status: true, sentAt: true },
     }),
   ]);
 
   const documentCompleted = isSigningCompletedDocumentStatus(document?.status);
+
+  /**
+   * SignNow has no webhook, so a contract can be out for signature with only the
+   * Document / Contract row marked `sent` while the application still reads
+   * Contract Generated. Promote it here so the summary header matches the
+   * Contracts Generated table without waiting for a manual refresh.
+   */
+  if (!documentCompleted) {
+    const envelopeOut =
+      isSigningSentDocumentStatus(document?.status) ||
+      Boolean(document?.sentAt) ||
+      ['SENT', 'VIEWED', 'SIGNED'].includes(normalizeContractStatus(contract?.status) || '');
+    if (!envelopeOut) return false;
+    return syncApplicationToContractSentFromRecord(prismaClient, applicationRecord, source);
+  }
 
   if (
     documentCompleted &&

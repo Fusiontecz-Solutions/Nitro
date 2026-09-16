@@ -1,5 +1,6 @@
 import express, { Router } from 'express';
 import { authenticateToken } from '../../middleware/authMiddleware';
+import signingPortalController from '../../controllers/signingPortalController';
 import { requireAdmin } from '../../middleware/requireAdmin';
 import {
   connectDocusign,
@@ -71,5 +72,12 @@ router.post('/sender-view', authenticateToken, getSenderView);
 router.post('/send-envelope', authenticateToken, sendEnvelope);
 router.get('/signnow-invite-status', authenticateToken, requireAdmin, getSignNowInviteDiagnostics);
 router.post('/sync-envelope-cc', authenticateToken, syncEnvelopeCc);
+// Email the contract to signers through the CRM signing portal (SendGrid)
+// instead of a SignNow group invite.
+router.post(
+  '/send-contract-portal',
+  authenticateToken,
+  signingPortalController.sendContractPortal.bind(signingPortalController),
+);
 
 export default router;

@@ -2,8 +2,24 @@ import express from 'express';
 import publicApprovalController from '../controllers/publicApprovalController';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { forbidRoles } from '../middleware/forbidRoles';
+import signingPortalController from '../controllers/signingPortalController';
 
 const router = express.Router();
+
+// Merchant signing portal — links emailed by SendGrid. Token-authenticated, no login.
+router.get(
+  '/signing-portal/:envelopeId/summary',
+  signingPortalController.getSummary.bind(signingPortalController)
+);
+router.post(
+  '/signing-portal/:envelopeId/link',
+  signingPortalController.createSigningLink.bind(signingPortalController)
+);
+// Signer finished in the iframe — hand the contract to the next signer in order.
+router.post(
+  '/signing-portal/:envelopeId/completed',
+  signingPortalController.markCompleted.bind(signingPortalController)
+);
 
 // Generate a new share token for an application's Approval page (protected)
 router.post(

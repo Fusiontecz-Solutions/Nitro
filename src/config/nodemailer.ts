@@ -86,12 +86,19 @@ function formatMailFromAddress(emailOrFrom: string): string {
     return `"${name}" <${address}>`;
 }
 
-/** From address for SendGrid-only sends (verified sender in SendGrid). */
+/**
+ * From address for SendGrid-only sends (contract portal, payment letters).
+ * Deliberately reads `SENDGRID_FROM_EMAIL` alone: these sends must go out from the
+ * verified contracts sender, never from an SMTP login address left over in `.env`.
+ */
 export function getSendGridMailFrom(): string {
-    const { name, address } = buildMailFrom(
-        process.env.SENDGRID_FROM_EMAIL?.trim() ||
-            process.env.SENDGRID_AUTH_USER?.trim(),
-    );
+    const configured = process.env.SENDGRID_FROM_EMAIL?.trim();
+    if (!configured) {
+        throw new Error(
+            'SENDGRID_FROM_EMAIL is not set. Add the verified SendGrid sender address to .env.',
+        );
+    }
+    const { name, address } = buildMailFrom(configured);
     return `"${name}" <${address}>`;
 }
 

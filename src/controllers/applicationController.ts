@@ -77,6 +77,7 @@ import {
     APPLICATION_QUEUE_APPROVAL_SENT,
     APPLICATION_STATE_APPROVAL_SENT,
 } from '../services/applicationApprovalEmailValues';
+import { OWNER_ORDER_BY } from '../utils/clientOwnerSlots';
 import {
     reinitiateContractForApplication,
     reconcileStaleContractReinitiationFlags,
@@ -540,7 +541,7 @@ const APPLICATION_DETAIL_INCLUDE = {
     client: {
         include: {
             owners: {
-                orderBy: { sortOrder: 'asc' as const },
+                orderBy: OWNER_ORDER_BY,
             },
         },
     },

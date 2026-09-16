@@ -11,6 +11,7 @@ import {
     normalizeOwnersInput,
     resolveOwnersForCreate,
 } from '../utils/clientMapper';
+import { OWNER_ORDER_BY } from '../utils/clientOwnerSlots';
 
 const getAuthenticatedUser = (req: Request): AuthenticatedUser | null => {
     const user = req.user;
@@ -35,7 +36,7 @@ const CLIENT_INCLUDE = {
         select: { id: true, firstName: true, lastName: true, email: true },
     },
     owners: {
-        orderBy: { sortOrder: 'asc' as const },
+        orderBy: OWNER_ORDER_BY,
     },
 };
 
@@ -296,7 +297,7 @@ class ClientController {
                                   select: { id: true, firstName: true, lastName: true, email: true },
                               },
                               owners: {
-                                  orderBy: { sortOrder: 'asc' },
+                                  orderBy: OWNER_ORDER_BY,
                               },
                           },
                 }),
@@ -405,7 +406,7 @@ class ClientController {
                             state: true,
                             zipCode: true,
                         },
-                        orderBy: { sortOrder: 'asc' },
+                        orderBy: OWNER_ORDER_BY,
                     },
                 },
             });
@@ -553,7 +554,7 @@ class ClientController {
                 const primaryData = buildOwnerCreateData(ownerOnly, 0);
                 const existingPrimary = await prisma.clientOwner.findFirst({
                     where: { clientId: id },
-                    orderBy: { sortOrder: 'asc' },
+                    orderBy: OWNER_ORDER_BY,
                 });
                 if (existingPrimary) {
                     await prisma.clientOwner.update({

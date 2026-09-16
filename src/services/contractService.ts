@@ -47,6 +47,7 @@ import {
   contractStatesMatch,
   normalizeContractStateToken,
 } from '../utils/usStateMatch';
+import { OWNER_ORDER_BY } from '../utils/clientOwnerSlots';
 
 const APPLICATION_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1342,7 +1343,7 @@ class ContractService {
               ownerZipCode: true,
               ownerOwnershipPercentage: true,
               owners: {
-                orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+                orderBy: OWNER_ORDER_BY,
                 take: 2,
                 select: {
                   firstName: true,

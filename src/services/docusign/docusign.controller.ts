@@ -732,6 +732,16 @@ export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) =>
       });
     }
     if (isSignNowEnvelopeId(String(envelopeId || ''))) {
+      // Sequential portal signing: if the signer holding the contract finished
+      // but never returned to their portal page, release the next signer here.
+      try {
+        const { advancePortalSigningQueue } = await import(
+          '../signnow/signnow-portal-send.service'
+        );
+        await advancePortalSigningQueue(String(envelopeId));
+      } catch (queueError) {
+        console.warn('[SignNow] portal queue advance on status sync failed', queueError);
+      }
       const result = await signNowService.getGroupStatus(
         String(envelopeId),
         applicationId ? String(applicationId) : undefined,

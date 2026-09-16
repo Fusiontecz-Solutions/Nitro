@@ -61,8 +61,15 @@ export const mapFlatClientOwnerToApi = (client: any) =>
     });
 
 export const resolveClientOwners = (client: any) => {
+    // Total order, matching OWNER_ORDER_BY on the query side. Sorting on sortOrder
+    // alone leaves tied rows in whatever order the caller happened to pass them,
+    // which is how two owners could trade places between responses.
     const relatedOwners = Array.isArray(client.owners)
-        ? [...client.owners].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+        ? [...client.owners].sort(
+              (a, b) =>
+                  (a.sortOrder ?? 0) - (b.sortOrder ?? 0) ||
+                  String(a.id ?? '').localeCompare(String(b.id ?? '')),
+          )
         : [];
 
     if (relatedOwners.length > 0) {

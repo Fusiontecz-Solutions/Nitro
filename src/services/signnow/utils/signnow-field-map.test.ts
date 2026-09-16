@@ -20,14 +20,42 @@ import {
 } from './signnow-field-map';
 
 describe('signnow-field-map', () => {
-  it('strips dashes from phone values for SignNow Number validators', () => {
-    expect(formatSignNowPrefillValue('561-577-8267', 'merchant_contact_phone')).toBe(
-      '5615778267',
+  it('prints phone and SSN values in the canonical dashed format', () => {
+    const textWidget = { type: 'text', validatorId: '' };
+    expect(
+      formatSignNowPrefillValue('5615778267', 'merchant_contact_phone', textWidget),
+    ).toBe('561-577-8267');
+    expect(formatSignNowPrefillValue('(561) 577-8267', 'client_phone', textWidget)).toBe(
+      '561-577-8267',
     );
-    expect(formatSignNowPrefillValue('(561) 577-8267', 'client_phone')).toBe('5615778267');
-    expect(formatSignNowPrefillValue('1-561-577-8267', 'guarantor_phone_p22')).toBe(
-      '5615778267',
+    expect(
+      formatSignNowPrefillValue('1-561-577-8267', 'guarantor_phone_p22', textWidget),
+    ).toBe('561-577-8267');
+    expect(formatSignNowPrefillValue('0006549876', 'owner2_phone', textWidget)).toBe(
+      '000-654-9876',
     );
+    expect(formatSignNowPrefillValue('366960737', 'guaranty_ss', textWidget)).toBe(
+      '366-96-0737',
+    );
+    expect(formatSignNowPrefillValue('366-96-0737', 'owner1_ssn_p22', textWidget)).toBe(
+      '366-96-0737',
+    );
+  });
+
+  it('sends digits-only phone / SSN to validated or unknown widgets', () => {
+    // The Number validator rejects dashes and takes the whole batch down.
+    expect(
+      formatSignNowPrefillValue('561-577-8267', 'merchant_contact_phone', {
+        type: 'text',
+        validatorId: 'number_validator_id',
+      }),
+    ).toBe('5615778267');
+    expect(
+      formatSignNowPrefillValue('561-577-8267', 'client_phone', { type: 'numeric' }),
+    ).toBe('5615778267');
+    // Unknown widget (no document field list) stays on the safe digits path.
+    expect(formatSignNowPrefillValue('561-577-8267', 'client_phone')).toBe('5615778267');
+    expect(formatSignNowPrefillValue('366-96-0737', 'guaranty_ss')).toBe('366960737');
     expect(formatSignNowPrefillValue('FUSIONTECZ', 'client_legal_name')).toBe('FUSIONTECZ');
     expect(formatSignNowPrefillValue('$ 1,025.00', 'origination_fee')).toBe('1,025.00');
     expect(formatSignNowPrefillValue('$49.00', 'ach_program_fee_p13')).toBe('49.00');

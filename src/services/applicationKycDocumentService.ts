@@ -13,10 +13,14 @@ import {
 } from './contractKycPrefillMapper';
 import {
   assignDriverLicenseOwnerSlots,
-  scoreOwnerNameMatch,
   type OwnerNameHint,
   type UploadedFileLike,
 } from './autoCreateBatchClassifyService';
+import {
+  nextAvailableOwnerSortOrder,
+  OWNER_ORDER_BY,
+  ownerRowForSlot,
+} from '../utils/clientOwnerSlots';
 
 export type ApplicationKycSlotRecord = {
   documentType: KycDocumentType;
@@ -109,7 +113,7 @@ async function persistKycToClientAndBank(
           ownerZipCode: true,
           driverLicense: true,
           owners: {
-            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            orderBy: OWNER_ORDER_BY,
             select: {
               id: true,
               sortOrder: true,
@@ -148,20 +152,26 @@ async function persistKycToClientAndBank(
     const dlZipCode = str(owner.zipCode);
     const driverLicense = str(guarantor?.driverLicenseNumber);
     const ownerIndex = mapped.ownerIndex ?? 1;
-    const existingOwners = Array.isArray(application.client?.owners)
+    const existingOwners: any[] = Array.isArray(application.client?.owners)
       ? application.client.owners
       : [];
     const client = application.client;
 
-    // Prefer matching ClientOwner by DL name when possible (owner 1 especially).
-    let target =
-      existingOwners.find((row: any) => {
-        const score = scoreOwnerNameMatch(
-          { firstName: dlFirstName, lastName: dlLastName },
-          { firstName: str(row.firstName), lastName: str(row.lastName) },
-        );
-        return score >= 40;
-      }) || existingOwners[ownerIndex - 1];
+    /**
+     * The owner slot is addressed by position — `ownerIndex` 1 is owners[0], 2 is
+     * owners[1] — because `owners` is ordered by `sortOrder`, which *is* the slot.
+     *
+     * This used to search the whole array by DL name first and fall back to the
+     * index. `scoreOwnerNameMatch` awards 60 for a shared last name alone, over the
+     * 40 threshold, so co-owners who are family (spouses, siblings, parent/child —
+     * common on these deals) always matched each other. Uploading Owner 2's licence
+     * then bound to Owner 1's row: Owner 1 was overwritten with Owner 2's licence
+     * data, Owner 2 never received its own, and both slots rendered the same person.
+     *
+     * A name match can only ever move data onto another owner's row, so position
+     * wins outright. When the slot has no row yet a new one is created below.
+     */
+    const target = ownerRowForSlot(existingOwners, ownerIndex);
 
     // Seed from application-PDF flat client fields for owner 1 when no ClientOwner row yet.
     const appSeed =
@@ -261,10 +271,20 @@ async function persistKycToClientAndBank(
         });
       }
     } else {
+      /**
+       * Never reuse a sortOrder already on the client. Duplicate sortOrders make
+       * `orderBy: { sortOrder: 'asc' }` non-deterministic, so the two owners could
+       * swap position between reads and look like they were changing on refresh.
+       */
+      const nextSortOrder = nextAvailableOwnerSortOrder(
+        existingOwners.map((row: any) => row?.sortOrder),
+        ownerIndex,
+      );
+
       await (prisma as any).clientOwner.create({
         data: {
           clientId: application.clientId,
-          sortOrder: ownerIndex - 1,
+          sortOrder: nextSortOrder,
           firstName: merged.firstName,
           middleName: merged.middleName,
           lastName: merged.lastName,

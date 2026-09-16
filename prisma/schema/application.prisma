@@ -578,10 +578,39 @@ model Document {
   /// Cloudinary URL for the signed combined PDF (avoids re-hitting DocuSign after complete).
   signedPdfUrl      String?
   signedPdfPublicId String?
+  /// sha256 of the package structure + CRM prefill values behind `envelopeId`.
+  /// Reuse of the SignNow draft group is gated on this: when the contract is
+  /// edited and sent again the hash changes and the group is rebuilt instead of
+  /// re-prefilled, so previously baked page text cannot survive as stale values.
+  prefillFingerprint String?
+  /// Set when the contract was emailed to signers through the CRM signing portal
+  /// (SendGrid) instead of a SignNow group invite. Portal sends use the preparer's
+  /// embedded invite, which otherwise reads as "owner review still open" and would
+  /// be rolled back to draft by revertPrematureSentIfOwnerReview.
+  portalSentAt      DateTime?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   userId            Int
   application       Application @relation(fields: [applicationId], references: [id])
+}
+
+/// Cached SignNow template documents (field face, roles, page count).
+/// Templates change rarely but are read on nearly every prefill, so the JSON is
+/// kept here and refreshed on TTL instead of re-fetched from SignNow per request.
+/// Survives process restarts and is shared across instances, unlike the
+/// in-process cache it backs.
+model SignNowTemplateCache {
+  id           String   @id @default(uuid()) @db.Uuid
+  /// SignNow document/template id.
+  templateId   String   @unique
+  documentName String?
+  /// Raw GET /document payload.
+  document     Json
+  fetchedAt    DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([fetchedAt])
 }
 
 /// One SignNow email group-invite per document-group (envelopeId). Used for send idempotency.
