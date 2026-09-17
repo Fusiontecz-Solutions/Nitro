@@ -641,8 +641,15 @@ export const OBSIDIAN_AGREEMENT_TEXT_FIELDS: Record<
  * template; until then this table routes each one by its verified position.
  */
 export const ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS: Record<string, string[]> = {
-  // Physically the "Date:" box.
-  'text field 1': ['agreement_date', 'signature_date', 'disclosure_date'],
+  // Physically the "Date:" box. `ach_weekly_signature_date_p1_ach` is the ACH-scoped id
+  // the CRM emits for it — the bare `Text Field 1` id is the CA / NY disclosure's
+  // "Funding Provided" amount and must never be written by this document.
+  'text field 1': [
+    'ach_weekly_signature_date_p1_ach',
+    'agreement_date',
+    'signature_date',
+    'disclosure_date',
+  ],
   // Physically the "Printed Names:" line.
   signature_date_p1_ach: [
     'print_name',
@@ -1509,9 +1516,20 @@ export function resolveSignNowPrefillValue(
   ];
   const nameField = isNameLikeField(canon, raw);
   const dateField = isSendDayDateField(canon, raw);
+  /**
+   * Default `Text Field N` widget names are reused by unrelated documents, so a value
+   * another document put in the shared prefill map can land in the wrong slot. Outside
+   * the two layouts that genuinely map a numbered widget to a date (ACH Weekly's "Date:"
+   * box, Monthly Fee's remittance start date), a numbered widget is never a date.
+   */
+  const numberedWidgetField =
+    /^text field\s*\d+$/i.test(raw) &&
+    options?.documentKind !== 'ach_weekly' &&
+    options?.documentKind !== 'monthly_fee';
   const valueAllowed = (value: string): boolean => {
     if (!value || isWeakSignNowPrefillHit(canon, value)) return false;
     if (dateField && isMoneyPrefillValue(value)) return false;
+    if (numberedWidgetField && isUsDatePrefillValue(value)) return false;
     if (nameField && (isMoneyPrefillValue(value) || isUsDatePrefillValue(value))) return false;
     return true;
   };

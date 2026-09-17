@@ -640,18 +640,64 @@ function fieldsOnExistingPages(
   });
 }
 
+/**
+ * SignNow fillable fields often carry their assignment as `role_id` only, with
+ * the human role name living in the document's `roles` / `field_invites` list.
+ * `toSignNowPutField` drops any field it cannot assign a role to, and because
+ * the merchant publish PUTs the whole field set, a dropped field is *deleted*
+ * from the document. That is how the page-22 reference / landlord / emergency
+ * widgets and the Exhibit C bank-portal slots disappeared from the signer's
+ * copy and came back as bare underlines.
+ */
+function collectSignNowRoleNamesById(remote: any): Map<string, string> {
+  const byId = new Map<string, string>();
+  const buckets = [
+    remote?.roles,
+    remote?.document_roles,
+    remote?.signing_roles,
+    remote?.field_invites,
+    remote?.routing_details?.roles,
+  ];
+  for (const rows of buckets) {
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      const name = String(
+        row.name || row.role || row.role_name || row.signer_role || '',
+      ).trim();
+      if (!name) continue;
+      for (const key of ['unique_id', 'id', 'role_id', 'signer_role_id'] as const) {
+        const id = String((row as any)[key] || '').trim();
+        if (id && !byId.has(id)) byId.set(id, name);
+      }
+    }
+  }
+  return byId;
+}
+
 function toSignNowPutField(
   field: any,
   container?: string,
-  options?: { defaultRole?: string; maxSize?: number },
+  options?: { defaultRole?: string; maxSize?: number; roleById?: Map<string, string> },
 ): Record<string, unknown> | null {
   const attrs = parseSignNowFieldAttrs(field);
   const type = signNowFieldType(field, container);
   if (!type || type === 'attachment') return null;
   if (SIGN_FIELD_TYPES.has(type) && isCompletedSignElement(field)) return null;
   const name = String(attrs.name || field?.name || field?.field_name || '').trim();
+  const roleFromId = (): string => {
+    const map = options?.roleById;
+    if (!map || !map.size) return '';
+    for (const key of ['role_id', 'signer_role_id', 'roleId'] as const) {
+      const id = String((field as any)?.[key] ?? (attrs as any)?.[key] ?? '').trim();
+      const hit = id ? map.get(id) : '';
+      if (hit) return hit;
+    }
+    return '';
+  };
   const role =
     String(field?.role || field?.signer || attrs.role || '').trim() ||
+    roleFromId() ||
     String(options?.defaultRole || '').trim() ||
     (isDedicatedExhibitCRequiredField(name) || isDedicatedContractP22RequiredField(name)
       ? 'Recipient 1'
@@ -721,7 +767,21 @@ function overlayTemplateFieldFace(
 }
 
 /** Copy page-20 / Exhibit C bank widgets from the template when a live copy dropped them. */
-function mergeMissingMerchantRequiredAchFields(
+/**
+ * Put back any signer widget the live document has lost.
+ *
+ * This used to restore only the hardcoded merchant-required ACH names. That was
+ * not enough once a document had been published by the older code, which
+ * deleted every blank signer widget it could not classify: the publish rebuilds
+ * from the *live* document, so a field deleted once could never come back and
+ * the signer kept seeing bare underlines no matter how the publish was fixed.
+ * Existing packages therefore stayed broken while only brand-new ones healed.
+ *
+ * Restoring from the template is safe because a field already present is left
+ * alone, CRM/Owner-held widgets are skipped, and signature/initial widgets are
+ * handled by their own restore just above the call site.
+ */
+function mergeMissingSignerFieldsFromTemplate(
   fields: Record<string, unknown>[],
   templateFields: Record<string, unknown>[],
   options?: SignNowPrefillOptions,
@@ -731,19 +791,23 @@ function mergeMissingMerchantRequiredAchFields(
     const name = String(field.name || '').trim().toLowerCase();
     if (name) present.add(name);
   }
+  const nitroStyle = usesNitroApproverRoles(
+    templateFields.map((field) => String(field.role || '')),
+  );
   const extra: Record<string, unknown>[] = [];
   for (const field of templateFields) {
     if (SIGN_FIELD_TYPES.has(String(field.type || ''))) continue;
     const rawName = String(field.name || '');
-    if (
-      !isMerchantRequiredSignerField(
-        rawName,
-        Number(field.page_number),
-        options,
-      )
-    ) {
-      continue;
-    }
+    const role = String(field.role || '').trim();
+    const whitelisted = isMerchantRequiredSignerField(
+      rawName,
+      Number(field.page_number),
+      options,
+    );
+    // A blank slot the template assigned to a signer is the merchant's to fill.
+    const signerOwned =
+      Boolean(role) && !/^owner$/i.test(role) && !isPreparerRole(role, nitroStyle);
+    if (!whitelisted && !signerOwned) continue;
     const name = rawName.trim().toLowerCase();
     if (name && present.has(name)) continue;
     if (name) present.add(name);
@@ -760,6 +824,10 @@ function collectSignNowPutFields(
 ): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   const seen = new Set<string>();
+  const roleById = collectSignNowRoleNamesById(remote);
+  // A field dropped here is deleted from the document by the merchant publish,
+  // so make that visible instead of letting widgets vanish silently.
+  const droppedNoRole: string[] = [];
   const containers = [
     'fields',
     'fillable_fields',
@@ -774,11 +842,27 @@ function collectSignNowPutFields(
       if (!field || typeof field !== 'object') continue;
       const key = signNowFieldKey(field, container);
       if (seen.has(key)) continue;
-      const put = toSignNowPutField(field, container, options);
-      if (!put) continue;
+      const put = toSignNowPutField(field, container, { ...options, roleById });
+      if (!put) {
+        const type = signNowFieldType(field, container);
+        if (type && type !== 'attachment' && !isCompletedSignElement(field)) {
+          const label = String(
+            field?.name || field?.field_name || parseSignNowFieldAttrs(field).name || '',
+          ).trim();
+          if (label) droppedNoRole.push(label);
+        }
+        continue;
+      }
       seen.add(key);
       out.push(put);
     }
+  }
+  if (droppedNoRole.length) {
+    console.warn('[SignNow] fields dropped with no resolvable role', {
+      count: droppedNoRole.length,
+      knownRoles: [...new Set(roleById.values())],
+      sample: droppedNoRole.slice(0, 15),
+    });
   }
   return out;
 }
@@ -2361,6 +2445,39 @@ export class SignNowService {
       }> = [];
       const pushDoc = (signer: EmbedSigner, doc: InviteDoc) => {
         if (!doc.id || skippedAssignments.has(assignmentKey(doc.id, doc.role))) return;
+        /**
+         * SignNow rejects the whole invite with "Document id with role must be
+         * unique" if one (document, role) pair appears twice, even under two
+         * different signers. That happens when a dropped CRM role sends the
+         * preparer to a fallback role the merchant already holds on that
+         * document. The pair is invalid either way, so keep the first claim
+         * rather than letting the create fail and strand the group with no
+         * embedded invites at all.
+         */
+        const claimedElsewhere = buckets.some((bucket) =>
+          bucket.documents.some(
+            (d) => d.id === doc.id && sameSignNowRole(d.role, doc.role),
+          ),
+        );
+        if (claimedElsewhere) {
+          const mine = buckets.find((bucket) =>
+            bucket.documents.some(
+              (d) => d.id === doc.id && sameSignNowRole(d.role, doc.role),
+            ),
+          );
+          const tagForSigner = signer.preparer
+            ? 'preparer'
+            : doc.role.replace(/[^a-z0-9]/gi, '').toLowerCase();
+          if (mine && mine.tag !== tagForSigner) {
+            console.warn('[SignNow] skipping duplicate embedded (document, role)', {
+              documentId: doc.id,
+              role: doc.role,
+              heldBy: mine.tag,
+              requestedBy: tagForSigner,
+            });
+            return;
+          }
+        }
         // Bucket by the DOCUMENT role, not the signer's own role name: one CRM
         // signer often covers Recipient 1 and Recipient 2, and keying on the
         // signer collapsed both onto one bucket where the second role was
@@ -3738,13 +3855,13 @@ export class SignNowService {
               }
             }
             const beforeRequired = sourceFields.length;
-            sourceFields = mergeMissingMerchantRequiredAchFields(
+            sourceFields = mergeMissingSignerFieldsFromTemplate(
               sourceFields,
               fromTemplate,
               isExhibitC ? { documentKind: 'exhibit_c' } : prefillOpts,
             );
             if (sourceFields.length > beforeRequired) {
-              console.info('[SignNow] restored merchant-required ACH fields from template', {
+              console.info('[SignNow] restored missing signer fields from template', {
                 documentId,
                 templateId,
                 exhibitC: isExhibitC,
@@ -3806,6 +3923,18 @@ export class SignNowService {
       roleCounts[role || '(none)'] = (roleCounts[role || '(none)'] || 0) + 1;
       if (!keepParty2 && isOwner2Role(role, nitroStyle)) continue;
       const next = { ...field };
+      /**
+       * Templates drift into case variants of one role ("Recipient 1" and
+       * "recipient 1" on the same document). SignNow treats those as two roles,
+       * so the embedded invite tried to attach one signer to the same document
+       * twice and failed with "Document id with role must be unique." Collapse
+       * every variant onto the exact role string this publish uses.
+       */
+      if (role && sameSignNowRole(role, merchantRole) && role !== merchantRole) {
+        next.role = merchantRole;
+      } else if (role && sameSignNowRole(role, ownerRole) && role !== ownerRole) {
+        next.role = ownerRole;
+      }
       const fieldName = String(next.name || '');
       const resolved = resolveSignNowPrefillValue(fieldName, values, prefillOpts);
       const isDateWidget =
@@ -4078,6 +4207,8 @@ export class SignNowService {
     const bakedRaw = splitPrefillPutPayload(putFields, bakeFilledText, {
       keepEmptyMerchantRequired: exposeToMerchant,
       documentKind: prefillOpts?.documentKind,
+      // Blank widgets still held by the CRM role are not the merchant's to fill.
+      ownerRole,
     });
     const baked = {
       fields: fieldsOnExistingPages(bakedRaw.fields, pageCount),
@@ -4090,6 +4221,7 @@ export class SignNowService {
           putFields.map(({ id: _id, ...rest }) => rest),
           putFields.map(({ lock_to_sign_prefill: _lock, ...rest }) => rest),
         ];
+    let lastFailureDetail = '';
     const attempts: Array<{ path: string; body: Record<string, unknown> }> = [];
     const pushPut = (bodyFields: Record<string, unknown>[], includeTexts: boolean) => {
       const withTexts = includeTexts && baked.texts.length > 0;
@@ -4143,10 +4275,11 @@ export class SignNowService {
           });
           return applied;
         }
+        lastFailureDetail = this.signNowErrorDetail(res);
         console.warn(
           '[SignNow] publish Owner fields failed',
           attempt.path,
-          this.signNowErrorDetail(res),
+          lastFailureDetail,
         );
       } catch (err) {
         console.warn(
@@ -4155,6 +4288,20 @@ export class SignNowService {
           err instanceof Error ? err.message : String(err),
         );
       }
+    }
+    /**
+     * Returning quietly here is what hid the real failure: SignNow rejects every
+     * field edit on an already-invited document, the merchant publish wrote
+     * nothing, and the caller still reported success — so the contract went out
+     * with none of the signer's fields on it. A merchant publish that wrote
+     * nothing is a failed send, so say so; Owner review keeps the old lenient
+     * behaviour because it has a later chance to write.
+     */
+    if (exposeToMerchant) {
+      throw new BadRequestException(
+        `SignNow refused every field write for document ${documentId}` +
+          (lastFailureDetail ? `: ${lastFailureDetail}` : ''),
+      );
     }
     return textsApplied || 0;
   }
@@ -5877,6 +6024,20 @@ export class SignNowService {
       applyMerchantSignerPrefill(values, orderedSigners(options.roles));
     }
     const valueCount = Object.keys(values).filter((key) => values[key]).length;
+    /**
+     * Owner review leaves embedded invites on the group, and SignNow refuses
+     * every field edit on an invited document with "Cannot edit fields on this
+     * document. This document has already been sent for signing." The publish
+     * then failed silently on all four documents, which is why the restored
+     * widgets never reached the signer no matter how the field logic changed.
+     *
+     * `sendEnvelope` clears the same invites before it bakes; this path has to
+     * do it too, then put the embedded invites back so the portal can still
+     * mint signing links from them.
+     */
+    await this.deleteEmbeddedInvites(client, id, documents);
+    await this.cancelPendingFieldInvites(client, documents);
+
     const failed: string[] = [];
     const PUBLISH_BATCH = 6;
     for (let i = 0; i < documents.length; i += PUBLISH_BATCH) {
@@ -5900,6 +6061,26 @@ export class SignNowService {
         }),
       );
     }
+    // Restore the embedded invites the unlock removed — `mintPortalSigningLink`
+    // refuses to mint a session for a group that has none.
+    if (options?.roles?.length) {
+      try {
+        await this.mintGroupEmbeddedInviteLink(client, {
+          documentId: '',
+          groupId: id,
+          redirect: '',
+          roles: options.roles,
+          documents,
+        });
+      } catch (err) {
+        console.error('[SignNow] could not recreate embedded invites after publish', {
+          groupId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+    }
+
     console.info('[SignNow] published fields to merchant', {
       groupId: id,
       documentCount: documents.length,

@@ -485,3 +485,114 @@ describe('signnow-prefill-put', () => {
     expect((field.json_attributes as { size?: number })?.size).toBe(FILLABLE_FONT_SIZE);
   });
 });
+
+describe('splitPrefillPutPayload required fields', () => {
+  const merchantOpts = { keepEmptyMerchantRequired: true };
+
+  it('keeps an empty template-required field fillable so SignNow can enforce it', () => {
+    const field = {
+      type: 'text',
+      name: 'addendum_owner_title',
+      role: 'Recipient 1',
+      required: true,
+      page_number: 0,
+      x: 10,
+      y: 10,
+    };
+    const out = splitPrefillPutPayload([field], true, merchantOpts);
+    expect(out.fields).toHaveLength(1);
+    expect(out.fields[0].name).toBe('addendum_owner_title');
+    expect(out.texts).toHaveLength(0);
+  });
+
+  it('shows an empty optional field without making it required', () => {
+    // The template placed this widget for the signer, so it stays visible — but
+    // the flag is carried through as-is, so it never blocks Finish.
+    const field = {
+      type: 'text',
+      name: 'addendum_optional_note',
+      role: 'Recipient 1',
+      required: false,
+      page_number: 0,
+      x: 10,
+      y: 10,
+    };
+    const out = splitPrefillPutPayload([field], true, merchantOpts);
+    expect(out.fields).toHaveLength(1);
+    expect(out.fields[0].required).toBe(false);
+    expect(out.texts).toHaveLength(0);
+  });
+
+  it('bakes a filled required field as text rather than re-asking for it', () => {
+    const field = {
+      type: 'text',
+      name: 'addendum_owner_title',
+      role: 'Recipient 1',
+      required: true,
+      prefilled_text: 'Managing Member',
+      page_number: 0,
+      x: 10,
+      y: 10,
+    };
+    const out = splitPrefillPutPayload([field], true, merchantOpts);
+    expect(out.fields).toHaveLength(0);
+    expect(out.texts).toHaveLength(1);
+    expect(out.texts[0].data).toBe('Managing Member');
+  });
+});
+
+describe('splitPrefillPutPayload signer-assigned blank widgets', () => {
+  const merchantOpts = { keepEmptyMerchantRequired: true, ownerRole: 'Owner' };
+
+  it('keeps a generic Text widget the template assigned to Recipient 1', () => {
+    // The page-22 reference slots are plain `Text Field N` widgets: they match
+    // no merchant-required name and SignNow reports no `required` flag, so they
+    // were deleted from the signer's copy and arrived as bare underlines.
+    const field = {
+      type: 'text',
+      name: 'Text Field 45',
+      role: 'Recipient 1',
+      page_number: 22,
+      x: 10,
+      y: 10,
+    };
+    const out = splitPrefillPutPayload([field], true, merchantOpts);
+    expect(out.fields).toHaveLength(1);
+    expect(out.fields[0].name).toBe('Text Field 45');
+    expect(out.texts).toHaveLength(0);
+  });
+
+  it('carries the template required flag through untouched', () => {
+    const required = {
+      type: 'text', name: 'Text Field 46', role: 'Recipient 1',
+      required: true, page_number: 22, x: 10, y: 10,
+    };
+    const optional = {
+      type: 'text', name: 'Text Field 47', role: 'Recipient 1',
+      required: false, page_number: 22, x: 10, y: 10,
+    };
+    const out = splitPrefillPutPayload([required, optional], true, merchantOpts);
+    expect(out.fields).toHaveLength(2);
+    expect(out.fields[0].required).toBe(true);
+    expect(out.fields[1].required).toBe(false);
+  });
+
+  it('still drops a blank widget the CRM role holds', () => {
+    const field = {
+      type: 'text', name: 'internal_note', role: 'Owner',
+      page_number: 1, x: 10, y: 10,
+    };
+    const out = splitPrefillPutPayload([field], true, merchantOpts);
+    expect(out.fields).toHaveLength(0);
+    expect(out.texts).toHaveLength(0);
+  });
+
+  it('keeps the Notification of Assignment merchant list blank', () => {
+    const field = {
+      type: 'text', name: 'assignment_merchant_line1', role: 'Recipient 1',
+      page_number: 1, x: 10, y: 10,
+    };
+    const out = splitPrefillPutPayload([field], true, merchantOpts);
+    expect(out.fields).toHaveLength(0);
+  });
+});

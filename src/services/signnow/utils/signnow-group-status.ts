@@ -177,9 +177,24 @@ export function resolveSignNowGroupStatus(
   if (explicit === 'completed' || explicit === 'voided') return explicit;
 
   const fromInvite = invitePayload ? resolveGroupInviteStatus(invitePayload) : null;
-  if (fromInvite === 'completed' || fromInvite === 'voided') return fromInvite;
+  if (fromInvite === 'voided') return fromInvite;
 
   const fromDocuments = resolveGroupDocumentsStatus(groupPayload);
+  /**
+   * A fulfilled invite means every signer *on that invite* finished — not that
+   * the package is done. The review signer's action lives outside the merchant
+   * invite, so once the merchants signed, the invite read "fulfilled" and the
+   * group was marked COMPLETED while documents still had open field invites:
+   * the review email went out against an already-completed deal.
+   *
+   * The documents are the authority when they carry a signing signal. When they
+   * carry none (`null`), the invite still decides, so nothing that previously
+   * resolved from the invite alone changes.
+   */
+  if (fromInvite === 'completed') {
+    if (fromDocuments === 'sent') return 'sent';
+    return 'completed';
+  }
   if (fromDocuments === 'completed' || fromDocuments === 'voided') return fromDocuments;
 
   if (explicit === 'sent' || fromInvite === 'sent' || fromDocuments === 'sent') return 'sent';

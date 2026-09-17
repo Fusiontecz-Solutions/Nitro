@@ -574,7 +574,9 @@ export async function sendContractViaPortal(input: {
       error: publishError instanceof Error ? publishError.message : String(publishError),
     });
     throw new BadRequest(
-      'Could not prepare the contract fields for the merchant. Nothing was emailed — please retry.',
+      'Could not prepare the contract fields for the merchant. Nothing was emailed. ' +
+        'Run Review in SignNow again, then send — the signing session was cleared ' +
+        'while the fields were being published.',
     );
   }
 

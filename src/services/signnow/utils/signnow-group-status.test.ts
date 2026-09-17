@@ -112,6 +112,35 @@ describe('resolveSignNowGroupStatus', () => {
     expect(resolveSignNowGroupStatus(group, invite)).toBe('completed');
   });
 
+  it('waits for the review signer when documents still have an open invite', () => {
+    // The merchants' invite is fulfilled, but the package is not done: the
+    // review signer's field invite is still pending on one document. Marking
+    // this "completed" is what promoted the deal the moment the review email
+    // went out.
+    const group = {
+      id: 'grp',
+      documents: [
+        { id: 'a', field_invites: [{ status: 'fulfilled' }] },
+        { id: 'b', field_invites: [{ status: 'pending' }] },
+      ],
+    };
+    const invite = { invite: { steps: [{ invite_actions: [{ status: 'fulfilled' }] }] } };
+    expect(resolveGroupInviteStatus(invite)).toBe('completed');
+    expect(resolveSignNowGroupStatus(group, invite)).toBe('sent');
+  });
+
+  it('completes once the documents agree the package is finished', () => {
+    const group = {
+      id: 'grp',
+      documents: [
+        { id: 'a', field_invites: [{ status: 'fulfilled' }] },
+        { id: 'b', field_invites: [{ status: 'fulfilled' }] },
+      ],
+    };
+    const invite = { invite: { steps: [{ invite_actions: [{ status: 'fulfilled' }] }] } };
+    expect(resolveSignNowGroupStatus(group, invite)).toBe('completed');
+  });
+
   it('still honours an explicit legacy `state`', () => {
     expect(resolveSignNowGroupStatus({ state: 'completed' })).toBe('completed');
     expect(resolveSignNowGroupStatus({ state: 'voided' })).toBe('voided');

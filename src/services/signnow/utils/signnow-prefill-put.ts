@@ -214,6 +214,8 @@ export function splitPrefillPutPayload(
     maxSize?: number;
     keepEmptyMerchantRequired?: boolean;
     documentKind?: SignNowPrefillDocumentKind;
+    /** Role that holds CRM-only widgets; its blank fields are not the merchant's to fill. */
+    ownerRole?: string;
   },
 ): { fields: Record<string, unknown>[]; texts: Record<string, unknown>[] } {
   if (!bakeFilledText) {
@@ -239,7 +241,34 @@ export function splitPrefillPutPayload(
       );
     const value = String(field.prefilled_text || field.data || '').trim();
     const empty = !value || /^enter text$/i.test(value);
-    if (isMerchantRequired && empty && options?.keepEmptyMerchantRequired) {
+    /**
+     * Every blank widget the template assigned to a signer has to survive the
+     * publish. Keying off the hardcoded name whitelist (or off `required`, which
+     * SignNow does not report on these widgets) meant the page-22 reference,
+     * landlord and emergency slots fell through to `toSignNowCompletedText` —
+     * which returns null for an empty value — so they were deleted outright.
+     * The signer saw bare underlines and SignNow had no field left to enforce.
+     *
+     * The template's own `required` flag rides along untouched: required widgets
+     * block Finish, optional ones stay optional. Blank CRM/Owner-held widgets
+     * are still dropped, so nothing the merchant should not see comes back.
+     */
+    const templateRequired =
+      field.required === true || String(field.required ?? '').toLowerCase() === 'true';
+    const role = String(field.role || '').trim();
+    const ownerRole = String(options?.ownerRole || '').trim();
+    const signerAssigned =
+      Boolean(role) &&
+      !/^owner$/i.test(role) &&
+      (!ownerRole || role.toLowerCase() !== ownerRole.toLowerCase());
+    // The Notification of Assignment merchant list is deliberately left blank.
+    const keepBlank = /assignment_merchant_line/i.test(String(field.name || ''));
+    const merchantFillable =
+      empty &&
+      Boolean(options?.keepEmptyMerchantRequired) &&
+      !keepBlank &&
+      (isMerchantRequired || templateRequired || signerAssigned);
+    if (merchantFillable) {
       const next = { ...field };
       if (
         usesAddendumFillableFont(

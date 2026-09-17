@@ -11,7 +11,10 @@
  * Re-running is safe: existing subscriptions for the same event + URL are left
  * alone. Pass `--list` to print the current subscriptions without changing them.
  */
+import { loadBackendEnv } from '../config/loadEnv';
 import { createSignNowApiClient } from '../services/signnow/utils/signnow-client';
+
+loadBackendEnv();
 
 /**
  * Group-level events drive the CRM status; the document-level ones are kept as
