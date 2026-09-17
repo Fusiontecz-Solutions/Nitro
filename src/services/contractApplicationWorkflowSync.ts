@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { invalidateAllApplicationStatsCache } from './applicationStatsCache';
 
 /** Approved deal awaiting contract generation. */
 export const APPLICATION_QUEUE_CONTRACT_PENDING = 'Contract Pending';
@@ -214,6 +215,11 @@ async function syncApplicationWorkflowStage(
     },
   });
 
+  // Webhook-driven stage moves (signed/completed) never pass through the
+  // application controller, so the dashboard cache must be busted here or the
+  // sidebar/state-card counts stay stale for the whole cache TTL.
+  invalidateAllApplicationStatsCache();
+
   console.log('[Contract→Application Sync]', {
     event: 'sync_applied',
     applicationId,
@@ -416,6 +422,8 @@ export async function syncApplicationToContractSignedWhenContractCompleted(
       currentState: true,
     },
   });
+
+  invalidateAllApplicationStatsCache();
 
   console.log('[Contract→Application Sync]', {
     event: 'sync_applied',

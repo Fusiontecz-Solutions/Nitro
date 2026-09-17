@@ -26,6 +26,7 @@ import {
   getSenderView,
   sendEnvelope,
   getSignNowInviteDiagnostics,
+  getSignNowReviewStatus,
   syncEnvelopeCc,
   getSignedPdf,
 } from './docusign.controller';
@@ -71,6 +72,8 @@ router.post('/create-draft-envelope', authenticateToken, createDraftEnvelope);
 router.post('/sender-view', authenticateToken, getSenderView);
 router.post('/send-envelope', authenticateToken, sendEnvelope);
 router.get('/signnow-invite-status', authenticateToken, requireAdmin, getSignNowInviteDiagnostics);
+/** Polled while the Review iframe is open — tells the CRM when Finish was clicked. */
+router.get('/signnow-review-status', authenticateToken, getSignNowReviewStatus);
 router.post('/sync-envelope-cc', authenticateToken, syncEnvelopeCc);
 // Email the contract to signers through the CRM signing portal (SendGrid)
 // instead of a SignNow group invite.

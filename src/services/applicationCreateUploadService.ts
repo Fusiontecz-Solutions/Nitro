@@ -12,6 +12,7 @@ type ExpressUploadedFile = {
     tempFilePath?: string;
     mimetype?: string;
     data?: Buffer;
+    truncated?: boolean;
 };
 
 function normalizeUploadedFiles(reqFiles: unknown): ExpressUploadedFile[] {
@@ -30,6 +31,12 @@ export async function snapshotRequestFiles(reqFiles: unknown): Promise<PendingAp
     const pending: PendingApplicationUpload[] = [];
 
     for (const file of files) {
+        // A truncated file hit the size limit mid-stream; storing it would
+        // attach a silently corrupt document to the application.
+        if (file?.truncated) {
+            console.warn(`[create application] skipping truncated upload: ${file?.name || 'document'}`);
+            continue;
+        }
         const originalName = String(file?.name || 'document').trim() || 'document';
         const mimetype = String(file?.mimetype || '').trim();
         if (file?.data && Buffer.isBuffer(file.data) && file.data.length > 0) {

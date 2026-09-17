@@ -417,11 +417,9 @@ let funderSignNowSettingsCache:
   | null = null;
 const FUNDER_SIGNNOW_SETTINGS_TTL_MS = 60_000;
 
-async function resolveSignNowTemplateFromFunderSettings(
-  templateId: string,
-): Promise<SignNowAddendumTemplate | null> {
-  const id = extractSignNowTemplateId(templateId);
-  if (!id) return null;
+async function loadFunderSignNowSettingsRows(): Promise<
+  Array<{ signnowAddendumTemplates: unknown; signnowDisclosureTemplates: unknown }>
+> {
   const now = Date.now();
   if (
     !funderSignNowSettingsCache ||
@@ -435,8 +433,15 @@ async function resolveSignNowTemplateFromFunderSettings(
     });
     funderSignNowSettingsCache = { at: now, rows: funders };
   }
+  return funderSignNowSettingsCache.rows;
+}
 
-  for (const funder of funderSignNowSettingsCache.rows) {
+async function resolveSignNowTemplateFromFunderSettings(
+  templateId: string,
+): Promise<SignNowAddendumTemplate | null> {
+  const id = extractSignNowTemplateId(templateId);
+  if (!id) return null;
+  for (const funder of await loadFunderSignNowSettingsRows()) {
     const buckets: Array<{ rows: unknown; type: 'addendum' | 'disclosure' }> = [
       { rows: funder.signnowAddendumTemplates, type: 'addendum' },
       { rows: funder.signnowDisclosureTemplates, type: 'disclosure' },
@@ -757,4 +762,77 @@ async function ensureSignNowAddendumTemplateRowUncached(
 
   const created = await prisma.boldSignTemplate.create({ data });
   return created.id;
+}
+
+/**
+ * Strip the copy/instance suffix SignNow puts on a document inside a group
+ * ("Exhibit C (2)", "ACH Weekly 1", "State Disclosure.pdf") so a live document
+ * name can be matched back to the template it was copied from.
+ */
+function baseSupplementalDocumentName(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .replace(/\.(pdf|docx?)$/i, '')
+    .replace(/\s*\((\d+)\)\s*$/, '')
+    .replace(/\s+\d+$/, '')
+    .trim();
+}
+
+/**
+ * The template a supplemental document in a live group came from, resolved by
+ * its document name.
+ *
+ * A re-publish rebuilds each document from its own live copy, but the first
+ * merchant publish bakes filled values into page text and deletes the widgets
+ * they came from. Without the origin template there is nothing left to resolve
+ * the current CRM values onto, so the document can only show the old stamp —
+ * which is why addenda and disclosures kept pre-edit values on a resend while
+ * the main agreement (which always had a template to restore from) updated.
+ */
+export async function resolveSignNowSupplementalTemplateByDocumentName(
+  documentName: unknown,
+): Promise<SignNowAddendumTemplate | null> {
+  const name = baseSupplementalDocumentName(documentName);
+  if (!name) return null;
+  const slug = slugifyTemplateName(name);
+  if (!slug) return null;
+
+  const catalog = getSignNowSupplementalTemplates();
+  const exact = catalog.find((row) => slugifyTemplateName(row.name) === slug);
+  if (exact) return exact;
+
+  for (const type of ['addendum', 'disclosure'] as const) {
+    const layoutKey = knownLayoutKeyFromSettingsName(name, type);
+    if (!layoutKey) continue;
+    const match = catalog.find((row) => row.layoutKey === layoutKey);
+    if (match) return match;
+  }
+
+  // Funder-specific templates configured in Settings → Funders.
+  try {
+    const rows = await loadFunderSignNowSettingsRows();
+    for (const funder of rows) {
+      const buckets: Array<{ rows: unknown; type: 'addendum' | 'disclosure' }> = [
+        { rows: funder.signnowAddendumTemplates, type: 'addendum' },
+        { rows: funder.signnowDisclosureTemplates, type: 'disclosure' },
+      ];
+      for (const bucket of buckets) {
+        if (!Array.isArray(bucket.rows)) continue;
+        for (const raw of bucket.rows) {
+          const row = catalogRowFromFunderLink(
+            (raw || {}) as FunderSignNowLinkRow,
+            bucket.type,
+          );
+          if (!row) continue;
+          if (slugifyTemplateName(row.name) === slug) return row;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(
+      '[SignNow] could not read funder templates while resolving a supplemental document',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  return null;
 }

@@ -686,6 +686,24 @@ describe('signnow-field-map', () => {
     ).toBe(currentSignNowUsDate());
   });
 
+  it('adds the ACH program fee to page-2 TOTAL FEES only when the ACH box is checked', () => {
+    const base = { origination_fee: '1,000.00' };
+    // Unchecked: underwriting fee alone.
+    expect(resolveSignNowPrefillValue('total_fees_p2', base)).toBe('1,000.00');
+    // Checked with no CRM amount: flat $25.
+    expect(
+      resolveSignNowPrefillValue('total_fees_p2', { ...base, ach_enabled: 'true' }),
+    ).toBe('1,025.00');
+    // CRM-supplied program fee wins over the flat default.
+    expect(
+      resolveSignNowPrefillValue('total_fees_p2', { ...base, ach_program_fee: '49.00' }),
+    ).toBe('1,049.00');
+    // A zero grand total must not print $0.00.
+    expect(
+      resolveSignNowPrefillValue('total_fees_p2', { ...base, total_fees: '0.00' }),
+    ).toBe('1,000.00');
+  });
+
   it('always fills purchase_price / purchased_amount / total_fees / ach_program_fee', () => {
     const prefill = {
       purchase_price: '10000.00',

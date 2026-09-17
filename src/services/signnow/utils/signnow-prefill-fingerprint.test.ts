@@ -1,6 +1,7 @@
 import {
   buildSignNowPrefillFingerprint,
   resolveSignNowPrefillReuse,
+  SIGNNOW_PRISTINE_PREFILL_FINGERPRINT,
 } from './signnow-prefill-fingerprint';
 
 const PACKAGE = '1|contract-template|disclosure';
@@ -84,6 +85,19 @@ describe('resolveSignNowPrefillReuse', () => {
         currentFingerprint: 'def',
       }),
     ).toEqual({ reuse: false, reason: 'prefill_fingerprint_changed' });
+  });
+
+  it('reuses a pre-warmed group however much the contract was edited after', () => {
+    // A `structureOnly` pre-warm copies the package and writes nothing into it,
+    // so it has no baked `texts[]` to go stale. Refusing it on a value change
+    // would throw the warm away and copy a second package against SignNow's
+    // daily document limit — defeating the point of warming it early.
+    expect(
+      resolveSignNowPrefillReuse({
+        previousFingerprint: SIGNNOW_PRISTINE_PREFILL_FINGERPRINT,
+        currentFingerprint: 'anything-at-all',
+      }),
+    ).toEqual({ reuse: true, reason: 'pristine_structure_only' });
   });
 
   it('rebuilds when no fingerprint was ever stored', () => {

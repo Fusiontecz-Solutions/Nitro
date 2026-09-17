@@ -1,9 +1,32 @@
+import http from 'http';
+import https from 'https';
 import axios, { type AxiosInstance } from '../../../types/http';
 import {
   countSignNowApiCall,
   getSignNowTiming,
   logSignNowTiming,
 } from './signnow-timing';
+
+/**
+ * One Review or Send makes 20-60 calls to api.signnow.com. Node's global agent
+ * drops an idle socket after 5s, so most of those calls were re-doing the DNS +
+ * TCP + TLS handshake (~200-400ms each from a US region). Pinning long-lived
+ * keep-alive agents here collapses that into one handshake per worker.
+ *
+ * `scheduling: 'lifo'` reuses the hottest socket, which keeps connections warm
+ * across the gap between the Review click and the Send click.
+ */
+const signNowAgentOptions = {
+  keepAlive: true,
+  keepAliveMsecs: 30_000,
+  maxSockets: 64,
+  maxFreeSockets: 16,
+  timeout: 120_000,
+  scheduling: 'lifo' as const,
+};
+
+export const signNowHttpAgent = new http.Agent(signNowAgentOptions);
+export const signNowHttpsAgent = new https.Agent(signNowAgentOptions);
 
 export const SIGNNOW_API_BASE = (
   process.env.SIGNNOW_API_BASE_URL ||
@@ -104,6 +127,8 @@ async function fetchOAuthAccessToken(): Promise<string> {
     },
     timeout: 20_000,
     validateStatus: () => true,
+    httpAgent: signNowHttpAgent,
+    httpsAgent: signNowHttpsAgent,
   });
   const token = String(res.data?.access_token || '').trim();
   if (res.status >= 400 || !token) {
@@ -181,6 +206,8 @@ export async function createSignNowApiClient(): Promise<AxiosInstance> {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json',
     },
+    httpAgent: signNowHttpAgent,
+    httpsAgent: signNowHttpsAgent,
   });
   client.interceptors.request.use((config) => {
     if (getSignNowTiming()) countSignNowApiCall();

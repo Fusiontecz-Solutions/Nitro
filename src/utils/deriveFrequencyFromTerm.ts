@@ -45,3 +45,44 @@ export function parseContractLengthDaysFromOfferTerm(term: unknown): number | nu
     const n = Number.parseInt(m[1], 10);
     return Number.isFinite(n) ? n : null;
 }
+
+/**
+ * Estimated term in CALENDAR DAYS for the state disclosure, from the offer's own
+ * `term` text and payment frequency.
+ *
+ * The disclosure's "Estimated Term" is a number of days, but `OfferDecision.term` is
+ * captured in the cadence's own unit — "20" / "20 Days" on a daily deal, "10 Weeks" on a
+ * weekly one. Reading that number as days made a 10-week deal disclose a 10-day term.
+ *
+ * The unit written on the term wins (a term already expressed in days is never scaled);
+ * a bare number is read in the selected frequency's unit. Returns null when there is no
+ * usable term, so callers keep whatever they already had.
+ */
+export function parseDisclosureTermDaysFromOffer(
+    term: unknown,
+    frequency: unknown,
+): number | null {
+    const count = parseContractLengthDaysFromOfferTerm(term);
+    if (count == null || !(count > 0)) return null;
+
+    const termText = String(term ?? '').toLowerCase();
+    const freqText = String(frequency ?? '').toLowerCase();
+    const unit = /\bweeks?\b/.test(termText)
+        ? 'week'
+        : /\bdays?\b/.test(termText)
+          ? 'day'
+          : /\bmonths?\b/.test(termText)
+            ? 'month'
+            : freqText.startsWith('week')
+              ? 'week'
+              : freqText.startsWith('bi')
+                ? 'biweek'
+                : freqText.startsWith('month')
+                  ? 'month'
+                  : 'day';
+
+    if (unit === 'week') return count * 7;
+    if (unit === 'biweek') return count * 14;
+    if (unit === 'month') return count * 30;
+    return count;
+}

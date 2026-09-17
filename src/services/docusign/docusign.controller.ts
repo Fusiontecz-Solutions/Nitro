@@ -879,6 +879,30 @@ export const sendEnvelope = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * GET /docusign/signnow-review-status?envelopeId=
+ * Polled by the contract modal while the SignNow review iframe is open, so the
+ * UI learns that the preparer clicked Finish even when the iframe redirect or
+ * postMessage never reaches it.
+ */
+export const getSignNowReviewStatus = async (req: Request, res: Response) => {
+  try {
+    const envelopeId = String(req.query.envelopeId || req.params.envelopeId || '').trim();
+    if (!envelopeId) {
+      return res.status(400).json({ message: 'Missing envelopeId' });
+    }
+    if (!isSignNowEnvelopeId(envelopeId)) {
+      return res.json({ envelopeId, reviewComplete: false, fulfilledRoles: [], status: null });
+    }
+    const result = await signNowService.getReviewStatus(envelopeId);
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to read SignNow review status',
+    });
+  }
+};
+
 export const getSignNowInviteDiagnostics = async (req: Request, res: Response) => {
   try {
     const envelopeId = String(req.query.envelopeId || req.params.envelopeId || '').trim();

@@ -52,14 +52,38 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // IMPORTANT: Do not run this on routes that use Multer — both parse multipart/body and the
 // stream can only be consumed once (Multer then throws "Unexpected end of form").
 import os from 'os';
+
+/** Per-file ceiling for multipart uploads (application PDFs, bank statements). */
+const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
+/**
+ * Hard ceiling on how long multipart parsing may take before we answer the
+ * caller. express-fileupload can leave a request without ever calling `next()`
+ * (e.g. busboy never emits `finish` after an aborted/unpiped stream), which
+ * otherwise leaves the browser spinning forever on "create application".
+ */
+const MULTIPART_PARSE_TIMEOUT_MS = 180_000;
+
 const expressFileUploadMiddleware = fileUpload({
   useTempFiles: true,
   tempFileDir: os.tmpdir(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max file size
-  abortOnLimit: true,
+  limits: { fileSize: MAX_UPLOAD_FILE_BYTES },
+  // Drain + answer with JSON ourselves instead of letting the library reset the
+  // socket: a mid-upload reset surfaces in the browser as an opaque network
+  // error, so the UI never learns the file was simply too large.
+  abortOnLimit: false,
+  limitHandler: (req: Request, res: Response) => {
+    if (res.headersSent) return;
+    req.resume();
+    res.status(413).json({
+      success: false,
+      message: `File is too large. Maximum allowed size is ${Math.round(
+        MAX_UPLOAD_FILE_BYTES / (1024 * 1024),
+      )}MB per file.`,
+    });
+  },
 });
 
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   const contentType = String(req.headers['content-type'] || '');
   if (!contentType.toLowerCase().includes('multipart/form-data')) {
     return next();
@@ -73,7 +97,39 @@ app.use((req, res, next) => {
   ) {
     return next();
   }
-  return expressFileUploadMiddleware(req, res, next);
+
+  // express-fileupload can invoke `next()` more than once (a file `error` event
+  // and a later busboy `finish` both call it). On POST /applications that ran
+  // the create handler twice — duplicate applications plus an
+  // ERR_HTTP_HEADERS_SENT crash. Latch so only the first call gets through.
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    console.error(`[upload] multipart parsing timed out for ${req.method} ${pathOnly}`);
+    if (!res.headersSent) {
+      res.status(408).json({
+        success: false,
+        message: 'File upload timed out. Please retry with a smaller file or a better connection.',
+      });
+    } else {
+      res.end();
+    }
+  }, MULTIPART_PARSE_TIMEOUT_MS);
+
+  const settle = (err?: unknown) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    // The limit handler (or an abort) already answered — stop here rather than
+    // running the route against a half-parsed body.
+    if (res.headersSent || res.writableEnded) return;
+    next(err as never);
+  };
+
+  res.on('close', () => clearTimeout(timer));
+
+  return expressFileUploadMiddleware(req, res, settle);
 });
 
 cloudinaryConnect();

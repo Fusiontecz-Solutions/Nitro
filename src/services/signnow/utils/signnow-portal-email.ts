@@ -1,4 +1,5 @@
 import { BRAND_DISPLAY_NAME } from '../../../constants/brand';
+import { signingPortalTokenTtlHours } from './signnow-portal-token';
 
 /** Minimal HTML escape — merchant names and funder names are untrusted input. */
 function escapeHtml(value: string): string {
@@ -16,7 +17,8 @@ function escapeHtml(value: string): string {
  * centered headline, one short sentence naming the document and sender, then a
  * single blue action button.
  * The link is single-signer and expires; the copy says so, because an expired
- * link is the most common reason a merchant contacts the funder.
+ * link is the most common reason a merchant contacts the funder. The stated
+ * window is read from the token TTL so the promise cannot drift from the code.
  */
 export function buildSigningPortalEmailHtml(input: {
   recipientName?: string | null;
@@ -33,6 +35,8 @@ export function buildSigningPortalEmailHtml(input: {
   const label = escapeHtml(input.contractLabel);
   const link = escapeHtml(input.signingLink);
   const senderEmail = input.senderEmail ? escapeHtml(input.senderEmail) : '';
+  const ttlHours = signingPortalTokenTtlHours();
+  const expiryCopy = `${ttlHours} ${ttlHours === 1 ? 'hour' : 'hours'}`;
   const fromPart = senderEmail
     ? ` from <a href="mailto:${senderEmail}" style="color:#1d4ed8;font-weight:bold;">${senderEmail}</a>`
     : ` from <strong>${sender}</strong>`;
@@ -73,7 +77,7 @@ export function buildSigningPortalEmailHtml(input: {
             </tr>
             <tr>
               <td style="padding:0 32px 16px;font-size:13px;line-height:20px;color:#52606d;">
-                This link is for you only and expires in 12 hours. If it has expired, reply to this
+                This link is for you only and expires in ${expiryCopy}. If it has expired, reply to this
                 email and we will send a new one.
               </td>
             </tr>

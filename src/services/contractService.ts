@@ -40,6 +40,14 @@ import {
   slugFromContractDocumentType,
 } from './applicationDocumentMirrorService';
 import { mergePreservingDocuSignEnvelopeMeta } from './docusign/utils/preserve-docusign-prefill-meta';
+import {
+  readBankFieldsFromPrefill,
+  syncBankFieldsEverywhereSafe,
+} from './bankFieldSync';
+import {
+  applyOfferDerivedValuesToContractRow,
+  resolveOfferDerivedContractValues,
+} from './contractOfferValueSync';
 import { resolveApplicationWhere } from './applicationService';
 import { resolveFunderProfile } from './funderProfileService';
 import { buildPrefixedDealId } from '../utils/applyFunderDealIdPrefix';
@@ -208,6 +216,27 @@ async function resolvePaymentBankDetailForContract(
 }
 
 /** Coerce optional FK to a positive int or null so bogus values (e.g. NaN, 0, placeholders) never hit Prisma. */
+/**
+ * The ACH form holds the same bank block as the prefill editor and the application bank row —
+ * mirror a saved ACH row outward so the values are already filled in everywhere else.
+ */
+async function syncAchRowBankFields(row: Record<string, unknown>) {
+  await syncBankFieldsEverywhereSafe(
+    {
+      contractId: row.contractId == null ? null : Number(row.contractId),
+      clientId: row.clientId == null ? null : String(row.clientId),
+    },
+    {
+      bankName: row.bankName as string | null,
+      accountNumber: row.accountNumber as string | null,
+      routingNumber: row.routingNumber as string | null,
+      bankPortal: row.ach_authorization_bank_portal_website as string | null,
+      bankUsername: row.ach_authorization_username as string | null,
+    },
+    { sourceAchId: row.id == null ? undefined : Number(row.id) },
+  );
+}
+
 function normalizeBusinessInfoIdForFk(value: unknown): number | null {
   if (value === undefined || value === null) return null;
   if (typeof value === 'string' && value.trim() === '') return null;
@@ -402,22 +431,16 @@ function decodeTypedFileName(storedFileName: unknown): {
   };
 }
 
+/**
+ * Origination fee in dollars, using the same percent-vs-dollars rule as every other
+ * offer-derived value so contract creation and the offer sync cannot disagree.
+ */
 function resolveOfferFeeDollarsForContract(
   fundedAmount: number | null | undefined,
   feesRaw: unknown,
 ): string | null {
-  const funded = Number(fundedAmount);
-  const fees = Number(feesRaw);
-  if (!Number.isFinite(funded) || funded <= 0) return null;
-  if (!Number.isFinite(fees) || fees <= 0) return null;
-  const looksLikeDollars = fees > 100 || fees > funded * 0.005;
-  if (looksLikeDollars) {
-    return String(Math.round(fees * 100) / 100);
-  }
-  if (fees > 0 && fees <= 100) {
-    return String(Math.round(((funded * fees) / 100) * 100) / 100);
-  }
-  return null;
+  return resolveOfferDerivedContractValues({ offer: fundedAmount, fees: feesRaw })
+    ?.appendixUnderwritingFees ?? null;
 }
 
 const OFFER_DECISION_CONTRACT_SELECT = {
@@ -428,6 +451,8 @@ const OFFER_DECISION_CONTRACT_SELECT = {
   frequency: true,
   repayPerPeriod: true,
   rate: true,
+  /** Origination fee drives the disclosure broker/underwriting line — keep it on every read. */
+  fees: true,
 } as const;
 
 /** Latest terms offer fields needed for contract UI (buy rate, % gross, factor, etc.). */
@@ -458,7 +483,11 @@ function mapTermsOfferNestedForApi(offer: Record<string, unknown> | null | undef
 
 function enrichContractRowForApi(row: Record<string, unknown> | null | undefined) {
   if (!row) return row;
-  const mapped = mapContractRecordForApi(row) as Record<string, unknown>;
+  // Contract columns are a creation-time snapshot of the offer. Overlay the live
+  // OfferDecision so the Info Required step (disclosure / addendum prefill) shows the
+  // current terms even when the row predates the last offer change.
+  const fresh = applyOfferDerivedValuesToContractRow(row) as Record<string, unknown>;
+  const mapped = mapContractRecordForApi(fresh) as Record<string, unknown>;
   const termsOffers = Array.isArray(row.termsOffers)
     ? row.termsOffers.map((t) => mapTermsOfferNestedForApi(t as Record<string, unknown>))
     : row.termsOffers;
@@ -1893,7 +1922,9 @@ class ContractService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return rows.map((row: Record<string, unknown>) => mapContractRecordForApi(row));
+    return rows.map((row: Record<string, unknown>) =>
+      mapContractRecordForApi(applyOfferDerivedValuesToContractRow(row) as Record<string, unknown>),
+    );
   }
 
   async getByIdContract(id: number) {
@@ -2096,6 +2127,13 @@ class ContractService {
         }),
       { maxAttempts: 5, baseDelayMs: 400, label: 'updateContract.write' },
     );
+
+    // Bank block edited in the prefill editor (or its Exhibit C entity modal): mirror it into
+    // the contract columns, ACH rows and the application bank row so it is never retyped.
+    if (data.contractPrefillOverrides != null && updateData.contractPrefillOverrides) {
+      const bank = readBankFieldsFromPrefill(updateData.contractPrefillOverrides);
+      await syncBankFieldsEverywhereSafe({ contractId: id }, bank);
+    }
     const row = await withDbRetry(
       async () => {
         const updated = await loadContractRowForUpdateResponse(id);
@@ -2241,6 +2279,7 @@ class ContractService {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
       },
     });
+    await syncAchRowBankFields(row);
     return mapAchRecordForApi(row);
   }
 
@@ -2369,6 +2408,7 @@ class ContractService {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
       },
     });
+    await syncAchRowBankFields(row);
     return mapAchRecordForApi(row);
   }
 
@@ -2897,6 +2937,7 @@ class ContractService {
         owners: true,
         guarantors: true,
         documents: true,
+        offer: { select: OFFER_DECISION_CONTRACT_SELECT },
       },
     });
 
@@ -2904,7 +2945,9 @@ class ContractService {
       throw new Error('Contract not found');
     }
 
-    return mapContractRecordForApi(contract);
+    // ACH / addendum rows are seeded once at contract creation; overlay the live offer so
+    // their amounts match the current terms rather than the ones in force back then.
+    return mapContractRecordForApi(applyOfferDerivedValuesToContractRow(contract));
   }
 
   async createBoldSignTemplate(data: {

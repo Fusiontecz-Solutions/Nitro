@@ -2,6 +2,7 @@
 import { randomUUID } from 'crypto';
 import { Readable } from 'stream';
 import { cloudinary } from '../config/cloudinary';
+import { runCloudinaryUpload } from './cloudinaryUploadLimiter';
 
 interface UploadedFile {
     name: string;
@@ -34,30 +35,20 @@ function resolveCloudinaryResourceType(file: {
     return 'raw';
 }
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isCloudinaryRateLimitError(error: unknown): boolean {
-    const msg = String((error as any)?.message || error || '');
-    const code = Number((error as any)?.http_code || (error as any)?.httpCode || 0);
-    return code === 429 || /429|rate.?limit|too many requests/i.test(msg);
-}
-
 class UploadToCloudinaryService {
-    // Upload single file to Cloudinary (retries on HTTP 429 rate limits)
+    /**
+     * Upload a single file. Concurrency and HTTP 429 back-off are handled process-wide by
+     * `runCloudinaryUpload`, so callers are free to invoke this in parallel.
+     */
     async uploadFile(file: UploadedFile, folder: string, title?: string): Promise<UploadResult> {
         const fileName = title || file.name;
         const resourceType = resolveCloudinaryResourceType(file);
-        const maxAttempts = 5;
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                const options = { folder, resource_type: resourceType as 'image' | 'raw' };
-
+        try {
+            return await runCloudinaryUpload(fileName || 'file', async () => {
                 // If file has a stream-like property, use upload_stream
                 if (file.tempFileStream) {
-                    const streamResult = await new Promise<UploadResult>((resolve, reject) => {
+                    return await new Promise<UploadResult>((resolve, reject) => {
                         const uploadStream = cloudinary.uploader.upload_stream(
                             {
                                 resource_type: resourceType,
@@ -79,41 +70,27 @@ class UploadToCloudinaryService {
                         );
                         file.tempFileStream!.pipe(uploadStream);
                     });
-                    return streamResult;
                 }
 
-                const response = await cloudinary.uploader.upload(file.tempFilePath, options);
+                const response = await cloudinary.uploader.upload(file.tempFilePath, {
+                    folder,
+                    resource_type: resourceType as 'image' | 'raw',
+                });
                 return {
                     success: true,
                     message: 'File uploaded successfully',
                     data: response,
                     fileName,
                 };
-            } catch (error: any) {
-                const retryable = isCloudinaryRateLimitError(error);
-                console.error(
-                    `Error in uploading file to Cloudinary (attempt ${attempt}/${maxAttempts}):`,
-                    error,
-                );
-                if (retryable && attempt < maxAttempts) {
-                    const waitMs = Math.min(8000, 750 * Math.pow(2, attempt - 1));
-                    console.warn(`[cloudinary] 429 rate limit — retrying in ${waitMs}ms…`);
-                    await sleep(waitMs);
-                    continue;
-                }
-                return {
-                    success: false,
-                    message: 'Error occurred while uploading file to Cloudinary',
-                    error: error?.message || String(error),
-                };
-            }
+            });
+        } catch (error: any) {
+            console.error(`Error in uploading file to Cloudinary (${fileName}):`, error);
+            return {
+                success: false,
+                message: 'Error occurred while uploading file to Cloudinary',
+                error: error?.message || String(error),
+            };
         }
-
-        return {
-            success: false,
-            message: 'Error occurred while uploading file to Cloudinary',
-            error: 'Upload failed after retries',
-        };
     }
 
     /**
@@ -130,10 +107,9 @@ class UploadToCloudinaryService {
         const withoutExt = safeBase.replace(/\.[^/.]+$/, '');
         const isPdf =
             options?.forcePdf === true || safeBase.toLowerCase().endsWith('.pdf');
-        const maxAttempts = 5;
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
+        try {
+            return await runCloudinaryUpload(safeBase, async () => {
                 const publicId = `${Date.now()}_${randomUUID().slice(0, 8)}_${withoutExt || 'document'}`;
                 const uploadOptions: Record<string, unknown> = {
                     folder,
@@ -147,7 +123,7 @@ class UploadToCloudinaryService {
                     uploadOptions.resource_type = resolveCloudinaryResourceType({ name: safeBase });
                 }
 
-                const result = await new Promise<UploadResult>((resolve, reject) => {
+                return await new Promise<UploadResult>((resolve, reject) => {
                     const uploadStream = cloudinary.uploader.upload_stream(
                         uploadOptions as any,
                         (error: any, cloudinaryResult: any) => {
@@ -169,32 +145,15 @@ class UploadToCloudinaryService {
                     );
                     Readable.from(buffer).pipe(uploadStream);
                 });
-                return result;
-            } catch (error: any) {
-                const retryable = isCloudinaryRateLimitError(error);
-                console.error(
-                    `Error uploading buffer to Cloudinary (attempt ${attempt}/${maxAttempts}):`,
-                    error,
-                );
-                if (retryable && attempt < maxAttempts) {
-                    const waitMs = Math.min(8000, 750 * Math.pow(2, attempt - 1));
-                    console.warn(`[cloudinary] buffer 429 — retrying in ${waitMs}ms…`);
-                    await sleep(waitMs);
-                    continue;
-                }
-                return {
-                    success: false,
-                    message: 'Error occurred while uploading file to Cloudinary',
-                    error: error?.message || String(error),
-                };
-            }
+            });
+        } catch (error: any) {
+            console.error(`Error uploading buffer to Cloudinary (${safeBase}):`, error);
+            return {
+                success: false,
+                message: 'Error occurred while uploading file to Cloudinary',
+                error: error?.message || String(error),
+            };
         }
-
-        return {
-            success: false,
-            message: 'Error occurred while uploading file to Cloudinary',
-            error: 'Upload failed after retries',
-        };
     }
 
     // Upload multiple files to Cloudinary

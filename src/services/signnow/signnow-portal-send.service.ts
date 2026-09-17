@@ -35,6 +35,7 @@ export type PortalSendResult = {
   recipientEmails: string[];
   sentAt: string;
   resent: boolean;
+  ccPrefilledEmail?: { emailed: string[]; skippedReason?: string };
 };
 
 class BadRequest extends Error {
@@ -527,6 +528,8 @@ export async function sendContractViaPortal(input: {
   /** Current CRM values, built by the same payload builder the SignNow send uses. */
   prefillFields?: Array<{ id: string; value: string }>;
   roles?: Array<{ roleName?: string; name?: string; email?: string }>;
+  /** Copy-only recipients (never a signer) — emailed the contract package once merchants are sent. */
+  ccEmails?: string[];
 }): Promise<PortalSendResult> {
   const envelopeId = String(input.envelopeId || '').trim();
   if (!envelopeId) throw new BadRequest('Missing contract id.');
@@ -645,6 +648,18 @@ export async function sendContractViaPortal(input: {
    */
   await syncPortalSendWorkflow(envelopeId);
 
+  const ccPrefilledEmail = await signNowService
+    .notifyCcRecipientsOnSend(
+      envelopeId,
+      input.ccEmails,
+      recipientEmails,
+      input.contractLabel,
+    )
+    .catch((err) => {
+      console.warn('[SignNow] portal CC email failed:', err);
+      return { emailed: [] as string[], skippedReason: 'error' };
+    });
+
   console.info('[SignNow] contract emailed via signing portal', {
     envelopeId,
     recipientEmails,
@@ -657,5 +672,6 @@ export async function sendContractViaPortal(input: {
     recipientEmails,
     sentAt: sentAt.toISOString(),
     resent,
+    ccPrefilledEmail,
   };
 }

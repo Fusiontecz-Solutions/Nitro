@@ -11,6 +11,11 @@ import {
   splitPrefillPutPayload,
   toSignNowCompletedText,
 } from './signnow-prefill-put';
+import {
+  collectCommittedSignNowTexts,
+  isSameSignNowTextSpot,
+  mergeCommittedSignNowTexts,
+} from './signnow-prefill-put';
 import { CONTRACT_P22_REQUIRED_UNIQUE_NAMES } from './signnow-field-map';
 
 describe('signnow-prefill-put', () => {
@@ -594,5 +599,63 @@ describe('splitPrefillPutPayload signer-assigned blank widgets', () => {
     };
     const out = splitPrefillPutPayload([field], true, merchantOpts);
     expect(out.fields).toHaveLength(0);
+  });
+});
+
+describe('committed page text on a re-publish', () => {
+  const stamp = (data: string, y: number, id = `id-${data}`) => ({
+    id,
+    data,
+    x: 197,
+    y,
+    page_number: 0,
+    font: 'Times New Roman',
+    size: 10,
+  });
+
+  it('reads the stamps an earlier publish left on the page', () => {
+    const committed = collectCommittedSignNowTexts({
+      texts: [stamp('RE-NEW-IT RENOVATIONS, LLC', 338), stamp('  ', 362), { data: 'x' }],
+    });
+    expect(committed.map((row) => row.data)).toEqual(['RE-NEW-IT RENOVATIONS, LLC', 'x']);
+    expect(committed[0]).toMatchObject({ id: 'id-RE-NEW-IT RENOVATIONS, LLC', y: 338 });
+  });
+
+  it('treats anchors a few points apart as the same line', () => {
+    expect(isSameSignNowTextSpot({ page_number: 0, x: 197, y: 338 }, { page_number: 0, x: 199, y: 340 })).toBe(true);
+    expect(isSameSignNowTextSpot({ page_number: 0, x: 197, y: 338 }, { page_number: 0, x: 197, y: 362 })).toBe(false);
+    expect(isSameSignNowTextSpot({ page_number: 0, x: 197, y: 338 }, { page_number: 1, x: 197, y: 338 })).toBe(false);
+  });
+
+  it('keeps one value per spot so Exhibit C (2) cannot stack over Exhibit C', () => {
+    const committed = collectCommittedSignNowTexts({
+      texts: [stamp('RE-NEW-IT RENOVATIONS, LLC', 338), stamp('JP MORGAN', 472)],
+    });
+    const merged = mergeCommittedSignNowTexts(
+      [{ data: 'FUSIONTECZ', x: 197, y: 338, page_number: 0 }],
+      committed,
+    );
+    expect(merged.map((row) => row.data)).toEqual(['FUSIONTECZ', 'JP MORGAN']);
+  });
+
+  it('drops an old stamp on a spot this send holds a widget for, even with nothing baked there', () => {
+    const committed = collectCommittedSignNowTexts({ texts: [stamp('$100,000.00', 338)] });
+    const merged = mergeCommittedSignNowTexts([], committed, {
+      ownedSpots: [{ page_number: 0, x: 197, y: 338 }],
+    });
+    expect(merged).toEqual([]);
+  });
+
+  it('still accepts a bare tolerance argument', () => {
+    const committed = collectCommittedSignNowTexts({ texts: [stamp('JP MORGAN', 472)] });
+    expect(mergeCommittedSignNowTexts([], committed, 6)).toHaveLength(1);
+  });
+
+  it('carries an uncovered stamp forward without its id, since the clear drops every text', () => {
+    const committed = collectCommittedSignNowTexts({ texts: [stamp('3273 COVE CREEK ROAD', 388)] });
+    const merged = mergeCommittedSignNowTexts([], committed);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ data: '3273 COVE CREEK ROAD', y: 388 });
+    expect(merged[0]).not.toHaveProperty('id');
   });
 });

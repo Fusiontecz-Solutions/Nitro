@@ -3,6 +3,7 @@
  */
 
 import {
+  composeFullAddress,
   digitsOnlyPhone,
   digitsOnlySsn,
   formatSsn,
@@ -427,6 +428,12 @@ const ALIASES: Record<string, string[]> = {
     'net_to_merchant',
   ],
   disclosure_page3_subtotal: ['disclosure_page3_subtotal'],
+  disclouser_pg2_frequency: [
+    'disclouser_pg2_frequency',
+    'disclosure_payment_frequency',
+    'payment_frequency',
+    'frequency',
+  ],
   // CA-style disclosure page 1 — SignNow still uses default "Text Field N" names.
   'text field 1': [
     'funding_provided',
@@ -1102,6 +1109,50 @@ function formatPrefillMoney(value: number): string {
  * Guarantee page-1 purchase columns + ach_program_fee resolve from CRM deal money.
  * Derives total_fees from offer − net when the fee field itself is blank.
  */
+/** Flat ACH/program fee charged when the deal's ACH box is checked. */
+const SIGNNOW_DEFAULT_ACH_PROGRAM_FEE = 25;
+
+const SIGNNOW_ACH_ENABLED_KEYS = [
+  'ach_enabled',
+  'ach_selected',
+  'ach_checked',
+  'ach_fee_enabled',
+  'monthly_fee_enabled',
+  'program_fee_enabled',
+  'has_ach_fee',
+];
+
+function isTruthyPrefillFlag(value: string): boolean {
+  return /^(1|y|yes|true|on|checked|x)$/i.test(String(value || '').trim());
+}
+
+/**
+ * ACH program fee to fold into TOTAL FEES: the CRM amount when it sends one,
+ * otherwise the flat $25 whenever the deal's ACH box is checked. Zero/blank
+ * amount with no flag means the box is unchecked — nothing is added.
+ */
+export function resolveAchProgramFeeAmount(map: Map<string, string>): number {
+  for (const key of [
+    'ach_program_fee',
+    'monthly_fee',
+    'program_fee',
+    'ach_monthly_fee',
+    'monthly_program_fee',
+    'ach_program_fee_amount',
+    'program_fee_amount',
+    'ach_program_fee_p1',
+  ]) {
+    const amount = parsePrefillMoney(mapGet(map, key));
+    if (amount != null && amount > 0) return amount;
+  }
+  for (const key of SIGNNOW_ACH_ENABLED_KEYS) {
+    if (isTruthyPrefillFlag(mapGet(map, key))) {
+      return SIGNNOW_DEFAULT_ACH_PROGRAM_FEE;
+    }
+  }
+  return 0;
+}
+
 function resolveForcedContractMoneyField(
   canon: string,
   map: Map<string, string>,
@@ -1151,15 +1202,11 @@ function resolveForcedContractMoneyField(
   }
 
   if (canon === 'total_fees') {
-    const explicit = first(
-      'total_fees',
-      'appendix_underwriting_fees',
-      'origination_fee',
-      'underwriting_fee',
-      'underwriter_fee',
-      'disclosure_broker_fee',
-    );
-    if (explicit) return explicit;
+    // A CRM-supplied grand total already includes the ACH fee — use it verbatim.
+    const explicitTotal = first('total_fees');
+    if (explicitTotal && !isZeroMoneyPrefill(explicitTotal)) return explicitTotal;
+
+    const achFee = resolveAchProgramFeeAmount(map);
     const offer = parsePrefillMoney(
       first(
         'purchase_amount',
@@ -1168,13 +1215,38 @@ function resolveForcedContractMoneyField(
         'approved_amount',
       ),
     );
+    const underwritingRaw = first(
+      'appendix_underwriting_fees',
+      'origination_fee',
+      'underwriting_fee',
+      'underwriter_fee',
+      'disclosure_broker_fee',
+    );
+    const underwriting = underwritingRaw
+      ? parsePrefillMoney(underwritingRaw)
+      : null;
+    // A fee that swallows the whole purchase price is a stale value scaled against a
+    // larger, superseded offer — not a fee. Printing it broke the row's own arithmetic
+    // (PURCHASE PRICE − TOTAL FEES = NET AMOUNT), so fall through to the net instead.
+    // An absent amount parses as 0 here, so only a positive offer can veto the fee.
+    const offerForFeeCheck = offer != null && offer > 0 ? offer : null;
+    if (
+      underwriting != null &&
+      underwriting > 0 &&
+      (offerForFeeCheck == null || underwriting + achFee < offerForFeeCheck)
+    ) {
+      return formatPrefillMoney(underwriting + achFee);
+    }
+
     const net = parsePrefillMoney(
       first('net_to_merchant', 'funding_provided_direct', 'disbursement_amount'),
     );
-    if (offer != null && net != null && offer >= net) {
+    if (offer != null && net != null && offer >= net && offer - net > 0) {
+      // offer − net already nets out every deducted fee, ACH included.
       return formatPrefillMoney(offer - net);
     }
-    return '';
+    if (achFee > 0) return formatPrefillMoney(achFee);
+    return explicitTotal || '';
   }
 
   if (canon === 'disclosure_page3_line_1') {
@@ -1462,6 +1534,16 @@ export function resolveSignNowPrefillValue(
     return resolveRemittanceStartDate(map);
   }
 
+  /**
+   * Mailing Address always mirrors Physical Address on the contract — the two
+   * are never allowed to disagree, so the Mailing Address widget resolves as
+   * the full Physical Address value (street + its own city/state/zip) rather
+   * than composing from its own, separately-entered mailing fields.
+   */
+  if (canon === 'business_address_contract') {
+    return resolveSignNowPrefillValue('business_address', prefill, options);
+  }
+
   const securityMatch = canon.match(/^ach_security_q([123])$/);
   if (securityMatch) {
     const combined = combineSecurityQa(
@@ -1492,6 +1574,15 @@ export function resolveSignNowPrefillValue(
   if (isInstallmentFrequencyWidget(raw, canon)) {
     const freq = installmentFrequencyFromMap(map);
     if (freq) return freq;
+  }
+
+  /**
+   * TOTAL FEES must be the underwriting fee plus the ACH program fee, so it is
+   * computed here rather than let the alias chain return the bare fee field.
+   */
+  if (canon === 'total_fees') {
+    const total = resolveForcedContractMoneyField('total_fees', map);
+    if (total) return formatSignNowPrefillValue(total, fieldName);
   }
 
   const einCanon = einField ? canon.replace(/_s2$/i, '').replace(/_g2$/i, '') : canon;
@@ -1534,10 +1625,12 @@ export function resolveSignNowPrefillValue(
     return true;
   };
   let hit = '';
+  let hitKey = '';
   for (const key of tryKeys) {
     const value = mapGet(map, key);
     if (valueAllowed(value)) {
       hit = value;
+      hitKey = key;
       break;
     }
   }
@@ -1567,7 +1660,42 @@ export function resolveSignNowPrefillValue(
   if (isPage1InitialInstallmentAmountField(raw)) {
     return stripInstallmentFrequencyFromAmount(hit);
   }
+  /**
+   * The contract page-2 business physical/mailing address line
+   * (`business_address` / `business_address_contract`) has no companion
+   * city/state/zip widgets on that page, unlike other address blocks in the
+   * package — so leaving it street-only prints an incomplete address with no
+   * way to fix it from a nearby field. Fold in the matching city/state/zip
+   * prefill values whenever the resolved value looks like a bare street (no
+   * comma already composed in by the CRM). Guarantor / Signer 1 / Recipient 1
+   * address widgets are deliberately left untouched.
+   */
+  if (isFullAddressField(canon) && !hit.includes(',')) {
+    // City/state/zip live under whichever key actually supplied the street — not
+    // necessarily `canon` itself, since `business_address` and
+    // `business_address_contract` alias each other. Pulling the canon's own
+    // companions regardless of which one matched paired one address's street
+    // with the OTHER address's city/state/zip.
+    // `hitKey` can be the raw/lowercased widget name itself (e.g. `business_address_p2`)
+    // when the prefill map happens to hold that exact key; only a genuine CRM alias
+    // (the canon itself or one of its aliases) has real `_city`/`_state`/`_zip` siblings.
+    const prefix =
+      hitKey === canon || aliases.includes(hitKey) ? hitKey.toLowerCase() : canon;
+    const composed = composeFullAddress(
+      hit,
+      mapGet(map, `${prefix}_city`) || mapGet(map, `${canon}_city`),
+      mapGet(map, `${prefix}_state`) || mapGet(map, `${canon}_state`),
+      mapGet(map, `${prefix}_zip`) || mapGet(map, `${canon}_zip`),
+    );
+    if (composed) return composed;
+  }
   return hit;
+}
+
+const FULL_ADDRESS_CANON_KEYS = new Set(['business_address', 'business_address_contract']);
+
+function isFullAddressField(canon: string): boolean {
+  return FULL_ADDRESS_CANON_KEYS.has(canon);
 }
 
 /** Match CRM values onto the unique names that actually exist on a SignNow document. */

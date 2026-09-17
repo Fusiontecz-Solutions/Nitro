@@ -287,3 +287,98 @@ export function splitPrefillPutPayload(
   }
   return { fields: fillable, texts };
 }
+
+/**
+ * Page text already committed onto a document by an earlier publish.
+ *
+ * `PUT /document/{id}` REPLACES `fields` but only ever APPENDS `texts` — the
+ * element id in the payload is ignored and `texts: []` is a no-op. So a second
+ * merchant publish stamps its values on top of the first set instead of
+ * replacing it, and both render: that is the two Exhibit C values overlapping on
+ * the Account Holder / Bank lines once an Exhibit C (2) copy is added and the
+ * package is sent again. `DELETE /document/{id}/text/{textId}` is the only way
+ * to clear them (it drops every text element on the document, not just the id
+ * passed), so a re-publish has to clear first and then write the full set.
+ */
+export type CommittedSignNowText = {
+  id: string;
+  page_number: number;
+  x: number;
+  y: number;
+  data: string;
+  raw: Record<string, unknown>;
+};
+
+export function collectCommittedSignNowTexts(remote: unknown): CommittedSignNowText[] {
+  const rows = Array.isArray((remote as Record<string, unknown>)?.texts)
+    ? ((remote as Record<string, unknown>).texts as Record<string, unknown>[])
+    : [];
+  const out: CommittedSignNowText[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const data = String(row.data ?? '').trim();
+    if (!data) continue;
+    out.push({
+      id: String(row.id ?? '').trim(),
+      page_number: Number(row.page_number) || 0,
+      x: Number(row.x) || 0,
+      y: Number(row.y) || 0,
+      data,
+      raw: row,
+    });
+  }
+  return out;
+}
+
+/** Two stamps land on the same line when their anchors are within a few points. */
+const TEXT_SPOT_TOLERANCE = 6;
+
+export function isSameSignNowTextSpot(
+  a: { page_number?: unknown; x?: unknown; y?: unknown },
+  b: { page_number?: unknown; x?: unknown; y?: unknown },
+  tolerance = TEXT_SPOT_TOLERANCE,
+): boolean {
+  if ((Number(a.page_number) || 0) !== (Number(b.page_number) || 0)) return false;
+  return (
+    Math.abs((Number(a.x) || 0) - (Number(b.x) || 0)) <= tolerance &&
+    Math.abs((Number(a.y) || 0) - (Number(b.y) || 0)) <= tolerance
+  );
+}
+
+/**
+ * The exact `texts` set a re-publish should end with: this send's baked values,
+ * plus any earlier stamp whose spot this send does not cover (agreement text
+ * that no longer has a widget behind it must not be wiped by the clear).
+ *
+ * One value per spot, current value wins — so nothing can stack.
+ */
+export function mergeCommittedSignNowTexts(
+  bakedTexts: Record<string, unknown>[],
+  committed: readonly CommittedSignNowText[],
+  options?:
+    | number
+    | {
+        tolerance?: number;
+        /**
+         * Spots this send holds a widget for. Their old stamp is dropped even
+         * when this send bakes nothing there — the CRM value behind it was
+         * cleared or is now blank, so keeping the stamp would show a value the
+         * application no longer has.
+         */
+        ownedSpots?: ReadonlyArray<{ page_number?: unknown; x?: unknown; y?: unknown }>;
+      },
+): Record<string, unknown>[] {
+  const tolerance =
+    typeof options === 'number' ? options : options?.tolerance ?? TEXT_SPOT_TOLERANCE;
+  const ownedSpots = typeof options === 'number' ? [] : options?.ownedSpots ?? [];
+  const out = [...bakedTexts];
+  for (const old of committed) {
+    const covered = out.some((row) => isSameSignNowTextSpot(row, old, tolerance));
+    if (covered) continue;
+    if (ownedSpots.some((spot) => isSameSignNowTextSpot(spot, old, tolerance))) continue;
+    // Re-send the old stamp without its id: SignNow assigns a fresh one anyway.
+    const { id: _id, ...rest } = old.raw as Record<string, unknown>;
+    out.push(rest);
+  }
+  return out;
+}

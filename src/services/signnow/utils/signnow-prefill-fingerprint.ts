@@ -53,10 +53,26 @@ export function buildSignNowPrefillFingerprint(
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
+/**
+ * Marker stored in place of a value fingerprint for a group that was copied but
+ * never prefilled — the `structureOnly` pre-warm the UI fires while the user is
+ * still on the Summary step.
+ *
+ * The value guard below exists because a group that has been prefilled or sent
+ * carries CRM values baked onto the page as `texts[]`, which a re-prefill cannot
+ * overwrite. A pristine group has no such values by construction, so there is
+ * nothing stale to inherit and it stays reusable no matter how much the contract
+ * is edited before Review is clicked. Without this, every edit after a pre-warm
+ * would throw the pre-warmed group away and copy a second one against SignNow's
+ * daily document limit.
+ */
+export const SIGNNOW_PRISTINE_PREFILL_FINGERPRINT = 'pristine:structure-only';
+
 export type SignNowPrefillReuseReason =
   | 'prefill_fingerprint_match'
   | 'prefill_fingerprint_changed'
-  | 'missing_prefill_fingerprint';
+  | 'missing_prefill_fingerprint'
+  | 'pristine_structure_only';
 
 export type SignNowPrefillReuseDecision = {
   reuse: boolean;
@@ -78,6 +94,9 @@ export function resolveSignNowPrefillReuse(input: {
   const previous = String(input.previousFingerprint ?? '').trim();
   if (!previous) {
     return { reuse: false, reason: 'missing_prefill_fingerprint' };
+  }
+  if (previous === SIGNNOW_PRISTINE_PREFILL_FINGERPRINT) {
+    return { reuse: true, reason: 'pristine_structure_only' };
   }
   if (previous !== String(input.currentFingerprint ?? '').trim()) {
     return { reuse: false, reason: 'prefill_fingerprint_changed' };

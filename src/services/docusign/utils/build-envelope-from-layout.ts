@@ -17,6 +17,7 @@ import {
 import { embedArialBoldPdfFont, embedArialPdfFont } from './embed-arial-pdf-font';
 import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
 import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
+import { formatUsPhone, isPhoneFieldName } from '../../../utils/contactFormat';
 import {
   buildScopedValuesForLayout,
   DISCLOSURE_MERCHANT_BUSINESS_NAME_VARS,
@@ -1246,7 +1247,26 @@ function formatFlexAddendumMoneyUsd(value: string): string {
   }).format(n);
 }
 
+/**
+ * Phone / mobile / business-phone blanks print in the CRM's canonical dashed
+ * format (`756-689-9020`) on DocuSign envelopes, matching what SignNow stamps.
+ * Applied at the single resolver boundary so both the envelope text tabs and the
+ * flattened page text drawn for review copies pick it up.
+ */
 function resolveTextPlacementValue(
+  variable: string,
+  values: Record<string, string>,
+  placement?: DocumentLayoutPlacement,
+  layoutKey?: string,
+): string {
+  const resolved = resolveTextPlacementValueRaw(variable, values, placement, layoutKey);
+  if (!resolved) return resolved;
+  const fieldName =
+    String(variable || '').trim() || String(placement?.sourceTabLabel || '').trim();
+  return isPhoneFieldName(fieldName) ? formatUsPhone(resolved) : resolved;
+}
+
+function resolveTextPlacementValueRaw(
   variable: string,
   values: Record<string, string>,
   placement?: DocumentLayoutPlacement,

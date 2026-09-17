@@ -10,6 +10,8 @@ import {
     recordContractWorkflowActivityLog,
     type ContractWorkflowLogContext,
 } from './contractWorkflowActivityLog';
+import { invalidateAllApplicationStatsCache } from './applicationStatsCache';
+import { syncContractValuesFromOfferDecision } from './contractOfferValueSync';
 
 const REINITIATION_ELIGIBLE_QUEUE_TOKENS = new Set([
     'finalapproval',
@@ -184,6 +186,7 @@ export async function reinitiateContractForApplication(
             approvedAmount: true,
             totalAmount: true,
             contractLenght: true,
+            contractPrefillOverrides: true,
             offer: {
                 select: {
                     offer: true,
@@ -231,6 +234,7 @@ export async function reinitiateContractForApplication(
                 currentState: 'Contract_Pending',
             },
         });
+        invalidateAllApplicationStatsCache();
         await recordContractWorkflowActivityLog(
             appId,
             'REINITIATED',
@@ -271,10 +275,34 @@ export async function reinitiateContractForApplication(
         await prisma.document.deleteMany({ where: { applicationId: appId } });
     }
 
+    /**
+     * Pointers at the package that was just archived. The send HISTORY is deliberately
+     * kept, but these name the live envelope for the main contract and for each document
+     * mapping — left in place, the regenerated package would attach the superseded
+     * documents instead of building fresh ones.
+     */
+    const clearedPrefillOverrides = clearLiveEnvelopePointers(
+        contract.contractPrefillOverrides,
+    );
+
     await prisma.contract.update({
         where: { id: contract.id },
-        data: { status: 'DRAFT' },
+        data: {
+            status: 'DRAFT',
+            ...(clearedPrefillOverrides !== undefined
+                ? { contractPrefillOverrides: clearedPrefillOverrides }
+                : {}),
+        },
     });
+
+    // The archived envelope carried the old terms; refresh every offer-derived value
+    // (and clear stale prefill overrides) so the regenerated ACH / disclosure documents
+    // prefill the re-approved offer rather than the superseded one.
+    try {
+        await syncContractValuesFromOfferDecision(appId);
+    } catch (syncErr) {
+        console.error('reinitiateContractForApplication: offer value sync failed', syncErr);
+    }
 
     await flagNeedsContractReinitiation(appId);
 
@@ -285,6 +313,8 @@ export async function reinitiateContractForApplication(
             currentState: 'Contract_Pending',
         },
     });
+
+    invalidateAllApplicationStatsCache();
 
     const applicationAfter = await prisma.application.findUnique({
         where: { id: appId },
@@ -312,6 +342,35 @@ export async function reinitiateContractForApplication(
     );
 
     return true;
+}
+
+/**
+ * Keys on `Contract.contractPrefillOverrides` that point at the CURRENT envelope rather
+ * than recording history. Cleared when a deal is re-initiated so the next send builds a
+ * new package; `documentSendHistory` / `contractSendHistory` are left untouched.
+ */
+const LIVE_ENVELOPE_POINTER_KEYS = [
+    'mainContractSendPackage',
+    'documentTemplateEnvelopeByMappingId',
+    'achAuthorizationDocuSign',
+    'standalonePackageDocuSign',
+] as const;
+
+export function clearLiveEnvelopePointers(
+    overrides: unknown,
+): Prisma.InputJsonValue | undefined {
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+        return undefined;
+    }
+    const next = { ...(overrides as Record<string, unknown>) };
+    let changed = false;
+    for (const key of LIVE_ENVELOPE_POINTER_KEYS) {
+        if (key in next) {
+            delete next[key];
+            changed = true;
+        }
+    }
+    return changed ? (next as Prisma.InputJsonValue) : undefined;
 }
 
 export function offerDecisionValuesChanged(

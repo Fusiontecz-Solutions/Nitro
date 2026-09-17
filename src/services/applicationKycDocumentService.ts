@@ -742,115 +742,115 @@ class ApplicationKycDocumentService {
       return { documents: [], kycExtractions: [] };
     }
 
-    // Sequential Cloudinary uploads (with service-level 429 retries) — parallel uploads
-    // were rate-limited and aborted the whole KYC batch, leaving only the application PDF.
-    const rawResults: Array<{
+    // Upload + extract every KYC file in parallel. Cloudinary concurrency and 429 back-off
+    // are enforced process-wide by the upload limiter, so a burst no longer drops the batch.
+    type RawResult = {
       kind: 'driverLicense' | 'voidedCheck';
       file: UploadedFileLike;
       document: Record<string, unknown>;
       mapped: KycExtractionMapped | null;
       fileMeta: { fileId?: string; fileName: string; fileUrl?: string };
       error: string | null;
-    }> = [];
+    };
 
-    for (const row of work) {
-      const originalName = row.file?.name || String(row.kind);
-      const tempSlug =
-        row.kind === 'voidedCheck' ? 'voided-check' : 'driver-license';
+    const rawResults: RawResult[] = await Promise.all(
+      work.map(async (row): Promise<RawResult> => {
+        const originalName = row.file?.name || String(row.kind);
+        const tempSlug =
+          row.kind === 'voidedCheck' ? 'voided-check' : 'driver-license';
 
-      let mapped: KycExtractionMapped | null = null;
-      let extractError: string | null = null;
+        // OCR (when not already done) and the Cloudinary upload are independent — overlap them.
+        const extractPromise: Promise<{
+          mapped: KycExtractionMapped | null;
+          error: string | null;
+        }> =
+          row.preMapped !== undefined || row.preError
+            ? Promise.resolve({ mapped: row.preMapped ?? null, error: row.preError ?? null })
+            : contractKycDocumentExtractService
+                .extractFromUploadedFile(row.file as any, row.kind, 1)
+                .then((mapped) => ({ mapped, error: null }))
+                .catch((extractErr: unknown) => {
+                  const msg =
+                    extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
+                  console.error(
+                    `[uploadExtractAssignOwnersAndSync] extraction failed for ${originalName}:`,
+                    extractErr,
+                  );
+                  return { mapped: null, error: msg };
+                });
 
-      if (row.preMapped !== undefined || row.preError) {
-        mapped = row.preMapped ?? null;
-        extractError = row.preError ?? null;
-      } else {
-        try {
-          mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
-            row.file as any,
-            row.kind,
-            1,
-          );
-        } catch (extractErr: unknown) {
-          extractError =
-            extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
-          console.error(
-            `[uploadExtractAssignOwnersAndSync] extraction failed for ${originalName}:`,
-            extractErr,
-          );
-        }
-      }
-
-      const uploadResult = await uploadService.uploadFile(
-        row.file as any,
-        folder,
-        row.file?.name,
-      );
-
-      if (!uploadResult.success || !uploadResult.data) {
-        const uploadErr =
-          uploadResult.error || `Failed to upload ${row.file?.name || row.kind}`;
-        console.error(
-          `[uploadExtractAssignOwnersAndSync] upload failed for ${originalName}:`,
-          uploadErr,
+        const uploadPromise = uploadService.uploadFile(
+          row.file as any,
+          folder,
+          row.file?.name,
         );
-        // Still sync owner/bank data from OCR even when Cloudinary fails — file row omitted.
-        rawResults.push({
+
+        const [{ mapped, error: extractError }, uploadResult] = await Promise.all([
+          extractPromise,
+          uploadPromise,
+        ]);
+
+        if (!uploadResult.success || !uploadResult.data) {
+          const uploadErr =
+            uploadResult.error || `Failed to upload ${row.file?.name || row.kind}`;
+          console.error(
+            `[uploadExtractAssignOwnersAndSync] upload failed for ${originalName}:`,
+            uploadErr,
+          );
+          // Still sync owner/bank data from OCR even when Cloudinary fails — file row omitted.
+          return {
+            kind: row.kind,
+            file: row.file,
+            document: {
+              originalName,
+              requestedDocumentSlug: tempSlug,
+              documentType: tempSlug,
+              uploadError: uploadErr,
+            },
+            mapped,
+            fileMeta: {
+              fileName: originalName,
+            },
+            error: mapped ? null : extractError || uploadErr,
+          };
+        }
+
+        const secureUrl = uploadResult.data.secure_url as string;
+        const publicId = uploadResult.data.public_id as string;
+        const created = await (prisma as any).applicationFile.create({
+          data: {
+            applicationId,
+            url: secureUrl,
+            publicId,
+            originalName:
+              row.file?.name || uploadResult.fileName || String(row.kind),
+            mimeType: (row.file as any)?.mimetype || 'application/octet-stream',
+            size: Number((row.file as any)?.size || uploadResult.data.bytes || 0),
+            requestedDocumentSlug: tempSlug,
+          },
+        });
+
+        return {
           kind: row.kind,
           file: row.file,
           document: {
-            originalName,
-            requestedDocumentSlug: tempSlug,
-            documentType: tempSlug,
-            uploadError: uploadErr,
+            _id: created.id,
+            id: created.id,
+            url: created.url,
+            originalName: created.originalName,
+            requestedDocumentSlug: created.requestedDocumentSlug,
+            documentType: created.requestedDocumentSlug,
           },
           mapped,
           fileMeta: {
-            fileName: originalName,
+            fileId: created.id,
+            fileName: created.originalName,
+            fileUrl: secureUrl,
           },
-          error: mapped ? null : extractError || uploadErr,
-        });
-        continue;
-      }
-
-      const secureUrl = uploadResult.data.secure_url as string;
-      const publicId = uploadResult.data.public_id as string;
-      const created = await (prisma as any).applicationFile.create({
-        data: {
-          applicationId,
-          url: secureUrl,
-          publicId,
-          originalName:
-            row.file?.name || uploadResult.fileName || String(row.kind),
-          mimeType: (row.file as any)?.mimetype || 'application/octet-stream',
-          size: Number((row.file as any)?.size || uploadResult.data.bytes || 0),
-          requestedDocumentSlug: tempSlug,
-        },
-      });
-
-      rawResults.push({
-        kind: row.kind,
-        file: row.file,
-        document: {
-          _id: created.id,
-          id: created.id,
-          url: created.url,
-          originalName: created.originalName,
-          requestedDocumentSlug: created.requestedDocumentSlug,
-          documentType: created.requestedDocumentSlug,
-        },
-        mapped,
-        fileMeta: {
-          fileId: created.id,
-          fileName: created.originalName,
-          fileUrl: secureUrl,
-        },
-        error: extractError,
-      });
-
-      // Stagger uploads so Cloudinary free-tier rate limits are less likely.
-      await new Promise((r) => setTimeout(r, 600));
-    }
+          error: extractError,
+        };
+      }),
+    );
 
     const licenseRows = rawResults.filter((r) => r.kind === 'driverLicense' && r.mapped);
     const assignments = assignDriverLicenseOwnerSlots(
@@ -974,6 +974,70 @@ class ApplicationKycDocumentService {
       documents: finalized.map((r) => r.document),
       kycExtractions: finalized.map((r) => r.extraction),
     };
+  }
+
+  /**
+   * Store files that filled no KYC slot (extra licenses, misc. attachments) on the
+   * application. Uploads run in parallel behind the Cloudinary gate; failures are logged
+   * and swallowed so they never fail the auto-create request.
+   */
+  async attachExtraBatchFiles(
+    applicationId: string,
+    files: UploadedFileLike[],
+  ): Promise<Array<Record<string, unknown>>> {
+    const list = (files || []).filter(Boolean);
+    if (!list.length) return [];
+
+    const application = await (prisma as any).application.findUnique({
+      where: { id: applicationId },
+      select: { id: true, applicationId: true },
+    });
+    if (!application) return [];
+
+    const folder = `ih-crm/applications/${application.applicationId || application.id}`;
+
+    const rows = await Promise.all(
+      list.map(async (file) => {
+        const originalName = file?.name || 'document';
+        try {
+          const uploadResult = await uploadService.uploadFile(file as any, folder, file?.name);
+          if (!uploadResult.success || !uploadResult.data) {
+            console.error(
+              `[attachExtraBatchFiles] upload failed for ${originalName}:`,
+              uploadResult.error || uploadResult.message,
+            );
+            return null;
+          }
+          const created = await (prisma as any).applicationFile.create({
+            data: {
+              applicationId,
+              url: uploadResult.data.secure_url as string,
+              publicId: uploadResult.data.public_id as string,
+              originalName,
+              mimeType: (file as any)?.mimetype || 'application/octet-stream',
+              size: Number((file as any)?.size || uploadResult.data.bytes || 0),
+              requestedDocumentSlug: 'supporting-document',
+            },
+          });
+          return {
+            _id: created.id,
+            id: created.id,
+            url: created.url,
+            originalName: created.originalName,
+            requestedDocumentSlug: created.requestedDocumentSlug,
+            documentType: created.requestedDocumentSlug,
+          } as Record<string, unknown>;
+        } catch (err: unknown) {
+          console.error(
+            `[attachExtraBatchFiles] failed for ${originalName}:`,
+            err instanceof Error ? err.message : err,
+          );
+          return null;
+        }
+      }),
+    );
+
+    return rows.filter(Boolean) as Array<Record<string, unknown>>;
   }
 
   async syncKycPrefill(

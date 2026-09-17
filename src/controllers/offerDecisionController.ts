@@ -13,6 +13,7 @@ import { syncApplicationToContractPending } from '../services/contractApplicatio
 import { createApplicationActivityLog } from '../services/applicationActivityLogService';
 import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
+import { syncContractValuesFromOfferDecision } from '../services/contractOfferValueSync';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -305,32 +306,17 @@ class OfferDecisionController {
                 select: { id: true, status: true, offerId: true },
               });
               if (draftContract && draftContract.status === 'DRAFT') {
-                const offerAmt =
-                  result.offer != null && Number.isFinite(Number(result.offer))
-                    ? Number(result.offer)
-                    : null;
-                const totalAmt =
-                  result.totalRemit != null && Number.isFinite(Number(result.totalRemit))
-                    ? Number(result.totalRemit)
-                    : null;
-                const moneyPatch: Record<string, unknown> = {};
-                if (offerAmt != null) {
-                  moneyPatch.approvedAmount = offerAmt;
-                  moneyPatch.purchaseAmount = String(offerAmt);
-                }
-                if (totalAmt != null) {
-                  moneyPatch.totalAmount = totalAmt;
-                  moneyPatch.purchasePrice = String(totalAmt);
-                }
                 if (result.id && draftContract.offerId !== result.id) {
-                  moneyPatch.offerId = result.id;
-                }
-                if (Object.keys(moneyPatch).length > 0) {
                   await prisma.contract.update({
                     where: { id: draftContract.id },
-                    data: moneyPatch,
+                    data: { offerId: result.id },
                   });
                 }
+                // Re-derive every offer-driven value (amounts, term, remittance, fees,
+                // ACH row, addendum) and drop stale prefill overrides, so the ACH
+                // authorization and state disclosure use the NEW offer, not the amounts
+                // snapshotted when the contract row was created.
+                await syncContractValuesFromOfferDecision(app.id);
               }
             } catch (contractSyncErr) {
               console.error(

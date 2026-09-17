@@ -14,7 +14,6 @@ import {
     applyPdfExtractToApplicationFromStoredFile,
     type AuthenticatedUser,
 } from '../services/applicationService';
-import { scheduleAttachBufferAsApplicationFile } from '../services/applicationPdfAttachService';
 import { allocateNextDealId, withAllocatedDealId } from '../services/nextDealIdService';
 import { resolveFinalApprovalUnderwriterTarget } from '../services/finalApprovalTargetService';
 import {
@@ -6175,16 +6174,26 @@ class ApplicationController {
                     : 'New';
 
             const persistStartedAt = Date.now();
-            // Defer application PDF Cloudinary attach when KYC files are present so we do not
-            // race free-tier rate limits (which previously dropped all DL/void uploads).
+            // The application PDF attach runs in the background and shares the process-wide
+            // Cloudinary concurrency gate with the KYC uploads, so it no longer needs deferring.
             const result = await createClientAndApplicationFromPDFBuffer(pdfBuffer, currentUserId, {
                 preParsedData: parsedData,
                 originalFileName: pdfOriginalName,
                 isoId: validatedIsoId,
                 applicationType: applicationTypeForCreate,
-                deferPdfAttach: kycFileCount > 0,
             });
             const persistMs = Date.now() - persistStartedAt;
+
+            // Unslotted attachments upload in parallel with the KYC batch (same Cloudinary gate).
+            const extraFilesPromise =
+                batch.extraFiles.length && result.application?.id
+                    ? applicationKycDocumentService
+                          .attachExtraBatchFiles(result.application.id, batch.extraFiles)
+                          .catch((err: unknown) => {
+                              console.error('[autoCreateFromPDF] extra file attach failed:', err);
+                              return [] as Array<Record<string, unknown>>;
+                          })
+                    : Promise.resolve([] as Array<Record<string, unknown>>);
 
             let kycDocuments: Array<Record<string, unknown>> = [];
             let kycExtractions: Array<Record<string, unknown>> = [];
@@ -6223,22 +6232,20 @@ class ApplicationController {
                     kycExtractions = [{ error: msg }];
                 }
                 kycMs = Date.now() - kycStartedAt;
-
-                // Attach application PDF after KYC uploads finish.
-                scheduleAttachBufferAsApplicationFile(
-                    result.application.id,
-                    pdfBuffer,
-                    pdfOriginalName,
-                );
             } else if (kycOcrPromise) {
                 void kycOcrPromise.catch(() => undefined);
+            }
+
+            const extraDocuments = await extraFilesPromise;
+            if (extraDocuments.length) {
+                kycDocuments = [...kycDocuments, ...extraDocuments];
             }
 
             const populatedApplication = mapApplicationToApi(result.application);
             const mappedClient = mapClientToApi(result.client);
             const kycSyncedCount = kycExtractions.filter((row) => row.synced).length;
             console.log(
-                `[autoCreateFromPDF] done in ${Date.now() - startedAt}ms extract=${extractMs}ms persist=${persistMs}ms kyc=${kycMs}ms existingClient=${result.existingClient} applicationId=${result.application?.id} kycFiles=${kycFileCount} kycSynced=${kycSyncedCount} classified=${batch.classifications.map((c) => `${c.kind}:${c.reason}`).join(',')}`,
+                `[autoCreateFromPDF] done in ${Date.now() - startedAt}ms extract=${extractMs}ms persist=${persistMs}ms kyc=${kycMs}ms existingClient=${result.existingClient} applicationId=${result.application?.id} kycFiles=${kycFileCount} kycSynced=${kycSyncedCount} extraFiles=${extraDocuments.length} classified=${batch.classifications.map((c) => `${c.kind}:${c.reason}`).join(',')}`,
             );
 
             const baseMessage = result.existingClient

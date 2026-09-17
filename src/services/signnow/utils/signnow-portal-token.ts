@@ -9,11 +9,19 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * remains the authority on whether signing is still open.
  */
 
-const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
 
 export function signingPortalTokenTtlMs(): number {
   const raw = Number(process.env.SIGNING_PORTAL_TOKEN_TTL_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : TWELVE_HOURS_MS;
+  return Number.isFinite(raw) && raw > 0 ? raw : FORTY_EIGHT_HOURS_MS;
+}
+
+/**
+ * TTL as whole hours for merchant-facing copy, so the email can never promise a
+ * window the token does not actually honour. Rounds up, and never below 1.
+ */
+export function signingPortalTokenTtlHours(ttlMs = signingPortalTokenTtlMs()): number {
+  return Math.max(1, Math.ceil(ttlMs / (60 * 60 * 1000)));
 }
 
 function getPortalSecret(): string {

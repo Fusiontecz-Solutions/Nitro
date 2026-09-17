@@ -32,6 +32,7 @@ class SigningPortalController {
         preparerEmail,
         replyToEmail,
         prefillFields,
+        ccEmails,
       } = req.body ?? {};
       const id = String(envelopeId ?? '').trim();
       if (!id) {
@@ -57,6 +58,9 @@ class SigningPortalController {
         // the CRM holds right now instead of whatever Owner review left behind.
         prefillFields: Array.isArray(prefillFields) ? prefillFields : undefined,
         roles,
+        ccEmails: Array.isArray(ccEmails)
+          ? ccEmails.map((v: unknown) => String(v ?? '').trim()).filter(Boolean)
+          : undefined,
       });
       return res.json({ success: true, data: result });
     } catch (error: any) {

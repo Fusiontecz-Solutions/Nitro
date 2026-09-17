@@ -18,8 +18,11 @@ import {
 } from '../docusign/utils/standalone-package-docusign';
 import {
   buildContractEnvelopeEmailSubject,
+  buildContractEnvelopePdfFilename,
   extractContractEmailContextFromPrefill,
+  normalizeContractCcEmailSubject,
 } from '../../utils/contractEnvelopeEmailSubject';
+import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
 import {
   createSignNowApiClient,
   extractSignNowTemplateId,
@@ -83,22 +86,33 @@ import {
 } from './utils/signnow-field-map';
 import {
   applyContractFillableFont,
+  collectCommittedSignNowTexts,
   copySignNowTemplateStyle,
+  mergeCommittedSignNowTexts,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
   splitPrefillPutPayload,
+  type CommittedSignNowText,
 } from './utils/signnow-prefill-put';
 import {
   getSignNowDisclosureTemplates,
   exhibitCInstanceIndexFromDocumentName,
   isExhibitCAddendumRow,
+  resolveSignNowSupplementalTemplateByDocumentName,
   resolveSignNowAddendaFromRefs,
   resolveSignNowAddendumTemplate,
   signNowExhibitCTemplateId,
   type SignNowAddendumTemplate,
 } from './utils/signnow-addendum-templates';
 import { EXHIBIT_C_ENTITIES_PREFILL_KEY } from '../contractKycPrefillMapper';
+import {
+  loadOfferDerivedValuesForContract,
+  readIncludeWireFeeFromOverrides,
+  resolveOfferDerivedContractValues,
+  type ContractOfferPrefillSource,
+} from '../contractOfferValueSync';
+import { buildOfferPrefillOverrides } from './utils/signnow-offer-values';
 import {
   buildSignNowPackageFingerprint,
   embeddedReviewRolesForDocument,
@@ -109,7 +123,12 @@ import {
 import {
   buildSignNowPrefillFingerprint,
   resolveSignNowPrefillReuse,
+  SIGNNOW_PRISTINE_PREFILL_FINGERPRINT,
 } from './utils/signnow-prefill-fingerprint';
+import {
+  collectSignedRoleNames,
+  resolveSignNowReviewStatus,
+} from './utils/signnow-review-status';
 import {
   readStoredTemplateDocument,
   writeStoredTemplateDocument,
@@ -781,10 +800,17 @@ function overlayTemplateFieldFace(
  * alone, CRM/Owner-held widgets are skipped, and signature/initial widgets are
  * handled by their own restore just above the call site.
  */
+/**
+ * `restoreAllTextFields` is for a re-publish of a fully CRM-driven document
+ * (Exhibit C): the first publish baked its Owner-role values into page text and
+ * deleted the widgets, and SignNow keeps no field name on a committed text, so
+ * without the template layout back there is nothing left to resolve the current
+ * values onto — the old stamp would be all the document could show.
+ */
 function mergeMissingSignerFieldsFromTemplate(
   fields: Record<string, unknown>[],
   templateFields: Record<string, unknown>[],
-  options?: SignNowPrefillOptions,
+  options?: SignNowPrefillOptions & { restoreAllTextFields?: boolean },
 ): Record<string, unknown>[] {
   const present = new Set<string>();
   for (const field of fields) {
@@ -807,7 +833,7 @@ function mergeMissingSignerFieldsFromTemplate(
     // A blank slot the template assigned to a signer is the merchant's to fill.
     const signerOwned =
       Boolean(role) && !/^owner$/i.test(role) && !isPreparerRole(role, nitroStyle);
-    if (!whitelisted && !signerOwned) continue;
+    if (!whitelisted && !signerOwned && !options?.restoreAllTextFields) continue;
     const name = rawName.trim().toLowerCase();
     if (name && present.has(name)) continue;
     if (name) present.add(name);
@@ -820,7 +846,7 @@ function mergeMissingSignerFieldsFromTemplate(
 
 function collectSignNowPutFields(
   remote: any,
-  options?: { defaultRole?: string; maxSize?: number },
+  options?: { defaultRole?: string; maxSize?: number; skipCommittedTexts?: boolean },
 ): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   const seen = new Set<string>();
@@ -828,14 +854,18 @@ function collectSignNowPutFields(
   // A field dropped here is deleted from the document by the merchant publish,
   // so make that visible instead of letting widgets vanish silently.
   const droppedNoRole: string[] = [];
-  const containers = [
-    'fields',
-    'fillable_fields',
-    'texts',
-    'signatures',
-    'initials',
-    'checks',
-  ] as const;
+  /**
+   * SignNow strips the field name off a committed text element, so a stamp from
+   * an earlier publish cannot be re-resolved against the current CRM values — it
+   * would ride along here carrying its stale `data` and be stamped a second time.
+   * A baking publish handles those elements explicitly (clear + rewrite through
+   * `mergeCommittedSignNowTexts`), so it leaves them out of the field list.
+   */
+  const containers = (
+    options?.skipCommittedTexts
+      ? ['fields', 'fillable_fields', 'signatures', 'initials', 'checks']
+      : ['fields', 'fillable_fields', 'texts', 'signatures', 'initials', 'checks']
+  ) as readonly string[];
   for (const container of containers) {
     const rows = Array.isArray(remote?.[container]) ? remote[container] : [];
     for (const field of rows) {
@@ -876,10 +906,26 @@ function countPutFieldTypes(fields: Record<string, unknown>[]): Record<string, n
   return counts;
 }
 
-function collectExistingSignNowFieldValues(remote: any): Record<string, string> {
+/**
+ * Values already on the document, used as the layer under this send's CRM values.
+ *
+ * `skipCommittedTexts` drops the `texts` container: those are the stamps an
+ * earlier publish baked onto the page, they carry no live field name, and on a
+ * resend they are exactly the pre-edit values that must not survive. A merchant
+ * publish rewrites `texts` wholesale, so it reads only the real widgets.
+ */
+function collectExistingSignNowFieldValues(
+  remote: any,
+  options?: { skipCommittedTexts?: boolean },
+): Record<string, string> {
   const out: Record<string, string> = {};
   const skipType = new Set(['signature', 'initials', 'checkmark', 'checkbox', 'radiobutton', 'attachment']);
-  for (const container of ['texts', 'fields', 'fillable_fields'] as const) {
+  const containers = (
+    options?.skipCommittedTexts
+      ? ['fields', 'fillable_fields']
+      : ['texts', 'fields', 'fillable_fields']
+  ) as readonly string[];
+  for (const container of containers) {
     const rows = Array.isArray(remote?.[container]) ? remote[container] : [];
     for (const field of rows) {
       if (!field || typeof field !== 'object') continue;
@@ -1413,6 +1459,8 @@ const signNowGroupWriteLocks = new Map<string, Promise<void>>();
 const addendumOriginIdCache = new Map<string, string>();
 const groupTemplateRowCache = new Map<string, { row: any; at: number }>();
 const GROUP_TEMPLATE_ROW_TTL_MS = 30 * 60 * 1000;
+/** Coalesces the concurrent origin-template lookups one prefill pass makes. */
+const groupTemplateRowInflight = new Map<string, Promise<any | null>>();
 let groupTemplateListCache: { at: number; rows: any[] } | null = null;
 
 export class SignNowService {
@@ -1585,6 +1633,43 @@ export class SignNowService {
     return origin;
   }
 
+  /**
+   * Origin document of the template a supplemental (addendum / disclosure) in a
+   * live group was copied from, resolved by its document name.
+   *
+   * Returns '' when the name matches no configured template — the caller then
+   * simply skips the restore, exactly as it did before this existed.
+   */
+  private async resolveSupplementalOriginDocumentId(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    documentName: string,
+  ): Promise<string> {
+    const match = await resolveSignNowSupplementalTemplateByDocumentName(documentName);
+    const templateId = String(match?.templateId || '').trim();
+    if (!templateId) {
+      console.info('[SignNow] no template matched supplemental document name', {
+        documentName,
+      });
+      return '';
+    }
+    const cached = addendumOriginIdCache.get(templateId);
+    if (cached) return cached;
+    try {
+      const origin =
+        (await this.resolveGroupTemplateOriginDocumentId(client, templateId)) ||
+        templateId;
+      addendumOriginIdCache.set(templateId, origin);
+      return origin;
+    } catch (err) {
+      console.warn('[SignNow] could not resolve supplemental origin document', {
+        documentName,
+        templateId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return '';
+    }
+  }
+
   async createContractFromGroupTemplate(
     userId: string,
     options: {
@@ -1659,24 +1744,28 @@ export class SignNowService {
       throw new BadRequestException('At least one signer with an email is required');
     }
 
-    const client = await createSignNowApiClient();
     const includeMainContract = options.sendPackage?.includeMainContract !== false;
     const funderProfileId = String(options.funderProfileId || '').trim();
-    const funderRow = funderProfileId
-      ? await measureSignNowStep('funder-profile-query', undefined, async () => {
-          countSignNowDb();
-          return prisma.funderProfile.findUnique({
-            where: { id: funderProfileId },
-            select: {
-              id: true,
-              name: true,
-              signnowContractTemplateLink: true,
-              signnowAddendumTemplates: true,
-              signnowDisclosureTemplates: true,
-            },
-          });
-        })
-      : null;
+    // The OAuth/token handshake and the funder read touch different systems —
+    // start both before awaiting either.
+    const [client, funderRow] = await Promise.all([
+      createSignNowApiClient(),
+      funderProfileId
+        ? measureSignNowStep('funder-profile-query', undefined, async () => {
+            countSignNowDb();
+            return prisma.funderProfile.findUnique({
+              where: { id: funderProfileId },
+              select: {
+                id: true,
+                name: true,
+                signnowContractTemplateLink: true,
+                signnowAddendumTemplates: true,
+                signnowDisclosureTemplates: true,
+              },
+            });
+          })
+        : Promise.resolve(null),
+    ]);
     const fromPrefill = extractContractEmailContextFromPrefill(options.prefillFields);
     const groupName =
       String(options.title || '').trim() ||
@@ -1757,11 +1846,55 @@ export class SignNowService {
       values.application_id = options.applicationId;
       values.case_id = options.applicationId;
     }
+    // The offer is what defines the deal, so its amounts are layered OVER the payload:
+    // the CRM screen can still post values it cached against a superseded offer, which
+    // is how the ACH addendums kept carrying old amounts while the recalculated
+    // disclosure showed the new ones. Both now follow the same source.
+    const liveOffer = await loadOfferDerivedValuesForContract({
+      contractId: options.contractId,
+      applicationId: options.applicationId,
+    });
+    Object.assign(values, buildOfferPrefillOverrides(liveOffer, values));
     applyMerchantSignerPrefill(values, signers);
     const prefillFingerprint = buildSignNowPrefillFingerprint({
       packageFingerprint,
       values,
     });
+
+    const contractIdNum = Number(options.contractId);
+    // Exhibit C mapping rows survive on the contract after a workflow that no
+    // longer attaches Exhibit C. Only read them when this package really has one,
+    // so yesterday's Exhibit C bank/holder values cannot seed today's documents.
+    const packageHasExhibitC = toAttach.some((row) =>
+      isExhibitCAddendumRow({
+        layoutKey: row.layoutKey,
+        name: row.name,
+        templateId: row.templateId,
+      }),
+    );
+    // Started here, awaited after the group is ready: this CRM read needs
+    // nothing from SignNow, so it should not sit behind the group copy.
+    const exhibitCContractReadPromise =
+      packageHasExhibitC && Number.isFinite(contractIdNum) && contractIdNum > 0
+        ? measureSignNowStep(
+            'contract-mapping-query',
+            { contractId: contractIdNum },
+            () => {
+              countSignNowDb();
+              return Promise.all([
+                prisma.contract.findUnique({
+                  where: { id: contractIdNum },
+                  select: { contractPrefillOverrides: true },
+                }),
+                (prisma as any).contractDocumentTemplateMapping.findMany({
+                  where: { contractId: contractIdNum },
+                  include: { template: true },
+                  orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+                }),
+              ]);
+            },
+          )
+        : null;
 
     const ensured = await measureSignNowStep(
       'ensure-review-group',
@@ -1783,37 +1916,11 @@ export class SignNowService {
     let documents = ensured.documents;
     const reusedExisting = ensured.reusedExisting;
 
-    const contractIdNum = Number(options.contractId);
     let exhibitCEntitiesRaw: unknown =
       values[EXHIBIT_C_ENTITIES_PREFILL_KEY] || undefined;
     let exhibitCMappingEntities: ExhibitCEntityPrefillRow[] = [];
-    // Exhibit C mapping rows survive on the contract after a workflow that no
-    // longer attaches Exhibit C. Only read them when this package really has one,
-    // so yesterday's Exhibit C bank/holder values cannot seed today's documents.
-    const packageHasExhibitC = toAttach.some((row) =>
-      isExhibitCAddendumRow({
-        layoutKey: row.layoutKey,
-        name: row.name,
-        templateId: row.templateId,
-      }),
-    );
-    if (packageHasExhibitC && Number.isFinite(contractIdNum) && contractIdNum > 0) {
-      countSignNowDb();
-      const [contractRow, mappingRows] = await measureSignNowStep(
-        'contract-mapping-query',
-        { contractId: contractIdNum },
-        () => Promise.all([
-        prisma.contract.findUnique({
-          where: { id: contractIdNum },
-          select: { contractPrefillOverrides: true },
-        }),
-        (prisma as any).contractDocumentTemplateMapping.findMany({
-          where: { contractId: contractIdNum },
-          include: { template: true },
-          orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
-        }),
-        ]),
-      );
+    if (exhibitCContractReadPromise) {
+      const [contractRow, mappingRows] = await exhibitCContractReadPromise;
       const overrides = contractRow?.contractPrefillOverrides;
       if (
         !exhibitCEntitiesRaw &&
@@ -1886,7 +1993,48 @@ export class SignNowService {
     };
 
     if (structureOnly) {
-      this.scheduleCrmPersist(runCrmPersist);
+      /**
+       * Park the warmed group for the Review click to adopt, and nothing more:
+       * no send-package row, no workflow transition. Awaited rather than
+       * deferred because a pre-warm is a background request whose latency
+       * nobody is waiting on, and Review finds this group through this row —
+       * deferring the write leaves a window where Review sees no group and
+       * copies a second one against SignNow's daily limit.
+       */
+      if (appId && !skipMainLink) {
+        /**
+         * Never let a warm overwrite a live document. The link upsert clears
+         * `sentAt`/`completedAt`/`signedPdfUrl` to open a fresh draft, which is
+         * right when the user clicked Review and wrong when a background warm
+         * fires against a contract that is already out for signature or signed.
+         * Warming still helps those cases — the group stays in the in-process
+         * draft cache — it just does not touch CRM state.
+         */
+        const liveDoc = await prisma.document
+          .findUnique({ where: { applicationId: appId }, select: { status: true } })
+          .catch(() => null);
+        const liveStatus = String(liveDoc?.status || '').toLowerCase();
+        const safeToLink = !liveDoc || liveStatus === 'draft' || liveStatus === '';
+        if (safeToLink) {
+          await this.linkGroupToApplication(
+            userId,
+            appId,
+            groupId,
+            SIGNNOW_PRISTINE_PREFILL_FINGERPRINT,
+            { skipWorkflowSync: true },
+          ).catch((err) => {
+            console.warn(
+              '[SignNow] pre-warm group link failed',
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        } else {
+          console.info('[SignNow] pre-warm not linked; document is not a draft', {
+            applicationId: appId,
+            status: liveStatus,
+          });
+        }
+      }
       const rolesReady =
         ensured.ownerRolesPrepared ||
         (await this.withSignNowGroupWriteLock(groupId, () =>
@@ -2853,6 +3001,74 @@ export class SignNowService {
     return this.mergePdfBuffers(parts);
   }
 
+  /**
+   * Emails a copy of the contract package to CC recipients as soon as the SignNow
+   * invite is sent. `completion_emails` (set in sendGroupInvite) only notifies CC
+   * once every signer finishes, so without this, a CC added at send time received
+   * nothing until (and unless) the whole package was fully signed.
+   */
+  /** Public: also used by the CRM signing-portal send path (SendGrid), which has no SignNow invite of its own to attach CC to. */
+  async notifyCcRecipientsOnSend(
+    groupId: string,
+    ccEmails: string[] | undefined | null,
+    signerEmails: string[] | undefined | null,
+    subjectBase?: string,
+  ): Promise<{ emailed: string[]; skippedReason?: string }> {
+    const signerSet = new Set(
+      (signerEmails || []).map((e) => String(e || '').trim().toLowerCase()).filter(Boolean),
+    );
+    const list = [
+      ...new Set(
+        (ccEmails || [])
+          .map((e) => String(e || '').trim())
+          .filter((e) => e && !signerSet.has(e.toLowerCase())),
+      ),
+    ];
+    if (!list.length) return { emailed: [], skippedReason: 'no_cc_addresses' };
+    if (!isOutboundSmtpConfigured()) {
+      console.warn('[SignNow] CC contract email skipped: SMTP not configured.');
+      return { emailed: [], skippedReason: 'smtp_not_configured' };
+    }
+
+    let pdf: Buffer | null = null;
+    try {
+      pdf = await this.downloadGroupPdf(groupId);
+    } catch (err) {
+      console.warn('[SignNow] Could not download group PDF for CC email:', err);
+    }
+
+    const subject = normalizeContractCcEmailSubject(
+      String(subjectBase || '').trim() || buildContractEnvelopeEmailSubject('Business', null),
+    );
+    const pdfFilename = buildContractEnvelopePdfFilename(subject);
+    const emailed: string[] = [];
+    for (const to of list) {
+      try {
+        await sendMail({
+          to,
+          subject,
+          html: '<p>Please find the contract package attached for your records.</p>',
+          attachments: pdf?.length
+            ? [
+                {
+                  filename: pdfFilename,
+                  content: pdf,
+                  contentType: 'application/pdf',
+                },
+              ]
+            : undefined,
+        });
+        emailed.push(to);
+      } catch (err) {
+        console.error(`[SignNow] Failed to email CC copy to ${to}:`, err);
+      }
+    }
+    if (emailed.length) {
+      console.log(`[SignNow] CC contract emailed to ${emailed.join(', ')} (group ${groupId}, subject "${subject}")`);
+    }
+    return { emailed };
+  }
+
   private async downloadMergedGroupPdf(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     groupId: string,
@@ -3134,18 +3350,23 @@ export class SignNowService {
     if (!signers.length) {
       throw new BadRequestException('At least one signer with an email is required to send');
     }
-    const subject = await this.resolveInviteEmailSubject({
-      title: options.title,
-      applicationId: options.applicationId,
-      prefillFields: options.prefillFields,
-      funderName: options.funderName,
-      fallbackGroupName: groupRes.data?.group_name,
-    });
+    // Subject (CRM reads), document hydration and the embedded-invite listing
+    // do not depend on each other. Awaiting them in sequence added two full
+    // round trips to every send for no ordering benefit.
+    const [subject, hydrated, embeddedRes] = await Promise.all([
+      this.resolveInviteEmailSubject({
+        title: options.title,
+        applicationId: options.applicationId,
+        prefillFields: options.prefillFields,
+        funderName: options.funderName,
+        fallbackGroupName: groupRes.data?.group_name,
+      }),
+      this.hydrateDocumentRoles(client, documents),
+      client.get(`/v2/document-groups/${id}/embedded-invites`, {
+        validateStatus: () => true,
+      }),
+    ]);
     console.info('[SignNow] invite email subject', { groupId: id, subject });
-    const hydrated = await this.hydrateDocumentRoles(client, documents);
-    const embeddedRes = await client.get(`/v2/document-groups/${id}/embedded-invites`, {
-      validateStatus: () => true,
-    });
     const fulfilledRoles = uniqueRoleNames([
       ...hydrated.flatMap((doc) => doc.fulfilledRoles || []),
       ...collectFulfilledFromEmbeddedInvites(embeddedRes.data),
@@ -3157,13 +3378,20 @@ export class SignNowService {
       ccCount: uniqueEmails(options.ccEmails).length,
     });
     // Owner review embedded invites lock field edits. Clear them (and any
-    // per-document invites) before baking merchant-visible values.
-    await this.deleteEmbeddedInvites(client, id, documents);
-    await this.cancelPendingFieldInvites(client, hydrated);
+    // per-document invites) before baking merchant-visible values. The two
+    // teardowns touch different SignNow resources, so running them in sequence
+    // only added a full round trip to every send.
+    await Promise.all([
+      this.deleteEmbeddedInvites(client, id, documents),
+      this.cancelPendingFieldInvites(client, hydrated),
+    ]);
+    // Pass the hydrated refs on: when nothing has to be attached this is the
+    // same list, and keeping `remote` lets waitForDocumentsReady below skip a
+    // second GET of every document in the package.
     const packaged = await this.attachMissingSupplementalsForSend(client, {
       groupId: id,
       groupName: subject,
-      documents,
+      documents: hydrated,
       applicationId: appIdEarly,
       supplementalDocumentRefs: options.supplementalDocumentRefs,
       sendPackage: options.sendPackage,
@@ -3183,11 +3411,25 @@ export class SignNowService {
       values.application_id = options.applicationId;
       values.case_id = options.applicationId;
     }
+    // Same rule as the review build: the live offer outranks payload amounts, so the
+    // text baked onto the merchant PDF cannot carry a superseded offer.
+    Object.assign(
+      values,
+      buildOfferPrefillOverrides(
+        await loadOfferDerivedValuesForContract({
+          applicationId: options.applicationId ?? appIdEarly,
+        }),
+        values,
+      ),
+    );
     applyMerchantSignerPrefill(values, signers);
     // Review writes Owner `prefilled_text` only. Merchants and the downloaded PDF
     // show committed text — bake/expose those values now, in parallel batches.
     const keepParty2 = Boolean(distinctSecondMerchant(signers));
-    const PREFILL_BATCH = 6;
+    // A full package is 6-12 documents. At 6 per round that was two serial
+    // rounds of the slowest call in the send; one round covers every package
+    // we actually build and still bounds concurrency against SignNow.
+    const PREFILL_BATCH = 12;
     console.info('[SignNow] baking send prefill for merchant PDF', {
       groupId: sendGroupId,
       documents: sendDocs.length,
@@ -3238,11 +3480,21 @@ export class SignNowService {
     } else if (appId) {
       await this.markGroupSent(appId, sendGroupId);
     }
+    const ccPrefilledEmail = await this.notifyCcRecipientsOnSend(
+      sendGroupId,
+      options.ccEmails,
+      signers.map((s) => s.email),
+      subject,
+    ).catch((err) => {
+      console.warn('[SignNow] notifyCcRecipientsOnSend failed:', err);
+      return { emailed: [] as string[], skippedReason: 'error' };
+    });
     return {
       success: true,
       envelopeId: sendGroupId,
       status: 'sent',
       url: null,
+      ccPrefilledEmail,
     };
     } catch (error) {
       const existing = await this.peekGroupInviteId(id).catch(() => '');
@@ -3586,34 +3838,69 @@ export class SignNowService {
     const results = await Promise.all(
       usable.map(async (doc) => {
         const id = String(doc.id || '').trim();
+        const documentName = String(doc.document_name || doc.name || '').trim();
+        const entityIdx = exhibitCInstanceIndexFromDocumentName(documentName);
+        const isolatedExtra = entityIdx != null && entityIdx > 0;
+        const entity = entityIdx != null ? entities[entityIdx] : undefined;
+        const docValues =
+          entityIdx != null
+            ? overlayExhibitCEntityOntoSignNowValues(
+                values,
+                entity,
+                isolatedExtra
+                  ? { isolateFromMainCrm: true }
+                  : { blankSharedFieldsFirst: false },
+              )
+            : values;
+        const options = {
+          exposeToMerchant: false,
+          keepParty2,
+          remote: doc.remote,
+          ignoreExistingFieldValues: entityIdx != null,
+        };
         try {
-          const documentName = String(doc.document_name || doc.name || '').trim();
-          const entityIdx = exhibitCInstanceIndexFromDocumentName(documentName);
-          const isolatedExtra = entityIdx != null && entityIdx > 0;
-          const entity = entityIdx != null ? entities[entityIdx] : undefined;
-          const docValues =
-            entityIdx != null
-              ? overlayExhibitCEntityOntoSignNowValues(
-                  values,
-                  entity,
-                  isolatedExtra
-                    ? { isolateFromMainCrm: true }
-                    : { blankSharedFieldsFirst: false },
-                )
-              : values;
-          return await this.prefillDocument(client, id, docValues, {
-            exposeToMerchant: false,
-            keepParty2,
-            remote: doc.remote,
-            ignoreExistingFieldValues: entityIdx != null,
-          });
+          const first = await this.prefillDocument(client, id, docValues, options);
+          /**
+           * The write is checked, not assumed: a document that had CRM values to write
+           * but published none did not take the prefill, and Review would otherwise open
+           * on it empty. Re-read it from SignNow (no cached `remote`) and write once more
+           * — the retry is on the failure, so a document that took its values first time
+           * costs nothing.
+           */
+          if (first.matched > 0 && first.applied === 0) {
+            console.warn('[SignNow] prefill wrote no fields; retrying document once', {
+              documentId: id,
+              matched: first.matched,
+            });
+            const retry = await this.prefillDocument(client, id, docValues, {
+              ...options,
+              remote: undefined,
+            });
+            return retry.applied > 0 ? retry : first;
+          }
+          return first;
         } catch (err) {
           // One slow/failed doc must not wipe success on the agreement or abort Review.
           console.warn(
-            '[SignNow] prefill document threw; continuing with remaining docs',
+            '[SignNow] prefill document threw; retrying document once',
             { documentId: id, error: err instanceof Error ? err.message : String(err) },
           );
-          return { applied: 0, attempted: 0 };
+          try {
+            return await this.prefillDocument(client, id, docValues, {
+              ...options,
+              remote: undefined,
+            });
+          } catch (retryErr) {
+            console.warn(
+              '[SignNow] prefill retry failed; continuing with remaining docs',
+              {
+                documentId: id,
+                error:
+                  retryErr instanceof Error ? retryErr.message : String(retryErr),
+              },
+            );
+            return { applied: 0, attempted: 0, matched: 0 };
+          }
         }
       }),
     );
@@ -3700,7 +3987,7 @@ export class SignNowService {
           remote?: any;
           ignoreExistingFieldValues?: boolean;
         } = false,
-  ): Promise<{ applied: number; attempted: number }> {
+  ): Promise<{ applied: number; attempted: number; matched: number }> {
     const expose =
       typeof exposeToMerchant === 'boolean'
         ? exposeToMerchant
@@ -3733,7 +4020,9 @@ export class SignNowService {
     const mergedValues = ignoreExisting
       ? { ...values }
       : {
-          ...collectExistingSignNowFieldValues(docRes.data),
+          ...collectExistingSignNowFieldValues(docRes.data, {
+            skipCommittedTexts: expose,
+          }),
           ...values,
         };
     const unmatched: string[] = [];
@@ -3764,7 +4053,11 @@ export class SignNowService {
       ),
       filledSample: filledSample.slice(0, 12),
     });
-    return { applied, attempted: filledSample.length + unmatched.length };
+    return {
+      applied,
+      attempted: filledSample.length + unmatched.length,
+      matched: filledSample.length,
+    };
   }
 
   /**
@@ -3810,8 +4103,12 @@ export class SignNowService {
       isSupplementalSignNowDocumentName(documentName) ||
       (shortDoc && !/agreement|pcm[_ ]?contract/i.test(documentName));
     const exhibitCDoc = isExhibitCDocumentName(documentName);
+    // Signer (merchant) view: filled CRM values are stamped as page text, so this
+    // publish owns the document's `texts` and rewrites them from scratch below.
+    const bakeFilledText = Boolean(exposeToMerchant);
     let sourceFields = collectSignNowPutFields(remote, {
       ...(monthlyFee || shortDoc || exhibitCDoc ? { defaultRole: 'Recipient 1' } : {}),
+      skipCommittedTexts: bakeFilledText,
     });
     const prefillOpts = signNowPrefillOptionsForDocument(
       documentName,
@@ -3823,11 +4120,30 @@ export class SignNowService {
     const signCount = sourceFields.filter((field) =>
       SIGN_FIELD_TYPES.has(String(field.type || '')),
     ).length;
-    if (!supplementalDoc || isExhibitC) {
+    /** Set when the restore below puts this document's own signature widgets back. */
+    let restoredSignFields = false;
+    /**
+     * Every document — agreement, addenda, disclosures — is rebuilt against the
+     * template it was copied from, not just the agreement and Exhibit C.
+     *
+     * A merchant publish bakes filled CRM values into page `texts` and deletes
+     * the widgets they came from, and SignNow keeps no field name on a committed
+     * text. So on a resend a supplemental document had no widget left for the
+     * edited value to land on: nothing covered the old stamp, and
+     * `mergeCommittedSignNowTexts` carried it forward. That is why an Offer
+     * Amount edit reached the agreement (which always restored from its
+     * template) but not the addenda or the disclosure.
+     *
+     * For a first-time send the live copy still has every widget, so the restore
+     * matches nothing and this path is a no-op.
+     */
+    {
       try {
         const templateId = isExhibitC
           ? await this.resolveExhibitCDocumentId(client)
-          : await this.resolveAgreementDocumentId(client);
+          : supplementalDoc
+            ? await this.resolveSupplementalOriginDocumentId(client, documentName)
+            : await this.resolveAgreementDocumentId(client);
         if (templateId && templateId !== documentId) {
           const templateData = await this.fetchTemplateDocumentCached(client, templateId);
           if (templateData) {
@@ -3846,6 +4162,7 @@ export class SignNowService {
                 );
                 if (fromSigns.length) {
                   sourceFields = [...sourceFields, ...fromSigns];
+                  restoredSignFields = true;
                   console.info('[SignNow] restored signature fields from template', {
                     documentId,
                     templateId,
@@ -3858,7 +4175,13 @@ export class SignNowService {
             sourceFields = mergeMissingSignerFieldsFromTemplate(
               sourceFields,
               fromTemplate,
-              isExhibitC ? { documentKind: 'exhibit_c' } : prefillOpts,
+              {
+                ...(isExhibitC ? { documentKind: 'exhibit_c' as const } : prefillOpts),
+                // A merchant publish is CRM-driven end to end: bring back every
+                // widget an earlier bake deleted so this send's values can land
+                // on them instead of the page keeping the previous stamp.
+                ...(bakeFilledText ? { restoreAllTextFields: true } : {}),
+              },
             );
             if (sourceFields.length > beforeRequired) {
               console.info('[SignNow] restored missing signer fields from template', {
@@ -3873,7 +4196,16 @@ export class SignNowService {
       } catch (err) {
         console.warn('[SignNow] could not restore field face from template', err);
       }
-    } else if (signCount === 0 && pageCount > 2) {
+    }
+    // Fallback for a supplemental whose own template could not be resolved: the
+    // agreement template is the only source of signature widgets left.
+    if (
+      supplementalDoc &&
+      !isExhibitC &&
+      !restoredSignFields &&
+      signCount === 0 &&
+      pageCount > 2
+    ) {
       try {
         const templateId = await this.resolveAgreementDocumentId(client);
         if (templateId && templateId !== documentId) {
@@ -4168,10 +4500,9 @@ export class SignNowService {
       if (dashed !== current) field.prefilled_text = dashed;
     }
 
-    // Signer (merchant) view: stamp filled CRM values as 10pt page text so the
-    // agreement matches addenda/disclosures (values on the line, no field boxes).
-    // Owner review stays fillable widgets.
-    const bakeFilledText = Boolean(exposeToMerchant);
+    // Filled CRM values are stamped as 10pt page text so the agreement matches
+    // addenda/disclosures (values on the line, no field boxes). Owner review
+    // stays fillable widgets — see `bakeFilledText` above.
     const needsMerchantRequiredReviewPut =
       !exposeToMerchant &&
       sourceFields.some((field) => {
@@ -4210,9 +4541,28 @@ export class SignNowService {
       // Blank widgets still held by the CRM role are not the merchant's to fill.
       ownerRole,
     });
+    /**
+     * `PUT /document/{id}` only ever APPENDS `texts`, so the values this publish
+     * bakes would land on top of the stamps an earlier publish left behind and
+     * both would render — the overlapping Exhibit C / Exhibit C (2) values.
+     * Carry forward any earlier stamp this send does not cover, then clear the
+     * document's text elements before writing, so every spot ends up with
+     * exactly one value: the current one.
+     */
+    const committedTexts = bakeFilledText
+      ? collectCommittedSignNowTexts(remote)
+      : [];
     const baked = {
       fields: fieldsOnExistingPages(bakedRaw.fields, pageCount),
-      texts: fieldsOnExistingPages(bakedRaw.texts, pageCount),
+      texts: fieldsOnExistingPages(
+        mergeCommittedSignNowTexts(bakedRaw.texts, committedTexts, {
+          // Every widget this send knows about owns its spot, so a stamp left
+          // there by an earlier send is replaced (or dropped when the CRM value
+          // is now blank) instead of being carried forward.
+          ownedSpots: putFields,
+        }),
+        pageCount,
+      ),
     };
     const fieldBodies = bakeFilledText
       ? [baked.fields, baked.fields.map(({ id: _id, ...rest }) => rest)]
@@ -4250,6 +4600,9 @@ export class SignNowService {
     }
     if (baked.texts.length) {
       pushPut(putFields, false);
+    }
+    if (committedTexts.length && baked.texts.length) {
+      await this.clearCommittedSignNowTexts(client, documentId, committedTexts);
     }
     for (const attempt of attempts) {
       try {
@@ -4304,6 +4657,49 @@ export class SignNowService {
       );
     }
     return textsApplied || 0;
+  }
+
+  /**
+   * Remove every text element committed by an earlier publish.
+   *
+   * `DELETE /document/{id}/text/{textId}` clears ALL of the document's text
+   * elements, not just the id passed — which is what makes it usable as the
+   * "clear" step SignNow otherwise has no endpoint for (`texts: []` on the PUT
+   * is a no-op). The caller must already hold the full replacement set.
+   */
+  private async clearCommittedSignNowTexts(
+    client: Awaited<ReturnType<typeof createSignNowApiClient>>,
+    documentId: string,
+    committed: readonly CommittedSignNowText[],
+  ): Promise<boolean> {
+    const textId = committed.find((row) => row.id)?.id || '';
+    if (!textId) return false;
+    try {
+      const res = await client.delete(`/document/${documentId}/text/${textId}`, {
+        validateStatus: () => true,
+      });
+      if (res.status < 400) {
+        console.info('[SignNow] cleared previously baked page text before re-publish', {
+          documentId,
+          cleared: committed.length,
+        });
+        return true;
+      }
+      // Not fatal: the PUT below still writes the current values. They stack on
+      // top of the old ones, which is the pre-existing behaviour, so say so.
+      console.warn('[SignNow] could not clear baked page text; values may stack', {
+        documentId,
+        status: res.status,
+        detail: this.signNowErrorDetail(res),
+      });
+    } catch (err) {
+      console.warn(
+        '[SignNow] clearing baked page text threw',
+        documentId,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return false;
   }
 
   private unwrapGroupTemplatePayload(raw: any): any | null {
@@ -4392,29 +4788,48 @@ export class SignNowService {
     if (cached && Date.now() - cached.at < GROUP_TEMPLATE_ROW_TTL_MS) {
       return cached.row;
     }
+    /**
+     * Prefill runs every document in the package at once and each one resolves
+     * its origin template here. On a cold cache that fanned out into one
+     * lookup per document — up to two round trips each, since the first path
+     * 404s on some accounts — all asking SignNow the same question. Coalesce
+     * them onto the first caller.
+     */
+    const inflight = groupTemplateRowInflight.get(wantedLower);
+    if (inflight) return inflight;
+
     const remember = (row: any) => {
       groupTemplateRowCache.set(wantedLower, { row, at: Date.now() });
       return row;
     };
 
-    const getPaths = [
-      `/documentgroup/template/${wanted}`,
-      `/v2/document-group-templates/${wanted}`,
-    ];
-    for (const path of getPaths) {
-      const getRes = await client.get(path, { validateStatus: () => true });
-      if (getRes.status >= 400) continue;
-      const row = this.unwrapGroupTemplatePayload(getRes.data);
-      if (row) return remember(row);
-    }
+    const work = (async () => {
+      const getPaths = [
+        `/documentgroup/template/${wanted}`,
+        `/v2/document-group-templates/${wanted}`,
+      ];
+      for (const path of getPaths) {
+        const getRes = await client.get(path, { validateStatus: () => true });
+        if (getRes.status >= 400) continue;
+        const row = this.unwrapGroupTemplatePayload(getRes.data);
+        if (row) return remember(row);
+      }
 
-    if (groupTemplateListCache && Date.now() - groupTemplateListCache.at < GROUP_TEMPLATE_ROW_TTL_MS) {
-      const fromCache = groupTemplateListCache.rows.find(
-        (row: any) => this.groupTemplateRowId(row).toLowerCase() === wantedLower,
-      );
-      if (fromCache) return remember(fromCache);
-    }
-    return null;
+      if (
+        groupTemplateListCache &&
+        Date.now() - groupTemplateListCache.at < GROUP_TEMPLATE_ROW_TTL_MS
+      ) {
+        const fromCache = groupTemplateListCache.rows.find(
+          (row: any) => this.groupTemplateRowId(row).toLowerCase() === wantedLower,
+        );
+        if (fromCache) return remember(fromCache);
+      }
+      return null;
+    })().finally(() => {
+      groupTemplateRowInflight.delete(wantedLower);
+    });
+    groupTemplateRowInflight.set(wantedLower, work);
+    return work;
   }
 
   private async resolveGroupTemplateOriginDocumentId(
@@ -5166,6 +5581,82 @@ export class SignNowService {
     }
   }
 
+  /**
+   * Has the preparer finished Owner Review on this group?
+   *
+   * The CRM used to infer this from the SignNow iframe: either a postMessage
+   * from the `/embedded-complete` redirect, or a "the iframe navigated again"
+   * heuristic. Both are lossy — SignNow drops the redirect when the CRM origin
+   * is not publicly reachable, and the heuristic misfires on SignNow's own
+   * in-app navigations. When the signal was missed the button stayed on
+   * "Review in SignNow" and the next click rebuilt the whole package from the
+   * start. This asks SignNow directly instead, so the UI has a signal that
+   * cannot be lost.
+   *
+   * Only the preparer holds an embedded invite while a group is in review —
+   * merchants are invited by email at send time — so any fulfilled embedded
+   * signer means review is done.
+   */
+  async getReviewStatus(groupId: string): Promise<{
+    envelopeId: string;
+    reviewComplete: boolean;
+    fulfilledRoles: string[];
+    status: string | null;
+  }> {
+    const id = String(groupId || '').trim();
+    if (!id) throw new BadRequestException('Missing SignNow document group id');
+    if (!this.isEnabled()) {
+      return { envelopeId: id, reviewComplete: false, fulfilledRoles: [], status: null };
+    }
+    const client = await createSignNowApiClient();
+    const checkOnce = async () => {
+      const res = await client.get(`/v2/document-groups/${id}/embedded-invites`, {
+        validateStatus: () => true,
+      });
+      const fromInvites =
+        res.status >= 400
+          ? { reviewComplete: false, fulfilledRoles: [] as string[], status: null as string | null }
+          : resolveSignNowReviewStatus(res.data);
+      if (fromInvites.reviewComplete) return fromInvites;
+
+      /**
+       * Second opinion: a signature that is actually filled in on the package.
+       *
+       * SignNow does not always flip the embedded invite's own status the moment
+       * the preparer clicks Finish — on some groups only the document changes —
+       * and a review whose finish is never noticed leaves the UI stuck on
+       * "Review in SignNow" with no way to send. Signed widgets cannot appear
+       * before somebody signed, and during Owner review the preparer is the only
+       * party holding the package, so this cannot report a finish that did not
+       * happen.
+       */
+      const groupRes = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
+      const signedRoles =
+        groupRes.status >= 400 ? [] : collectSignedRoleNames(groupRes.data?.data ?? groupRes.data);
+      if (signedRoles.length) {
+        return { reviewComplete: true, fulfilledRoles: signedRoles, status: 'review_complete' };
+      }
+      return fromInvites;
+    };
+
+    let result = await checkOnce();
+    /**
+     * A document group that is being reviewed for the very first time has no
+     * prior state (no reused draft, no warmed embedded invite), so its role
+     * assignments are still settling in SignNow when the preparer clicks
+     * Finish. Both signals above can briefly report "not complete" right on
+     * the heels of a real Finish on a brand-new group — a gap that closed
+     * itself by the second attempt because the group had since stabilized.
+     * One short, bounded retry absorbs that propagation lag without adding
+     * meaningful latency to the normal "still reviewing" case.
+     */
+    if (!result.reviewComplete) {
+      await sleepSignNow(1500);
+      result = await checkOnce();
+    }
+    return { envelopeId: id, ...result };
+  }
+
   async getInviteSendDiagnostics(options: { envelopeId?: string; applicationId?: string }) {
     const envelopeId = String(options.envelopeId || '').trim();
     const applicationId = String(options.applicationId || '').trim();
@@ -5248,7 +5739,13 @@ export class SignNowService {
     });
   }
 
-  /** Cancel per-document field invites left over from Owner embedded review. */
+  /**
+   * Cancel per-document field invites left over from Owner embedded review.
+   * Callers that already hydrated `/document/{id}` pass those bodies through
+   * `doc.remote`: the invite list is the same one a second GET would return,
+   * so re-reading every document here only added a full round trip per
+   * document to both Review and Send.
+   */
   private async cancelPendingFieldInvites(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     documents: SignNowDocumentRef[],
@@ -5257,10 +5754,14 @@ export class SignNowService {
       documents.map(async (doc) => {
         const id = String(doc.id || '').trim();
         if (!id) return;
-        const docRes = await client.get(`/document/${id}`, { validateStatus: () => true });
-        if (docRes.status >= 400) return;
-        const invites = Array.isArray(docRes.data?.field_invites)
-          ? docRes.data.field_invites
+        let remote = doc.remote;
+        if (!remote) {
+          const docRes = await client.get(`/document/${id}`, { validateStatus: () => true });
+          if (docRes.status >= 400) return;
+          remote = docRes.data;
+        }
+        const invites = Array.isArray(remote?.field_invites)
+          ? remote.field_invites
           : [];
         for (const invite of invites) {
           const inviteId = String(invite?.id || invite?.unique_id || '').trim();
@@ -5996,6 +6497,111 @@ export class SignNowService {
    * `exposeToMerchant` rewrites `fields` *and* `texts` in one PUT, so supplying
    * current values replaces the baked page text rather than layering over it.
    */
+  /**
+   * Current CRM values for this group's contract, straight from the database.
+   *
+   * A resend must never depend on the caller's payload being fresh: when it
+   * omits a key (or arrives empty), the value the merchant publish would fall
+   * back to is whatever an earlier send baked onto the page. Reading the
+   * Contract row — which the application edit updates — means an Offer Amount
+   * change reaches every document even if the request carries nothing.
+   *
+   * These fill gaps only; a value the caller did send always wins.
+   */
+  private async loadContractPrefillDefaults(
+    groupId: string,
+  ): Promise<{
+    defaults: Record<string, string>;
+    offerSource: ContractOfferPrefillSource;
+  }> {
+    try {
+      const document = await prisma.document.findUnique({
+        where: { envelopeId: groupId },
+        select: { applicationId: true },
+      });
+      const applicationId = String(document?.applicationId || '').trim();
+      if (!applicationId) {
+        return { defaults: {}, offerSource: { values: null, includeWireFee: true } };
+      }
+      const contract = await prisma.contract.findFirst({
+        where: { applicationId },
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          purchasePrice: true,
+          purchaseAmount: true,
+          purchasePercent: true,
+          remittance: true,
+          appendixUnderwritingFees: true,
+          contractPrefillOverrides: true,
+          offer: {
+            select: {
+              offer: true,
+              totalRemit: true,
+              term: true,
+              frequency: true,
+              repayPerPeriod: true,
+              fees: true,
+            },
+          },
+          legalName: true,
+          customerName: true,
+          doingBusinessAs: true,
+          federalTaxIdEin: true,
+          clientName: true,
+          clientEmail: true,
+          clientPhone: true,
+          businessAddress: true,
+          businessAddressCity: true,
+          businessAddressState: true,
+          businessAddressZip: true,
+        },
+      });
+      if (!contract) {
+        return { defaults: {}, offerSource: { values: null, includeWireFee: true } };
+      }
+      const out: Record<string, string> = {};
+      const put = (key: string, value: unknown) => {
+        const text = String(value ?? '').trim();
+        if (text) out[key] = text;
+      };
+      // The columns are a creation-time snapshot; the live OfferDecision wins so a
+      // re-scrubbed offer reaches the ACH / disclosure documents on every send.
+      const derived = resolveOfferDerivedContractValues(contract.offer);
+      put('purchase_price', derived?.purchasePrice ?? contract.purchasePrice);
+      put('purchased_amount', derived?.purchaseAmount ?? contract.purchaseAmount);
+      put('purchase_percent', contract.purchasePercent);
+      put('remittance', derived?.remittance ?? contract.remittance);
+      put(
+        'appendix_underwriting_fees',
+        derived?.appendixUnderwritingFees ?? contract.appendixUnderwritingFees,
+      );
+      put('legal_name', contract.legalName);
+      put('customer_name', contract.customerName);
+      put('doing_business_as', contract.doingBusinessAs);
+      put('federal_tax_id_ein', contract.federalTaxIdEin);
+      put('client_name', contract.clientName);
+      put('client_email', contract.clientEmail);
+      put('client_phone', contract.clientPhone);
+      put('business_address', contract.businessAddress);
+      put('business_address_city', contract.businessAddressCity);
+      put('business_address_state', contract.businessAddressState);
+      put('business_address_zip', contract.businessAddressZip);
+      return {
+        defaults: out,
+        offerSource: {
+          values: derived,
+          includeWireFee: readIncludeWireFeeFromOverrides(contract.contractPrefillOverrides),
+        },
+      };
+    } catch (err) {
+      console.warn('[SignNow] could not read contract prefill defaults', {
+        groupId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { defaults: {}, offerSource: { values: null, includeWireFee: true } };
+    }
+  }
+
   async publishGroupFieldsToMerchant(
     groupId: string,
     options?: {
@@ -6020,6 +6626,13 @@ export class SignNowService {
     );
     // Same shaping the SignNow invite applies, so both paths bake identical text.
     const values = prefillRecord(options?.prefillFields);
+    // Latest CRM values from the database, under whatever the caller sent — except the
+    // offer-derived amounts, which go over it so a resend cannot re-bake an old offer.
+    const { defaults: fromDb, offerSource } = await this.loadContractPrefillDefaults(id);
+    for (const [key, value] of Object.entries(fromDb)) {
+      if (!String(values[key] ?? '').trim()) values[key] = value;
+    }
+    Object.assign(values, buildOfferPrefillOverrides(offerSource, values));
     if (options?.roles?.length) {
       applyMerchantSignerPrefill(values, orderedSigners(options.roles));
     }
@@ -6641,6 +7254,15 @@ export class SignNowService {
     groupId: string,
     /** Values this group was built/prefilled with — gates reuse on the next send. */
     prefillFingerprint?: string,
+    options?: {
+      /**
+       * Set by the `structureOnly` pre-warm. The warm only parks a copied,
+       * empty group for the Review click to adopt; the user has not asked for
+       * anything yet, so it must not advance the application to Contract
+       * Generated. The Review click does that.
+       */
+      skipWorkflowSync?: boolean;
+    },
   ) {
     const existingDoc = await prisma.document.findUnique({
       where: { applicationId },
@@ -6677,6 +7299,7 @@ export class SignNowService {
       },
     });
     countSignNowDb();
+    if (options?.skipWorkflowSync) return;
     try {
       const { syncApplicationToContractGenerated } = await import(
         '../contractApplicationWorkflowSync'

@@ -154,6 +154,12 @@ export type ResolvedAutoCreateBatch = {
   /** Ordered driver-license files (owner assignment happens after name match). */
   driverLicenseFiles: UploadedFileLike[];
   voidedCheckFile: UploadedFileLike | null;
+  /**
+   * Files that fill no KYC slot (a third driver license, a second voided check, any other
+   * attachment). They carry no extraction, but they are still stored on the application so a
+   * multi-file upload never silently loses a document.
+   */
+  extraFiles: UploadedFileLike[];
   classifications: ClassifiedBatchFile[];
 };
 
@@ -227,10 +233,16 @@ export function resolveAutoCreateBatch(
   const voidedCheckFile =
     voids.map((r) => r.file).find((f) => f !== applicationFile) || null;
 
+  // Anything not claimed by a slot above is still uploaded and attached to the application.
+  const claimed = new Set<UploadedFileLike>([applicationFile, ...driverLicenseFiles]);
+  if (voidedCheckFile) claimed.add(voidedCheckFile);
+  const extraFiles = files.filter((f) => !claimed.has(f));
+
   return {
     applicationFile,
     driverLicenseFiles,
     voidedCheckFile,
+    extraFiles,
     classifications: rows,
   };
 }

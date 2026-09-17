@@ -16,6 +16,7 @@ import {
   createBoldSignApiKeyClient,
 } from './utils/boldsign-client';
 
+import { formatUsPhone, isPhoneFieldName } from '../../utils/contactFormat';
 import { STATE_DOCUMENT_CONFIG } from './state-document-config';
 import { FUNDERNAME_DOCUMENT_CONFIG } from './funderName-document-config';
 import { PAYOFF_DOCUMENT_CONFIG } from './payoff-document-config';
@@ -1062,10 +1063,13 @@ export class BoldSignService {
 
       const mappedFields = fields
         .filter((f) => f?.id && String(f.value ?? '').trim() !== '')
-        .map((f) => ({
-          id: String(f.id).trim(),
-          value: String(f.value ?? '').trim(),
-        }));
+        .map((f) => {
+          const id = String(f.id).trim();
+          const value = String(f.value ?? '').trim();
+          // Phone / mobile / business-phone blanks print dashed (756-689-9020),
+          // matching the SignNow and DocuSign agreements.
+          return { id, value: isPhoneFieldName(id) ? formatUsPhone(value) : value };
+        });
 
       if (mappedFields.length === 0) {
         return null;
