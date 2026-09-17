@@ -14,13 +14,19 @@ import {
     formatDisclosureDocumentFrequencyLabel,
     formatDisclosurePaymentFrequencyLabel,
 } from "./disclosureAprCalculator";
-import { expandDisclosureEditorValuesToPdfFields } from "./disclosureEditorFields";
+import {
+    buildDisclosureEditorFieldsFromContext,
+    expandDisclosureEditorValuesToPdfFields,
+} from "./disclosureEditorFields";
 import { resolveWantedAddendumKinds } from "./disclosureDocumentRules";
 import {
     buildCaliforniaRefinancePage3Amounts,
     resolveCaliforniaEstimatedTermDays,
 } from "./california_disclosure";
-import { getStateDisclosurePrefillFieldsByName } from "./stateDisclosurePrefill";
+import {
+    buildStateDisclosurePrefillContextFromContract,
+    getStateDisclosurePrefillFieldsByName,
+} from "./stateDisclosurePrefill";
 
 function fieldMap(fields: { id: string; value: string }[]): Record<string, string> {
     const out: Record<string, string> = {};
@@ -480,6 +486,118 @@ test("Guide Utah provider-pays field left blank", () => {
     assert.equal(map.purchase_amount, "90000.00");
     assert.equal(map.net_to_merchant, "90000.00");
     assert.ok(!map.appendix_underwriting_fees, "provider pays must be blank per Guide");
+});
+
+/**
+ * The Offer Summary's first row is gross funding; the blank in the paragraph
+ * beside it is what reaches the merchant after deductions. Both printed the
+ * same net figure, so a disclosure never showed that anything was deducted.
+ *
+ * These cover `buildDisclosureEditorFieldsFromContext`, the builder every
+ * registered state actually goes through. The per-state builders tested above
+ * are only the fallback, which is how the bug survived them.
+ */
+test("Offer Summary funding provided is gross, funds provided directly is net", () => {
+    const fields = buildDisclosureEditorFieldsFromContext({
+        fundingProvided: "100000.00",
+        fundingDisbursed: "90000.00",
+        netContractedFunding: "90000.00",
+        feesDeducted: "10000.00",
+        totalRepayment: "150000.00",
+        financeCharge: "50000.00",
+        estimatedPayment: "1500.00",
+        averageMonthlyIncome: "80000.00",
+    });
+    const map = fieldMap(fields);
+    assert.equal(map.funding_provided, "100000.00");
+    assert.equal(map.funding_provided_direct, "90000.00");
+    // The two must differ whenever anything is deducted — that difference is
+    // the whole point of the row and the blank beside it.
+    assert.notEqual(map.funding_provided, map.funding_provided_direct);
+});
+
+test("REFI keeps funding provided gross and disburses the post-payoff amount", () => {
+    const fields = buildDisclosureEditorFieldsFromContext({
+        isRefinance: true,
+        fundingProvided: "100000.00",
+        fundingDisbursed: "90000.00",
+        netContractedFunding: "90000.00",
+        actualDisbursement: "65000.00",
+        previousRefiBalance: "25000.00",
+        feesDeducted: "10000.00",
+        totalRepayment: "150000.00",
+        financeCharge: "50000.00",
+        estimatedPayment: "1500.00",
+        averageMonthlyIncome: "80000.00",
+    });
+    const map = fieldMap(fields);
+    assert.equal(map.funding_provided, "100000.00");
+    assert.equal(map.funding_provided_direct, "65000.00");
+});
+
+/**
+ * The contract row carries no cadence of its own, and the API returns the PaymentTerms
+ * relation as an array — reading that array as the cadence left the disclosure cadence
+ * empty, so the calculators fell through to their "Daily" default and a weekly offer
+ * disclosed Daily with a 10-week term shown as 10 days.
+ */
+function weeklyDealContract(): Record<string, unknown> {
+    return {
+        id: 1,
+        state: "California",
+        // As the contract API returns it: relation arrays, and no `frequency` column.
+        paymentTerms: [] as unknown[],
+        achs: [] as unknown[],
+        contractLenght: 10,
+        purchaseAmount: "10000",
+        appendixUnderwritingFees: "1000",
+        offer: {
+            offer: 10000,
+            totalRemit: 14990,
+            term: "10 Weeks",
+            frequency: "Weekly",
+            repayPerPeriod: 1499,
+            fees: 10,
+        },
+    };
+}
+
+test("Weekly offer discloses Weekly, not the Daily default", () => {
+    const ctx = buildStateDisclosurePrefillContextFromContract({
+        contract: weeklyDealContract(),
+        application: {},
+    });
+    assert.equal(ctx.frequency, "Weekly");
+    const map = fieldMap(buildDisclosureEditorFieldsFromContext(ctx));
+    assert.equal(map.disclosure_payment_frequency, "Weekly");
+});
+
+test("Weekly estimated term is stated in calendar days (weeks x 7)", () => {
+    const ctx = buildStateDisclosurePrefillContextFromContract({
+        contract: weeklyDealContract(),
+        application: {},
+    });
+    assert.equal(ctx.estimatedTermDays, "70");
+    assert.equal(
+        fieldMap(buildDisclosureEditorFieldsFromContext(ctx)).disclosure_term_days,
+        "70",
+    );
+});
+
+test("Daily offer keeps its term in days and its Daily cadence", () => {
+    const contract = weeklyDealContract();
+    contract.contractLenght = 20;
+    contract.offer = {
+        offer: 10000,
+        totalRemit: 14990,
+        term: "20 Days",
+        frequency: "Daily",
+        repayPerPeriod: 749.5,
+        fees: 10,
+    };
+    const ctx = buildStateDisclosurePrefillContextFromContract({ contract, application: {} });
+    assert.equal(ctx.frequency, "Daily");
+    assert.equal(ctx.estimatedTermDays, "20");
 });
 
 console.log(`\n${passed} tests passed`);

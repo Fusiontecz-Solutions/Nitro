@@ -663,6 +663,15 @@ function formatPercent(value: unknown, suffix = "%"): string {
     }).format(truncated)}${suffix}`;
 }
 
+/** First argument that is a non-empty string once trimmed. */
+function firstNonEmpty(...values: unknown[]): string {
+    for (const value of values) {
+        const text = String(value ?? "").trim();
+        if (text) return text;
+    }
+    return "";
+}
+
 function firstRecord(value: unknown): Record<string, unknown> | null {
     if (Array.isArray(value) && value[0] != null && typeof value[0] === "object") {
         return value[0] as Record<string, unknown>;
@@ -736,19 +745,22 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     const contract = (args.contract ?? {}) as Record<string, unknown>;
     const offer = (contract.offer ?? null) as Record<string, unknown> | null;
 
+    // The offer leads: the contract columns and any snake_case copies merged in from the
+    // application are a snapshot taken when the deal was prepared, so a re-scrubbed offer
+    // has to win over them or every document keeps quoting the superseded advance.
     const purchaseAmount = coerceFiniteNumber(
-        contract.purchase_price ??
+        offer?.offer ??
+            offer?.approvedAmount ??
+            contract.purchase_price ??
             contract.purchaseAmount ??
             contract.purchase_amount ??
-            offer?.offer ??
-            offer?.approvedAmount ??
             contract.approvedAmount,
     );
     const purchasePrice = coerceFiniteNumber(
-        contract.purchased_amount ??
-            contract.purchasePrice ??
-            offer?.totalRemit ??
+        offer?.totalRemit ??
             offer?.paybackAmount ??
+            contract.purchased_amount ??
+            contract.purchasePrice ??
             contract.totalAmount,
     );
     const purchasePercent = coerceFiniteNumber(
@@ -784,7 +796,10 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
 
     /** Per-period payment lives on the TermsOffer / OfferDecision row. */
     const periodicPayment = coerceFiniteNumber(
-        offer?.paymentAmount ??
+        // `repayPerPeriod` is the OfferDecision's own per-period field; without it the
+        // context fell back to a stale contract copy of the payment.
+        offer?.repayPerPeriod ??
+            offer?.paymentAmount ??
             (contract as Record<string, unknown>).paymentAmount ??
             offer?.dailyPayment ??
             offer?.weeklyPayment,
@@ -811,8 +826,24 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         positionRow?.percentOfGross,
         positionRow?.mcaRemit,
     );
+    /**
+     * Payment cadence for the disclosure.
+     *
+     * The offer is what defines the cadence, so it is read first. The contract row has no
+     * frequency column of its own, and `contract.paymentTerms` is the PaymentTerms
+     * relation (an array) — so the old `??` chain stopped there and resolved to an empty
+     * string, which left the disclosure to fall back on the calculator's "Daily" default
+     * and print Daily for a weekly deal.
+     */
     const frequency = String(
-        contract.frequency ?? contract.paymentTerms ?? offer?.frequency ?? "",
+        firstNonEmpty(
+            offer?.frequency,
+            (contract as Record<string, unknown>).frequency,
+            (contract as Record<string, unknown>).disclosureFrequency,
+            firstRecord(contract.paymentTerms)?.paymentFrequency,
+            firstRecord(contract.achs)?.frequency,
+            termsOffer?.frequency,
+        ),
     ).trim();
 
     const fundingProvided = formatUsd(purchaseAmount);
@@ -1096,6 +1127,23 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         }
     } catch {
         estimatedTermDays = "";
+    }
+
+    /**
+     * Last-resort estimated term when the calculators could not produce one: the offer
+     * term read in the cadence's own unit. A weekly term is a number of weeks, and the
+     * disclosure states the term in calendar days, so it is 7 days per payment.
+     */
+    if (!estimatedTermDays && termLength !== undefined && termLength > 0) {
+        const freqKey = normalizeFrequencyKey(frequency);
+        const perPayment = freqKey.startsWith("bi")
+            ? 14
+            : freqKey.startsWith("week")
+              ? 7
+              : freqKey.startsWith("month")
+                ? 30
+                : 1;
+        estimatedTermDays = String(Math.trunc(termLength) * perPayment);
     }
 
     const resolvedAverageMonthlyIncome =

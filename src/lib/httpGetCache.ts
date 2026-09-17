@@ -3,9 +3,14 @@ import type { AxiosRequestConfig, AxiosResponse } from "axios";
 const GET_CACHE_TTL_MS = 90_000;
 const MAX_ENTRIES = 80;
 
-/** Endpoints that must always hit the network (OAuth, binary, live signing). */
+/**
+ * Endpoints that must always hit the network (OAuth, binary, live signing) plus
+ * the live count feeds. Stat cards, queue totals and the sidebar badges are
+ * refetched precisely when something changed, so serving them from this cache
+ * only reintroduced the staleness the refetch was meant to clear.
+ */
 const SKIP_URL_RE =
-  /\/docusign\/(callback|sender-view)|\/uploads\/|\/public\/|\/auth\/(login|logout|verify)/i;
+  /\/docusign\/(callback|sender-view|signnow-review-status|signnow-invite-status)|\/uploads\/|\/public\/|\/auth\/(login|logout|verify)|\/applications\/(stats|operations-dashboard-summary|operations-dashboard-recent-cases)/i;
 
 type CachedGetEntry = {
   at: number;

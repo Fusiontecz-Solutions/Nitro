@@ -588,8 +588,32 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
 
     const termRaw = String(offer?.term ?? offer?.termLength ?? contract.contractLenght ?? "");
     const termNum = parseTerm(termRaw);
+    /**
+     * Cadence sources, in order of authority. `contract.remittance` used to sit in this
+     * chain, but it holds the per-period dollar amount, so an offer without a cadence
+     * resolved a money string and `normalizeFrequency` turned it into the "Daily"
+     * default — which is how a weekly deal's term and monthly cost were computed daily.
+     */
+    const achRow =
+        Array.isArray(contract.achs) && contract.achs.length
+            ? (contract.achs[0] as Record<string, unknown>)
+            : null;
+    const paymentTermsRow =
+        Array.isArray(contract.paymentTerms) && contract.paymentTerms.length
+            ? (contract.paymentTerms[0] as Record<string, unknown>)
+            : null;
     const frequency = normalizeFrequency(
-        String(offer?.frequency ?? contract.remittance ?? "Daily"),
+        String(
+            [
+                offer?.frequency,
+                contract.frequency,
+                contract.disclosureFrequency,
+                paymentTermsRow?.paymentFrequency,
+                achRow?.frequency,
+            ]
+                .map((v) => String(v ?? "").trim())
+                .find((v) => v) ?? "Daily",
+        ),
     ) as DisclosureCalculatorFrequency;
 
     let numberOfPayments =

@@ -19,7 +19,7 @@ export interface AchWeeklyContractPrefillFields {
     accountNumber?: string;
     printName?: string;
     printTitle?: string;
-    /** The bottom "Date:" box (template widget `Text Field 1`). */
+    /** The bottom "Date:" box (template widget `Text Field 1`, routed by the backend). */
     signatureDate?: string;
 }
 
@@ -34,6 +34,13 @@ export interface AchWeeklyContractPrefillFields {
  * They are routed by position in signnow-field-map.ts
  * (ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS). Renaming them in SignNow would let that
  * table be deleted.
+ *
+ * The date must NOT be emitted under the bare `Text Field 1` id: prefill values are
+ * one flat map for the whole envelope, and the CA / NY disclosure writes its
+ * "Funding Provided" amount to that same default widget name. Whichever document was
+ * built last won, which is how the signing date ended up printed in the disclosure's
+ * Funding Provided box. It is emitted under the ACH-scoped id below instead, which the
+ * backend positional table reads first for this document.
  */
 const FIELD_DEFS: Array<{
     id: keyof AchWeeklyContractPrefillFields;
@@ -52,7 +59,7 @@ const FIELD_DEFS: Array<{
     { id: "routingNumber", label: "Routing Number", tab: "ach_bank_routing_p1_ach" },
     { id: "accountNumber", label: "Account Number", tab: "ach_bank_account_p1_ach" },
     // Bottom section — tab names are the template's, positions are as documented above.
-    { id: "signatureDate", label: "Date", tab: "Text Field 1" },
+    { id: "signatureDate", label: "Date", tab: "ach_weekly_signature_date_p1_ach" },
     { id: "printName", label: "Printed Names", tab: "signature_date_p1_ach" },
 ];
 

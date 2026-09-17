@@ -161,6 +161,7 @@ import {
     uploadApplicationDocuments,
     getApplicationById,
     getApplicationByApplicationId,
+    reinitiateContract as reinitiateContractAction,
 } from "@/redux/actions/applicationActions";
 import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
 import { resolveOfferDecisionFeesDisplayDollars } from "@/lib/offerDecisionFees";
@@ -321,6 +322,17 @@ import {
 } from "./contractdata/multiInstanceAddendum";
 
 const SIGNNOW_REVIEW_TOAST_ID = "signnow-review-hint";
+/** How often the CRM asks SignNow whether Owner Review has been finished. */
+const SIGNNOW_REVIEW_POLL_MS = 4000;
+/** Slower cadence once the review has been open a while. */
+const SIGNNOW_REVIEW_POLL_SLOW_MS = 12000;
+const SIGNNOW_REVIEW_POLL_BACKOFF_AFTER_MS = 3 * 60 * 1000;
+/** Stop polling a review tab that was opened and abandoned. */
+const SIGNNOW_REVIEW_POLL_MAX_MS = 45 * 60 * 1000;
+/** Quiet period on the Summary step before the SignNow package is pre-warmed. */
+const SIGNNOW_PREWARM_IDLE_MS = 2500;
+/** Hard cap on background package copies per modal session (daily document limit). */
+const SIGNNOW_PREWARM_MAX_PER_SESSION = 2;
 import {
     getTemplateRoleEmailFromRow,
     getTemplateRoleLabel,
@@ -2008,6 +2020,7 @@ const PDFViewerModal = ({
     const [isSendingViaSendGrid, setIsSendingViaSendGrid] = useState(false);
     const sendingLockRef = useRef(false);
     const [isCancellingContract, setIsCancellingContract] = useState(false);
+    const [isResendingNewContract, setIsResendingNewContract] = useState(false);
     /** Set when the browser blocks `window.open` after the draft URL is ready — user opens via button click. */
     const [docuSignOpenUrl, setDocuSignOpenUrl] = useState<string | null>(null);
     const [signNowEmbedUrl, setSignNowEmbedUrl] = useState<string | null>(null);
@@ -2027,6 +2040,20 @@ const PDFViewerModal = ({
     const signNowCachedEmbedUrlRef = useRef<string | null>(null);
     /** Skip "send existing draft" so Review can remint after Owner finish. */
     const signNowForceFreshReviewRef = useRef(false);
+    /**
+     * The SignNow package the currently open (or just finished) review belongs to.
+     *
+     * `sessionEnvelopeId` cannot answer that on its own: `invalidateDocuSignDraftSession`
+     * nulls it whenever the signer-roles fingerprint shifts, and that fingerprint moves
+     * by itself when a background contract refresh lands while the review iframe is open.
+     * On a first send nothing else holds the id yet — the contract the modal loaded has
+     * no `document.envelopeId` until it is refetched — so losing it stopped the
+     * review-status poll (Finish was never detected) and made Send report "Finish Review
+     * in SignNow first — there is no contract package to send yet" for a package that
+     * existed all along. Cleared when the review package is genuinely gone: modal close,
+     * a completed send, or a void.
+     */
+    const signNowReviewEnvelopeIdRef = useRef<string | null>(null);
     type ContractWizardStep = "documents" | "info" | "summary" | "sent";
     const [activeStep, setActiveStep] = useState<ContractWizardStep>("documents");
     const [sentAt, setSentAt] = useState<Date | null>(null);
@@ -3440,7 +3467,9 @@ const PDFViewerModal = ({
 
     const docuSignPrimaryActionLabel = useMemo(() => {
         if (showResendContractOnSentStep) {
-            return "Send new contract";
+            // Rebuilds the whole package from the current application / offer rather
+            // than re-sending the one already on the deal.
+            return "Resend new contract";
         }
         if (isSignNowContractUiEnabled()) {
             if (signNowReviewOpen || signNowReviewComplete) return "Send via SignNow";
@@ -3706,6 +3735,7 @@ const PDFViewerModal = ({
             setPreviewingMainContract(false);
             signNowForceFreshReviewRef.current = false;
             signNowCachedEmbedUrlRef.current = null;
+            signNowReviewEnvelopeIdRef.current = null;
             setSignNowEmbedUrl(null);
             setSignNowReviewVisible(false);
             setSignNowReviewComplete(false);
@@ -4046,6 +4076,54 @@ const PDFViewerModal = ({
     const addendumMappingsWriteInFlightRef = useRef(0);
     const addendumPersistTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
     const flushAddendumMappingsRef = useRef<() => Promise<void>>(async () => {});
+    /** Latest build of the CRM → SignNow prefill payload, callable after an `await`. */
+    const buildPrefillFieldsPayloadRef = useRef<() => ContractPrefillField[]>(() => []);
+
+    /**
+     * Everything the SignNow package is prefilled from: the contract row with its saved
+     * prefill, the document-template mappings, the disclosure link, the offer, and the
+     * bank analysis the disclosure calculator reads.
+     *
+     * Review used to build its payload from whatever had arrived by the time the button
+     * was clicked, so a click during the initial load opened SignNow with the fields
+     * those loads supply (phone, fees, cadence) still empty — and only a second Review,
+     * by which time the loads had finished, showed them.
+     */
+    const contractDataReadyForReview =
+        contractPrefillLoaded &&
+        !loadingTemplateMappings &&
+        !linkingDisclosureTemplate &&
+        !loadingDisclosureCalcBankAnalysis &&
+        !offerDecisionLoading;
+    const contractDataReadyRef = useRef(false);
+    const contractDataReadyWaitersRef = useRef<Array<() => void>>([]);
+    const releaseContractDataWaiters = useCallback(() => {
+        const waiters = contractDataReadyWaitersRef.current;
+        contractDataReadyWaitersRef.current = [];
+        for (const resolve of waiters) resolve();
+    }, []);
+    useEffect(() => {
+        contractDataReadyRef.current = contractDataReadyForReview;
+        if (contractDataReadyForReview) releaseContractDataWaiters();
+    }, [contractDataReadyForReview, releaseContractDataWaiters]);
+    useEffect(() => {
+        // Nothing else will settle once the modal is closed.
+        if (!isOpen) releaseContractDataWaiters();
+    }, [isOpen, releaseContractDataWaiters]);
+
+    /**
+     * Resolves once every load above has settled — driven by those loads completing, not
+     * by a timer. Queued mapping writes drain first, because they are what refresh the
+     * template-mapping rows the addendum / disclosure prefill is built from.
+     */
+    const waitForContractDataReady = useCallback(async () => {
+        await addendumMappingsWriteChainRef.current.catch(() => undefined);
+        await disclosureMappingsWriteChainRef.current.catch(() => undefined);
+        if (contractDataReadyRef.current) return;
+        await new Promise<void>((resolve) => {
+            contractDataReadyWaitersRef.current.push(resolve);
+        });
+    }, []);
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
     effectiveContractIdRef.current = effectiveContractId;
@@ -4417,6 +4495,138 @@ const PDFViewerModal = ({
         () => buildDocuSignRolesForSync(),
         [buildDocuSignRolesForSync],
     );
+
+    /**
+     * Copy the SignNow package in the background while the user is still on the
+     * Summary step, so clicking "Review in SignNow" does not have to wait for it.
+     *
+     * Almost all of the Review wait is SignNow's own document-group copy, which
+     * takes 25-40s and which no amount of backend tuning can shorten. `structureOnly`
+     * performs exactly that copy and nothing else — no prefill, no invite, no
+     * review link — and parks the result against this application. The Review
+     * click then finds the warmed group and only has to prefill it and mint the
+     * embed URL.
+     *
+     * Cost control, because every copy counts against SignNow's daily document
+     * limit:
+     *  - Only fires on the Summary step, after the user has settled for a moment.
+     *  - At most once per package shape, and capped per modal session.
+     *  - Never once a draft is already open, under review, or sent.
+     * The warmed group is recorded as pristine (nothing was ever written into it),
+     * so later edits to the contract do not invalidate it and it is still adopted
+     * rather than replaced by a second copy.
+     */
+    const signNowPrewarmedFingerprintsRef = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        if (!isSignNowContractUiEnabled()) return;
+        if (activeStep !== "summary") return;
+        // ContractTab omits this prop when the contract tab is read-only, and the
+        // real Review click is gated on it too.
+        if (!onPrepareDocuSignDraft) return;
+        if (signNowEmbedUrl || signNowReviewComplete || isSending) return;
+        if (sessionEnvelopeId || linkedEnvelopeIdRef.current) return;
+        if (!canReviewAndSendCurrentPackage) return;
+        // A resend deliberately builds a brand new package; warming one here
+        // would copy it twice against SignNow's daily document limit.
+        if (isContractOutForSignature || sentAt) return;
+        const applicationId = String(applicationIdForLookupRef.current || "").trim();
+        if (!applicationId) return;
+        const roles = buildDocuSignRolesForSync();
+        if (!roles.length) return;
+        const addendumTemplateIds = resolveAddendumTemplateIdsForDocuSignMerge();
+        const disclosureDocumentRef = includeDisclosureInSendRef.current
+            ? resolveDisclosureTemplateRefForDocuSignMerge()
+            : null;
+        const packageSelection = getEffectiveSendPackage();
+        /**
+         * Must reproduce byte for byte what ContractTab posts on the real Review,
+         * because the backend keys draft reuse on the resulting package shape.
+         * A payload that differs by even one supplemental ref warms a package
+         * Review cannot adopt, and then Review copies a second one.
+         */
+        const extraFunderDisclosureRefs = disclosureDocumentRef
+            ? funderDisclosureOptions
+                  .slice(1)
+                  .map((d) => d.templateId || d.layoutKey)
+                  .filter(Boolean)
+            : [];
+        const supplementalDocumentRefs = expandAddendumRefsAllowingDuplicates(
+            [
+                ...addendumTemplateIds,
+                ...extraFunderDisclosureRefs,
+                disclosureDocumentRef,
+            ].filter(Boolean) as string[],
+        );
+        const key = [
+            applicationId,
+            sendPackageFingerprint,
+            supplementalDocumentRefs.join(","),
+            packageSelection.includeMainContract ? "main" : "nomain",
+        ].join("|");
+        const warmed = signNowPrewarmedFingerprintsRef.current;
+        if (warmed.has(key) || warmed.size >= SIGNNOW_PREWARM_MAX_PER_SESSION) return;
+
+        let cancelled = false;
+        const timer = window.setTimeout(() => {
+            if (cancelled) return;
+            warmed.add(key);
+            void axiosPost(
+                "/docusign/merge-and-send",
+                {
+                    applicationId,
+                    roles,
+                    supplementalDocumentRefs,
+                    includeMainContract: packageSelection.includeMainContract,
+                    mainContractLayoutKey: resolveLayoutKey(
+                        selectedFunder,
+                        selectedFunderProfile?.id,
+                    ),
+                    sendPackage: {
+                        ...packageSelection,
+                        includeAddendum: addendumTemplateIds.length > 0,
+                        includeDisclosure: Boolean(disclosureDocumentRef),
+                    },
+                    funderName:
+                        String(selectedFunderRef.current || selectedFunder || "").trim() ||
+                        undefined,
+                    funderProfileId:
+                        persistedFunderProfileIdForApi(selectedFunderProfile) || undefined,
+                    ...(packageSelection.includeMainContract
+                        ? {}
+                        : { skipApplicationEnvelopeLink: true }),
+                    autoSend: false,
+                    structureOnly: true,
+                },
+                { timeout: 300_000 },
+            ).catch(() => {
+                // Best effort only. A failed warm just means Review copies the
+                // package itself, exactly as it did before — never surface it.
+                warmed.delete(key);
+            });
+        }, SIGNNOW_PREWARM_IDLE_MS);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [
+        activeStep,
+        onPrepareDocuSignDraft,
+        isContractOutForSignature,
+        sentAt,
+        signNowEmbedUrl,
+        signNowReviewComplete,
+        isSending,
+        sessionEnvelopeId,
+        canReviewAndSendCurrentPackage,
+        sendPackageFingerprint,
+        buildDocuSignRolesForSync,
+        resolveAddendumTemplateIdsForDocuSignMerge,
+        resolveDisclosureTemplateRefForDocuSignMerge,
+        getEffectiveSendPackage,
+        funderDisclosureOptions,
+        selectedFunder,
+        selectedFunderProfile,
+    ]);
 
     const openSignerEditor = useCallback(() => {
         const baseRows = buildSignerEditorRows({
@@ -5290,6 +5500,7 @@ const PDFViewerModal = ({
         try {
             await voidLinkedContractEnvelope(envelopeId, "Cancelled by user from CRM");
             invalidateDocuSignDraftSession();
+            signNowReviewEnvelopeIdRef.current = null;
             setDocuSignOpenUrl(null);
             setSentStepUnlocked(false);
             setSentAt(null);
@@ -5321,13 +5532,99 @@ const PDFViewerModal = ({
     };
 
     /**
+     * Start a brand new contract package for a deal whose contract was already sent.
+     *
+     * Editing the application or re-scrubbing the offer afterwards leaves the sent package
+     * describing superseded terms, and sending again from the Sent step reused that package
+     * instead of rebuilding it. This archives the current envelope to send history, returns
+     * the CRM contract to draft with the current offer's amounts, and drops the wizard back
+     * to Info Required so the rest of the flow — Info Required → Summary → Review in
+     * SignNow → Send via SignNow — runs exactly as it does for a first contract, disclosure
+     * and addendums included.
+     *
+     * The previous envelope is not voided: use Void Contract first when the merchant must be
+     * stopped from signing the old package.
+     */
+    const handleResendNewContract = async () => {
+        const appId = String(applicationIdForLookup ?? "").trim();
+        if (!appId) {
+            toast.error("This contract is not linked to an application yet.");
+            return;
+        }
+        setIsResendingNewContract(true);
+        try {
+            await dispatch(reinitiateContractAction(appId)).unwrap();
+
+            // Drop every handle on the archived package before the wizard reopens, so no
+            // part of the previous send can be reused or shown against the new one.
+            invalidateDocuSignDraftSession();
+            invalidateDocuSignPdfCache();
+            resetSignNowReviewUi();
+            signNowReviewEnvelopeIdRef.current = null;
+            setDocuSignOpenUrl(null);
+            setSessionEnvelopeId(null);
+            setSentStepUnlocked(false);
+            setSentAt(null);
+            setSentCcEmails([]);
+            /**
+             * These refs are assigned during render, so the refresh below — awaited before
+             * React re-renders — would otherwise still read the pre-resend values, compute
+             * `nowSent` as true and snap the wizard straight back to the Sent step. Point
+             * them at the state just set so the refresh sees the deal as it now is.
+             */
+            sentStepUnlockedRef.current = false;
+            sentAtRef.current = null;
+            activeStepRef.current = "info";
+            contractWasSentRef.current = false;
+            awaitingDocuSignSendRef.current = false;
+            pendingCcForSentRef.current = [];
+            ccEmailDeliveredRef.current = false;
+            prefilledPdfCachedForEnvelopeRef.current = null;
+            setPrefilledBoldSignPdfUrl(null);
+            setPrefilledBoldSignPdfHint(null);
+            /** Review must build a new package rather than reopen the archived draft. */
+            signNowForceFreshReviewRef.current = true;
+            /** Step 4 is empty until the new package is sent — never bounce back to it. */
+            didSuggestSentTabThisOpenRef.current = true;
+
+            // Land on Info Required straight away rather than after the refresh round trip,
+            // so the user never watches the Sent step while the new draft is prepared.
+            setPdfRightPaneTab("template");
+            setActiveStep("info");
+
+            await refreshContractSigningState(false, {
+                syncDocuSign: false,
+                forceDocuSignSync: false,
+            });
+            onContractDocumentsChanged?.();
+        } catch (error) {
+            console.error("Failed to start a new contract:", error);
+            const msg = await parseApiErrorMessageFromAxios(error);
+            toast.error(
+                typeof error === "string"
+                    ? error
+                    : msg || "Failed to start a new contract for this application.",
+            );
+        } finally {
+            setIsResendingNewContract(false);
+        }
+    };
+
+    /**
      * Email the merchant a CRM signing-portal link through SendGrid instead of
      * letting SignNow send the invite. The package must already exist (Review
      * completed) — the portal remints a session from that same embedded invite.
      */
     const handleSendViaSendGrid = async () => {
+        // The id of the package the user just reviewed comes first: a background
+        // refresh during the review can null `sessionEnvelopeId`, and on a first
+        // send the contract row has no envelope id yet, so reading either of
+        // those alone reported "no contract package to send" after Finish.
         const envelopeId = String(
-            sessionEnvelopeId || linkedEnvelopeIdRef.current || "",
+            signNowReviewEnvelopeIdRef.current ||
+                sessionEnvelopeId ||
+                linkedEnvelopeIdRef.current ||
+                "",
         ).trim();
         if (!envelopeId) {
             toast.error(
@@ -5353,6 +5650,7 @@ const PDFViewerModal = ({
             ).trim() || "Your funding agreement";
         setIsSendingViaSendGrid(true);
         try {
+            const ccForSend = mergeWithDefaultCcEmails(ccEmails, contractCcMergeOptions);
             await axiosPost("/docusign/send-contract-portal", {
                 envelopeId,
                 roles,
@@ -5363,11 +5661,15 @@ const PDFViewerModal = ({
                 // whatever Owner review had written, so a contract edited after
                 // review still emailed its previous amounts.
                 prefillFields: buildDocuSignPrefillFieldsPayload(),
+                // Copy-only recipients — the backend emails them the contract
+                // package once merchants are sent (never a signer).
+                ccEmails: ccForSend,
             });
             contractWasSentRef.current = true;
             setSentStepUnlocked(true);
             setSentAt(new Date());
             setActiveStep("sent");
+            signNowReviewEnvelopeIdRef.current = null;
             onContractDocumentsChanged?.();
             toast.success(
                 "Signing link emailed to the merchant. They can sign from that link — no SignNow account needed.",
@@ -5418,6 +5720,15 @@ const PDFViewerModal = ({
         const sendViaSignNowApi =
             isSignNowContractUiEnabled() &&
             (packageIncludesMainContract || hasSignNowStandaloneSupplemental);
+        if (sendViaSignNowApi) {
+            /**
+             * Nothing is built for SignNow until the contract, its saved prefill, the
+             * template mappings, the disclosure link and the bank analysis have all
+             * loaded. Awaiting them here — not a delay, the loads themselves release it —
+             * is what stops the first Review opening on a half-filled package.
+             */
+            await waitForContractDataReady();
+        }
         const outForSignatureBeforeSend = getPrimaryContractEnvelopeView(
             resolvedContract,
             sentAt,
@@ -5430,7 +5741,14 @@ const PDFViewerModal = ({
             sendViaSignNowApi &&
             Boolean(signNowReviewOpen || signNowReviewComplete) &&
             !forceFreshSignNowReview &&
-            Boolean(String(sessionEnvelopeId || linkedEnvelopeIdRef.current || "").trim());
+            Boolean(
+                String(
+                    signNowReviewEnvelopeIdRef.current ||
+                        sessionEnvelopeId ||
+                        linkedEnvelopeIdRef.current ||
+                        "",
+                ).trim(),
+            );
         if (!canReviewAndSendCurrentPackage && !sendingOpenSignNowDraft) {
             sendingLockRef.current = false;
             toast.info(
@@ -5461,6 +5779,7 @@ const PDFViewerModal = ({
                 invalidateDocuSignDraftSession();
                 setSessionEnvelopeId(null);
                 linkedEnvelopeIdRef.current = null;
+                signNowReviewEnvelopeIdRef.current = null;
                 awaitingDocuSignSendRef.current = false;
                 pendingCcForSentRef.current = [];
                 ccEmailDeliveredRef.current = false;
@@ -5551,8 +5870,12 @@ const PDFViewerModal = ({
                     (signNowReviewComplete || signNowReviewOpen) &&
                     !forceFreshSignNowReview
                 ) {
-                    const envelopeId =
-                        String(sessionEnvelopeId || linkedEnvelopeIdRef.current || "").trim();
+                    const envelopeId = String(
+                        signNowReviewEnvelopeIdRef.current ||
+                            sessionEnvelopeId ||
+                            linkedEnvelopeIdRef.current ||
+                            "",
+                    ).trim();
                     if (!envelopeId) {
                         toast.error(
                             "SignNow review finished, but the contract id is missing. Click Review in SignNow again.",
@@ -5571,7 +5894,7 @@ const PDFViewerModal = ({
                             applicationId: applicationIdForLookupRef.current,
                             roles: signerRolesForSend,
                             ccEmails: toSend,
-                            prefillFields: buildDocuSignPrefillFieldsPayload(),
+                            prefillFields: buildPrefillFieldsPayloadRef.current(),
                             funderName:
                                 String(
                                     selectedFunderRef.current || selectedFunder || "",
@@ -5603,6 +5926,7 @@ const PDFViewerModal = ({
                     setActiveStep("sent");
                     setPdfRightPaneTab("docusign");
                     setSignNowReviewComplete(false);
+                    signNowReviewEnvelopeIdRef.current = null;
                     onContractDocumentsChanged?.();
                     invalidateDocuSignPdfCache();
                     void refreshContractSigningStateRef.current(true, {
@@ -5660,6 +5984,7 @@ const PDFViewerModal = ({
                     const embedUrl = String(reminted.url || "").trim();
                     if (embedUrl && !isSignNowLoginWebappUrl(embedUrl)) {
                         signNowCachedEmbedUrlRef.current = embedUrl;
+                        signNowReviewEnvelopeIdRef.current = sessionEnv;
                         pendingCcForSentRef.current = toSend;
                         ccEmailDeliveredRef.current = false;
                         awaitingDocuSignSendRef.current = true;
@@ -5706,7 +6031,7 @@ const PDFViewerModal = ({
                         );
                     }
 
-                    const prefillFieldsForDraft = buildDocuSignPrefillFieldsPayload().map((f) => ({
+                    const prefillFieldsForDraft = buildPrefillFieldsPayloadRef.current().map((f) => ({
                         id: f.id,
                         value: f.value,
                     }));
@@ -5833,6 +6158,7 @@ const PDFViewerModal = ({
                     awaitingDocuSignSendRef.current = true;
                     setPdfRightPaneTab("docusign");
                     signNowCachedEmbedUrlRef.current = embedUrl;
+                    signNowReviewEnvelopeIdRef.current = envelopeId;
                     if (signNowTimingRequestId) {
                         markSignNowReviewEmbedSet(signNowTimingRequestId);
                     }
@@ -6031,6 +6357,87 @@ const PDFViewerModal = ({
             window.removeEventListener("message", onMessage);
         };
     }, [signNowEmbedUrl, markSignNowReviewComplete, onContractDocumentsChanged]);
+
+    /**
+     * Ask SignNow directly whether the preparer has finished Owner Review.
+     *
+     * The two signals above are both lossy. SignNow only redirects the iframe to
+     * `/embedded-complete` when the CRM origin is publicly reachable, so on some
+     * deployments the postMessage never arrives; and the "the iframe navigated
+     * again" fallback misfires on SignNow's own in-app navigations. Whenever the
+     * finish went unnoticed the footer stayed on "Review in SignNow", and the
+     * next click rebuilt the package from the beginning instead of sending —
+     * which is exactly the loop users hit after clicking Finish.
+     *
+     * This poll cannot be lost: the backend reads the group's embedded invites
+     * and reports whether any signer is fulfilled.
+     */
+    useEffect(() => {
+        if (!signNowEmbedUrl || signNowReviewComplete) return;
+        // The package this review opened on, first. `sessionEnvelopeId` is nulled
+        // whenever the signer-roles fingerprint shifts — which a background
+        // contract refresh does on its own — and losing it mid-review stopped the
+        // poll dead, leaving Finish undetected for the rest of the session.
+        const envelopeId = String(
+            signNowReviewEnvelopeIdRef.current ||
+                sessionEnvelopeId ||
+                linkedEnvelopeId ||
+                linkedEnvelopeIdRef.current ||
+                "",
+        ).trim();
+        if (!envelopeId) return;
+        let cancelled = false;
+        let timer: number | undefined;
+        const startedAt = Date.now();
+        // Tight while the preparer is actually reading, then slower, and it gives
+        // up on a review tab that was left open and walked away from. The iframe
+        // signals still apply for the whole time the review is open.
+        const nextDelay = () => {
+            const openFor = Date.now() - startedAt;
+            if (openFor > SIGNNOW_REVIEW_POLL_MAX_MS) return null;
+            return openFor > SIGNNOW_REVIEW_POLL_BACKOFF_AFTER_MS
+                ? SIGNNOW_REVIEW_POLL_SLOW_MS
+                : SIGNNOW_REVIEW_POLL_MS;
+        };
+        const poll = async () => {
+            if (cancelled) return;
+            try {
+                const res = await axiosGet(
+                    `/docusign/signnow-review-status?envelopeId=${encodeURIComponent(envelopeId)}`,
+                    // This is a liveness poll: the answer changes the moment the
+                    // preparer clicks Finish. The shared GET cache would replay
+                    // the first `in_review` body for its whole TTL, so every
+                    // later poll re-read a snapshot taken before the click and
+                    // the UI never left the Review step.
+                    { skipCache: true },
+                );
+                const complete = Boolean(
+                    (res?.data as { reviewComplete?: boolean } | undefined)?.reviewComplete,
+                );
+                if (complete && !cancelled) {
+                    markSignNowReviewComplete();
+                    return;
+                }
+            } catch {
+                /* Transient — keep polling; the iframe signals still apply. */
+            }
+            const delay = cancelled ? null : nextDelay();
+            if (delay != null) timer = window.setTimeout(poll, delay);
+        };
+        timer = window.setTimeout(poll, SIGNNOW_REVIEW_POLL_MS);
+        return () => {
+            cancelled = true;
+            if (timer) window.clearTimeout(timer);
+        };
+    }, [
+        signNowEmbedUrl,
+        signNowReviewComplete,
+        sessionEnvelopeId,
+        // Reading the id only through a ref meant a review opened before the
+        // contract's envelope id had loaded never started polling at all.
+        linkedEnvelopeId,
+        markSignNowReviewComplete,
+    ]);
 
     /**
      * Auto-upload a single required document as soon as the user picks/drops it.
@@ -7174,6 +7581,13 @@ const PDFViewerModal = ({
         resolveLayoutKeyForProfile,
         disclosureCalcBankAnalyses,
     ]);
+
+    /**
+     * Kept pointing at the current render's builder so a caller that awaited the CRM
+     * loads builds its payload from the data that arrived while it waited, rather than
+     * from the closure it captured when the button was clicked.
+     */
+    buildPrefillFieldsPayloadRef.current = buildDocuSignPrefillFieldsPayload;
 
     const syncPrefillToDraftEnvelope = useCallback(
         async (options?: { envelopeId?: string | null }) => {
@@ -13911,24 +14325,31 @@ const PDFViewerModal = ({
                                     {isCancellingContract ? "Voiding contract…" : "Void Contract"}
                                 </Button>
                             ) : null}
-                            {isSignNowContractUiEnabled() &&
-                            (signNowReviewOpen || signNowReviewComplete) ? null : showResendContractOnSentStep ? (
+                            {/*
+                              * Resend outranks the SignNow review pane: once a package has
+                              * been reviewed or sent this session, that state stayed set and
+                              * left the Sent step showing only Close / Void Contract, with no
+                              * way to rebuild the package after the deal changed.
+                              */}
+                            {showResendContractOnSentStep ? (
                                 <Button
                                     type="button"
                                     variant="default"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
-                                    onClick={handleSend}
-                                    disabled={isSending || isCancellingContract}
+                                    onClick={() => void handleResendNewContract()}
+                                    disabled={
+                                        isSending ||
+                                        isCancellingContract ||
+                                        isResendingNewContract
+                                    }
                                 >
-                                    {isSending
-                                        ? isSignNowContractUiEnabled()
-                                            ? signNowEmbedUrl || signNowReviewComplete
-                                                ? "Sending via SignNow…"
-                                                : "Opening SignNow…"
-                                            : "Preparing DocuSign…"
+                                    {isResendingNewContract
+                                        ? "Starting new contract…"
                                         : docuSignPrimaryActionLabel}
                                 </Button>
-                            ) : activeStep === "sent" && !canCancelSentContract ? (
+                            ) : isSignNowContractUiEnabled() &&
+                              (signNowReviewOpen || signNowReviewComplete) ? null : activeStep ===
+                                  "sent" && !canCancelSentContract ? (
                                     <Button
                                         type="button"
                                         variant="default"

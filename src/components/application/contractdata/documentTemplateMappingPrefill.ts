@@ -868,6 +868,10 @@ function mergeFieldRows(
         if (isSendDayPrefillDateFieldId(def.id) && computedVal) {
             return { id: def.id, label: def.label, value: computedVal, group: def.group };
         }
+        // The live offer outranks an amount saved against a superseded one.
+        if (isOfferDerivedPrefillFieldId(def.id) && computedVal) {
+            return { id: def.id, label: def.label, value: computedVal, group: def.group };
+        }
         if (fromSavedTrim !== "") {
             const savedNum = parsePrefillMoneyForMerge(fromSavedTrim);
             const computedNum = parsePrefillMoneyForMerge(computedVal);
@@ -1146,6 +1150,29 @@ function buildCaseTakeoverAddendumComputed(
 function todayUsDate(): string {
     const d = new Date();
     return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+/**
+ * Field ids whose value is dictated by the offer (advance, payback, per-period payment,
+ * origination fee and the totals derived from them).
+ *
+ * A saved per-mapping blob normally wins over a computed value so hand edits survive a
+ * reload. That is wrong for these: re-scrubbing an offer is what defines the deal, so an
+ * ACH addendum saved against a previous offer kept showing its advance and payment
+ * forever while the recalculated disclosure moved on. Exhibit C already resolves the same
+ * conflict in favour of the live value (see mergeExhibitCFieldRows).
+ *
+ * Dates are deliberately excluded — `remittance_start_date_*` is not an amount.
+ */
+const OFFER_DERIVED_FIELD_ID =
+    /^(remittance|purchase_amount|purchase_price|purchased_amount|funding_provided|net_to_merchant|total_fees|payback_amount|payment_total|approved_amount|offer_amount|weekly_payment|daily_payment|initial_installment|appendix_underwriting_fees|origination_fee|underwriter_fee|underwriting_fee)(_p\d+)?(_ach)?$/;
+
+export function isOfferDerivedPrefillFieldId(id: string): boolean {
+    const n = String(id || "")
+        .trim()
+        .toLowerCase()
+        .replace(/-/g, "_");
+    return OFFER_DERIVED_FIELD_ID.test(n);
 }
 
 function isMerchantLegalNameFieldId(id: string): boolean {

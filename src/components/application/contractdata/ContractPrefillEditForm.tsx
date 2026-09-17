@@ -116,7 +116,7 @@ import {
 } from "./exhibitCEntityPrefill";
 import { isMultiInstanceAddendumRef } from "./multiInstanceAddendum";
 import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
-import { formatSSN } from "@/utils/formatSSN";
+import { formatSSN, getSSNDigits } from "@/utils/formatSSN";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -654,7 +654,7 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
     {
         id: "ssn",
         label: "SSN",
-        keys: ["guarantyOwner1Ss", "guarantyGuarantor1Ss"],
+        keys: ["guarantyOwner1Ss", "guarantyGuarantor1Ss", "guarantySs"],
     },
     {
         id: "driverLicense",
@@ -818,6 +818,60 @@ const PREFILL_REALTIME_MIRROR_BY_KEY = (() => {
     for (const group of PREFILL_SYNC_GROUPS) {
         for (const key of group.keys) {
             map.set(key, group.keys);
+        }
+    }
+    return map;
+})();
+
+/**
+ * Exhibit C slot 1 is the primary entity, so its bank and online-banking block holds the
+ * same values as the main ACH pages. Edits are mirrored between the two instead of being
+ * typed twice — the extra Exhibit C slots keep their own bank (other void-check entities).
+ */
+const EXHIBIT_C_PRIMARY_BANK_MIRROR: Array<{
+    entityKey: keyof Omit<ExhibitCEntityPrefill, "id">;
+    mainKeys: ContractPrefillFormFieldKey[];
+}> = [
+    {
+        entityKey: "bankName",
+        mainKeys: ["authorizationClientBankName", "achAuthorizationAccountHolderBankName"],
+    },
+    {
+        entityKey: "bankAccount",
+        mainKeys: [
+            "authorizationClientBankAccount",
+            "achAuthorizationAccountHolderBankAccountNumber",
+        ],
+    },
+    {
+        entityKey: "bankRouting",
+        mainKeys: [
+            "authorizationClientBankRouting",
+            "achAuthorizationAccountHolderBankRoutingNumber",
+        ],
+    },
+    { entityKey: "bankPortal", mainKeys: ["achAuthorizationBankPortalWebsite"] },
+    { entityKey: "bankUsername", mainKeys: ["achAuthorizationUsername"] },
+    { entityKey: "bankPassword", mainKeys: ["achAuthorizationPassword"] },
+    { entityKey: "securityQa1", mainKeys: ["achAuthorizationSecurityQuestion1"] },
+    { entityKey: "securityQa2", mainKeys: ["achAuthorizationSecurityQuestion2"] },
+    { entityKey: "accountHolderName", mainKeys: ["achAuthorizationAccountHolderName"] },
+    { entityKey: "accountHolderDba", mainKeys: ["achAuthorizationAccountHolderDba"] },
+    { entityKey: "accountHolderAddress", mainKeys: ["achAuthorizationAccountHolderAddress"] },
+    { entityKey: "accountHolderCity", mainKeys: ["achAuthorizationAccountHolderCity"] },
+    { entityKey: "accountHolderState", mainKeys: ["achAuthorizationAccountHolderState"] },
+    { entityKey: "accountHolderZip", mainKeys: ["achAuthorizationAccountHolderZip"] },
+];
+
+const EXHIBIT_C_PRIMARY_MIRROR_BY_ENTITY_KEY = new Map(
+    EXHIBIT_C_PRIMARY_BANK_MIRROR.map((row) => [row.entityKey, row.mainKeys] as const),
+);
+
+const MAIN_KEY_TO_EXHIBIT_C_PRIMARY_FIELD = (() => {
+    const map = new Map<ContractPrefillFormFieldKey, keyof Omit<ExhibitCEntityPrefill, "id">>();
+    for (const row of EXHIBIT_C_PRIMARY_BANK_MIRROR) {
+        for (const mainKey of row.mainKeys) {
+            if (!map.has(mainKey)) map.set(mainKey, row.entityKey);
         }
     }
     return map;
@@ -1036,7 +1090,29 @@ function mergeFormState(
     if (!String(rec.includeWireFee ?? "").trim()) rec.includeWireFee = "true";
     const frequency = coercePaymentFrequencyLabel(rec.frequency);
     if (frequency) rec.frequency = frequency;
+    normalizeSsnFormValues(rec);
     return rec;
+}
+
+/**
+ * SSNs arrive from OCR / saved overrides with stray digits, spaces or no dashes, so a value
+ * that reads as nine digits on screen ("888-27-6882" rendered from a longer raw string) could
+ * still fail validation. Every SSN key is stored canonically as XXX-XX-XXXX here, and hidden
+ * mirror keys (never rendered in a section) are back-filled from their visible partner so they
+ * cannot raise an error the user has no field to fix.
+ */
+function normalizeSsnFormValues(rec: Record<keyof BuildContractPrefillFieldsArgs, string>): void {
+    for (const key of ALL_SSN_FORM_KEYS) {
+        const current = String(rec[key] ?? "").trim();
+        rec[key] = current ? formatSSN(current) : "";
+    }
+    for (const group of SSN_MIRROR_GROUPS) {
+        const source = group.find((key) => getSSNDigits(rec[key]).length === 9);
+        if (!source) continue;
+        for (const key of group) {
+            if (getSSNDigits(rec[key]).length !== 9) rec[key] = rec[source];
+        }
+    }
 }
 
 function toPayload(values: Record<keyof BuildContractPrefillFieldsArgs, string>): Partial<BuildContractPrefillFieldsArgs> {
@@ -1116,12 +1192,23 @@ const MONEY_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "achAuthorizationAccountHolderBankNumberOfTransactions",
     "achAuthorizationAccountHolderBankTransactionFee",
 ];
+/** Keys an outline section actually renders as an editable input. */
+const RENDERED_PREFILL_FIELD_KEYS = new Set<string>(
+    CONTRACT_PREFILL_SECTIONS.flatMap((section) => contractPrefillSectionKeys(section) as string[]),
+);
 const SSN_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "guarantySs",
     "guarantyOwner1Ss",
     "guarantyOwner2Ss",
     "guarantyGuarantor1Ss",
     "guarantyGuarantor2Ss",
+];
+/** Every SSN-bearing form key, including the ones no section renders. */
+const ALL_SSN_FORM_KEYS = SSN_KEYS;
+/** SSN keys that hold the same person's number and must stay identical. */
+const SSN_MIRROR_GROUPS: (keyof BuildContractPrefillFieldsArgs)[][] = [
+    ["guarantyOwner1Ss", "guarantyGuarantor1Ss", "guarantySs"],
+    ["guarantyGuarantor2Ss", "guarantyOwner2Ss"],
 ];
 /** When exactly two characters, treat as US state abbreviation. */
 const US_STATE_ABBR_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
@@ -1446,6 +1533,9 @@ function validatePrefillValues(values: Record<keyof BuildContractPrefillFieldsAr
         if (msg) err[key] = msg;
     }
     for (const key of SSN_KEYS) {
+        // Hidden mirror keys are back-filled from their visible partner; flagging them would
+        // point the user at a section that renders no SSN field at all.
+        if (!RENDERED_PREFILL_FIELD_KEYS.has(key)) continue;
         const msg = validateSsnDigits(trimField(values, key));
         if (msg) err[key] = msg;
     }
@@ -2510,6 +2600,23 @@ export function ContractPrefillEditForm({
             setExhibitCEntities((prev) =>
                 prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)),
             );
+            // Slot 1 is the primary entity: push its bank / online-banking block onto the
+            // main ACH fields so the same values are not typed again on those stages.
+            if (index !== 0) return;
+            const mirrorKeys = EXHIBIT_C_PRIMARY_MIRROR_BY_ENTITY_KEY.get(key);
+            if (!mirrorKeys?.length) return;
+            fieldEditSeqRef.current += 1;
+            const editedAt = fieldEditSeqRef.current;
+            setValues((prev) => {
+                const next = { ...prev };
+                for (const mainKey of mirrorKeys) {
+                    next[mainKey] = value;
+                    dirtyFieldKeysRef.current.add(mainKey);
+                    fieldEditedAtRef.current.set(mainKey, editedAt);
+                }
+                return next;
+            });
+            setSaveError(null);
         },
         [],
     );
@@ -3043,10 +3150,12 @@ export function ContractPrefillEditForm({
     );
 
     const setField = useCallback(
-        (key: keyof BuildContractPrefillFieldsArgs, v: string) => {
+        (key: keyof BuildContractPrefillFieldsArgs, vRaw: string) => {
+            let v = vRaw;
             if (key === "purchasePercent") {
                 purchasePercentTouchedRef.current = true;
             }
+            if (isSsnPrefillKey(key)) v = formatSSN(v);
             dirtyFieldKeysRef.current.add(key);
             fieldEditSeqRef.current += 1;
             fieldEditedAtRef.current.set(key, fieldEditSeqRef.current);
@@ -3093,6 +3202,19 @@ export function ContractPrefillEditForm({
             }
             const nextMain = { ...valuesRef.current, ...updates };
             setValues(nextMain);
+            // Fill the primary Exhibit C slot from the main form too, but only where it is
+            // still blank — a slot already carrying another entity's bank keeps its own.
+            const primaryEntityField = MAIN_KEY_TO_EXHIBIT_C_PRIMARY_FIELD.get(
+                key as ContractPrefillFormFieldKey,
+            );
+            if (primaryEntityField) {
+                setExhibitCEntities((prev) => {
+                    if (!prev.length) return prev;
+                    const primary = prev[0];
+                    if (String(primary[primaryEntityField] ?? "").trim()) return prev;
+                    return [{ ...primary, [primaryEntityField]: v }, ...prev.slice(1)];
+                });
+            }
             setAddendumFieldValues((linked) =>
                 overlayLinkedDocFieldsFromMain(linked, nextMain, {
                     typed: { key: key as ContractPrefillFormFieldKey, value: v },

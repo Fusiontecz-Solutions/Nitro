@@ -567,10 +567,22 @@ export function buildDisclosureEditorFieldsFromContext(
         /** Guide: page-3 amount given directly = net funding (NO REFI) / actual disbursement (REFI). */
         disclosure_recipient_funds: page3TopLine,
         NetFundProvided: page3TopLine,
-        funding_provided:
-            ctx.isRefinance
-                ? ctx.netContractedFunding || netFunding
-                : netFunding || ctx.fundingProvided || "",
+        /**
+         * Row 1 of the Offer Summary: "This is how much funding Nitro Advance
+         * will provide" — the gross funding amount, the same figure as
+         * `purchase_amount` / `total_amount_business_fund` just above.
+         *
+         * This used to resolve to `netFunding`, so both this row and the
+         * "funds that will be provided to you directly" blank underneath it
+         * printed the same net number and the disclosure never showed what was
+         * deducted. Net belongs only in `funding_provided_direct` below, which
+         * is what the state-builder path has always done (see the REFI case in
+         * disclosureGuide.acceptance.test.ts: 100,000 gross vs 65,000 direct).
+         *
+         * Gross is gross on a refinance too — only the direct figure changes,
+         * to the actual disbursement after the previous balance is paid off.
+         */
+        funding_provided: ctx.fundingProvided || ctx.amountBusinessFund || netFunding || "",
         funding_provided_direct: ctx.isRefinance
             ? ctx.actualDisbursement || netFunding
             : netFunding || ctx.fundingProvidedDirect || ctx.fundingProvided || "",
