@@ -18,6 +18,7 @@ import {
 } from '../docusign/utils/standalone-package-docusign';
 import {
   buildContractEnvelopeEmailSubject,
+  ensureSubjectAmountHasDollarSign,
   buildContractEnvelopePdfFilename,
   extractContractEmailContextFromPrefill,
   normalizeContractCcEmailSubject,
@@ -1768,7 +1769,7 @@ export class SignNowService {
     ]);
     const fromPrefill = extractContractEmailContextFromPrefill(options.prefillFields);
     const groupName =
-      String(options.title || '').trim() ||
+      ensureSubjectAmountHasDollarSign(String(options.title || '').trim()) ||
       buildContractEnvelopeEmailSubject(
         fromPrefill.businessName || signers[0]?.name || 'Contract',
         fromPrefill.offerAmount,
@@ -3225,10 +3226,10 @@ export class SignNowService {
         selectedFunder,
       );
     }
-    return (
+    return ensureSubjectAmountHasDollarSign(
       String(options.title || '').trim() ||
       String(options.fallbackGroupName || '').trim() ||
-      'Nitro Advance Contract'
+      'Nitro Advance Contract',
     );
   }
 

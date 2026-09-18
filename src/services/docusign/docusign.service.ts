@@ -124,6 +124,7 @@ import {
   buildContractEnvelopeDocumentName,
   buildContractEnvelopeEmailSubject,
   buildContractEnvelopePdfFilename,
+  ensureSubjectAmountHasDollarSign,
   normalizeContractCcEmailSubject,
 } from '../../utils/contractEnvelopeEmailSubject';
 import {
@@ -1697,7 +1698,7 @@ export class DocusignService {
     }
 
     const override = String(options.title || '').trim();
-    if (override) return override;
+    if (override) return ensureSubjectAmountHasDollarSign(override);
 
     const clientName = await this.resolveClientDisplayNameForApplication(appId);
     return buildContractEnvelopeEmailSubject(clientName, fromPrefill.offerAmount, lenderName);
@@ -1741,7 +1742,7 @@ export class DocusignService {
     titleOverride?: string,
   ): Promise<string> {
     const override = String(titleOverride || '').trim();
-    if (override) return override;
+    if (override) return ensureSubjectAmountHasDollarSign(override);
     // CRM-only — never GET /envelopes/{id} just for a subject (counts as envelope polling).
     const appId = String(applicationId || '').trim();
     if (appId) {

@@ -5,6 +5,7 @@ jest.mock('../services/pdf/letterHtmlToPdf.service', () => ({
 import {
   buildContractEnvelopeEmailSubject,
   CONTRACT_ENVELOPE_LENDER_NAME,
+  ensureSubjectAmountHasDollarSign,
   extractContractEmailContextFromPrefill,
   formatContractOfferAmountForSubject,
 } from './contractEnvelopeEmailSubject';
@@ -42,5 +43,15 @@ describe('contract envelope email subject', () => {
       offerAmount: '25000.00',
       funderName: 'NITRO ADVANCE',
     });
+  });
+
+  it('adds a $ sign to a raw caller-supplied subject missing one', () => {
+    expect(ensureSubjectAmountHasDollarSign('Nitro Advance Happy nails LLC 12000.00')).toBe(
+      'Nitro Advance Happy nails LLC $12000.00',
+    );
+    expect(ensureSubjectAmountHasDollarSign('Nitro Advance Happy nails LLC $12000.00')).toBe(
+      'Nitro Advance Happy nails LLC $12000.00',
+    );
+    expect(ensureSubjectAmountHasDollarSign('Contract for review')).toBe('Contract for review');
   });
 });

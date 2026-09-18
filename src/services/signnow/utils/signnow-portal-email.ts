@@ -36,7 +36,10 @@ export function buildSigningPortalEmailHtml(input: {
   const link = escapeHtml(input.signingLink);
   const senderEmail = input.senderEmail ? escapeHtml(input.senderEmail) : '';
   const ttlHours = signingPortalTokenTtlHours();
-  const expiryCopy = `${ttlHours} ${ttlHours === 1 ? 'hour' : 'hours'}`;
+  const expiryCopy =
+    ttlHours >= 24 && ttlHours % 24 === 0
+      ? `${ttlHours / 24} ${ttlHours === 24 ? 'day' : 'days'}`
+      : `${ttlHours} ${ttlHours === 1 ? 'hour' : 'hours'}`;
   const fromPart = senderEmail
     ? ` from <a href="mailto:${senderEmail}" style="color:#1d4ed8;font-weight:bold;">${senderEmail}</a>`
     : ` from <strong>${sender}</strong>`;

@@ -107,6 +107,20 @@ export function extractContractEmailContextFromPrefill(
   };
 }
 
+/**
+ * Guards subjects that bypass buildContractEnvelopeEmailSubject (e.g. a raw
+ * caller-supplied title fallback): prepends a $ to a trailing bare amount
+ * like "Business 12000.00" so it reads "Business $12000.00".
+ */
+export function ensureSubjectAmountHasDollarSign(subject: string): string {
+  const trimmed = String(subject || '').trim();
+  if (!trimmed) return trimmed;
+  return trimmed.replace(
+    /(^|[^$\d])(\d[\d,]*\.\d{2})\s*$/,
+    (_match, pre: string, amount: string) => `${pre}$${amount}`,
+  );
+}
+
 export function buildContractEnvelopePdfFilename(subject: string): string {
   return sanitizeLetterPdfFilename(subject);
 }
