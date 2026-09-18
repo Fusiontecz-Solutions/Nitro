@@ -23,6 +23,44 @@ export function normalizeAddendumLayoutKey(ref: unknown): string {
         .replace(/::\d+$/, "");
 }
 
+/**
+ * ref -> real Settings display name, for every addendum/disclosure template
+ * currently loaded for any funder. A funder's Exhibit C template is often
+ * just a bare SignNow hex id with nothing "exhibit_c"-shaped about it on its
+ * own (Obsidian's, for one) — several call sites below only have the ref, not
+ * its label, so without this registry extra Exhibit C copies for that funder
+ * would be misread as a single-instance addendum and collapse back to one.
+ * Populated by `registerAddendumRefLabels` wherever a funder's template
+ * options are loaded; never cleared, since refs are stable SignNow ids/keys.
+ */
+const addendumRefLabelRegistry = new Map<string, string>();
+
+export function registerAddendumRefLabels(
+    options: ReadonlyArray<{
+        ref?: unknown;
+        layoutKey?: unknown;
+        templateId?: unknown;
+        label?: unknown;
+        name?: unknown;
+    }>,
+): void {
+    for (const opt of options) {
+        const label = String(opt.label ?? opt.name ?? "").trim();
+        if (!label) continue;
+        for (const rawRef of [opt.ref, opt.layoutKey, opt.templateId]) {
+            const key = normalizeAddendumLayoutKey(rawRef);
+            if (key) addendumRefLabelRegistry.set(key, label);
+        }
+    }
+}
+
+function knownLabelFor(ref: unknown, label?: unknown): unknown {
+    const given = String(label ?? "").trim();
+    if (given) return given;
+    const key = normalizeAddendumLayoutKey(ref);
+    return key ? addendumRefLabelRegistry.get(key) : undefined;
+}
+
 function looksLikeExhibitCLabel(label: unknown): boolean {
     const n = String(label ?? "")
         .trim()
@@ -57,7 +95,8 @@ function looksLikeAchWeeklyLabel(label: unknown): boolean {
 
 /** True for the distinct ACH Daily SignNow template (not Exhibit C ×N). */
 export function isAchDailyAddendumRef(ref: unknown, label?: unknown): boolean {
-    if (looksLikeAchDailyLabel(label) || looksLikeAchDailyLabel(ref)) return true;
+    const resolvedLabel = knownLabelFor(ref, label);
+    if (looksLikeAchDailyLabel(resolvedLabel) || looksLikeAchDailyLabel(ref)) return true;
     const key = normalizeAddendumLayoutKey(ref);
     if (!key) return false;
     if (key === "ach_daily" || key.endsWith("_ach_daily")) return true;
@@ -67,7 +106,8 @@ export function isAchDailyAddendumRef(ref: unknown, label?: unknown): boolean {
 
 /** True for ACH Weekly (layout key or catalog hex). */
 export function isAchWeeklyAddendumRef(ref: unknown, label?: unknown): boolean {
-    if (looksLikeAchWeeklyLabel(label) || looksLikeAchWeeklyLabel(ref)) return true;
+    const resolvedLabel = knownLabelFor(ref, label);
+    if (looksLikeAchWeeklyLabel(resolvedLabel) || looksLikeAchWeeklyLabel(ref)) return true;
     const key = normalizeAddendumLayoutKey(ref);
     if (!key) return false;
     if (key === "ach_weekly" || key.endsWith("_ach_weekly")) return true;
@@ -116,7 +156,8 @@ export function isMultiInstanceAddendumRef(ref: unknown, label?: unknown): boole
     if (isAchDailyAddendumRef(ref, label) || isAchWeeklyAddendumRef(ref, label)) {
         return false;
     }
-    if (label != null && looksLikeExhibitCLabel(label)) return true;
+    const resolvedLabel = knownLabelFor(ref, label);
+    if (resolvedLabel != null && looksLikeExhibitCLabel(resolvedLabel)) return true;
     const key = normalizeAddendumLayoutKey(ref);
     if (!key) return false;
     if (key === SIGNNOW_ACH_DAILY_TEMPLATE_ID || key === SIGNNOW_ACH_WEEKLY_TEMPLATE_ID) {
@@ -218,11 +259,14 @@ export function labelForAddendumInstance(
 ): string {
     const label = String(baseLabel || "").trim() || "Addendum";
     if (!isMultiInstanceAddendumRef(ref, label)) return label;
-    // Count only sibling multi-instance refs — never pass `label` here or every
-    // selected addendum (ACH Daily, etc.) would be treated as Exhibit C.
+    // Count only this same addendum's own copies. Matching by ref (not a bare
+    // `isMultiInstanceAddendumRef(allRefs[i])` re-check with no label) is what
+    // makes this work for a funder whose Exhibit C is a plain SignNow hex id
+    // with nothing "exhibit_c"-shaped about it on its own (e.g. Obsidian) —
+    // without the label, that hex cannot be told apart from any other ref.
     let n = 0;
     for (let i = 0; i <= indexInAll && i < allRefs.length; i++) {
-        if (isMultiInstanceAddendumRef(allRefs[i])) n += 1;
+        if (sameAddendumPickerRef(allRefs[i], ref)) n += 1;
     }
     return n <= 1 ? label : `${label} (${n})`;
 }

@@ -2,6 +2,7 @@ import type {
   FunderProfile,
   SignNowTemplateLinkItem,
 } from "@/types/integrationSettingsTypes";
+import { registerAddendumRefLabels } from "@/components/application/contractdata/multiInstanceAddendum";
 import {
   SIGNNOW_ACH_DAILY_LAYOUT_KEY,
   SIGNNOW_ACH_DAILY_TEMPLATE_ID,
@@ -310,6 +311,10 @@ export function mapFunderSignNowTemplates(
       link: link || templateId,
     });
   }
+  // Every ref this funder's options carry now has its real Settings name on
+  // file, so a ref-only lookup elsewhere (no label in hand) can still tell a
+  // funder-specific Exhibit C template apart from a single-instance addendum.
+  registerAddendumRefLabels(out);
   return out;
 }
 
