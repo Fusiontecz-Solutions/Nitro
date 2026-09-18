@@ -640,18 +640,30 @@ class ContractService {
       throw new Error('Contract not found');
     }
     const documentType = String(data.documentType || '').trim() || 'other';
-    // Preserve duplicate Exhibit C refs; still collapse other templates.
-    const nextRefs = expandAddendumRefsAllowingDuplicates(
-      Array.isArray(data.templateRefs) ? data.templateRefs : [],
-    );
 
     const contract = await (prisma as any).contract.findUnique({
       where: { id: contractId },
-      select: { id: true },
+      select: { id: true, funderName: true },
     });
     if (!contract) {
       throw new Error('Contract not found');
     }
+
+    const funderName = String((contract as { funderName?: string | null }).funderName || '').trim();
+    const funderRow = funderName
+      ? await (prisma as any).funderProfile.findFirst({
+          where: { name: funderName },
+          select: { signnowAddendumTemplates: true, signnowDisclosureTemplates: true },
+        })
+      : null;
+    // Preserve duplicate Exhibit C refs; still collapse other templates. Funder
+    // context here is what lets a funder's own Exhibit C template (often just a
+    // bare SignNow hex id, e.g. Obsidian's) still be recognized as Exhibit C —
+    // without it, extra copies silently collapsed back to one on save.
+    const nextRefs = expandAddendumRefsAllowingDuplicates(
+      Array.isArray(data.templateRefs) ? data.templateRefs : [],
+      funderRow,
+    );
 
     const existing = await (prisma as any).contractDocumentTemplateMapping.findMany({
       where: { contractId, documentType },

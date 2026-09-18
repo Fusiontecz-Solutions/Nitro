@@ -51,6 +51,30 @@ function shouldUseSignNowForMainContract(body: any): boolean {
 
 const docusignService = new DocusignService();
 
+/**
+ * Persists the funder chosen for a contract so reopening/regenerating it
+ * restores the last selection instead of defaulting away from it. Callers may
+ * pass either the funder's display name or its FunderProfile id (the id is
+ * resolved to a name since Contract only stores `funderName`).
+ */
+async function persistContractFunderSelection(
+  contractId: number,
+  funderName: unknown,
+  funderProfileId: unknown,
+): Promise<void> {
+  let resolvedFunderName = typeof funderName === 'string' ? funderName.trim() : '';
+  if (!resolvedFunderName && typeof funderProfileId === 'string' && funderProfileId.trim()) {
+    const funderProfile = await prisma.funderProfile
+      .findUnique({ where: { id: funderProfileId.trim() }, select: { name: true } })
+      .catch(() => null);
+    resolvedFunderName = funderProfile?.name?.trim() || '';
+  }
+  if (!resolvedFunderName) return;
+  await prisma.contract
+    .update({ where: { id: contractId }, data: { funderName: resolvedFunderName } })
+    .catch(() => undefined);
+}
+
 function sendDocusignRouteError(
   res: Response,
   error: unknown,
@@ -598,6 +622,11 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'roles is required' });
     }
 
+    const contractIdNum = contractId != null ? Number(contractId) : undefined;
+    if (contractIdNum && Number.isFinite(contractIdNum)) {
+      await persistContractFunderSelection(contractIdNum, funderName, funderProfileId);
+    }
+
     if (shouldUseSignNowForMainContract(req.body)) {
       const timingRequestId = String(
         req.header('x-signnow-timing-id') || req.body?.timingRequestId || '',
@@ -822,6 +851,14 @@ export const sendEnvelope = async (req: Request, res: Response) => {
       req.body;
     if (!envelopeId) {
       return res.status(400).json({ message: 'Missing envelopeId' });
+    }
+    const sendEnvelopeContractIdNum = contractId != null ? Number(contractId) : undefined;
+    if (sendEnvelopeContractIdNum && Number.isFinite(sendEnvelopeContractIdNum)) {
+      await persistContractFunderSelection(
+        sendEnvelopeContractIdNum,
+        funderName,
+        req.body?.funderProfileId,
+      );
     }
     if (isSignNowEnvelopeId(String(envelopeId))) {
       const roles = Array.isArray(req.body?.roles) ? req.body.roles : [];

@@ -84,21 +84,72 @@ export function isExhibitCAddendumRow(row: {
   return knownLayoutKeyFromSettingsName(name, 'addendum') === SIGNNOW_EXHIBIT_C_LAYOUT_KEY;
 }
 
-export function expandAddendumRefsAllowingDuplicates(refs: unknown): string[] {
+/** Addendum catalog rows sourced from one funder's Settings links (name + layoutKey). */
+function buildFunderAddendumCatalog(
+  funder:
+    | { signnowAddendumTemplates?: unknown; signnowDisclosureTemplates?: unknown }
+    | null
+    | undefined,
+): SignNowAddendumTemplate[] {
+  if (!funder) return [];
+  const catalog: SignNowAddendumTemplate[] = [];
+  const pushRows = (rows: unknown, type: 'addendum' | 'disclosure') => {
+    if (!Array.isArray(rows)) return;
+    for (const raw of rows) {
+      const row = catalogRowFromFunderLink((raw || {}) as FunderSignNowLinkRow, type);
+      if (row) catalog.push(row);
+    }
+  };
+  pushRows(funder.signnowAddendumTemplates, 'addendum');
+  pushRows(funder.signnowDisclosureTemplates, 'disclosure');
+  return catalog;
+}
+
+function findInFunderCatalog(
+  catalog: SignNowAddendumTemplate[],
+  token: string,
+): SignNowAddendumTemplate | null {
+  const templateId = extractSignNowTemplateId(token);
+  return (
+    catalog.find(
+      (row) =>
+        row.templateId.toLowerCase() === token ||
+        row.layoutKey.toLowerCase() === token ||
+        (templateId && row.templateId.toLowerCase() === templateId) ||
+        row.name.toLowerCase() === token ||
+        slugifyTemplateName(row.name) === token,
+    ) || null
+  );
+}
+
+export function expandAddendumRefsAllowingDuplicates(
+  refs: unknown,
+  funder?:
+    | { signnowAddendumTemplates?: unknown; signnowDisclosureTemplates?: unknown }
+    | null,
+): string[] {
   const list = Array.isArray(refs) ? refs : [];
   const out: string[] = [];
   const seenNonMulti = new Set<string>();
+  // Resolve against the funder's own catalog first: a funder's Exhibit C
+  // template is often just a custom hex id with no "exhibit_c" layout key or
+  // name of its own, so without the funder's real Settings name attached it
+  // cannot be told apart from a single-instance addendum and its extra
+  // copies collapse back to one on save.
+  const funderCatalog = buildFunderAddendumCatalog(funder);
   for (const raw of list) {
     const ref = String(raw || '').trim();
     if (!ref) continue;
-    const match = resolveSignNowAddendumTemplate(ref);
+    const token = ref.toLowerCase();
+    const match = findInFunderCatalog(funderCatalog, token) || resolveSignNowAddendumTemplate(ref);
     const layout = String(match?.layoutKey || '')
       .trim()
       .toLowerCase();
     // Only Exhibit C may repeat. Keep the original funder/template ref (hex id).
     if (
       isMultiInstanceAddendumLayoutKey(layout) ||
-      isMultiInstanceAddendumLayoutKey(ref)
+      isMultiInstanceAddendumLayoutKey(ref) ||
+      (match && isExhibitCAddendumRow(match))
     ) {
       out.push(ref);
       continue;
@@ -551,7 +602,7 @@ export function resolveSignNowAddendaFromRefs(
     signnowDisclosureTemplates?: unknown;
   } | null,
 ): SignNowAddendumTemplate[] {
-  const list = expandAddendumRefsAllowingDuplicates(refs);
+  const list = expandAddendumRefsAllowingDuplicates(refs, funder);
   if (!list.length) return [];
 
   const fromFunder = resolveSignNowAddendaFromFunderLinks(list, funder);

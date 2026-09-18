@@ -207,14 +207,23 @@ class ContractController {
         state,
         funderName,
         funder,
+        funderProfileId,
         contractPrefillOverrides,
         reverseDisbursementEnabled,
         reverseDisbursementSchedule,
         ...rest
       } = req.body;
 
-      const resolvedFunderName =
+      let resolvedFunderName =
         funderName !== undefined ? funderName : funder !== undefined ? funder : undefined;
+
+      if (resolvedFunderName === undefined && funderProfileId) {
+        const funderProfile = await prisma.funderProfile.findUnique({
+          where: { id: String(funderProfileId) },
+          select: { name: true },
+        });
+        resolvedFunderName = funderProfile?.name;
+      }
 
       const data = await contractService.updateContract(id, {
         clientId,

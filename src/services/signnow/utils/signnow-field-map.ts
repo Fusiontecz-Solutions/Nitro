@@ -386,6 +386,11 @@ const ALIASES: Record<string, string[]> = {
     'owner1_guarantor_name',
     'merchant_contact_name',
   ],
+  addendum_p_print_title: ['owner_print_title'],
+  addendum_p_addendum_dated: ['agreement_date', 'signature_date', 'disclosure_date'],
+  // Exhibit A has no dedicated "which owner" CRM field; the primary owner/guarantor
+  // is the only reasonable single-owner value for this widget.
+  exhibit_owner_name: ['owner1_guarantor_name', 'client_name', 'merchant_contact_name'],
   // Monthly Fee — unique names already include `_p1`; map to main contract ids.
   authorization_client_name: [
     'client_legal_name',
@@ -1670,7 +1675,7 @@ export function resolveSignNowPrefillValue(
    * comma already composed in by the CRM). Guarantor / Signer 1 / Recipient 1
    * address widgets are deliberately left untouched.
    */
-  if (isFullAddressField(canon) && !hit.includes(',')) {
+  if (isFullAddressField(canon)) {
     // City/state/zip live under whichever key actually supplied the street — not
     // necessarily `canon` itself, since `business_address` and
     // `business_address_contract` alias each other. Pulling the canon's own
@@ -1681,18 +1686,31 @@ export function resolveSignNowPrefillValue(
     // (the canon itself or one of its aliases) has real `_city`/`_state`/`_zip` siblings.
     const prefix =
       hitKey === canon || aliases.includes(hitKey) ? hitKey.toLowerCase() : canon;
-    const composed = composeFullAddress(
-      hit,
-      mapGet(map, `${prefix}_city`) || mapGet(map, `${canon}_city`),
-      mapGet(map, `${prefix}_state`) || mapGet(map, `${canon}_state`),
-      mapGet(map, `${prefix}_zip`) || mapGet(map, `${canon}_zip`),
-    );
-    if (composed) return composed;
+    const zip = String(mapGet(map, `${prefix}_zip`) || mapGet(map, `${canon}_zip`) || '').trim();
+    // A comma alone (e.g. a suite typed into address line 2) does not mean the
+    // street already carries city/state/zip — only the zip actually appearing
+    // in it does. Checking for any comma wrongly skipped composition whenever
+    // the street itself happened to contain one.
+    const alreadyComposed = Boolean(zip) && hit.includes(zip);
+    if (!alreadyComposed) {
+      const composed = composeFullAddress(
+        hit,
+        mapGet(map, `${prefix}_city`) || mapGet(map, `${canon}_city`),
+        mapGet(map, `${prefix}_state`) || mapGet(map, `${canon}_state`),
+        zip,
+      );
+      if (composed) return composed;
+    }
   }
   return hit;
 }
 
-const FULL_ADDRESS_CANON_KEYS = new Set(['business_address', 'business_address_contract']);
+const FULL_ADDRESS_CANON_KEYS = new Set([
+  'business_address',
+  'business_address_contract',
+  'ach_account_holder_address',
+  'ach_authorization_account_holder_address',
+]);
 
 function isFullAddressField(canon: string): boolean {
   return FULL_ADDRESS_CANON_KEYS.has(canon);
