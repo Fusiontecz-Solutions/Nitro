@@ -6527,6 +6527,7 @@ export class SignNowService {
         where: { applicationId },
         orderBy: { updatedAt: 'desc' },
         select: {
+          id: true,
           purchasePrice: true,
           purchaseAmount: true,
           purchasePercent: true,
@@ -6571,6 +6572,10 @@ export class SignNowService {
       put('purchased_amount', derived?.purchaseAmount ?? contract.purchaseAmount);
       put('purchase_percent', contract.purchasePercent);
       put('remittance', derived?.remittance ?? contract.remittance);
+      // `frequency` has no scalar column on Contract (it only lives on OfferDecision /
+      // BoldSignTemplate / ACH); `derived` is the only funder-agnostic source here, and
+      // it is populated whenever the contract's required OfferDecision loaded correctly.
+      put('frequency', derived?.frequency);
       put(
         'appendix_underwriting_fees',
         derived?.appendixUnderwritingFees ?? contract.appendixUnderwritingFees,
@@ -6586,6 +6591,49 @@ export class SignNowService {
       put('business_address_city', contract.businessAddressCity);
       put('business_address_state', contract.businessAddressState);
       put('business_address_zip', contract.businessAddressZip);
+      // Obsidian's EPA / Exhibit A addendums carry a numbered seller table and an
+      // early-payoff schedule that live in their own CRM tables, not on Contract.
+      try {
+        const addendum = contract.id
+          ? await prisma.addendum.findFirst({
+              where: { contractId: contract.id },
+              orderBy: { updatedAt: 'desc' },
+            })
+          : null;
+        put('addendum_type_of_entity_1', addendum?.typeOfEntity1);
+        put('addendum_type_of_entity_2', addendum?.typeOfEntity2);
+        put('addendum_type_of_entity_3', addendum?.typeOfEntity3);
+        put('addendum_ein_1', addendum?.ein1);
+        put('addendum_ein_2', addendum?.ein2);
+        put('addendum_ein_3', addendum?.ein3);
+        put('exhibit_a_value_1', addendum?.legalName1);
+        put('exhibit_a_value_2', addendum?.legalName2);
+        put('exhibit_a_value_3', addendum?.legalName3);
+      } catch (err) {
+        console.warn('[SignNow] could not read addendum prefill defaults', {
+          groupId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
+        const epo = contract.id
+          ? await prisma.ePO.findFirst({
+              where: { contractId: contract.id },
+              orderBy: { updatedAt: 'desc' },
+            })
+          : null;
+        put('epo_amount_received_1', epo?.amountReceived1);
+        put('epo_amount_received_2', epo?.amountReceived2);
+        put('epo_amount_received_3', epo?.amountReceived3);
+        put('epo_received_date_1', epo?.receivedDate1);
+        put('epo_received_date_2', epo?.receivedDate2);
+        put('epo_received_date_3', epo?.receivedDate3);
+      } catch (err) {
+        console.warn('[SignNow] could not read EPO prefill defaults', {
+          groupId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return {
         defaults: out,
         offerSource: {
