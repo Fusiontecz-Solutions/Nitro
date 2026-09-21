@@ -1082,6 +1082,170 @@ describe('signnow-field-map', () => {
     ).toBe('obsidian_agreement');
   });
 
+  /**
+   * Tiberian Funding's contract is Nitro's agreement plus one extra page
+   * (viewer page 22, "Declaration of Ordinary Course of Business"), so every
+   * later page shifts by one while the widget names keep their original `_p22`
+   * … `_p26` suffixes. Names and coordinates below are from the live template
+   * (document group 13ab1bd4…, document adf5b131…).
+   */
+  describe('Tiberian Funding agreement', () => {
+    const opts = { documentKind: 'tiberian_agreement' as const };
+    const prefill = {
+      client_legal_name: 'ACME WIDGETS LLC',
+      client_name: 'JANE OWNER',
+      owner2_guarantor_name: 'JOHN OWNER2',
+      owner2_email: 'john@acme.com',
+      agreement_date: '09/21/2026',
+      purchase_price: '50000.00',
+      purchased_amount: '72500.00',
+      net_to_merchant: '48500.00',
+      appendix_underwriting_fees: '1475.00',
+      guarantor_name: 'JANE OWNER',
+      guarantor_phone: '8605551234',
+      guarantor_email: 'jane@acme.com',
+    };
+
+    it('recognises the template by document name and by field signature', () => {
+      expect(signNowPrefillDocumentKind('CONTRACT TIBERIAN FUNDING (2)')).toBe(
+        'tiberian_agreement',
+      );
+      expect(
+        signNowPrefillDocumentKind(undefined, [
+          'merchant_pg22',
+          'p1_totalfee',
+          'client_legal_name',
+        ]),
+      ).toBe('tiberian_agreement');
+      // Nitro's copy of the same contract must not be caught by either check.
+      expect(signNowPrefillDocumentKind('Agreement - Nitro Advance')).toBeUndefined();
+    });
+
+    it('fills the extra page-22 Declaration of Ordinary Course of Business', () => {
+      expect(resolveSignNowPrefillValue('date_pg22', prefill, opts)).toBe(
+        '09/21/2026',
+      );
+      expect(resolveSignNowPrefillValue('merchant_pg22', prefill, opts)).toBe(
+        'ACME WIDGETS LLC',
+      );
+      expect(resolveSignNowPrefillValue('seller_pg22', prefill, opts)).toBe(
+        'JANE OWNER',
+      );
+      expect(resolveSignNowPrefillValue('seller2_pg22', prefill, opts)).toBe(
+        'JOHN OWNER2',
+      );
+      // The page's two signature widgets keep SignNow's default names.
+      expect(shouldSkipSignNowPrefill('Signature8_pg22', opts)).toBe(true);
+      expect(shouldSkipSignNowPrefill('Signature9_pg22', opts)).toBe(true);
+    });
+
+    it('leaves the seller-2 Declaration name blank when there is no second owner', () => {
+      const soleOwner = { client_name: 'JANE OWNER', client_legal_name: 'ACME WIDGETS LLC' };
+      expect(resolveSignNowPrefillValue('seller2_pg22', soleOwner, opts)).toBe('');
+      expect(resolveSignNowPrefillValue('seller_pg22', soleOwner, opts)).toBe(
+        'JANE OWNER',
+      );
+    });
+
+    it('maps the unnamed reference-page contact slots, not the disclosure amounts', () => {
+      expect(resolveSignNowPrefillValue('Text Field 283', prefill, opts)).toBe(
+        'JANE OWNER',
+      );
+      // Raw here; `formatSignNowPrefillValue` dashes it for the phone widget.
+      expect(resolveSignNowPrefillValue('Text Field 285', prefill, opts)).toBe(
+        '8605551234',
+      );
+      expect(resolveSignNowPrefillValue('Text Field 287', prefill, opts)).toBe(
+        'jane@acme.com',
+      );
+      // `Text Field 22` stays the business-reference-1 contact, as on Nitro.
+      expect(isMerchantRequiredPage22ReferenceField('Text Field 22', 22, opts)).toBe(
+        true,
+      );
+      expect(
+        isDedicatedContractP22RequiredField('ref_personal1_name_p22'),
+      ).toBe(true);
+    });
+
+    it('never writes over the printed $ / % glyphs on the page-2 money row', () => {
+      for (const name of [
+        'Text Field 438',
+        'Text Field 439',
+        'Text Field 440',
+        'Text Field 441',
+        'Text Field 442',
+        'Text Field 443',
+      ]) {
+        expect(shouldSkipSignNowPrefill(name, opts)).toBe(true);
+      }
+    });
+
+    it('names the page-2 money row that Nitro leaves on SignNow defaults', () => {
+      // TOTAL FEES = underwriting fee + ACH program fee, same as Nitro's `Text Field 34`.
+      expect(resolveSignNowPrefillValue('p1_totalfee', prefill, opts)).toBe(
+        '1,475.00',
+      );
+      // These pass the CRM amount straight through; only the computed TOTAL
+      // FEES above is formatted at resolve time.
+      expect(resolveSignNowPrefillValue('Text Field 36', prefill, opts)).toBe(
+        '50000.00',
+      );
+      expect(resolveSignNowPrefillValue('purchased_amount', prefill, opts)).toBe(
+        '72500.00',
+      );
+      expect(resolveSignNowPrefillValue('net_to_merchant', prefill, opts)).toBe(
+        '48500.00',
+      );
+    });
+
+    it('keeps the Notification of Assignment merchant list blank', () => {
+      // Tiberian transposed the last line to `assignment_merchant13_line_p24`.
+      expect(
+        shouldSkipSignNowPrefill('assignment_merchant13_line_p24', opts),
+      ).toBe(true);
+      expect(
+        shouldSkipSignNowPrefill('assignment_merchant_line12_p24', opts),
+      ).toBe(true);
+      expect(resolveSignNowPrefillValue('case_id_p24', { case_id: 'CASE-1' }, opts)).toBe(
+        'CASE-1',
+      );
+    });
+
+    it('skips the default-named and typo’d signature / initials widgets', () => {
+      for (const name of [
+        'Initials 47',
+        'Initials 48',
+        'Initials 6',
+        'initial_g21_p6',
+        'initia2_g1_p19',
+        'initial_g1_p27',
+        'initial_g2_p27',
+      ]) {
+        expect(shouldSkipSignNowPrefill(name, opts)).toBe(true);
+      }
+      // `signature_date` text tabs must still be filled.
+      expect(shouldSkipSignNowPrefill('signature_date_p23_g1', opts)).toBe(false);
+      expect(
+        resolveSignNowPrefillValue('signature_date_p23_g1', prefill, opts),
+      ).toBe('09/21/2026');
+    });
+
+    it('still marks the page-20 ACH bank slots merchant-required', () => {
+      for (const name of [
+        'ach_bank_name_p20',
+        'ach_bank_portal_p20',
+        'ach_bank_account_p20',
+        'ach_bank_routing_p20',
+        'ach_username_p20',
+        'ach_password_p20',
+        'ach_security_q2_p20',
+        'Text Field 13',
+      ]) {
+        expect(isMerchantRequiredSignerField(name, 19, opts)).toBe(true);
+      }
+    });
+  });
+
   it('treats addenda and disclosures as supplemental SignNow documents', () => {
     expect(isSupplementalSignNowDocumentName('NY State Disclosure')).toBe(true);
     expect(isSupplementalSignNowDocumentName('Addendum P')).toBe(true);

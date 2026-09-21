@@ -515,6 +515,21 @@ const ALIASES: Record<string, string[]> = {
     'payback_amount',
     'estimated_total_payment',
   ],
+  /**
+   * Tiberian Funding agreement page-2 money row. It names what Nitro leaves on
+   * SignNow defaults: `p1_totalfee` = `Text Field 34` (TOTAL FEES), while
+   * PURCHASED AMOUNT / PURCHASE PRICE arrive as `purchased_amount` and
+   * `Text Field 36`, which the shared entries already cover. The computed
+   * underwriting + ACH total in `resolveForcedContractMoneyField` takes
+   * precedence; this chain is the fallback when that comes back empty.
+   */
+  p1_totalfee: [
+    'total_fees',
+    'appendix_underwriting_fees',
+    'origination_fee',
+    'underwriting_fee',
+    'disclosure_broker_fee',
+  ],
   'text field 36': [
     'purchase_price',
     'purchase_amount',
@@ -600,9 +615,25 @@ export function isObsidianDocumentName(value: unknown): boolean {
     .includes('obsidian');
 }
 
+/**
+ * Tiberian Funding's contract template is the Nitro Advance agreement plus one
+ * extra page (viewer page 22, "Declaration of Ordinary Course of Business"), so
+ * every page from 22 on is shifted by one. The widget *names* keep the original
+ * `_p22`…`_p26` suffixes, so name-driven mapping still lines up; only the new
+ * page's `_pg22` widgets and a handful of renamed slots need Tiberian-specific
+ * handling (see `TIBERIAN_AGREEMENT_TEXT_FIELDS` / `TIBERIAN_PG22_FIELD_CRM_IDS`).
+ */
+export function isTiberianDocumentName(value: unknown): boolean {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .includes('tiberian');
+}
+
 export type SignNowPrefillDocumentKind =
   | 'monthly_fee'
   | 'obsidian_agreement'
+  | 'tiberian_agreement'
   | 'exhibit_c'
   | 'ach_weekly';
 
@@ -680,6 +711,52 @@ export const ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS: Record<string, string[]> = {
 };
 
 /**
+ * Tiberian agreement — the "THIS FORM MUST BE FILLED OUT BEFORE FUNDING"
+ * reference page (page index 22; Nitro's is 21). Nitro names its three Contact
+ * Information widgets `guarantor_name_p22` / `guarantor_phone_p22` /
+ * `guarantor_email_p22`; the Tiberian copy ships them with SignNow's default
+ * names. The numbers are matched by position against the live template
+ * (document adf5b131…, page index 22): 283 sits on the "Guarantor Name" line
+ * (x=109 y=129), 285 on "Phone number" (x=100 y=153), 287 on "Email"
+ * (x=67 y=176) — the same boxes as Nitro's named widgets.
+ *
+ * Every other numbered widget on the Tiberian template is deliberately absent:
+ * `Text Field 438`-`443` on the page-2 money row are the printed `$` / `%`
+ * glyphs beside the amounts and must keep their own prefilled text, and
+ * `Text Field 22` is the business-reference-1 contact already covered by the
+ * shared `text field 22` alias.
+ */
+export const TIBERIAN_AGREEMENT_TEXT_FIELDS: Record<number, string> = {
+  283: 'guarantor_name',
+  285: 'guarantor_phone',
+  287: 'guarantor_email',
+};
+
+/**
+ * Tiberian agreement — the extra page 22 ("DECLARATION OF ORDINARY COURSE OF
+ * BUSINESS") that Nitro and Obsidian do not have. SignNow named these widgets
+ * with a `_pg22` suffix rather than the `_p22` the rest of the template uses,
+ * so `canonicalizeSignNowFieldName` leaves them untouched and they need an
+ * explicit mapping. Each entry resolves through the normal CRM id so the value
+ * matches the same field everywhere else on the contract — `agreement_date`
+ * still falls back to today's US date, and `owner2_guarantor_name` still blanks
+ * out when the deal has no distinct second owner.
+ *
+ * These four names exist only on the Tiberian template, so the mapping cannot
+ * change what any other funder's contract resolves.
+ */
+export const TIBERIAN_PG22_FIELD_CRM_IDS: Record<string, string> = {
+  /** "…Agreement ("Agreement"), dated ____" */
+  date_pg22: 'agreement_date',
+  /** "…and ____ ("Merchant") on behalf of Merchant." */
+  merchant_pg22: 'client_legal_name',
+  /** "AUTHORIZED ACCOUNT HOLDER FOR THE SELLER #1 — Name: ____" */
+  seller_pg22: 'client_name',
+  /** Same block, Seller #2. */
+  seller2_pg22: 'owner2_guarantor_name',
+};
+
+/**
  * Exhibit C ACH block, by position.
  *
  * Nitro's Exhibit C names every widget (`ach_account_holder_dba_p1`, …), but the
@@ -745,7 +822,17 @@ export function signNowPrefillDocumentKind(
   if (isMonthlyFeeDocumentName(documentName)) return 'monthly_fee';
   if (isExhibitCDocumentName(documentName)) return 'exhibit_c';
   if (isObsidianDocumentName(documentName)) return 'obsidian_agreement';
+  if (isTiberianDocumentName(documentName)) return 'tiberian_agreement';
   const names = (fieldNames || []).map((n) => String(n || '').trim().toLowerCase());
+  /**
+   * Field-name signature of the Tiberian agreement, for the prefill paths that
+   * run without a document name. `merchant_pg22` only exists on its extra
+   * Declaration page and `p1_totalfee` only on its page-2 money row, so the
+   * pair cannot match Nitro's or Obsidian's copy of the same contract.
+   */
+  if (names.includes('merchant_pg22') && names.includes('p1_totalfee')) {
+    return 'tiberian_agreement';
+  }
   if (
     names.includes('text field 23') &&
     names.includes('text field 27') &&
@@ -1020,6 +1107,16 @@ export function shouldSkipSignNowPrefill(
     if (options?.documentKind === 'obsidian_agreement' && OBSIDIAN_AGREEMENT_TEXT_FIELDS[num]) {
       return false;
     }
+    /**
+     * Tiberian's reference-page Contact Information slots. Anything else
+     * numbered on that template is a printed `$` / `%` glyph whose own
+     * prefilled text must survive, so it stays skipped by the rules below.
+     */
+    if (options?.documentKind === 'tiberian_agreement') {
+      if (TIBERIAN_AGREEMENT_TEXT_FIELDS[num]) return false;
+      const aliased = ALIASES[`text field ${num}`];
+      return !aliased;
+    }
     // Exhibit C's numbered widgets mean what its own layout says (see
     // `EXHIBIT_C_TEXT_FIELD_CRM_IDS`); a number that layout does not use is not
     // a CA-disclosure slot either, so nothing is written to it.
@@ -1039,15 +1136,22 @@ export function shouldSkipSignNowPrefill(
   const lower = n.toLowerCase();
   const canon = canonicalizeSignNowFieldName(n);
   // Notification of Assignment merchant list stays blank — no business names.
+  // Tiberian transposed the last one to `assignment_merchant13_line_p24`.
   if (
     /^assignment_merchant_line\d+$/.test(canon) ||
-    /assignment_merchant_line/i.test(lower)
+    /assignment_merchant_line/i.test(lower) ||
+    /assignment_merchant\d+_line/i.test(lower)
   ) {
     return true;
   }
-  // Signature/initial widgets — keep `signature_date` (disclosure text tab).
-  if (lower.startsWith('signature_') && !lower.includes('date')) return true;
-  if (lower.startsWith('initial_') && !lower.includes('date')) return true;
+  /**
+   * Signature/initial widgets — keep `signature_date` (disclosure text tab).
+   * Tiberian's copy carries SignNow defaults (`Signature8_pg22`, `Initials 47`)
+   * and a few typo'd names (`initia2_g1_p19`, `initial_g21_p6`), so the prefix
+   * test is name-shape based rather than an exact `signature_` / `initial_`.
+   */
+  if (/^signature/.test(lower) && !lower.includes('date')) return true;
+  if (/^initia/.test(lower) && !lower.includes('date')) return true;
   return false;
 }
 
@@ -1243,6 +1347,15 @@ export function resolveAchProgramFeeAmount(map: Map<string, string>): number {
     }
   }
   return 0;
+}
+
+/**
+ * Page-2 TOTAL FEES widget. Nitro leaves it on SignNow's default `Text Field 34`
+ * (mapped through the alias table); Tiberian names it `p1_totalfee`. Both must
+ * reach the computed underwriting + ACH total rather than the bare fee field.
+ */
+function isTotalFeesField(canon: string): boolean {
+  return canon === 'total_fees' || canon === 'p1_totalfee';
 }
 
 function resolveForcedContractMoneyField(
@@ -1615,6 +1728,23 @@ export function resolveSignNowPrefillValue(
     }
   }
 
+  if (options?.documentKind === 'tiberian_agreement') {
+    const numbered = raw.match(/^text field\s*(\d+)$/i);
+    if (numbered) {
+      const crmId = TIBERIAN_AGREEMENT_TEXT_FIELDS[Number(numbered[1])];
+      // A number this layout does not name is a printed `$` / `%` glyph or a
+      // slot the shared aliases already cover — never fall through to the CA
+      // disclosure's `text field 1`-`9` money slots.
+      if (crmId) return resolveSignNowPrefillValue(crmId, prefill);
+    }
+  }
+
+  /** Tiberian's extra Declaration page (see `TIBERIAN_PG22_FIELD_CRM_IDS`). */
+  const tiberianPg22 = TIBERIAN_PG22_FIELD_CRM_IDS[canon];
+  if (tiberianPg22) {
+    return resolveSignNowPrefillValue(tiberianPg22, prefill, options);
+  }
+
   if (options?.documentKind === 'obsidian_agreement') {
     const numbered = raw.match(/^text field\s*(\d+)$/i);
     if (numbered) {
@@ -1685,7 +1815,7 @@ export function resolveSignNowPrefillValue(
    * TOTAL FEES must be the underwriting fee plus the ACH program fee, so it is
    * computed here rather than let the alias chain return the bare fee field.
    */
-  if (canon === 'total_fees') {
+  if (isTotalFeesField(canon)) {
     const total = resolveForcedContractMoneyField('total_fees', map);
     if (total) return formatSignNowPrefillValue(total, fieldName);
   }
