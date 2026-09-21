@@ -456,6 +456,135 @@ describe('signnow-field-map', () => {
     );
   });
 
+  /**
+   * The Obsidian INITIAL INSTALLMENT box holds two widgets: the amount
+   * (`remittance`) and, beside it, `Text Field 92` for the cadence. Without a
+   * mapping the cadence box printed the bare "Text" placeholder.
+   */
+  it('fills Obsidian Text Field 92 with the installment cadence', () => {
+    const opts = { documentKind: 'obsidian_agreement' as const };
+    expect(shouldSkipSignNowPrefill('Text Field 92', opts)).toBe(false);
+    for (const [crmValue, printed] of [
+      ['daily', 'Daily'],
+      ['WEEKLY', 'Weekly'],
+      ['month', 'Monthly'],
+    ] as const) {
+      expect(resolveSignNowPrefillValue('Text Field 92', { frequency: crmValue }, opts)).toBe(
+        printed,
+      );
+    }
+    // Same CRM keys the disclosure frequency reads.
+    expect(
+      resolveSignNowPrefillValue('Text Field 92', { payment_frequency: 'weekly' }, opts),
+    ).toBe('Weekly');
+    expect(
+      resolveSignNowPrefillValue('Text Field 92', { disclosure_payment_frequency: 'DAILY' }, opts),
+    ).toBe('Daily');
+    // The amount beside it stays dollars-only.
+    expect(
+      resolveSignNowPrefillValue('remittance', { remittance: '1,499.00', frequency: 'daily' }, opts),
+    ).toBe('1,499.00');
+  });
+
+  it('fills the account-holder line with the signer and the DBA line with the business', () => {
+    const prefill = {
+      client_name: 'MARY IRVIN',
+      client_legal_name: 'RE-NEW-IT RENOVATIONS, LLC',
+    };
+    expect(resolveSignNowPrefillValue('ach_account_holder_name_p19', prefill)).toBe(
+      'MARY IRVIN',
+    );
+    expect(resolveSignNowPrefillValue('ach_account_holder_dba_p19', prefill)).toBe(
+      'RE-NEW-IT RENOVATIONS, LLC',
+    );
+  });
+
+  /**
+   * Exhibit C's numbered widgets are its own ACH holder / bank lines. Reading
+   * them through the shared CA-disclosure aliases stamped funding-provided,
+   * finance-charge and payment amounts over the Account Holder lines on the live
+   * Obsidian package — `7,175.00` on Account Holder DBA, `600.00` on Business
+   * Address. Each one resolves by position instead (see
+   * `EXHIBIT_C_TEXT_FIELD_CRM_IDS`), and the disclosure keeps its own meaning.
+   */
+  it('maps Obsidian Exhibit C Text Field N by position, never to disclosure amounts', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    const prefill = {
+      funding_provided: '10,000.00',
+      funding_provided_direct: '7,175.00',
+      net_to_merchant: '8,975.00',
+      disclosure_apr: '600.00',
+      disclosure_avg_monthly_revenue: '100.00',
+      disclosure_finance_charge: '4,990.00',
+      disclosure_total_payment: '12,000.00',
+      disclosure_monthly_cost: '23,984.00',
+      disclosure_payment_frequency: 'Daily',
+      remittance: '1,499.00',
+      ach_authorization_account_holder_name: 'RE-NEW-IT RENOVATIONS, LLC',
+      ach_authorization_account_holder_dba: 'RE-NEW-IT',
+      ach_authorization_account_holder_address: '3273 COVE CREEK ROAD',
+      ach_authorization_account_holder_bank_name: 'SBI MORGAN',
+      ach_authorization_account_holder_bank_account_number: '123456789',
+      ach_authorization_account_holder_bank_routing_number: '987654321',
+    };
+    expect(resolveSignNowPrefillValue('Text Field 1', prefill, opts)).toBe(
+      'RE-NEW-IT RENOVATIONS, LLC',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 2', prefill, opts)).toBe('RE-NEW-IT');
+    expect(resolveSignNowPrefillValue('Text Field 3', prefill, opts)).toBe(
+      '3273 COVE CREEK ROAD',
+    );
+    expect(resolveSignNowPrefillValue('Text Field 4', prefill, opts)).toBe('SBI MORGAN');
+    expect(resolveSignNowPrefillValue('Text Field 6', prefill, opts)).toBe('123456789');
+    expect(resolveSignNowPrefillValue('Text Field 7', prefill, opts)).toBe('987654321');
+    // Bank portal, credentials and security answers are the merchant's to type,
+    // and a number this layout does not use is not a disclosure slot either.
+    for (const name of [
+      'Text Field 5',
+      'Text Field 8',
+      'Text Field 9',
+      'Text Field 10',
+      'Text Field 11',
+      'Text Field 12',
+    ]) {
+      expect(resolveSignNowPrefillValue(name, prefill, opts)).toBe('');
+    }
+    // The disclosure itself still reads its own numbered slots.
+    expect(resolveSignNowPrefillValue('Text Field 1', prefill)).toBe('10,000.00');
+    expect(resolveSignNowPrefillValue('Text Field 3', prefill)).toBe('600.00');
+  });
+
+  /**
+   * The Obsidian template names none of its Exhibit C widgets, so the slots the
+   * merchant fills arrive numbered. They must stay empty signer boxes rather
+   * than be baked over or dropped.
+   */
+  it('treats the numbered Obsidian Exhibit C slots as merchant-required', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    for (const name of [
+      'Text Field 1',
+      'Text Field 5',
+      'Text Field 8',
+      'Text Field 9',
+      'Text Field 10',
+      'Text Field 11',
+    ]) {
+      expect(isMerchantRequiredExhibitCField(name, 0, opts)).toBe(true);
+      expect(isMerchantRequiredSignerField(name, 0, opts)).toBe(true);
+    }
+    // CRM-owned lines are filled from the contract, not left for the signer.
+    for (const name of ['Text Field 2', 'Text Field 3', 'Text Field 4', 'Text Field 6', 'Text Field 7']) {
+      expect(isMerchantRequiredExhibitCField(name, 0, opts)).toBe(false);
+    }
+    // Other documents' numbered widgets are untouched by this rule.
+    expect(isMerchantRequiredExhibitCField('Text Field 5', 0)).toBe(false);
+    expect(
+      isMerchantRequiredExhibitCField('Text Field 5', 0, {
+        documentKind: 'obsidian_agreement',
+      }),
+    ).toBe(false);
+  });
+
   it('marks contract page 22 reference fields as required for the merchant signer', () => {
     for (const name of CONTRACT_P22_REQUIRED_UNIQUE_NAMES) {
       expect(isDedicatedContractP22RequiredField(name)).toBe(true);

@@ -346,6 +346,47 @@ export function isSameSignNowTextSpot(
 }
 
 /**
+ * An earlier stamp carrying the same value a few points off this send's stamp is
+ * that value's previous copy, not a second value: once a widget's text is baked
+ * the widget leaves `fields`, so the next send no longer holds a spot for it and
+ * the anchor-based checks above cannot recognise it. Measured on a live Obsidian
+ * group, the page-1 money row drifted 4-15pt horizontally and 2-4pt vertically
+ * between sends, which is why `$ 10,000.00` printed twice.
+ *
+ * Window is deliberately narrow: legitimate repeats of one value on a single
+ * line (the `$` column markers, the two signature dates) sit 90pt or more apart.
+ */
+const DUPLICATE_STAMP_DX = 60;
+const DUPLICATE_STAMP_DY = 8;
+
+function isStaleDuplicateStamp(
+  baked: { page_number?: unknown; x?: unknown; y?: unknown; data?: unknown },
+  old: CommittedSignNowText,
+): boolean {
+  if ((Number(baked.page_number) || 0) !== old.page_number) return false;
+  const data = String(baked.data ?? '').trim();
+  if (!data || data !== old.data) return false;
+  return (
+    Math.abs((Number(baked.x) || 0) - old.x) <= DUPLICATE_STAMP_DX &&
+    Math.abs((Number(baked.y) || 0) - old.y) <= DUPLICATE_STAMP_DY
+  );
+}
+
+/**
+ * Baked values an earlier publish already stamped on the page, for the case where
+ * the clear failed — SignNow refuses text deletes once the group is out for
+ * signature. Writing them again would append a second copy next to the first, so
+ * the duplicates are dropped and the surviving stamp stands.
+ */
+export function dropBakedTextsAlreadyStamped(
+  bakedTexts: Record<string, unknown>[],
+  committed: readonly CommittedSignNowText[],
+): Record<string, unknown>[] {
+  if (!committed.length) return bakedTexts;
+  return bakedTexts.filter((row) => !committed.some((old) => isStaleDuplicateStamp(row, old)));
+}
+
+/**
  * The exact `texts` set a re-publish should end with: this send's baked values,
  * plus any earlier stamp whose spot this send does not cover (agreement text
  * that no longer has a widget behind it must not be wiped by the clear).
@@ -375,6 +416,7 @@ export function mergeCommittedSignNowTexts(
   for (const old of committed) {
     const covered = out.some((row) => isSameSignNowTextSpot(row, old, tolerance));
     if (covered) continue;
+    if (bakedTexts.some((row) => isStaleDuplicateStamp(row, old))) continue;
     if (ownedSpots.some((spot) => isSameSignNowTextSpot(spot, old, tolerance))) continue;
     // Re-send the old stamp without its id: SignNow assigns a fresh one anyway.
     const { id: _id, ...rest } = old.raw as Record<string, unknown>;

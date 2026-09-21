@@ -17,6 +17,14 @@ import {
   updateStandalonePackageDocuSignStatus,
 } from '../docusign/utils/standalone-package-docusign';
 import {
+  archiveSignedEnvelopePdf,
+  fetchStoredSignedPdfBuffer,
+  getStoredEnvelopePdfArchive,
+  isDocumentFullySignedStatus,
+  isSignedPhaseArchiveUrl,
+  type EnvelopePdfArchivePhase,
+} from '../docusign/utils/archive-signed-envelope-pdf';
+import {
   buildContractEnvelopeEmailSubject,
   ensureSubjectAmountHasDollarSign,
   buildContractEnvelopePdfFilename,
@@ -89,6 +97,7 @@ import {
   applyContractFillableFont,
   collectCommittedSignNowTexts,
   copySignNowTemplateStyle,
+  dropBakedTextsAlreadyStamped,
   mergeCommittedSignNowTexts,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
@@ -808,6 +817,33 @@ function overlayTemplateFieldFace(
  * without the template layout back there is nothing left to resolve the current
  * values onto — the old stamp would be all the document could show.
  */
+/**
+ * A template widget whose box lands on a spot the live document already has a
+ * widget for is a duplicate, whatever the two are called.
+ *
+ * Exhibit C is the case that forced this. `resolveExhibitCDocumentId` returns
+ * one Exhibit C document for every funder — Nitro's, whose widgets all carry
+ * real names. The Obsidian copy of the same page ships with SignNow's default
+ * `Text Field 1` … `Text Field 11` and nothing else, so the restore below saw
+ * `ach_bank_portal_p1` / `ach_username_p1` / `ach_password_p1` /
+ * `ach_security_q1_p1` / `ach_security_q2_p1` / `ach_account_holder_name_p1`
+ * "missing" and stacked a second box on top of the numbered widget already
+ * sitting there. That is the row of stray "Optional" boxes the merchant saw
+ * beside the Account Holder and bank lines.
+ */
+const RESTORE_SPOT_TOLERANCE = 8;
+
+function occupiesSameSignNowSpot(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  if ((Number(a.page_number) || 0) !== (Number(b.page_number) || 0)) return false;
+  return (
+    Math.abs((Number(a.x) || 0) - (Number(b.x) || 0)) <= RESTORE_SPOT_TOLERANCE &&
+    Math.abs((Number(a.y) || 0) - (Number(b.y) || 0)) <= RESTORE_SPOT_TOLERANCE
+  );
+}
+
 function mergeMissingSignerFieldsFromTemplate(
   fields: Record<string, unknown>[],
   templateFields: Record<string, unknown>[],
@@ -837,6 +873,7 @@ function mergeMissingSignerFieldsFromTemplate(
     if (!whitelisted && !signerOwned && !options?.restoreAllTextFields) continue;
     const name = rawName.trim().toLowerCase();
     if (name && present.has(name)) continue;
+    if (fields.some((live) => occupiesSameSignNowSpot(live, field))) continue;
     if (name) present.add(name);
     const copy = { ...field };
     delete copy.id;
@@ -2963,10 +3000,34 @@ export class SignNowService {
     return '';
   }
 
-  /** Combined PDF for a SignNow document group (signed contract + addenda + disclosures). */
-  async downloadGroupPdf(groupId: string): Promise<Buffer> {
+  /**
+   * Combined PDF for a SignNow document group (signed contract + addenda + disclosures).
+   * Once the group is complete, the merged PDF is archived to Cloudinary (see
+   * `archiveSignedEnvelopePdf`) so every later "eye" preview / download is served from
+   * that durable copy instead of re-hitting SignNow's API and its daily rate limit.
+   */
+  async downloadGroupPdf(
+    groupId: string,
+    options?: {
+      applicationId?: string | null;
+      funderName?: string | null;
+      funderProfileId?: string | null;
+    },
+  ): Promise<Buffer> {
     const id = String(groupId || '').trim();
     if (!id) throw new BadRequestException('Missing SignNow document group id');
+
+    const storedArchive = await getStoredEnvelopePdfArchive(id);
+    const storedUrl = storedArchive?.url || null;
+    const docFullySigned = isDocumentFullySignedStatus(storedArchive?.status);
+    const archiveIsSigned = isSignedPhaseArchiveUrl(storedUrl);
+    const staleSentArchive = Boolean(storedUrl && docFullySigned && !archiveIsSigned);
+
+    if (storedUrl && !staleSentArchive) {
+      const fromCloud = await fetchStoredSignedPdfBuffer(storedUrl);
+      if (fromCloud?.length) return fromCloud;
+    }
+
     const client = await createSignNowApiClient();
     const groupRes = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
     if (groupRes.status >= 400) {
@@ -2983,23 +3044,42 @@ export class SignNowService {
       count: documents.length,
       names: documents.map((d) => d.document_name || d.name || d.id),
     });
+
+    let buf: Buffer;
     if (documents.length === 1) {
-      return this.downloadDocumentPdfBuffer(
+      buf = await this.downloadDocumentPdfBuffer(
         client,
         documents[0].id,
         String(documents[0].document_name || documents[0].name || 'contract'),
       );
+    } else {
+      const merged = await this.downloadMergedGroupPdf(client, id, documents);
+      if (merged) {
+        buf = merged;
+      } else {
+        const parts: Buffer[] = [];
+        for (const doc of documents) {
+          const label = String(doc.document_name || doc.name || doc.id);
+          parts.push(await this.downloadDocumentPdfBuffer(client, doc.id, label));
+        }
+        buf = await this.mergePdfBuffers(parts);
+      }
     }
 
-    const merged = await this.downloadMergedGroupPdf(client, id, documents);
-    if (merged) return merged;
+    const phase: EnvelopePdfArchivePhase = docFullySigned || staleSentArchive ? 'completed' : 'sent';
+    void archiveSignedEnvelopePdf({
+      envelopeId: id,
+      pdf: buf,
+      phase,
+      replaceExisting: phase === 'completed',
+      applicationId: options?.applicationId || undefined,
+      funderName: options?.funderName || undefined,
+      funderProfileId: options?.funderProfileId || undefined,
+    }).catch((err) =>
+      console.warn(`[SignNow] lazy ${phase} PDF archive failed for ${id}:`, err),
+    );
 
-    const parts: Buffer[] = [];
-    for (const doc of documents) {
-      const label = String(doc.document_name || doc.name || doc.id);
-      parts.push(await this.downloadDocumentPdfBuffer(client, doc.id, label));
-    }
-    return this.mergePdfBuffers(parts);
+    return buf;
   }
 
   /**
@@ -3134,7 +3214,7 @@ export class SignNowService {
     return Buffer.from(await merged.save());
   }
 
-  private async resolveInviteEmailSubject(options: {
+  async resolveInviteEmailSubject(options: {
     title?: string;
     applicationId?: string;
     prefillFields?: PrefillField[];
@@ -3740,6 +3820,14 @@ export class SignNowService {
           mappedInternal,
           applicationId,
         );
+        if (status === 'completed') {
+          // Warm the Cloudinary archive as soon as SignNow reports completion
+          // (webhook or manual refresh) so the "eye" preview never needs a live
+          // SignNow GET for a finished contract.
+          void this.downloadGroupPdf(id, { applicationId: applicationId || undefined }).catch(
+            (err) => console.warn(`[SignNow] proactive signed PDF archive failed for ${id}:`, err),
+          );
+        }
       }
       return { envelopeId: id, status };
     }
@@ -4140,6 +4228,14 @@ export class SignNowService {
      */
     {
       try {
+        /**
+         * Exhibit C is resolved from one global template id for every funder, so
+         * the document this restores from is often not the one this copy was made
+         * from — Nitro's Exhibit C names every widget, Obsidian's ships with
+         * SignNow's default `Text Field 1` … `Text Field 11` on the same lines.
+         * `mergeMissingSignerFieldsFromTemplate` drops anything that would land
+         * on an occupied spot, which is what keeps that mismatch harmless.
+         */
         const templateId = isExhibitC
           ? await this.resolveExhibitCDocumentId(client)
           : supplementalDoc
@@ -4553,15 +4649,28 @@ export class SignNowService {
     const committedTexts = bakeFilledText
       ? collectCommittedSignNowTexts(remote)
       : [];
+    const mergedTexts = mergeCommittedSignNowTexts(bakedRaw.texts, committedTexts, {
+      // Every widget this send knows about owns its spot, so a stamp left
+      // there by an earlier send is replaced (or dropped when the CRM value
+      // is now blank) instead of being carried forward.
+      ownedSpots: putFields,
+    });
+    /**
+     * Clear before deciding what to write: SignNow refuses text deletes once the
+     * group is out for signature, and re-sending the carried-forward set onto a
+     * page that still holds it is what stacked two copies of every page-1 amount.
+     * When the clear fails, only values this page does not already carry go out.
+     */
+    const clearedCommittedTexts =
+      committedTexts.length && mergedTexts.length
+        ? await this.clearCommittedSignNowTexts(client, documentId, committedTexts)
+        : true;
     const baked = {
       fields: fieldsOnExistingPages(bakedRaw.fields, pageCount),
       texts: fieldsOnExistingPages(
-        mergeCommittedSignNowTexts(bakedRaw.texts, committedTexts, {
-          // Every widget this send knows about owns its spot, so a stamp left
-          // there by an earlier send is replaced (or dropped when the CRM value
-          // is now blank) instead of being carried forward.
-          ownedSpots: putFields,
-        }),
+        clearedCommittedTexts
+          ? mergedTexts
+          : dropBakedTextsAlreadyStamped(bakedRaw.texts, committedTexts),
         pageCount,
       ),
     };
@@ -4601,9 +4710,6 @@ export class SignNowService {
     }
     if (baked.texts.length) {
       pushPut(putFields, false);
-    }
-    if (committedTexts.length && baked.texts.length) {
-      await this.clearCommittedSignNowTexts(client, documentId, committedTexts);
     }
     for (const attempt of attempts) {
       try {
@@ -4673,33 +4779,36 @@ export class SignNowService {
     documentId: string,
     committed: readonly CommittedSignNowText[],
   ): Promise<boolean> {
-    const textId = committed.find((row) => row.id)?.id || '';
-    if (!textId) return false;
-    try {
-      const res = await client.delete(`/document/${documentId}/text/${textId}`, {
-        validateStatus: () => true,
-      });
-      if (res.status < 400) {
-        console.info('[SignNow] cleared previously baked page text before re-publish', {
-          documentId,
-          cleared: committed.length,
+    const textIds = committed.map((row) => row.id).filter(Boolean);
+    if (!textIds.length) return false;
+    let lastDetail = '';
+    // The delete drops every text element, so one success is enough — but a
+    // single id can be rejected on its own (already removed by an earlier
+    // partial clear), and giving up there left the whole stale set on the page.
+    for (const textId of textIds) {
+      try {
+        const res = await client.delete(`/document/${documentId}/text/${textId}`, {
+          validateStatus: () => true,
         });
-        return true;
+        if (res.status < 400) {
+          console.info('[SignNow] cleared previously baked page text before re-publish', {
+            documentId,
+            cleared: committed.length,
+          });
+          return true;
+        }
+        lastDetail = this.signNowErrorDetail(res);
+      } catch (err) {
+        lastDetail = err instanceof Error ? err.message : String(err);
       }
-      // Not fatal: the PUT below still writes the current values. They stack on
-      // top of the old ones, which is the pre-existing behaviour, so say so.
-      console.warn('[SignNow] could not clear baked page text; values may stack', {
-        documentId,
-        status: res.status,
-        detail: this.signNowErrorDetail(res),
-      });
-    } catch (err) {
-      console.warn(
-        '[SignNow] clearing baked page text threw',
-        documentId,
-        err instanceof Error ? err.message : String(err),
-      );
     }
+    // Not fatal: the caller drops the values this page already carries so they
+    // cannot stack, and still writes the ones that changed.
+    console.warn('[SignNow] could not clear baked page text; keeping existing stamps', {
+      documentId,
+      attempted: textIds.length,
+      detail: lastDetail,
+    });
     return false;
   }
 

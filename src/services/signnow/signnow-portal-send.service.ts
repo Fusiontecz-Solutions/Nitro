@@ -290,6 +290,8 @@ export type PortalQueueEntry = {
 type PortalQueue = {
   envelopeId: string;
   contractLabel: string;
+  /** "{Funder} {Deal name} {$Amount}" — the actual email subject sent to signers. */
+  emailSubject: string;
   funderName: string | null;
   replyToEmail: string | null;
   startedAt: string;
@@ -351,9 +353,11 @@ function readQueue(overrides: Record<string, unknown>, envelopeId: string): Port
   const queue = raw as Partial<PortalQueue>;
   if (String(queue.envelopeId || '').trim() !== envelopeId) return null;
   if (!Array.isArray(queue.recipients) || !queue.recipients.length) return null;
+  const contractLabel = String(queue.contractLabel || '').trim() || 'Your funding agreement';
   return {
     envelopeId,
-    contractLabel: String(queue.contractLabel || '').trim() || 'Your funding agreement',
+    contractLabel,
+    emailSubject: String(queue.emailSubject || '').trim() || contractLabel,
     funderName: queue.funderName ? String(queue.funderName) : null,
     replyToEmail: queue.replyToEmail ? String(queue.replyToEmail) : null,
     startedAt: String(queue.startedAt || new Date().toISOString()),
@@ -387,6 +391,7 @@ async function emailPortalInvite(input: {
   envelopeId: string;
   recipient: PortalQueueEntry;
   contractLabel: string;
+  emailSubject: string;
   funderName: string | null;
   replyToEmail: string | null;
 }): Promise<void> {
@@ -406,7 +411,7 @@ async function emailPortalInvite(input: {
   await sendSendGridMail({
     to: email,
     from,
-    subject: input.contractLabel,
+    subject: input.emailSubject || input.contractLabel,
     html: buildSigningPortalEmailHtml({
       recipientName: input.recipient.name || null,
       contractLabel: input.contractLabel,
@@ -480,6 +485,7 @@ export async function advancePortalSigningQueue(
       envelopeId: id,
       recipient: pending,
       contractLabel: queue.contractLabel,
+      emailSubject: queue.emailSubject,
       funderName: queue.funderName,
       replyToEmail: queue.replyToEmail,
     });
@@ -501,6 +507,7 @@ export async function advancePortalSigningQueue(
     envelopeId: id,
     recipient: next,
     contractLabel: queue.contractLabel,
+    emailSubject: queue.emailSubject,
     funderName: queue.funderName,
     replyToEmail: queue.replyToEmail,
   });
@@ -550,9 +557,20 @@ export async function sendContractViaPortal(input: {
 
   const existing = await prisma.document.findUnique({
     where: { envelopeId },
-    select: { portalSentAt: true, sentAt: true },
+    select: { portalSentAt: true, sentAt: true, applicationId: true },
   });
   const resent = Boolean(existing?.portalSentAt || existing?.sentAt);
+
+  // "{Selected funder} {Deal name} {$Amount}" — same subject format the SignNow
+  // group-invite send uses, so a portal send for e.g. Obsidian reads
+  // "Obsidian <deal name> $<amount>" instead of the generic contract label.
+  const emailSubject = await signNowService.resolveInviteEmailSubject({
+    title: input.contractLabel,
+    applicationId: existing?.applicationId || undefined,
+    prefillFields: input.prefillFields,
+    funderName: input.funderName,
+    fallbackGroupName: input.contractLabel,
+  });
 
   const sentAt = new Date();
   /**
@@ -588,6 +606,7 @@ export async function sendContractViaPortal(input: {
   const queue = {
     envelopeId,
     contractLabel: input.contractLabel,
+    emailSubject,
     funderName: input.funderName || null,
     replyToEmail: input.replyToEmail || null,
     startedAt: sentAt.toISOString(),
@@ -608,6 +627,7 @@ export async function sendContractViaPortal(input: {
         envelopeId,
         recipient,
         contractLabel: queue.contractLabel,
+        emailSubject: queue.emailSubject,
         funderName: queue.funderName,
         replyToEmail: queue.replyToEmail,
       });

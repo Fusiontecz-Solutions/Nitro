@@ -1,6 +1,8 @@
 import {
   buildSigningPortalUrl,
   createSigningPortalToken,
+  signingPortalTokenTtlHours,
+  signingPortalTokenTtlMs,
   verifySigningPortalToken,
 } from './signnow-portal-token';
 
@@ -108,5 +110,61 @@ describe('signing portal tokens', () => {
     expect(url).toBe(
       'https://crm.example.com/sign/group-123?email=merchant%40example.com&token=tok',
     );
+  });
+});
+
+describe('signing portal token window', () => {
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  const previousSecret = process.env.SIGNING_PORTAL_SECRET;
+  const previousTtl = process.env.SIGNING_PORTAL_TOKEN_TTL_MS;
+
+  beforeAll(() => {
+    process.env.SIGNING_PORTAL_SECRET = 'test-portal-secret';
+  });
+
+  afterEach(() => {
+    if (previousTtl === undefined) delete process.env.SIGNING_PORTAL_TOKEN_TTL_MS;
+    else process.env.SIGNING_PORTAL_TOKEN_TTL_MS = previousTtl;
+  });
+
+  afterAll(() => {
+    if (previousSecret === undefined) delete process.env.SIGNING_PORTAL_SECRET;
+    else process.env.SIGNING_PORTAL_SECRET = previousSecret;
+  });
+
+  it('defaults to seven days when the env var is unset', () => {
+    delete process.env.SIGNING_PORTAL_TOKEN_TTL_MS;
+    expect(signingPortalTokenTtlMs()).toBe(SEVEN_DAYS_MS);
+    expect(signingPortalTokenTtlHours()).toBe(168);
+  });
+
+  it('raises a shorter configured window back up to seven days', () => {
+    for (const shorter of ['172800000', '3600000', '300000', '604799999']) {
+      process.env.SIGNING_PORTAL_TOKEN_TTL_MS = shorter;
+      expect(signingPortalTokenTtlMs()).toBe(SEVEN_DAYS_MS);
+    }
+  });
+
+  it('honours a window longer than seven days', () => {
+    process.env.SIGNING_PORTAL_TOKEN_TTL_MS = String(30 * 24 * 60 * 60 * 1000);
+    expect(signingPortalTokenTtlMs()).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
+  it('still opens a link emailed two days ago even under a stale 48h env value', () => {
+    process.env.SIGNING_PORTAL_TOKEN_TTL_MS = String(48 * 60 * 60 * 1000);
+    const issuedAt = Date.now() - 2.7 * 24 * 60 * 60 * 1000;
+    const token = createSigningPortalToken({ envelopeId: ENVELOPE, email: EMAIL, issuedAt });
+    expect(
+      verifySigningPortalToken({ token, envelopeId: ENVELOPE, email: EMAIL }),
+    ).toMatchObject({ valid: true });
+  });
+
+  it('expires a link only once it is older than seven days', () => {
+    delete process.env.SIGNING_PORTAL_TOKEN_TTL_MS;
+    const issuedAt = Date.now() - (SEVEN_DAYS_MS + 60_000);
+    const token = createSigningPortalToken({ envelopeId: ENVELOPE, email: EMAIL, issuedAt });
+    expect(
+      verifySigningPortalToken({ token, envelopeId: ENVELOPE, email: EMAIL }),
+    ).toEqual({ valid: false, reason: 'expired' });
   });
 });

@@ -11,29 +11,29 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * Floor for `SIGNING_PORTAL_TOKEN_TTL_MS`. A merchant can take hours to open an
- * email, so anything shorter than this is almost certainly a misconfigured env
- * var (e.g. someone setting "300000" meaning 5 minutes, or a raw seconds/minutes
- * value dropped in where milliseconds are required) rather than an intended TTL,
- * and would otherwise expire a freshly-sent contract before the merchant can
- * open it.
+ * Seven days is a floor, not merely a default, because the merchant email
+ * promises a seven-day window. A shorter `SIGNING_PORTAL_TOKEN_TTL_MS` on a
+ * deployed box — a stale 48h value left over from an earlier release, or a
+ * seconds/minutes number dropped in where milliseconds are required — must not
+ * be able to kill a link while the merchant still has the email in their inbox.
+ * Longer windows are honoured exactly as configured.
  */
-const ONE_HOUR_MS = 60 * 60 * 1000;
+const MIN_TTL_MS = SEVEN_DAYS_MS;
 
 let warnedOnce = false;
 
 export function signingPortalTokenTtlMs(): number {
   const raw = Number(process.env.SIGNING_PORTAL_TOKEN_TTL_MS);
   if (!Number.isFinite(raw) || raw <= 0) return SEVEN_DAYS_MS;
-  if (raw < ONE_HOUR_MS) {
+  if (raw < MIN_TTL_MS) {
     if (!warnedOnce) {
       warnedOnce = true;
       console.warn(
-        `[SignNow] SIGNING_PORTAL_TOKEN_TTL_MS=${raw} is below the ${ONE_HOUR_MS}ms floor; using the floor instead. ` +
-          'This env var is milliseconds — set it to at least 3600000 (1 hour).',
+        `[SignNow] SIGNING_PORTAL_TOKEN_TTL_MS=${raw} is below the ${MIN_TTL_MS}ms (7 day) floor; ` +
+          'using the floor instead. This env var is milliseconds — set it to at least 604800000 (7 days).',
       );
     }
-    return ONE_HOUR_MS;
+    return MIN_TTL_MS;
   }
   return raw;
 }

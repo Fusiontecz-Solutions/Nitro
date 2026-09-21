@@ -13,6 +13,7 @@ import {
 } from './signnow-prefill-put';
 import {
   collectCommittedSignNowTexts,
+  dropBakedTextsAlreadyStamped,
   isSameSignNowTextSpot,
   mergeCommittedSignNowTexts,
 } from './signnow-prefill-put';
@@ -657,5 +658,60 @@ describe('committed page text on a re-publish', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ data: '3273 COVE CREEK ROAD', y: 388 });
     expect(merged[0]).not.toHaveProperty('id');
+  });
+
+  /**
+   * Live Obsidian group 1972bc76…: the page-1 money row drifted a few points
+   * between sends, so the same amount sat twice on one line. The baked widget is
+   * gone from `fields` by then, so `ownedSpots` cannot recognise the old anchor.
+   */
+  it('does not carry forward the previous copy of a value this send re-bakes', () => {
+    const committed = collectCommittedSignNowTexts({
+      texts: [
+        { id: 't1', data: '10,000.00', x: 69, y: 381, page_number: 1 },
+        { id: 't2', data: '14,990.00', x: 145, y: 383, page_number: 1 },
+        { id: 't3', data: '19', x: 248, y: 382, page_number: 1 },
+      ],
+    });
+    const merged = mergeCommittedSignNowTexts(
+      [
+        { data: '10,000.00', x: 63, y: 379, page_number: 1 },
+        { data: '14,990.00', x: 153, y: 379, page_number: 1 },
+        { data: '19', x: 233, y: 379, page_number: 1 },
+      ],
+      committed,
+      { ownedSpots: [] },
+    );
+    expect(merged).toHaveLength(3);
+    expect(merged.map((row) => row.x)).toEqual([63, 153, 233]);
+  });
+
+  it('keeps a repeat of one value that belongs on its own column', () => {
+    const committed = collectCommittedSignNowTexts({
+      texts: [{ id: 't1', data: '$', x: 137, y: 379, page_number: 1 }],
+    });
+    const merged = mergeCommittedSignNowTexts(
+      [{ data: '$', x: 45, y: 379, page_number: 1 }],
+      committed,
+      { ownedSpots: [] },
+    );
+    expect(merged.map((row) => row.x)).toEqual([45, 137]);
+  });
+
+  it('drops values the page already carries when the clear was refused', () => {
+    const committed = collectCommittedSignNowTexts({
+      texts: [
+        { id: 't1', data: '10,000.00', x: 69, y: 381, page_number: 1 },
+        { id: 't2', data: 'PUNEET MEENA', x: 197, y: 337, page_number: 0 },
+      ],
+    });
+    const kept = dropBakedTextsAlreadyStamped(
+      [
+        { data: '10,000.00', x: 63, y: 379, page_number: 1 },
+        { data: 'RE-NEW-IT RENOVATIONS, LLC', x: 194, y: 362, page_number: 0 },
+      ],
+      committed,
+    );
+    expect(kept.map((row) => row.data)).toEqual(['RE-NEW-IT RENOVATIONS, LLC']);
   });
 });

@@ -351,7 +351,9 @@ export const downloadPrefilledPdfByApplication = async (req: Request, res: Respo
     const applicationUuid = String(applicationId).trim();
     const envelopeId = await docusignService.getEnvelopeIdForApplication(applicationUuid);
     if (isSignNowEnvelopeId(String(envelopeId || '')) && isSignNowConfigured()) {
-      const pdfBuffer = await signNowService.downloadGroupPdf(String(envelopeId));
+      const pdfBuffer = await signNowService.downloadGroupPdf(String(envelopeId), {
+        applicationId: applicationUuid,
+      });
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader(
         'Content-Disposition',
@@ -495,16 +497,6 @@ async function sendEnvelopeSignedPdf(
     });
   }
 
-  if (isSignNowEnvelopeId(envelopeId)) {
-    const pdfBuffer = await signNowService.downloadGroupPdf(envelopeId);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `${options.contentDisposition}; filename="${options.filenamePrefix}-${envelopeId}.pdf"`,
-    );
-    return res.send(pdfBuffer);
-  }
-
   const contractIdNum = Number(req.query.contractId);
   const applicationId =
     typeof req.query.applicationId === 'string'
@@ -522,6 +514,20 @@ async function sendEnvelopeSignedPdf(
       : typeof req.query.state === 'string'
         ? req.query.state.trim()
         : undefined;
+
+  if (isSignNowEnvelopeId(envelopeId)) {
+    const pdfBuffer = await signNowService.downloadGroupPdf(envelopeId, {
+      applicationId: applicationId || undefined,
+      funderName: funderName || undefined,
+      funderProfileId: funderProfileId || undefined,
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `${options.contentDisposition}; filename="${options.filenamePrefix}-${envelopeId}.pdf"`,
+    );
+    return res.send(pdfBuffer);
+  }
 
   const pdfBuffer = await docusignService.downloadSignedPdf(userId, envelopeId, {
     requireDocument: options.requireDocument,

@@ -94,14 +94,15 @@ const ALIASES: Record<string, string[]> = {
   ach_account_holder_name: [
     'ach_authorization_account_holder_name',
     'authorization_client_name',
-    'client_legal_name',
     'client_name',
+    'client_legal_name',
   ],
   ach_account_holder_dba: [
     'ach_authorization_account_holder_dba',
     'doing_business_as',
     'dba',
     'security_doing_business_as',
+    'client_legal_name',
   ],
   ach_account_holder_address: [
     'ach_authorization_account_holder_address',
@@ -632,6 +633,13 @@ export const OBSIDIAN_AGREEMENT_TEXT_FIELDS: Record<
   32: { crmId: 'owner2_print_title' },
   88: { crmId: 'ref_personal1_name' },
   91: { crmId: 'ref_personal2_phone' },
+  /**
+   * Second widget inside the INITIAL INSTALLMENT box, beside the amount: the
+   * cadence, printed as Daily / Weekly / Bi-Weekly / Monthly off the same CRM
+   * frequency the disclosure reads. The amount widget (`remittance`) keeps the
+   * dollars alone — appending the cadence there stacked "1,499.00Daily".
+   */
+  92: { crmId: 'page1_installmentblock_frequency' },
 };
 
 /**
@@ -670,6 +678,65 @@ export const ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS: Record<string, string[]> = {
     'merchant_contact_name',
   ],
 };
+
+/**
+ * Exhibit C ACH block, by position.
+ *
+ * Nitro's Exhibit C names every widget (`ach_account_holder_dba_p1`, …), but the
+ * Obsidian Capital Group copy of the same page ships with SignNow's default
+ * names — `Text Field 1` … `Text Field 11` — and nothing else. Verified against
+ * the live Obsidian template (document a03909e9…, page 0) and Nitro's named
+ * template (3621713302…), whose widgets sit on the same lines:
+ *
+ *   y=337/338  Text Field 1   <-> ach_account_holder_name_p1
+ *   y=362      Text Field 2   <-> ach_account_holder_dba_p1
+ *   y=388      Text Field 3   <-> ach_account_holder_address_p1
+ *   y=470/472  Text Field 4   <-> ach_bank_name_p1
+ *   y=494/496  Text Field 5   <-> ach_bank_portal_p1
+ *   y=521/522  Text Field 6   <-> ach_bank_account_p1
+ *   y=545/549  Text Field 7   <-> ach_bank_routing_p1
+ *   y=571/573  Text Field 8   <-> ach_username_p1
+ *   y=598      Text Field 9   <-> ach_password_p1
+ *   y=622/623  Text Field 10  <-> ach_security_q1_p1
+ *   y=648/647  Text Field 11  <-> ach_security_q2_p1
+ *
+ * Resolving those names through the shared alias table filled the Account
+ * Holder / bank lines with the CA disclosure's page-1 money row — the
+ * `7,175.00` DBA and `600.00` Business Address the merchant saw. Suppressing
+ * them instead left the same lines permanently blank, because on this template
+ * there is no other widget behind them. Routing each one by its verified
+ * position is what actually fills the page.
+ *
+ * `''` marks a slot the merchant fills in the signing session (bank portal,
+ * credentials, security answers). The CRM never has those values, and stamping
+ * anything there would sit under the signer's own box.
+ */
+export const EXHIBIT_C_TEXT_FIELD_CRM_IDS: Record<number, string> = {
+  1: 'ach_account_holder_name',
+  2: 'ach_account_holder_dba',
+  3: 'ach_account_holder_address',
+  4: 'ach_bank_name',
+  5: '',
+  6: 'ach_bank_account',
+  7: 'ach_bank_routing',
+  8: '',
+  9: '',
+  10: '',
+  11: '',
+};
+
+/** Exhibit C numbered slots the merchant fills — kept as empty signer widgets. */
+const EXHIBIT_C_MERCHANT_TEXT_FIELD_NUMBERS = new Set([1, 5, 8, 9, 10, 11]);
+
+/** `Text Field N` on an Exhibit C layout, N as a number (0 when it is not one). */
+export function exhibitCTextFieldNumber(fieldName: string): number {
+  const match = String(fieldName || '')
+    .trim()
+    .match(/^text[\s_]*field[\s_]*(\d+)$/i);
+  if (!match) return 0;
+  const num = Number(match[1]);
+  return Number.isFinite(num) ? num : 0;
+}
 
 export function signNowPrefillDocumentKind(
   documentName?: unknown,
@@ -788,6 +855,20 @@ export function isMerchantRequiredExhibitCField(
   if (!raw) return false;
   if (options?.documentKind && options.documentKind !== 'exhibit_c') return false;
   if (isDedicatedExhibitCRequiredField(raw)) return true;
+  /**
+   * The Obsidian copy of Exhibit C names none of its widgets, so its merchant
+   * slots arrive as `Text Field 1/5/8/9/10/11` (see
+   * `EXHIBIT_C_TEXT_FIELD_CRM_IDS`). They are the same bank-portal / credential
+   * / security blanks the named Nitro template marks required, and must stay
+   * empty signer widgets rather than be baked or dropped.
+   */
+  const numberedSlot = exhibitCTextFieldNumber(raw);
+  if (numberedSlot) {
+    return (
+      options?.documentKind === 'exhibit_c' &&
+      EXHIBIT_C_MERCHANT_TEXT_FIELD_NUMBERS.has(numberedSlot)
+    );
+  }
   const n = raw.toLowerCase();
   if (/_p20\b/i.test(n) || pageNumber === 19 || pageNumber === 20) return false;
   if (/_p1_achd\b|_p\d+_achd\b|_p1_ach\b|_p\d+_ach\b/i.test(n)) return false;
@@ -938,6 +1019,12 @@ export function shouldSkipSignNowPrefill(
     }
     if (options?.documentKind === 'obsidian_agreement' && OBSIDIAN_AGREEMENT_TEXT_FIELDS[num]) {
       return false;
+    }
+    // Exhibit C's numbered widgets mean what its own layout says (see
+    // `EXHIBIT_C_TEXT_FIELD_CRM_IDS`); a number that layout does not use is not
+    // a CA-disclosure slot either, so nothing is written to it.
+    if (options?.documentKind === 'exhibit_c') {
+      return !(num in EXHIBIT_C_TEXT_FIELD_CRM_IDS);
     }
     const aliasKey = `text field ${num}`;
     if (ALIASES[aliasKey]) return false;
@@ -1503,6 +1590,19 @@ export function resolveSignNowPrefillValue(
     }
   }
 
+  if (options?.documentKind === 'exhibit_c') {
+    const slot = exhibitCTextFieldNumber(raw);
+    if (slot) {
+      const crmId = EXHIBIT_C_TEXT_FIELD_CRM_IDS[slot];
+      // Merchant-filled slot, or a number this layout does not use. Never fall
+      // through to the generic aliases: `text field 2` there is the CA
+      // disclosure's "Funds Provided Directly" amount, which is how the Account
+      // Holder DBA line came out as `7,175.00`.
+      if (!crmId) return '';
+      return resolveSignNowPrefillValue(crmId, prefill);
+    }
+  }
+
   if (options?.documentKind === 'monthly_fee') {
     const numbered = raw.match(/^text field\s*(\d+)$/i);
     if (numbered) {
@@ -1604,6 +1704,13 @@ export function resolveSignNowPrefillValue(
     ...(einField
       ? ['security_tax_ein', 'federal_tax_id_ein', 'ein', 'tax_id', 'authorization_client_tax_id']
       : []),
+    /**
+     * A numbered widget on a layout we recognise means whatever that layout says
+     * it means, never what another document's `Text Field N` happens to mean.
+     * Monthly Fee and the Obsidian agreement fall through to here when their own
+     * table has no entry for the number; Exhibit C never does, because its whole
+     * ACH block is numbered and is resolved positionally above.
+     */
     ...((options?.documentKind === 'monthly_fee' ||
       options?.documentKind === 'obsidian_agreement') &&
     /^text field\s*\d+$/i.test(raw)
@@ -1829,6 +1936,9 @@ function installmentFrequencyFromMap(map: Map<string, string>): string {
       mapGet(map, 'paymentterms') ||
       mapGet(map, 'payment_terms') ||
       mapGet(map, 'paymentfrequency') ||
+      // Same keys the disclosure frequency reads, so page 1 cannot disagree with it.
+      mapGet(map, 'payment_frequency') ||
+      mapGet(map, 'disclosure_payment_frequency') ||
       mapGet(map, 'page1_installmentblock_frequency'),
   );
 }
