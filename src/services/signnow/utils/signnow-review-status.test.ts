@@ -2,6 +2,7 @@ import {
   collectFinishedEmbeddedSigners,
   collectSignedRoleNames,
   resolveSignNowReviewStatus,
+  signNowRowTimestamp,
 } from './signnow-review-status';
 
 describe('resolveSignNowReviewStatus', () => {
@@ -170,5 +171,75 @@ describe('collectSignedRoleNames', () => {
     for (const bad of [null, undefined, {}, { data: null }, []]) {
       expect(collectSignedRoleNames(bad)).toEqual([]);
     }
+  });
+});
+
+describe('review-session freshness (`since`)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const openedAt = Date.parse('2026-09-21T12:00:00Z');
+  const lastWeek = Math.floor((openedAt - 7 * 24 * HOUR) / 1000);
+  const justNow = Math.floor((openedAt + 30_000) / 1000);
+
+  it('ignores a signature the preparer drew in an earlier review of a reused group', () => {
+    // Prefill does not clear signature widgets, so a group that was reviewed,
+    // finished and then reused still carries them. Counting them reported
+    // "review complete" about four seconds after the new iframe opened.
+    const payload = {
+      data: {
+        documents: [
+          { id: 'doc-1', signatures: [{ role: 'Owner', data: 'base64', created: lastWeek }] },
+        ],
+      },
+    };
+    expect(collectSignedRoleNames(payload)).toEqual(['Owner']);
+    expect(collectSignedRoleNames(payload, openedAt)).toEqual([]);
+  });
+
+  it('still reports a signature laid down during this review session', () => {
+    const payload = {
+      data: {
+        documents: [
+          { id: 'doc-1', signatures: [{ role: 'Owner', data: 'base64', created: justNow }] },
+        ],
+      },
+    };
+    expect(collectSignedRoleNames(payload, openedAt)).toEqual(['Owner']);
+  });
+
+  it('keeps a row that carries no timestamp, so freshness can only discard proven-old evidence', () => {
+    const payload = {
+      data: { documents: [{ id: 'doc-1', signatures: [{ role: 'Owner', data: 'base64' }] }] },
+    };
+    expect(collectSignedRoleNames(payload, openedAt)).toEqual(['Owner']);
+  });
+
+  it('drops a fulfilled embedded signer left over from the previous review', () => {
+    const payload = {
+      data: [
+        {
+          created: lastWeek,
+          signers: [{ role: 'Owner', status: 'fulfilled', created: lastWeek }],
+        },
+      ],
+    };
+    expect(resolveSignNowReviewStatus(payload).reviewComplete).toBe(true);
+    expect(resolveSignNowReviewStatus(payload, openedAt).reviewComplete).toBe(false);
+  });
+
+  it('accepts the invite timestamp when the signer row carries none', () => {
+    const payload = {
+      data: [{ created: justNow, signers: [{ role: 'Owner', status: 'fulfilled' }] }],
+    };
+    expect(resolveSignNowReviewStatus(payload, openedAt).reviewComplete).toBe(true);
+  });
+
+  it('reads unix seconds, milliseconds and ISO timestamps alike', () => {
+    expect(signNowRowTimestamp({ created: 1_758_456_000 })).toBe(1_758_456_000_000);
+    expect(signNowRowTimestamp({ created: 1_758_456_000_000 })).toBe(1_758_456_000_000);
+    expect(signNowRowTimestamp({ created_at: '2026-09-21T12:00:00Z' })).toBe(openedAt);
+    expect(signNowRowTimestamp({ json_attributes: { created: 1_758_456_000 } })).toBe(
+      1_758_456_000_000,
+    );
+    expect(signNowRowTimestamp({ role: 'Owner' })).toBeNull();
   });
 });

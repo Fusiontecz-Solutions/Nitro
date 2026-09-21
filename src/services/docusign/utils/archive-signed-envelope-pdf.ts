@@ -1,5 +1,5 @@
 import prisma from '../../../config/prismaClient';
-import uploadService from '../../uploadService';
+import { uploadPdfBufferToCloudinary } from './cloudinary-pdf-upload';
 import { slugifyFunderDocumentToken } from '../../../utils/funderContractLayout';
 import { resolveEnvelopeFunderAuthHints } from './envelope-funder-auth';
 import { findSignedPdfUrlInContractSendHistory, appendContractSendHistoryEntry } from './contract-send-history';
@@ -182,6 +182,17 @@ export async function archiveSignedEnvelopePdf(args: {
       publicId: String(existing?.signedPdfPublicId || '').trim(),
     };
   }
+  /**
+   * Idempotency: a completed archive is final. Without this, every extra
+   * completion signal (webhook retry, manual refresh, a second preview that
+   * raced the first) re-uploaded the same signed package to Cloudinary.
+   */
+  if (existingUrl && phase === 'completed' && isSignedPhaseArchiveUrl(existingUrl)) {
+    return {
+      url: existingUrl,
+      publicId: String(existing?.signedPdfPublicId || '').trim(),
+    };
+  }
 
   let funderName = String(args.funderName || '').trim() || null;
   let funderProfileId = String(args.funderProfileId || '').trim() || null;
@@ -206,30 +217,14 @@ export async function archiveSignedEnvelopePdf(args: {
   const suffix = phase === 'completed' ? 'signed' : 'sent';
   const fileName = `${appPart}_${envPart}_${suffix}.pdf`;
 
-  const uploaded = await uploadService.uploadBuffer(pdf, folder, fileName, { forcePdf: true });
-  if (!uploaded.success || !uploaded.data?.secure_url) {
-    console.error(
-      `[DocuSign] ${phase} PDF Cloudinary upload failed:`,
-      uploaded.error || uploaded.message,
-    );
-    return null;
-  }
-
-  // Prefer a .pdf delivery URL (image/upload/…/file.pdf), never /raw/upload/.
-  let url = String(uploaded.data.secure_url || uploaded.data.url || '').trim();
-  if (url.includes('/raw/upload/')) {
-    url = url.replace('/raw/upload/', '/image/upload/');
-  }
-  if (url && !/\.pdf(\?|$)/i.test(url)) {
-    url = `${url}.pdf`;
-  }
-  const publicId = String(uploaded.data.public_id || '').trim();
-  const format = String(uploaded.data.format || '').toLowerCase();
-  if (format && format !== 'pdf') {
-    console.warn(
-      `[DocuSign] ${phase} PDF uploaded with unexpected Cloudinary format="${format}" (expected pdf)`,
-    );
-  }
+  const uploaded = await uploadPdfBufferToCloudinary({
+    pdf,
+    folder,
+    fileName,
+    label: `[DocuSign] ${phase}`,
+  });
+  if (!uploaded) return null;
+  const { url, publicId } = uploaded;
 
   const updated = await prisma.document.updateMany({
     where: { envelopeId: eid },

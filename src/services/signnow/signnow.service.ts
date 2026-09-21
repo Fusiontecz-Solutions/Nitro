@@ -144,6 +144,10 @@ import {
   writeStoredTemplateDocument,
 } from './utils/signnow-template-store';
 import {
+  invalidateStoredTemplatePdf,
+  resolveTemplatePdf,
+} from './utils/signnow-template-pdf-archive';
+import {
   orderSignNowGroupDocuments,
   sameSignNowDocumentOrder,
   signNowDocumentIdsInOrder,
@@ -487,6 +491,73 @@ function overlayExhibitCEntityOntoSignNowValues(
   out.agreement_date = date;
   out.agreement_date_p1 = date;
   return out;
+}
+
+/**
+ * One entity row per Exhibit C copy, in send order, merged from the two places
+ * the CRM keeps them: the `exhibitCEntities` prefill payload and the per-mapping
+ * "Edit template mapping" tabs saved on the contract.
+ */
+function buildExhibitCEntitiesForPrefill(
+  values: Record<string, string>,
+  overrides: unknown,
+  mappingRows: unknown,
+): ExhibitCEntityPrefillRow[] {
+  let entitiesRaw: unknown = values[EXHIBIT_C_ENTITIES_PREFILL_KEY] || undefined;
+  if (
+    !entitiesRaw &&
+    overrides &&
+    typeof overrides === 'object' &&
+    !Array.isArray(overrides)
+  ) {
+    entitiesRaw = (overrides as Record<string, unknown>)[EXHIBIT_C_ENTITIES_PREFILL_KEY];
+  }
+  const payloadEntities = parseExhibitCEntitiesForPrefill(entitiesRaw);
+  const blob = parseDocumentTemplatePrefillBlob(overrides);
+  const mappingEntities = (Array.isArray(mappingRows) ? mappingRows : [])
+    .filter((row: any) =>
+      isExhibitCAddendumRow({
+        layoutKey: row?.template?.layoutKey,
+        name: row?.template?.name,
+      }),
+    )
+    .map((row: any) => entityFromExhibitCTabs(blob[String(row?.id || '')] ?? {}));
+  const maxSlots = Math.max(payloadEntities.length, mappingEntities.length);
+  const out: ExhibitCEntityPrefillRow[] = [];
+  for (let i = 0; i < maxSlots; i += 1) {
+    out[i] = mergeExhibitCEntityRows(payloadEntities[i], mappingEntities[i]);
+  }
+  return out;
+}
+
+/**
+ * The values ONE document in the package should be prefilled with.
+ *
+ * Every Exhibit C copy shares the same field map, so the only thing that tells
+ * `Exhibit C` from `Exhibit C (2)` is its position in the send order. Baking the
+ * package-wide `values` onto both copies is what made the two copies render
+ * identically in SignNow even though the CRM held different entities for them.
+ * Non-Exhibit documents are returned untouched.
+ */
+function exhibitCDocumentPrefillValues(
+  values: Record<string, string>,
+  entities: readonly ExhibitCEntityPrefillRow[],
+  documentName: unknown,
+): { values: Record<string, string>; entityIndex: number | null } {
+  const entityIndex = exhibitCInstanceIndexFromDocumentName(documentName);
+  if (entityIndex == null) return { values, entityIndex };
+  // Copies after the first must not inherit the main CRM merchant/ACH values:
+  // their entity is a different business, so an unset key has to stay blank
+  // rather than fall back to the primary merchant.
+  const isolatedExtra = entityIndex > 0;
+  return {
+    values: overlayExhibitCEntityOntoSignNowValues(
+      values,
+      entities[entityIndex],
+      isolatedExtra ? { isolateFromMainCrm: true } : { blankSharedFieldsFirst: false },
+    ),
+    entityIndex,
+  };
 }
 
 type SignNowDocumentRef = {
@@ -1455,10 +1526,18 @@ function hasActiveEmbeddedInvites(payload: unknown): boolean {
 
 let cachedAgreementDocumentId = '';
 const cachedAgreementDocumentIdByTemplate = new Map<string, string>();
+/**
+ * Optional hot layer in front of the durable archive.
+ *
+ * Correctness no longer depends on it: the DB + Cloudinary archive
+ * (`signnow-template-pdf-archive`) is the source of truth for blank template
+ * PDFs, and a cold process simply reads from Cloudinary instead of SignNow.
+ * Keeping the buffers in memory only saves the Cloudinary round trip.
+ */
+/** In-flight signed-package downloads, keyed by document-group id. */
+const groupPdfInflight = new Map<string, Promise<Buffer>>();
 const cachedAgreementPdfByTemplate = new Map<string, { buffer: Buffer; at: number }>();
-const agreementPdfInflightByTemplate = new Map<string, Promise<Buffer>>();
 const cachedAddendumPdf = new Map<string, { buffer: Buffer; at: number }>();
-const addendumPdfInflight = new Map<string, Promise<Buffer>>();
 /** Blank template PDFs change rarely — keep them warm so View Contract is instant. */
 const AGREEMENT_PDF_TTL_MS = 6 * 60 * 60 * 1000;
 /**
@@ -1506,8 +1585,17 @@ export class SignNowService {
     return isSignNowConfigured();
   }
 
-  /** Blank Agreement PDF from a SignNow document-group template (for CRM preview). */
-  async downloadAgreementPdf(templateId?: string | null): Promise<Buffer> {
+  /**
+   * Blank Agreement PDF from a SignNow document-group template (for CRM preview).
+   *
+   * Served from the durable archive (DB row → Cloudinary). SignNow is contacted
+   * only when nothing has been archived for this template yet, or when the
+   * caller explicitly asks for a refresh after the template was repointed.
+   */
+  async downloadAgreementPdf(
+    templateId?: string | null,
+    options?: { forceRefresh?: boolean },
+  ): Promise<Buffer> {
     const resolvedTemplateId =
       extractSignNowTemplateId(templateId) || SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID;
     if (!resolvedTemplateId) {
@@ -1515,62 +1603,96 @@ export class SignNowService {
         'No SignNow main contract template id was provided.',
       );
     }
+    const forceRefresh = options?.forceRefresh === true;
     const now = Date.now();
     const cached = cachedAgreementPdfByTemplate.get(resolvedTemplateId);
-    if (cached && now - cached.at < AGREEMENT_PDF_TTL_MS) {
+    if (!forceRefresh && cached && now - cached.at < AGREEMENT_PDF_TTL_MS) {
       return cached.buffer;
     }
-    const inflight = agreementPdfInflightByTemplate.get(resolvedTemplateId);
-    if (inflight) return inflight;
-    const pending = this.fetchAgreementPdfUncached(now, resolvedTemplateId).finally(() => {
-      agreementPdfInflightByTemplate.delete(resolvedTemplateId);
-    });
-    agreementPdfInflightByTemplate.set(resolvedTemplateId, pending);
-    return pending;
-  }
 
-  private async fetchAgreementPdfUncached(
-    now: number,
-    templateId: string,
-  ): Promise<Buffer> {
-    const client = await createSignNowApiClient();
-    const documentId = await this.resolveAgreementDocumentId(client, templateId);
-    const buffer = await this.downloadDocumentPdfBuffer(
-      client,
-      documentId,
-      'Agreement',
-    );
-    cachedAgreementPdfByTemplate.set(templateId, { buffer, at: now });
+    const buffer = await resolveTemplatePdf({
+      identity: {
+        signnowTemplateId: resolvedTemplateId,
+        name: 'Agreement',
+        type: 'contract',
+      },
+      forceRefresh,
+      fetchFromSignNow: async () => {
+        const client = await createSignNowApiClient();
+        const documentId = await this.resolveAgreementDocumentId(
+          client,
+          resolvedTemplateId,
+        );
+        const pdf = await this.downloadDocumentPdfBuffer(client, documentId, 'Agreement');
+        return { pdf, originDocumentId: documentId };
+      },
+    });
+
+    cachedAgreementPdfByTemplate.set(resolvedTemplateId, { buffer, at: Date.now() });
     return buffer;
   }
 
-  /** Blank addendum PDF from a SignNow document-group template (CRM picker preview). */
-  async downloadGroupTemplatePdf(layoutKeyOrId: string): Promise<Buffer> {
+  /**
+   * Blank addendum / disclosure / exhibit PDF from a SignNow document-group
+   * template (CRM picker preview). Same archive-first path as the agreement —
+   * nothing here is specific to a template type.
+   */
+  async downloadGroupTemplatePdf(
+    layoutKeyOrId: string,
+    options?: { forceRefresh?: boolean },
+  ): Promise<Buffer> {
     const def = resolveSignNowAddendumTemplate(layoutKeyOrId);
     if (!def?.templateId) {
       throw new BadRequestException(`Unknown SignNow addendum "${layoutKeyOrId}"`);
     }
+    const forceRefresh = options?.forceRefresh === true;
     const now = Date.now();
     const cached = cachedAddendumPdf.get(def.layoutKey);
-    if (cached && now - cached.at < AGREEMENT_PDF_TTL_MS) {
+    if (!forceRefresh && cached && now - cached.at < AGREEMENT_PDF_TTL_MS) {
       return cached.buffer;
     }
-    const inflight = addendumPdfInflight.get(def.layoutKey);
-    if (inflight) return inflight;
-    const pending = (async () => {
-      const client = await createSignNowApiClient();
-      const documentId = await this.resolveGroupTemplateOriginDocumentId(
-        client,
-        def.templateId,
-      );
-      const buffer = await this.downloadDocumentPdfBuffer(client, documentId, def.name);
-      cachedAddendumPdf.set(def.layoutKey, { buffer, at: now });
-      return buffer;
-    })().finally(() => {
-      addendumPdfInflight.delete(def.layoutKey);
+
+    const buffer = await resolveTemplatePdf({
+      identity: {
+        signnowTemplateId: def.templateId,
+        layoutKey: def.layoutKey,
+        name: def.name,
+        type: def.type,
+      },
+      forceRefresh,
+      fetchFromSignNow: async () => {
+        const client = await createSignNowApiClient();
+        const documentId = await this.resolveGroupTemplateOriginDocumentId(
+          client,
+          def.templateId,
+        );
+        const pdf = await this.downloadDocumentPdfBuffer(client, documentId, def.name);
+        return { pdf, originDocumentId: documentId };
+      },
     });
-    addendumPdfInflight.set(def.layoutKey, pending);
-    return pending;
+
+    cachedAddendumPdf.set(def.layoutKey, { buffer, at: Date.now() });
+    return buffer;
+  }
+
+  /**
+   * Forget a template's archived PDF (and the hot copies of it) so the next
+   * preview re-fetches from SignNow once. Call when a template link is
+   * repointed in Settings → Funders.
+   */
+  async invalidateTemplatePdf(templateIdOrLink: string): Promise<void> {
+    const resolved = extractSignNowTemplateId(templateIdOrLink) ||
+      resolveSignNowAddendumTemplate(templateIdOrLink)?.templateId ||
+      '';
+    if (!resolved) return;
+    await invalidateStoredTemplatePdf(resolved);
+    cachedAgreementPdfByTemplate.delete(resolved);
+    for (const [key, ] of cachedAddendumPdf) {
+      const def = resolveSignNowAddendumTemplate(key);
+      if (def?.templateId?.toLowerCase() === resolved.toLowerCase()) {
+        cachedAddendumPdf.delete(key);
+      }
+    }
   }
 
   private async resolveAgreementDocumentId(
@@ -3017,6 +3139,25 @@ export class SignNowService {
     const id = String(groupId || '').trim();
     if (!id) throw new BadRequestException('Missing SignNow document group id');
 
+    // Concurrent cold requests (preview + download + a completion warm racing
+    // each other) must produce one SignNow fetch, not three.
+    const inflight = groupPdfInflight.get(id);
+    if (inflight) return inflight;
+    const pending = this.downloadGroupPdfUncached(id, options).finally(() => {
+      groupPdfInflight.delete(id);
+    });
+    groupPdfInflight.set(id, pending);
+    return pending;
+  }
+
+  private async downloadGroupPdfUncached(
+    id: string,
+    options?: {
+      applicationId?: string | null;
+      funderName?: string | null;
+      funderProfileId?: string | null;
+    },
+  ): Promise<Buffer> {
     const storedArchive = await getStoredEnvelopePdfArchive(id);
     const storedUrl = storedArchive?.url || null;
     const docFullySigned = isDocumentFullySignedStatus(storedArchive?.status);
@@ -3067,7 +3208,7 @@ export class SignNowService {
     }
 
     const phase: EnvelopePdfArchivePhase = docFullySigned || staleSentArchive ? 'completed' : 'sent';
-    void archiveSignedEnvelopePdf({
+    const archive = archiveSignedEnvelopePdf({
       envelopeId: id,
       pdf: buf,
       phase,
@@ -3075,9 +3216,17 @@ export class SignNowService {
       applicationId: options?.applicationId || undefined,
       funderName: options?.funderName || undefined,
       funderProfileId: options?.funderProfileId || undefined,
-    }).catch((err) =>
-      console.warn(`[SignNow] lazy ${phase} PDF archive failed for ${id}:`, err),
-    );
+    }).catch((err) => {
+      console.warn(`[SignNow] lazy ${phase} PDF archive failed for ${id}:`, err);
+      return null;
+    });
+
+    if (phase === 'completed') {
+      // The signed package is final: persist the Cloudinary URL before handing
+      // the buffer back, so the next preview reads it from the DB rather than
+      // racing an unfinished background upload into another SignNow download.
+      await archive;
+    }
 
     return buf;
   }
@@ -3511,10 +3660,21 @@ export class SignNowService {
     // rounds of the slowest call in the send; one round covers every package
     // we actually build and still bounds concurrency against SignNow.
     const PREFILL_BATCH = 12;
+    /**
+     * Each Exhibit C copy is prefilled from its own entity, exactly as the
+     * review build does. Baking the shared `values` onto every copy is what
+     * made `Exhibit C` and `Exhibit C (2)` show the same merchant, DBA and bank
+     * details in SignNow no matter what the CRM held for the second copy.
+     */
+    const exhibitCEntities = await this.loadExhibitCEntitiesForGroup(
+      sendGroupId,
+      values,
+    );
     console.info('[SignNow] baking send prefill for merchant PDF', {
       groupId: sendGroupId,
       documents: sendDocs.length,
       fulfilledRoles,
+      exhibitCEntities: exhibitCEntities.length,
       crmPrefillKeys: Object.keys(values).filter((k) => values[k]).length,
     });
     for (let i = 0; i < sendDocs.length; i += PREFILL_BATCH) {
@@ -3522,10 +3682,18 @@ export class SignNowService {
       await Promise.all(
         batch.map(async (doc) => {
           try {
-            await this.prefillDocument(client, doc.id, values, {
+            const { values: docValues, entityIndex } = exhibitCDocumentPrefillValues(
+              values,
+              exhibitCEntities,
+              String(doc.document_name || doc.name || '').trim(),
+            );
+            await this.prefillDocument(client, doc.id, docValues, {
               exposeToMerchant: true,
               keepParty2,
               remote: doc.remote,
+              // A copy's own entity outranks whatever an earlier send left on
+              // the widget, otherwise copy 2 keeps copy 1's baked text.
+              ignoreExistingFieldValues: entityIndex != null,
             });
           } catch (err) {
             console.warn(
@@ -3928,19 +4096,8 @@ export class SignNowService {
       usable.map(async (doc) => {
         const id = String(doc.id || '').trim();
         const documentName = String(doc.document_name || doc.name || '').trim();
-        const entityIdx = exhibitCInstanceIndexFromDocumentName(documentName);
-        const isolatedExtra = entityIdx != null && entityIdx > 0;
-        const entity = entityIdx != null ? entities[entityIdx] : undefined;
-        const docValues =
-          entityIdx != null
-            ? overlayExhibitCEntityOntoSignNowValues(
-                values,
-                entity,
-                isolatedExtra
-                  ? { isolateFromMainCrm: true }
-                  : { blankSharedFieldsFirst: false },
-              )
-            : values;
+        const { values: docValues, entityIndex: entityIdx } =
+          exhibitCDocumentPrefillValues(values, entities, documentName);
         const options = {
           exposeToMerchant: false,
           keepParty2,
@@ -5707,7 +5864,18 @@ export class SignNowService {
    * merchants are invited by email at send time — so any fulfilled embedded
    * signer means review is done.
    */
-  async getReviewStatus(groupId: string): Promise<{
+  async getReviewStatus(
+    groupId: string,
+    options: {
+      /**
+       * Epoch ms the CRM opened this review session. Evidence SignNow dates
+       * before it belongs to an earlier review of the same reused group and is
+       * ignored — otherwise the very first poll after the iframe opens reports
+       * last session's Finish and the UI jumps straight to "Send via SignNow".
+       */
+      since?: number;
+    } = {},
+  ): Promise<{
     envelopeId: string;
     reviewComplete: boolean;
     fulfilledRoles: string[];
@@ -5718,6 +5886,10 @@ export class SignNowService {
     if (!this.isEnabled()) {
       return { envelopeId: id, reviewComplete: false, fulfilledRoles: [], status: null };
     }
+    const since =
+      Number.isFinite(options.since) && Number(options.since) > 0
+        ? Number(options.since)
+        : undefined;
     const client = await createSignNowApiClient();
     const checkOnce = async () => {
       const res = await client.get(`/v2/document-groups/${id}/embedded-invites`, {
@@ -5726,7 +5898,7 @@ export class SignNowService {
       const fromInvites =
         res.status >= 400
           ? { reviewComplete: false, fulfilledRoles: [] as string[], status: null as string | null }
-          : resolveSignNowReviewStatus(res.data);
+          : resolveSignNowReviewStatus(res.data, since);
       if (fromInvites.reviewComplete) return fromInvites;
 
       /**
@@ -5742,28 +5914,26 @@ export class SignNowService {
        */
       const groupRes = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
       const signedRoles =
-        groupRes.status >= 400 ? [] : collectSignedRoleNames(groupRes.data?.data ?? groupRes.data);
+        groupRes.status >= 400
+          ? []
+          : collectSignedRoleNames(groupRes.data?.data ?? groupRes.data, since);
       if (signedRoles.length) {
         return { reviewComplete: true, fulfilledRoles: signedRoles, status: 'review_complete' };
       }
       return fromInvites;
     };
 
-    let result = await checkOnce();
     /**
-     * A document group that is being reviewed for the very first time has no
-     * prior state (no reused draft, no warmed embedded invite), so its role
-     * assignments are still settling in SignNow when the preparer clicks
-     * Finish. Both signals above can briefly report "not complete" right on
-     * the heels of a real Finish on a brand-new group — a gap that closed
-     * itself by the second attempt because the group had since stabilized.
-     * One short, bounded retry absorbs that propagation lag without adding
-     * meaningful latency to the normal "still reviewing" case.
+     * One check per request — no sleep-and-retry.
+     *
+     * This endpoint is a 4-second liveness poll that runs for as long as the
+     * review pane is open. Re-checking inside a single call doubled the SignNow
+     * API traffic of every poll (four calls per tick) and held each request
+     * open for an extra 1.5s, which is load the account's rate limit then takes
+     * out on the signing session running in the iframe. The propagation lag the
+     * retry was there for is covered by the next poll, 4 seconds later.
      */
-    if (!result.reviewComplete) {
-      await sleepSignNow(1500);
-      result = await checkOnce();
-    }
+    const result = await checkOnce();
     return { envelopeId: id, ...result };
   }
 
@@ -6618,6 +6788,51 @@ export class SignNowService {
    *
    * These fill gaps only; a value the caller did send always wins.
    */
+  /**
+   * Exhibit C entities for a group we only know by envelope id.
+   *
+   * The review build already has the contract id to hand; the send and the
+   * merchant publish do not, so they resolve it the same way
+   * `loadContractPrefillDefaults` does (document → applicationId → contract).
+   * Returns an empty list when the contract cannot be resolved, which leaves
+   * the caller baking the package-wide values exactly as before.
+   */
+  private async loadExhibitCEntitiesForGroup(
+    groupId: string,
+    values: Record<string, string>,
+  ): Promise<ExhibitCEntityPrefillRow[]> {
+    try {
+      const document = await prisma.document.findUnique({
+        where: { envelopeId: groupId },
+        select: { applicationId: true },
+      });
+      const applicationId = String(document?.applicationId || '').trim();
+      if (!applicationId) return [];
+      const contract = await prisma.contract.findFirst({
+        where: { applicationId },
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true, contractPrefillOverrides: true },
+      });
+      if (!contract) return [];
+      const mappingRows = await (prisma as any).contractDocumentTemplateMapping.findMany({
+        where: { contractId: contract.id },
+        include: { template: true },
+        orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+      });
+      return buildExhibitCEntitiesForPrefill(
+        values,
+        contract.contractPrefillOverrides,
+        mappingRows,
+      );
+    } catch (err) {
+      console.warn('[SignNow] could not load Exhibit C entities for group', {
+        groupId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+  }
+
   private async loadContractPrefillDefaults(
     groupId: string,
   ): Promise<{
@@ -6811,15 +7026,24 @@ export class SignNowService {
 
     const failed: string[] = [];
     const PUBLISH_BATCH = 6;
+    // Same per-copy rule as the review build and the send bake: an Exhibit C
+    // copy is prefilled from the entity saved against its own send position.
+    const exhibitCEntities = await this.loadExhibitCEntitiesForGroup(id, values);
     for (let i = 0; i < documents.length; i += PUBLISH_BATCH) {
       const batch = documents.slice(i, i + PUBLISH_BATCH);
       await Promise.all(
         batch.map(async (doc) => {
           try {
-            await this.prefillDocument(client, doc.id, values, {
+            const { values: docValues, entityIndex } = exhibitCDocumentPrefillValues(
+              values,
+              exhibitCEntities,
+              String(doc.document_name || doc.name || '').trim(),
+            );
+            await this.prefillDocument(client, doc.id, docValues, {
               exposeToMerchant: true,
               keepParty2: options?.keepParty2 !== false,
               remote: doc.remote,
+              ignoreExistingFieldValues: entityIndex != null,
             });
           } catch (err) {
             failed.push(doc.id);

@@ -25,6 +25,9 @@ import {
   type FunderProfileInput,
 } from '../services/funderProfileService';
 import { resolveContractCcDefaultsForApi } from '../utils/contractCcDefaults';
+import prisma from '../config/prismaClient';
+import { invalidateStoredTemplatePdf } from '../services/signnow/utils/signnow-template-pdf-archive';
+import { extractSignNowTemplateId } from '../services/signnow/utils/signnow-client';
 import type { FunderSupplementalLayoutType } from '../utils/funderContractLayout';
 
 function handleError(res: Response, error: unknown) {
@@ -472,13 +475,51 @@ export const createFunder = async (req: Request, res: Response) => {
   }
 };
 
+/** SignNow template ids referenced by a funder's contract / addendum / disclosure links. */
+function signNowTemplateIdsOnFunder(row: {
+  signnowContractTemplateLink?: unknown;
+  signnowAddendumTemplates?: unknown;
+  signnowDisclosureTemplates?: unknown;
+} | null): Set<string> {
+  const out = new Set<string>();
+  if (!row) return out;
+  const add = (value: unknown) => {
+    const id = extractSignNowTemplateId(String(value ?? ''));
+    if (id) out.add(id);
+  };
+  add(row.signnowContractTemplateLink);
+  for (const bucket of [row.signnowAddendumTemplates, row.signnowDisclosureTemplates]) {
+    if (!Array.isArray(bucket)) continue;
+    for (const item of bucket) {
+      add((item as { link?: unknown })?.link);
+    }
+  }
+  return out;
+}
+
 export const updateFunder = async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
     const input = parseFunderProfileBody((req.body || {}) as Record<string, unknown>);
+    const before = await prisma.funderProfile.findUnique({
+      where: { id },
+      select: {
+        signnowContractTemplateLink: true,
+        signnowAddendumTemplates: true,
+        signnowDisclosureTemplates: true,
+      },
+    });
     const data = await saveFunderWithOptionalAssets(req, () =>
       updateFunderProfile(id, input),
     );
+    // A repointed template link must not keep serving the previous template's
+    // archived PDF, so drop the archive for ids this funder no longer uses.
+    const previous = signNowTemplateIdsOnFunder(before);
+    const current = signNowTemplateIdsOnFunder(data as never);
+    for (const templateId of previous) {
+      if (current.has(templateId)) continue;
+      await invalidateStoredTemplatePdf(templateId);
+    }
     return res.json({ success: true, data });
   } catch (error) {
     return handleError(res, error);

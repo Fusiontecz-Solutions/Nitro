@@ -285,7 +285,39 @@ export function splitPrefillPutPayload(
     const text = toSignNowCompletedText(field, options);
     if (text) texts.push(text);
   }
-  return { fields: fillable, texts };
+  return { fields: fillable, texts: dropOverlappingDuplicateTexts(texts) };
+}
+
+/**
+ * Two widgets on the same spot carrying the same CRM value bake two stamps, and
+ * `PUT /document/{id}` prints both — the `10  10` the merchant saw in the
+ * Obsidian agreement's SPECIFIED PERCENTAGE cell, where the named percent
+ * widget and the template's leftover `Text Field 25` sit on top of each other.
+ *
+ * Unlike `dropBakedTextsAlreadyStamped` (which compares this send against
+ * stamps an earlier send left behind) this collapses duplicates *within* one
+ * publish, before anything is written. Only an identical value is dropped, so
+ * no information can be lost: the surviving stamp renders exactly what the
+ * dropped one would have. The window is the same narrow one used for stale
+ * stamps — legitimate repeats of a value on one line (the `$` column markers,
+ * the two signature dates) sit 90pt or more apart.
+ */
+export function dropOverlappingDuplicateTexts(
+  texts: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const row of texts) {
+    const data = String(row.data ?? '').trim();
+    const duplicate = out.some(
+      (kept) =>
+        String(kept.data ?? '').trim() === data &&
+        (Number(kept.page_number) || 0) === (Number(row.page_number) || 0) &&
+        Math.abs((Number(kept.x) || 0) - (Number(row.x) || 0)) <= DUPLICATE_STAMP_DX &&
+        Math.abs((Number(kept.y) || 0) - (Number(row.y) || 0)) <= DUPLICATE_STAMP_DY,
+    );
+    if (!duplicate) out.push(row);
+  }
+  return out;
 }
 
 /**

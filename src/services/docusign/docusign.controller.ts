@@ -937,7 +937,14 @@ export const getSignNowReviewStatus = async (req: Request, res: Response) => {
     if (!isSignNowEnvelopeId(envelopeId)) {
       return res.json({ envelopeId, reviewComplete: false, fulfilledRoles: [], status: null });
     }
-    const result = await signNowService.getReviewStatus(envelopeId);
+    // `since` (epoch ms) is when the CRM opened this review session. It keeps a
+    // Finish from an earlier review of the same reused draft group from being
+    // read as this one — which flipped the UI to the Send screen seconds after
+    // the iframe opened, before the document had rendered.
+    const sinceRaw = Number(req.query.since ?? req.query.openedAt ?? 0);
+    const result = await signNowService.getReviewStatus(envelopeId, {
+      since: Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : undefined,
+    });
     return res.json(result);
   } catch (error: any) {
     return res.status(error.status || 500).json({

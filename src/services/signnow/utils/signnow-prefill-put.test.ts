@@ -14,6 +14,7 @@ import {
 import {
   collectCommittedSignNowTexts,
   dropBakedTextsAlreadyStamped,
+  dropOverlappingDuplicateTexts,
   isSameSignNowTextSpot,
   mergeCommittedSignNowTexts,
 } from './signnow-prefill-put';
@@ -713,5 +714,69 @@ describe('committed page text on a re-publish', () => {
       committed,
     );
     expect(kept.map((row) => row.data)).toEqual(['RE-NEW-IT RENOVATIONS, LLC']);
+  });
+});
+
+describe('dropOverlappingDuplicateTexts', () => {
+  it('collapses two stacked widgets carrying the same value (Obsidian SPECIFIED PERCENTAGE)', () => {
+    const kept = dropOverlappingDuplicateTexts([
+      { data: '10', x: 402, y: 381, page_number: 0 },
+      { data: '10', x: 419, y: 384, page_number: 0 },
+    ]);
+    expect(kept.map((row) => row.x)).toEqual([402]);
+  });
+
+  it('keeps repeats of one value that sit apart on the same line', () => {
+    const kept = dropOverlappingDuplicateTexts([
+      { data: '$', x: 69, y: 381, page_number: 0 },
+      { data: '$', x: 268, y: 381, page_number: 0 },
+    ]);
+    expect(kept).toHaveLength(2);
+  });
+
+  it('keeps the same value on different lines and different pages', () => {
+    const kept = dropOverlappingDuplicateTexts([
+      { data: '09/21/2026', x: 120, y: 700, page_number: 0 },
+      { data: '09/21/2026', x: 120, y: 660, page_number: 0 },
+      { data: '09/21/2026', x: 120, y: 700, page_number: 3 },
+    ]);
+    expect(kept).toHaveLength(3);
+  });
+
+  it('never drops a different value stamped nearby', () => {
+    const kept = dropOverlappingDuplicateTexts([
+      { data: '10', x: 402, y: 381, page_number: 0 },
+      { data: '12', x: 419, y: 384, page_number: 0 },
+    ]);
+    expect(kept).toHaveLength(2);
+  });
+
+  it('bakes one text when two overlapping fields hold the same CRM value', () => {
+    const split = splitPrefillPutPayload(
+      [
+        {
+          type: 'text',
+          name: 'purchase_percent',
+          prefilled_text: '10',
+          x: 402,
+          y: 381,
+          page_number: 0,
+          width: 30,
+          height: 12,
+        },
+        {
+          type: 'text',
+          name: 'Text Field 25',
+          prefilled_text: '10',
+          x: 419,
+          y: 384,
+          page_number: 0,
+          width: 30,
+          height: 12,
+        },
+      ],
+      true,
+    );
+    expect(split.texts).toHaveLength(1);
   });
 });

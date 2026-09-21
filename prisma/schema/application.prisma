@@ -613,6 +613,35 @@ model SignNowTemplateCache {
   @@index([fetchedAt])
 }
 
+/// Permanent Cloudinary archive of a blank SignNow template PDF.
+///
+/// Keyed by the SignNow template id so one row serves every preview of that
+/// template — main agreement, addendum, disclosure or exhibit alike. Rows have
+/// no TTL: the PDF is re-fetched from SignNow only when the archive is missing
+/// or explicitly invalidated (template link repointed).
+model SignNowTemplatePdf {
+  id                String   @id @default(uuid()) @db.Uuid
+  /// SignNow document-group template id this PDF was rendered from.
+  signnowTemplateId String   @unique
+  /// SignNow origin document id the PDF bytes were downloaded from.
+  originDocumentId  String?
+  /// Catalog layout key (`exhibit_c`, `signnow_disclosure`, …) when known.
+  layoutKey         String?
+  name              String?
+  /// `contract` | `addendum` | `disclosure`.
+  type              String?
+  /// Cloudinary delivery URL for the archived PDF.
+  pdfUrl            String
+  pdfPublicId       String?
+  byteSize          Int?
+  fetchedAt         DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([layoutKey])
+  @@index([fetchedAt])
+}
+
 /// One SignNow email group-invite per document-group (envelopeId). Used for send idempotency.
 model SignNowInviteSend {
   id            String    @id @default(uuid()) @db.Uuid

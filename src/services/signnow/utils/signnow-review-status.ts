@@ -15,6 +15,66 @@
 
 const FINISHED_TOKENS = new Set(['fulfilled', 'completed', 'signed', 'finished', 'done']);
 
+/** Slack on `since`: clock skew between this server and SignNow, plus mint→open lag. */
+const SINCE_SLACK_MS = 90_000;
+
+const TIMESTAMP_KEYS = [
+  'signed_at',
+  'completed_at',
+  'fulfilled_at',
+  'updated_at',
+  'updated',
+  'created_at',
+  'created',
+  'timestamp',
+] as const;
+
+/**
+ * Epoch ms for a SignNow row, or null when it carries no readable timestamp.
+ *
+ * SignNow answers with unix seconds on most objects, ms on a few, and ISO
+ * strings on others, so all three are accepted.
+ */
+export function signNowRowTimestamp(row: unknown): number | null {
+  const record = (row || {}) as Record<string, unknown>;
+  const attrs = (record.json_attributes || {}) as Record<string, unknown>;
+  for (const key of TIMESTAMP_KEYS) {
+    const raw = record[key] ?? attrs[key];
+    if (raw == null || raw === '') continue;
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return raw > 1e12 ? raw : raw * 1000;
+    }
+    const text = String(raw).trim();
+    if (/^\d+$/.test(text)) {
+      const num = Number(text);
+      return num > 1e12 ? num : num * 1000;
+    }
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Is this row from the review session the caller is asking about?
+ *
+ * Without this, a group that was reviewed once and then reused — click Review,
+ * Finish, "change details", Review again — reports the *previous* Finish the
+ * moment the new review opens: the signature widgets the preparer filled last
+ * time are still on the documents, and prefill does not clear them. The CRM
+ * poll then flipped to "Owner review complete / Send via SignNow" about four
+ * seconds after the iframe opened, before the preparer had seen a single page.
+ *
+ * A row with no readable timestamp is kept, so this can only ever discard
+ * evidence it can prove is old.
+ */
+function isFreshRow(row: unknown, since?: number): boolean {
+  if (!since || !Number.isFinite(since)) return true;
+  const at = signNowRowTimestamp(row);
+  if (at == null) return true;
+  return at >= since - SINCE_SLACK_MS;
+}
+
 function statusOf(row: Record<string, unknown>): string {
   return String(row.status || row.state || row.invite_status || '')
     .trim()
@@ -74,11 +134,15 @@ function signerIsFinished(signer: Record<string, unknown>): boolean {
 }
 
 /** Signers whose invite says they are done, named by role (or email). */
-export function collectFinishedEmbeddedSigners(payload: unknown): string[] {
+export function collectFinishedEmbeddedSigners(payload: unknown, since?: number): string[] {
   const names: string[] = [];
   for (const invite of inviteRows(payload)) {
     for (const signer of objectRows(invite.signers)) {
       if (!signerIsFinished(signer)) continue;
+      // A fulfilled signer from a previous review of a reused group is not this
+      // review's Finish. The invite itself is deleted and recreated at every
+      // mint, so its own timestamp dates the session.
+      if (!isFreshRow(signer, since) && !isFreshRow(invite, since)) continue;
       const name = String(signer.role || signer.role_name || signer.email || '').trim();
       if (name && !names.some((existing) => existing.toLowerCase() === name.toLowerCase())) {
         names.push(name);
@@ -100,7 +164,7 @@ export function collectFinishedEmbeddedSigners(payload: unknown): string[] {
  * appear before somebody signed, and during Owner review the preparer is the
  * only party holding the package.
  */
-export function collectSignedRoleNames(payload: unknown): string[] {
+export function collectSignedRoleNames(payload: unknown, since?: number): string[] {
   const names: string[] = [];
   const root = (payload || {}) as Record<string, unknown>;
   const documents = objectRows((root.data as { documents?: unknown })?.documents ?? root.documents);
@@ -109,6 +173,10 @@ export function collectSignedRoleNames(payload: unknown): string[] {
       for (const field of objectRows(doc[container])) {
         const attrs = (field.json_attributes || {}) as Record<string, unknown>;
         if (!field.data && !field.signature_id && !attrs.data && !attrs.signature_id) continue;
+        // Signatures survive prefill, so a reused draft still carries the ones
+        // the preparer drew during an earlier review. Only count a signature
+        // laid down since this review session opened.
+        if (!isFreshRow(field, since)) continue;
         const name = String(
           field.role || field.signer || attrs.role || attrs.role_name || attrs.signer || '',
         ).trim();
@@ -127,8 +195,11 @@ export type SignNowReviewStatus = {
   status: 'review_complete' | 'in_review';
 };
 
-export function resolveSignNowReviewStatus(payload: unknown): SignNowReviewStatus {
-  const fulfilledRoles = collectFinishedEmbeddedSigners(payload);
+export function resolveSignNowReviewStatus(
+  payload: unknown,
+  since?: number,
+): SignNowReviewStatus {
+  const fulfilledRoles = collectFinishedEmbeddedSigners(payload, since);
   return {
     reviewComplete: fulfilledRoles.length > 0,
     fulfilledRoles,
