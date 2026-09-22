@@ -55,7 +55,8 @@ export type ContractSigningStatusRealtimePayload = {
   envelopeId?: string | null;
   status: string;
   priorStatus?: string | null;
-  provider?: 'docusign' | 'boldsign';
+  /** `crm` covers stage moves made in-app rather than by an e-sign callback. */
+  provider?: 'docusign' | 'boldsign' | 'signnow' | 'crm';
   envelopeKind?: string | null;
 };
 

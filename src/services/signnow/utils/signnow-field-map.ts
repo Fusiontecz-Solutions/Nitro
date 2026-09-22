@@ -608,6 +608,24 @@ export function isAchWeeklyDocumentName(value: unknown): boolean {
   return /\bach\b/.test(n) && /week/.test(n);
 }
 
+/**
+ * Every funder ships its own copy of the state disclosure ("Disclosure Obsidian
+ * Capital Group", "Tiberian Funding - Disclosure", "Disclosure - Nitro Advance")
+ * and all three carry byte-identical widget names — the CA page-1 `Text Field 1`-`8`
+ * money row, `*_p2` page-2 slots and `*_p3` page-3 ledger. Those names are shared
+ * across funders, so a disclosure must never be classified by the funder in its
+ * title: the agreement layouts keyed off that funder name (`OBSIDIAN_AGREEMENT_TEXT_FIELDS`,
+ * `TIBERIAN_AGREEMENT_TEXT_FIELDS`) would then claim the disclosure's numbered
+ * widgets and stamp contract values into the disclosure's money row.
+ */
+export function isDisclosureDocumentName(value: unknown): boolean {
+  const n = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!n) return false;
+  return n.includes('disclosure') || n.includes('disclouser');
+}
+
 export function isObsidianDocumentName(value: unknown): boolean {
   return String(value || '')
     .trim()
@@ -821,8 +839,12 @@ export function signNowPrefillDocumentKind(
 ): SignNowPrefillDocumentKind | undefined {
   if (isMonthlyFeeDocumentName(documentName)) return 'monthly_fee';
   if (isExhibitCDocumentName(documentName)) return 'exhibit_c';
-  if (isObsidianDocumentName(documentName)) return 'obsidian_agreement';
-  if (isTiberianDocumentName(documentName)) return 'tiberian_agreement';
+  // A funder's disclosure carries the funder name too — never let it be read as
+  // that funder's agreement (see `isDisclosureDocumentName`).
+  if (!isDisclosureDocumentName(documentName)) {
+    if (isObsidianDocumentName(documentName)) return 'obsidian_agreement';
+    if (isTiberianDocumentName(documentName)) return 'tiberian_agreement';
+  }
   const names = (fieldNames || []).map((n) => String(n || '').trim().toLowerCase());
   /**
    * Field-name signature of the Tiberian agreement, for the prefill paths that

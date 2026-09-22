@@ -531,6 +531,23 @@ function buildExhibitCEntitiesForPrefill(
 }
 
 /**
+ * Does this slot describe a business of its own?
+ *
+ * The agreement date is deliberately not counted: `entityFromExhibitCTabs`
+ * picks one up from any saved mapping tab, and a slot that carries nothing but
+ * a date names no entity — treating it as one is what turned an otherwise
+ * untouched Exhibit C copy into a page with a date and nothing else.
+ */
+export function exhibitCEntityRowHasData(
+  entity: ExhibitCEntityPrefillRow | undefined,
+): boolean {
+  if (!entity) return false;
+  return Object.entries(entity).some(
+    ([key, value]) => key !== 'agreementDate' && String(value ?? '').trim() !== '',
+  );
+}
+
+/**
  * The values ONE document in the package should be prefilled with.
  *
  * Every Exhibit C copy shares the same field map, so the only thing that tells
@@ -539,21 +556,33 @@ function buildExhibitCEntitiesForPrefill(
  * identically in SignNow even though the CRM held different entities for them.
  * Non-Exhibit documents are returned untouched.
  */
-function exhibitCDocumentPrefillValues(
+export function exhibitCDocumentPrefillValues(
   values: Record<string, string>,
   entities: readonly ExhibitCEntityPrefillRow[],
   documentName: unknown,
 ): { values: Record<string, string>; entityIndex: number | null } {
   const entityIndex = exhibitCInstanceIndexFromDocumentName(documentName);
   if (entityIndex == null) return { values, entityIndex };
-  // Copies after the first must not inherit the main CRM merchant/ACH values:
-  // their entity is a different business, so an unset key has to stay blank
-  // rather than fall back to the primary merchant.
-  const isolatedExtra = entityIndex > 0;
+  const entity = entities[entityIndex];
+  /**
+   * Isolation is what a second *entity* needs, not what a second *copy* needs.
+   *
+   * A copy whose slot names its own business must not inherit the main CRM
+   * merchant/ACH values — an unset key there stays blank rather than falling
+   * back to the primary merchant, so one entity's page can never carry
+   * another's bank or holder details.
+   *
+   * A copy with no entity of its own is simply another Exhibit C for this
+   * deal's merchant. Isolating it blanked every holder/bank/merchant key and
+   * put nothing back, which is why `Exhibit C (2)` and `(3)` reached SignNow
+   * showing only the agreement date while the merchant still had to sign them.
+   * Those copies are filled from the package values, exactly like the first.
+   */
+  const isolatedExtra = entityIndex > 0 && exhibitCEntityRowHasData(entity);
   return {
     values: overlayExhibitCEntityOntoSignNowValues(
       values,
-      entities[entityIndex],
+      entity,
       isolatedExtra ? { isolateFromMainCrm: true } : { blankSharedFieldsFirst: false },
     ),
     entityIndex,
@@ -1552,6 +1581,12 @@ const AGREEMENT_PDF_TTL_MS = 6 * 60 * 60 * 1000;
 const templateDocumentCache = new Map<string, { data: any; at: number }>();
 const templateDocumentInflight = new Map<string, Promise<any>>();
 const TEMPLATE_DOCUMENT_TTL_MS = 10 * 60 * 1000;
+/**
+ * Minutes an embedded review link (and its session) stays usable. SignNow caps
+ * both at 45, and it rejects a `session_expiration` that outlives the link, so
+ * one value feeds both fields.
+ */
+const SIGNNOW_EMBED_LINK_EXPIRATION_MINUTES = 45;
 const DRAFT_GROUP_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const draftGroupCache = new Map<
   string,
@@ -2701,7 +2736,11 @@ export class SignNowService {
       documents = documents.map((d) => byId.get(d.id) || d);
     }
     const documentId = options.documentId || this.pickEditorDocumentId(documents);
-    if (!documentId) return '';
+    if (!documentId) {
+      throw new BadRequestException(
+        'Could not mint a SignNow review link. The contract package has no documents in SignNow yet — wait for the upload to finish, then click Review in SignNow again.',
+      );
+    }
 
     const existingRoles = uniqueRoleNames(documents.flatMap((d) => d.roles || []));
     const templateRoles = uniqueRoleNames([
@@ -2715,7 +2754,11 @@ export class SignNowService {
       orderedSigners(options.roles || []),
       { includeSameEmailOwner2: true },
     );
-    if (!inviteSigners.length) return '';
+    if (!inviteSigners.length) {
+      throw new BadRequestException(
+        'Could not mint a SignNow review link. No signer could be matched to the template roles — check the signer names and emails on the deal.',
+      );
+    }
     const nitroStyle = usesNitroApproverRoles(templateRoles);
     const reviewSigners = inviteSigners.filter(
       (s) => s.preparer || isPreparerRole(s.roleName, nitroStyle),
@@ -3070,6 +3113,25 @@ export class SignNowService {
       });
     }
     if (created.res.status >= 400 || !inviteId) {
+      /**
+       * The create can fail because this group already carries an embedded
+       * invite — a second Review click on the same draft, or a repair posted
+       * after SignNow had accepted the first one. That invite is perfectly
+       * usable, so read it back before giving up on the review.
+       */
+      const existing = await client.get(
+        `/v2/document-groups/${options.groupId}/embedded-invites`,
+        { validateStatus: () => true },
+      );
+      inviteId = this.extractEmbeddedInviteId(existing.data);
+      if (inviteId) {
+        console.warn('[SignNow] reusing the existing embedded invite on this group', {
+          groupId: options.groupId,
+          createDetail: this.signNowErrorDetail(created.res),
+        });
+      }
+    }
+    if (!inviteId) {
       const detail = this.signNowErrorDetail(created.res);
       console.warn('[SignNow] group embedded-invite create failed', detail);
       throw new BadRequestException(
@@ -3097,29 +3159,75 @@ export class SignNowService {
     ]);
     if (!emails.length) {
       console.warn('[SignNow] no Owner/preparer email to mint the review link');
-      return '';
-    }
-    for (const email of emails) {
-      const linkStarted = Date.now();
-      const linkRes = await client.post(
-        `/v2/document-groups/${options.groupId}/embedded-invites/${inviteId}/link`,
-        {
-          email,
-          auth_method: 'none',
-          link_expiration: 45,
-          session_expiration: 60,
-        },
-        { validateStatus: () => true },
+      throw new BadRequestException(
+        'Could not mint a SignNow review link. No Owner/preparer email is configured for SignNow — set SIGNNOW_PREPARER_EMAIL (or the deal owner) and try again.',
       );
-      logSignNowTiming('embedded-invite-link', Date.now() - linkStarted, {
-        documentCount: documents.length,
-      });
-      const url = this.extractEmbeddedLink(linkRes.data);
-      if (linkRes.status < 400 && url) return url;
-      console.warn('[SignNow] group embedded-invite link failed', this.signNowErrorDetail(linkRes));
-      countSignNowRetry();
     }
-    return '';
+    /**
+     * Every candidate signer on the invite, not only the Owner bucket. SignNow
+     * mints a link per signer email, and it rejects an email that did not end up
+     * on the invite it just created — which is what left the CRM with no link at
+     * all whenever a role repair moved the Owner into a different bucket.
+     */
+    const linkEmails = uniqueEmails([...emails, ...payloadEmails]);
+    const linkFailures: string[] = [];
+    for (const email of linkEmails) {
+      // A fresh document group is still settling on SignNow's side for a moment
+      // after the invite is created; the first link POST can come back 4xx/5xx
+      // and succeed on the retry.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) {
+          countSignNowRetry();
+          await sleepSignNow(500 * attempt);
+        }
+        const linkStarted = Date.now();
+        const linkRes = await client.post(
+          `/v2/document-groups/${options.groupId}/embedded-invites/${inviteId}/link`,
+          {
+            email,
+            auth_method: 'none',
+            link_expiration: SIGNNOW_EMBED_LINK_EXPIRATION_MINUTES,
+            // SignNow rejects a session that outlives its link, so this tracks
+            // `link_expiration` rather than carrying a longer value of its own.
+            session_expiration: SIGNNOW_EMBED_LINK_EXPIRATION_MINUTES,
+          },
+          { validateStatus: () => true },
+        );
+        logSignNowTiming('embedded-invite-link', Date.now() - linkStarted, {
+          documentCount: documents.length,
+        });
+        const url = this.extractEmbeddedLink(linkRes.data);
+        if (linkRes.status < 400 && url) return url;
+        const detail = this.signNowErrorDetail(linkRes);
+        console.warn('[SignNow] group embedded-invite link failed', {
+          status: linkRes.status,
+          email,
+          attempt: attempt + 1,
+          detail,
+        });
+        linkFailures.push(`${email}: ${detail}`);
+        if (!isTransientSignNowFailure(linkRes.status, detail)) break;
+      }
+    }
+    // The document-level invite covers the agreement only, but an Owner review
+    // of the agreement beats handing the preparer an error they cannot act on.
+    const singleDocUrl = await this.mintDocumentEmbeddedInviteLink(client, {
+      documentId,
+      redirect: options.redirect,
+      roles: options.roles,
+    });
+    if (singleDocUrl) {
+      console.warn('[SignNow] fell back to a document-level review link', {
+        groupId: options.groupId,
+        documentId,
+      });
+      return singleDocUrl;
+    }
+    throw new BadRequestException(
+      `Could not mint a SignNow review link. SignNow rejected the review link: ${
+        linkFailures[0] || 'no signer on the invite could be given a link'
+      }`,
+    );
   }
 
   /**

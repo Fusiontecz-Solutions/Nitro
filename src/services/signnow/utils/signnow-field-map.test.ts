@@ -17,6 +17,7 @@ import {
   resolveSignNowPrefillValue,
   shouldSkipSignNowPrefill,
   signNowPrefillDocumentKind,
+  signNowPrefillOptionsForDocument,
 } from './signnow-field-map';
 
 describe('signnow-field-map', () => {
@@ -1257,5 +1258,140 @@ describe('signnow-field-map', () => {
     expect(
       isSupplementalSignNowDocumentName('Obsidian Capital Group - Agreement 1'),
     ).toBe(false);
+  });
+});
+
+/**
+ * Funder disclosure copies. Verified against the live SignNow templates:
+ * Nitro Advance ce1229f1… ("Disclosure - Nitro Advance"), Obsidian Capital
+ * Group 445770b8… ("Disclosure Obsidian Capital Group") and Tiberian Funding
+ * 46bffdc5… ("Tiberian Funding - Disclosure"). All three carry the same 31
+ * widgets under the same names, so one field map fills all three.
+ */
+describe('funder disclosure templates', () => {
+  /** The live widget names, in page order, on all three disclosure copies. */
+  const DISCLOSURE_WIDGETS = [
+    'Text Field 1',
+    'Text Field 2',
+    'Text Field 3',
+    'Text Field 4',
+    'Text Field 5',
+    'Text Field 6',
+    'Text Field 7',
+    'Text Field 8',
+    'disclouser_pg2_frequency',
+    'payement_exceeded_percent_p2_s1',
+    'estimated_term_p2',
+    'finance_charge_p2',
+    'signature_date_p2',
+    'disclosure_recipient_funds_p3',
+    'disclosure_page3_line_1_p3',
+    'disclosure_page3_third_parties_p3',
+    'previous_lender_name_p3',
+    'disclosure_page3_line_2_p3',
+    'disclosure_page3_subtotal_p3',
+    'disclosure_broker_fee_p3',
+    'disclosure_page3_net_p3',
+  ];
+
+  /** The disclosure prefill the CRM emits (already expanded to PDF ids). */
+  const DISCLOSURE_PREFILL: Record<string, string> = {
+    'Text Field 1': '50,000.00',
+    'Text Field 2': '48,525.00',
+    'Text Field 3': '41.23',
+    'Text Field 4': '120,000.00',
+    'Text Field 5': '22,500.00',
+    'Text Field 6': '72,500.00',
+    'Text Field 7': '9,000.00',
+    'Text Field 8': '1,208.33',
+    disclouser_pg2_frequency: 'DAY',
+    disclosure_payment_terms: '12',
+    payement_exceeded_percent_p2_s1: '12',
+    disclosure_term_days: '60',
+    estimated_term_p2: '60',
+    disclosure_finance_charge: '22,500.00',
+    finance_charge_p2: '22,500.00',
+    disclosure_date: '09/21/2026',
+    signature_date_p2: '09/21/2026',
+    disclosure_recipient_funds: '48,525.00',
+    disclosure_recipient_funds_p3: '48,525.00',
+    disclosure_page3_line_1: '1,475.00',
+    disclosure_page3_line_1_p3: '1,475.00',
+    disclosure_page3_third_parties_p3: '0.00',
+    disclosure_page3_line_2: '0.00',
+    disclosure_page3_line_2_p3: '0.00',
+    disclosure_page3_subtotal: '48,525.00',
+    disclosure_page3_subtotal_p3: '48,525.00',
+    disclosure_broker_fee: '1,475.00',
+    disclosure_broker_fee_p3: '1,475.00',
+    disclosure_page3_net: '47,050.00',
+    disclosure_page3_net_p3: '47,050.00',
+    previous_lender_name: '',
+    previous_lender_name_p3: '',
+  };
+
+  function filled(documentName: string): Record<string, string> {
+    const options = signNowPrefillOptionsForDocument(documentName, DISCLOSURE_WIDGETS);
+    const out: Record<string, string> = {};
+    for (const text of buildSignNowDocumentPrefillTexts(
+      DISCLOSURE_WIDGETS,
+      DISCLOSURE_PREFILL,
+      options,
+    )) {
+      out[text.field_name] = text.prefilled_text;
+    }
+    return out;
+  }
+
+  it.each([
+    ['Disclosure - Nitro Advance'],
+    ['Disclosure Obsidian Capital Group'],
+    ['Tiberian Funding - Disclosure'],
+  ])('%s is a disclosure, never that funder’s agreement layout', (documentName) => {
+    // `OBSIDIAN_AGREEMENT_TEXT_FIELDS` / `TIBERIAN_AGREEMENT_TEXT_FIELDS` key off
+    // the funder name and would claim these numbered widgets for contract values.
+    expect(signNowPrefillDocumentKind(documentName, DISCLOSURE_WIDGETS)).toBeUndefined();
+  });
+
+  it('fills every Tiberian disclosure widget the same as the Obsidian copy', () => {
+    const tiberian = filled('Tiberian Funding - Disclosure');
+    const obsidian = filled('Disclosure Obsidian Capital Group');
+    expect(tiberian).toEqual(obsidian);
+    expect(tiberian).toEqual(filled('Disclosure - Nitro Advance'));
+  });
+
+  it('puts the CA page-1 money row on the Tiberian numbered widgets', () => {
+    const out = filled('Tiberian Funding - Disclosure');
+    expect(out['Text Field 1']).toBe('50,000.00');
+    expect(out['Text Field 2']).toBe('48,525.00');
+    expect(out['Text Field 3']).toBe('41.23');
+    expect(out['Text Field 4']).toBe('120,000.00');
+    expect(out['Text Field 5']).toBe('22,500.00');
+    expect(out['Text Field 6']).toBe('72,500.00');
+    expect(out['Text Field 7']).toBe('9,000.00');
+    expect(out['Text Field 8']).toBe('1,208.33');
+  });
+
+  it('fills the Tiberian page-2 and page-3 ledger widgets', () => {
+    const out = filled('Tiberian Funding - Disclosure');
+    expect(out.disclouser_pg2_frequency).toBe('DAY');
+    expect(out.payement_exceeded_percent_p2_s1).toBe('12');
+    expect(out.estimated_term_p2).toBe('60');
+    expect(out.finance_charge_p2).toBe('22,500.00');
+    expect(out.signature_date_p2).toBe('09/21/2026');
+    expect(out.disclosure_recipient_funds_p3).toBe('48,525.00');
+    expect(out.disclosure_page3_line_1_p3).toBe('1,475.00');
+    expect(out.disclosure_page3_subtotal_p3).toBe('48,525.00');
+    expect(out.disclosure_broker_fee_p3).toBe('1,475.00');
+    expect(out.disclosure_page3_net_p3).toBe('47,050.00');
+  });
+
+  it('still reads the Tiberian agreement itself as the agreement', () => {
+    expect(
+      signNowPrefillDocumentKind('CONTRACT TIBERIAN FUNDING (2)', [
+        'merchant_pg22',
+        'p1_totalfee',
+      ]),
+    ).toBe('tiberian_agreement');
   });
 });

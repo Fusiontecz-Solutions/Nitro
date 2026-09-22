@@ -29,6 +29,13 @@ export const APPLICATION_STATE_CONTRACT_SIGNED = 'Signed_Contracts';
 
 type PrismaLike = typeof prisma | Prisma.TransactionClient;
 
+/**
+ * Grace period before broadcasting a stage move that was written inside a
+ * transaction, so listeners that refetch on the event do not read rows the
+ * transaction has not committed yet.
+ */
+const POST_COMMIT_BROADCAST_DELAY_MS = 1_000;
+
 export type ContractWorkflowSyncMeta = {
   source: string;
   contractId?: number;
@@ -170,6 +177,72 @@ function isApplicationPastContractSignedStage(app: {
   );
 }
 
+/**
+ * Envelope-ish status token broadcast with a stage move, so CRM screens that
+ * key off `contract:signing-status` see the same vocabulary the DocuSign /
+ * BoldSign webhooks already push.
+ */
+const STAGE_BROADCAST_STATUS: Record<string, string> = {
+  [APPLICATION_QUEUE_CONTRACT_PENDING]: 'pending',
+  [APPLICATION_QUEUE_CONTRACT_GENERATED]: 'generated',
+  [APPLICATION_QUEUE_CONTRACT_SENT]: 'sent',
+  [APPLICATION_QUEUE_CONTRACT_SIGNED]: 'completed',
+  [APPLICATION_QUEUE_CONTRACT_CANCELLED]: 'revoked',
+};
+
+function providerFromSyncSource(source: string): 'docusign' | 'boldsign' | 'signnow' | 'crm' {
+  const prefix = String(source || '').toLowerCase();
+  if (prefix.startsWith('signnow')) return 'signnow';
+  if (prefix.startsWith('boldsign')) return 'boldsign';
+  if (prefix.startsWith('docusign')) return 'docusign';
+  return 'crm';
+}
+
+/**
+ * Push a stage move to every CRM user watching the deal.
+ *
+ * Without this, only DocuSign emitted realtime status: a SignNow webhook (or
+ * any in-CRM stage move) updated the database and busted the server-side stats
+ * cache, but open browsers learned about it on their next 45s safety poll or
+ * the next remount — which is why the Applications table's CURRENT STATE
+ * column looked like it updated minutes late.
+ *
+ * Fire-and-forget: a socket fan-out must never fail or slow the DB write that
+ * caused it. When the write ran inside a transaction the emit is held back
+ * briefly, so a browser that refetches on the event reads committed rows
+ * rather than the pre-commit snapshot.
+ */
+function broadcastStageChange(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  newQueue: string,
+  previousQueue: string | null | undefined,
+  meta: ContractWorkflowSyncMeta,
+): void {
+  const status = STAGE_BROADCAST_STATUS[newQueue] ?? 'updated';
+  const inTransaction = prismaClient !== prisma;
+  const delayMs = inTransaction ? POST_COMMIT_BROADCAST_DELAY_MS : 0;
+
+  setTimeout(() => {
+    void import('./contractSigningStatusEffects')
+      .then(({ emitContractSigningStatusRealtime }) =>
+        emitContractSigningStatusRealtime({
+          applicationId,
+          status,
+          priorStatus: previousQueue ? STAGE_BROADCAST_STATUS[previousQueue] ?? null : null,
+          provider: providerFromSyncSource(meta.source),
+        }),
+      )
+      .catch((err) => {
+        console.warn('[Contract→Application Sync] realtime stage broadcast failed', {
+          applicationId,
+          newQueue,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }, delayMs).unref?.();
+}
+
 async function syncApplicationWorkflowStage(
   prismaClient: PrismaLike,
   applicationId: string,
@@ -219,6 +292,15 @@ async function syncApplicationWorkflowStage(
   // application controller, so the dashboard cache must be busted here or the
   // sidebar/state-card counts stay stale for the whole cache TTL.
   invalidateAllApplicationStatsCache();
+
+  // Same reason the cache is busted here: open CRM tabs need a push, not a poll.
+  broadcastStageChange(
+    prismaClient,
+    applicationId,
+    updated.currentQueue,
+    application.currentQueue,
+    meta,
+  );
 
   console.log('[Contract→Application Sync]', {
     event: 'sync_applied',
