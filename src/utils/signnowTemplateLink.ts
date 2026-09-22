@@ -23,6 +23,8 @@ import {
   SIGNNOW_MONTHLY_FEE_TEMPLATE_ID,
   SIGNNOW_PAYOFF_ADDENDUM_LAYOUT_KEY,
   SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID,
+  SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID,
+  registerSignNowDisclosureTemplateRefs,
 } from "@/components/application/contractdata/signnowAddendumTemplates";
 
 /** SignNow document / template ids are 40-char hex. */
@@ -35,6 +37,7 @@ const KNOWN_SIGNNOW_TEMPLATE_ID_LABELS: Record<string, string> = {
   [SIGNNOW_EXHIBIT_C_TEMPLATE_ID]: "Exhibit C",
   [SIGNNOW_FLEX_ADDENDUM_TEMPLATE_ID]: "Flex Addendum",
   [SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID]: "PayOff Addendum (Refi)",
+  [SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID]: "Payoff Addendum",
   [SIGNNOW_EPA_TEMPLATE_ID]: "EPA Nitro Advance",
   [SIGNNOW_MONTHLY_FEE_TEMPLATE_ID]: "Monthly Fee",
   [SIGNNOW_DISCLOSURE_TEMPLATE_ID]: "State Disclosure",
@@ -315,6 +318,15 @@ export function mapFunderSignNowTemplates(
   // file, so a ref-only lookup elsewhere (no label in hand) can still tell a
   // funder-specific Exhibit C template apart from a single-instance addendum.
   registerAddendumRefLabels(out);
+  // A funder's disclosure copy is keyed by its own SignNow id (Settings names it
+  // after the funder, e.g. "TIBERIAN FUNDING", so no `disclosure` slug to match).
+  // Registering the ids is what lets a ref-only caller recognize it as the
+  // disclosure and expand the disclosure prefill onto it.
+  if (kind === "disclosure") {
+    registerSignNowDisclosureTemplateRefs(
+      out.flatMap((opt) => [opt.layoutKey, opt.templateId, opt.link]),
+    );
+  }
   return out;
 }
 

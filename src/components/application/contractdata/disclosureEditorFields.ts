@@ -70,7 +70,16 @@ export const DISCLOSURE_EDITOR_FIELD_CATALOG: ReadonlyArray<{ id: string; label:
     { id: "disclosure_date", label: "Disclosure date" },
 ];
 
-/** PDF / legacy prefill field ids written for each canonical editor field. */
+/**
+ * PDF / legacy prefill field ids written for each canonical editor field.
+ *
+ * The `_p2` / `_p3` / `_p2_s1` entries are the live SignNow unique names on the
+ * funder disclosure templates — verified against Nitro Advance
+ * (ce1229f1…), Obsidian Capital Group (445770b8…) and Tiberian Funding
+ * (46bffdc5…), which ship byte-identical widget names. SignNow scopes a widget
+ * to its page with that suffix; writing both the suffixed and unsuffixed id
+ * means the value lands whether or not the reader strips the suffix.
+ */
 const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     disclosure_avg_monthly_revenue: [
         "disclosure_avg_monthly_revenue",
@@ -91,6 +100,7 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     funding_provided_direct: ["funding_provided_direct", "Text Field 2"],
     disclosure_recipient_funds: [
         "disclosure_recipient_funds",
+        "disclosure_recipient_funds_p3",
         "total_amount_of_fund_disbursed",
         "total_amount_fund_disbursed",
         "disbursement_amount",
@@ -110,6 +120,7 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "finance_charge",
         "financeCharge",
         "total_dollar_cost_of_frinancing",
+        "finance_charge_p2",
         "Text Field 5",
     ],
     disclosure_total_payment: [
@@ -160,11 +171,23 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         // (those IDs are Daily/Weekly cadence on the main contract).
         "payment_terms_percent",
         "payment_exceed_percent",
+        "payement_exceeded_percent_p2_s1",
     ],
-    disclosure_term_days: ["disclosure_term_days", "estimated_term", "estimated_number_of_payement", "estimated_time_periodic_paymement"],
-    disclosure_broker_fee: ["disclosure_broker_fee", "appendix_underwriting_fees"],
+    disclosure_term_days: [
+        "disclosure_term_days",
+        "estimated_term",
+        "estimated_term_p2",
+        "estimated_number_of_payement",
+        "estimated_time_periodic_paymement",
+    ],
+    disclosure_broker_fee: [
+        "disclosure_broker_fee",
+        "disclosure_broker_fee_p3",
+        "appendix_underwriting_fees",
+    ],
     disclosure_page3_line_1: [
         "disclosure_page3_line_1",
+        "disclosure_page3_line_1_p3",
         "disclosure_fees_deducted",
         "disclosure_origination_fee",
     ],
@@ -173,8 +196,8 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "disclosure_page3_line_2_p3",
         "refinance_amount",
     ],
-    disclosure_page3_subtotal: ["disclosure_page3_subtotal"],
-    disclosure_page3_net: ["disclosure_page3_net"],
+    disclosure_page3_subtotal: ["disclosure_page3_subtotal", "disclosure_page3_subtotal_p3"],
+    disclosure_page3_net: ["disclosure_page3_net", "disclosure_page3_net_p3"],
     disclosure_page3_third_parties: [
         "disclosure_page3_third_parties",
         "disclosure_page3_third_parties_p3",
@@ -182,10 +205,12 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     disclosure_page3_3a: ["disclosure_page3_3a", "disclosure_page3_3a_p3"],
     disclosure_page3_3b: ["disclosure_page3_3b", "disclosure_page3_3b_p3"],
     disclosure_page3_3c: ["disclosure_page3_3c", "disclosure_page3_3c_p3"],
-    previous_lender_name: ["previous_lender_name"],
+    previous_lender_name: ["previous_lender_name", "previous_lender_name_p3"],
     disclosure_payment_frequency: [
         "disclosure_payment_frequency",
         "payment_frequency",
+        // SignNow's own spelling on the disclosure page-1 payment row.
+        "disclouser_pg2_frequency",
         "Text Field 9",
     ],
     client_name: [
@@ -206,6 +231,7 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "disclosure_date2",
         "Signature_date",
         "signature_date",
+        "signature_date_p2",
         "signature1_date",
     ],
 };
@@ -486,6 +512,9 @@ export function expandDisclosureEditorValuesToPdfFields(
                 ? String(editorValues.funder_name || PLATFORM_DISCLOSURE_FUNDER_NAME).trim()
                 : "";
     }
+    // Resolved after the expansion loop above, so its SignNow page-3 name is
+    // mirrored here rather than through EDITOR_TO_PDF_FIELD_IDS.
+    out.previous_lender_name_p3 = out.previous_lender_name;
 
     const INLINE_PERCENT_TAB_IDS = new Set([
         "payement_exceeded_percent",
@@ -517,6 +546,9 @@ export function expandDisclosureEditorValuesToPdfFields(
         if (
             idNorm === "paymentfrequency" ||
             idNorm === "disclosurepaymentfrequency" ||
+            // SignNow's own (misspelled) name for the page-1 cadence widget on
+            // the funder disclosure templates.
+            idNorm === "disclouserpg2frequency" ||
             idNorm === "frequency" ||
             idNorm === "paymentterms"
         ) {

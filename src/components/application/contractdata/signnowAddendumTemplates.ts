@@ -19,6 +19,15 @@ export const SIGNNOW_FLEX_ADDENDUM_TEMPLATE_ID =
 export const SIGNNOW_PAYOFF_ADDENDUM_LAYOUT_KEY = "payoff_addendum";
 export const SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID =
     "f43506d2bed645099045b75bd9abc6f5825e7bf6";
+/**
+ * Tiberian Funding's own copy of the PayOff Addendum (Settings -> Funders names
+ * it "Payoff Addendum"). Like every funder copy it is stored under its own
+ * 40-char SignNow id, so a ref-only caller — one holding the id but no display
+ * name — cannot tell it is a payoff addendum from the id alone. Naming it here
+ * is what lets `resolveAddendumKind` reach the payoff prefill for this funder.
+ */
+export const SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID =
+    "1a242e0fb07c41d08fd0f3d25662d61a86642a36";
 export const SIGNNOW_EPA_LAYOUT_KEY = "epa";
 export const SIGNNOW_EPA_TEMPLATE_ID =
     "084719dbcd1142c4b5ce8bcde5e253193fc47a4b";
@@ -28,6 +37,40 @@ export const SIGNNOW_MONTHLY_FEE_TEMPLATE_ID =
 export const SIGNNOW_DISCLOSURE_LAYOUT_KEY = "signnow_disclosure";
 export const SIGNNOW_DISCLOSURE_TEMPLATE_ID =
     "ce1229f11a6942118bded3e3cb8715434dc3f8af";
+
+/**
+ * Funder-specific SignNow disclosure templates, by template id.
+ *
+ * Each funder uploads its own copy of the state disclosure (Obsidian Capital
+ * Group, Tiberian Funding, …) and Settings -> Funders stores it under that
+ * copy's own 40-char SignNow id rather than the shared `signnow_disclosure`
+ * key, so two funders' copies never overwrite each other's mapping. Those ids
+ * are not knowable up front, so `mapFunderSignNowTemplates` registers each one
+ * here as the funder profiles load; a ref-only caller (which has the id but no
+ * document type in hand) can then still tell a disclosure from an addendum.
+ *
+ * Seeded with Tiberian Funding's id so a disclosure-only send is recognized
+ * before any funder profile has been fetched.
+ */
+export const SIGNNOW_TIBERIAN_DISCLOSURE_TEMPLATE_ID =
+    "46bffdc5ef0c4eef80a05e627fa34d999c216502";
+
+const signNowDisclosureTemplateIds = new Set<string>([
+    SIGNNOW_DISCLOSURE_TEMPLATE_ID,
+    SIGNNOW_TIBERIAN_DISCLOSURE_TEMPLATE_ID,
+]);
+
+/** Record a funder's disclosure template ids / layout keys (never cleared — ids are stable). */
+export function registerSignNowDisclosureTemplateRefs(
+    refs: ReadonlyArray<string | null | undefined>,
+): void {
+    for (const ref of refs) {
+        const key = String(ref ?? "")
+            .trim()
+            .toLowerCase();
+        if (key) signNowDisclosureTemplateIds.add(key);
+    }
+}
 
 export const SIGNNOW_ADDENDUM_TEMPLATE_OPTIONS: SupplementalDocumentOption[] = [
     { layoutKey: SIGNNOW_ACH_DAILY_LAYOUT_KEY, label: "ACH Daily" },
@@ -54,10 +97,13 @@ export function isSignNowAddendumLayoutKey(value: unknown): boolean {
     if (key === SIGNNOW_EXHIBIT_A_TEMPLATE_ID) return true;
     if (key === SIGNNOW_FLEX_ADDENDUM_TEMPLATE_ID) return true;
     if (key === SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID) return true;
+    if (key === SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID) return true;
     if (key === SIGNNOW_EPA_TEMPLATE_ID) return true;
     if (key === SIGNNOW_MONTHLY_FEE_TEMPLATE_ID) return true;
     // Settings → Funders may store a raw SignNow template id as the option key.
-    if (/^[a-f0-9]{40}$/i.test(key)) return true;
+    // A funder's disclosure copy is stored the same way, so exclude the ids
+    // registered as disclosures — they are not addenda.
+    if (/^[a-f0-9]{40}$/i.test(key)) return !signNowDisclosureTemplateIds.has(key);
     return (
         key.endsWith("_ach_daily") ||
         key.endsWith("_ach_weekly") ||
@@ -78,7 +124,20 @@ export function isSignNowDisclosureLayoutKey(value: unknown): boolean {
     if (!key) return false;
     return (
         key === SIGNNOW_DISCLOSURE_LAYOUT_KEY ||
-        key === SIGNNOW_DISCLOSURE_TEMPLATE_ID.toLowerCase() ||
+        signNowDisclosureTemplateIds.has(key) ||
         key.endsWith("_signnow_disclosure")
+    );
+}
+
+/** True for Tiberian Funding's PayOff Addendum copy (its own SignNow template id). */
+export function isTiberianPayoffAddendumRef(
+    ...refs: ReadonlyArray<string | null | undefined>
+): boolean {
+    return refs.some(
+        (ref) =>
+            String(ref ?? "")
+                .trim()
+                .toLowerCase()
+                .replace(/^bs:/i, "") === SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID,
     );
 }

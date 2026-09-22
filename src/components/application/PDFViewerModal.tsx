@@ -270,9 +270,7 @@ import {
 } from "@/utils/signnowTemplateLink";
 import {
     beginSignNowReviewTiming,
-    getActiveSignNowReviewTimingId,
     markSignNowReviewEmbedSet,
-    markSignNowReviewIframeLoad,
     newSignNowTimingRequestId,
 } from "@/utils/signnowTiming";
 import {
@@ -324,8 +322,8 @@ import {
 const SIGNNOW_REVIEW_TOAST_ID = "signnow-review-hint";
 /** How often the CRM asks SignNow whether Owner Review has been finished. */
 const SIGNNOW_REVIEW_POLL_MS = 4000;
-/** How long SignNow may stay blank before the CRM offers a reload / new tab. */
-const SIGNNOW_EMBED_SLOW_MS = 25000;
+/** Named window for the Owner Review tab, so a reopen reuses the same tab. */
+const SIGNNOW_REVIEW_TAB_NAME = "nitro-signnow-review";
 /** Slower cadence once the review has been open a while. */
 const SIGNNOW_REVIEW_POLL_SLOW_MS = 12000;
 const SIGNNOW_REVIEW_POLL_BACKOFF_AFTER_MS = 3 * 60 * 1000;
@@ -2027,19 +2025,21 @@ const PDFViewerModal = ({
     const [docuSignOpenUrl, setDocuSignOpenUrl] = useState<string | null>(null);
     const [signNowEmbedUrl, setSignNowEmbedUrl] = useState<string | null>(null);
     const [signNowReviewVisible, setSignNowReviewVisible] = useState(false);
-    const [signNowEmbedBlocked, setSignNowEmbedBlocked] = useState(false);
     const [signNowReviewComplete, setSignNowReviewComplete] = useState(false);
     const signNowEmbedUrlRef = useRef<string | null>(null);
     const signNowReviewCompleteRef = useRef(false);
     signNowEmbedUrlRef.current = signNowEmbedUrl;
     signNowReviewCompleteRef.current = signNowReviewComplete;
-    const signNowIframeRef = useRef<HTMLIFrameElement | null>(null);
-    /** True from the moment a review URL is set until SignNow's first load event. */
-    const [signNowEmbedLoading, setSignNowEmbedLoading] = useState(false);
-    /** SignNow has not painted after SIGNNOW_EMBED_SLOW_MS — offer a way out. */
-    const [signNowEmbedSlow, setSignNowEmbedSlow] = useState(false);
-    const [signNowEmbedReloadKey, setSignNowEmbedReloadKey] = useState(0);
-    const signNowIframeLoadCountRef = useRef(0);
+    /**
+     * The browser tab the Owner Review runs in.
+     *
+     * SignNow is no longer framed inside the CRM: its embedded editor needs its
+     * own top-level origin to keep the signnow.com session, and inside an iframe
+     * it fell back to the SignNow login screen. The review now opens as a real
+     * tab, and the CRM keeps this handle so "Open SignNow tab" refocuses that
+     * tab instead of minting a second review window.
+     */
+    const signNowReviewTabRef = useRef<Window | null>(null);
     const signNowCompleteToastShownRef = useRef(false);
     /** Last minted review URL — reopen without calling SignNow prepare again. */
     const signNowCachedEmbedUrlRef = useRef<string | null>(null);
@@ -2074,19 +2074,70 @@ const PDFViewerModal = ({
     /** After user explicitly opens Documents during this modal session, stop auto-switching Documents → Sent. */
     const didSuggestSentTabThisOpenRef = useRef(false);
     const awaitingDocuSignSendRef = useRef(false);
+    /** Close the Owner Review tab the CRM opened, if it is still ours and open. */
+    const closeSignNowReviewTab = useCallback(() => {
+        const tab = signNowReviewTabRef.current;
+        signNowReviewTabRef.current = null;
+        if (!tab) return;
+        try {
+            if (!tab.closed) tab.close();
+        } catch {
+            /* Cross-origin tab that refused to close — leave it to the user. */
+        }
+    }, []);
+    /**
+     * Point the review tab at SignNow.
+     *
+     * `preOpened` is the blank tab opened synchronously on the click: browsers
+     * only allow `window.open` inside a user gesture, and the review URL is not
+     * minted until several awaits later, so the tab is claimed first and
+     * navigated once SignNow answers.
+     */
+    const openSignNowReviewTab = useCallback((url: string, preOpened?: Window | null) => {
+        const existing = signNowReviewTabRef.current;
+        let tab: Window | null =
+            preOpened && !preOpened.closed
+                ? preOpened
+                : existing && !existing.closed
+                  ? existing
+                  : null;
+        if (!tab) {
+            tab = window.open(url, SIGNNOW_REVIEW_TAB_NAME);
+            if (!tab) {
+                signNowReviewTabRef.current = null;
+                toast.error(
+                    "Your browser blocked the SignNow tab. Allow pop-ups for this site, then click Open SignNow tab.",
+                    { autoClose: 12000 },
+                );
+                return false;
+            }
+        } else {
+            try {
+                tab.location.href = url;
+            } catch {
+                tab = window.open(url, SIGNNOW_REVIEW_TAB_NAME);
+            }
+        }
+        signNowReviewTabRef.current = tab;
+        try {
+            tab?.focus();
+        } catch {
+            /* Focus is a courtesy — the tab is open either way. */
+        }
+        return true;
+    }, []);
     const resetSignNowReviewUi = useCallback((options?: { keepCachedEmbed?: boolean }) => {
         setSignNowEmbedUrl(null);
         setSignNowReviewVisible(false);
         setSignNowReviewComplete(false);
-        setSignNowEmbedBlocked(false);
-        signNowIframeLoadCountRef.current = 0;
+        closeSignNowReviewTab();
         signNowCompleteToastShownRef.current = false;
         awaitingDocuSignSendRef.current = false;
         if (!options?.keepCachedEmbed) {
             signNowCachedEmbedUrlRef.current = null;
         }
         toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
-    }, []);
+    }, [closeSignNowReviewTab]);
     const refreshContractSigningStateRef = useRef<
         (
             silent?: boolean,
@@ -3742,8 +3793,7 @@ const PDFViewerModal = ({
             setSignNowEmbedUrl(null);
             setSignNowReviewVisible(false);
             setSignNowReviewComplete(false);
-            setSignNowEmbedBlocked(false);
-            signNowIframeLoadCountRef.current = 0;
+            closeSignNowReviewTab();
             signNowCompleteToastShownRef.current = false;
             awaitingDocuSignSendRef.current = false;
             toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
@@ -3892,7 +3942,7 @@ const PDFViewerModal = ({
         return () => {
             cancelled = true;
         };
-    }, [isOpen, contractId, applicationIdForLookup, dispatch]);
+    }, [isOpen, contractId, applicationIdForLookup, dispatch, closeSignNowReviewTab]);
 
     const effectiveContractId = useMemo(() => {
         if (resolvedContractId != null && Number.isFinite(resolvedContractId) && resolvedContractId > 0) {
@@ -5699,6 +5749,7 @@ const PDFViewerModal = ({
         ) {
             setSignNowReviewVisible(true);
             setPdfRightPaneTab("docusign");
+            openSignNowReviewTab(signNowEmbedUrl);
             return;
         }
         sendingLockRef.current = true;
@@ -5761,6 +5812,14 @@ const PDFViewerModal = ({
         }
 
         let docuSignTab: Window | null = null;
+        /**
+         * Claimed synchronously on the click — a `window.open` after the first
+         * await is a pop-up block — and navigated to SignNow once the review URL
+         * comes back. Closed again in `finally` if this click turned out to be a
+         * send rather than a review.
+         */
+        let signNowReviewTab: Window | null = null;
+        let signNowReviewTabConsumed = false;
         try {
             setDocuSignOpenUrl(null);
             if (!sendViaSignNowApi) {
@@ -5768,6 +5827,15 @@ const PDFViewerModal = ({
                 if (docuSignTab) {
                     try {
                         writeDocuSignLoadingTab(docuSignTab.document);
+                    } catch {
+                        /* ignore */
+                    }
+                }
+            } else if (!sendingOpenSignNowDraft) {
+                signNowReviewTab = window.open("about:blank", SIGNNOW_REVIEW_TAB_NAME);
+                if (signNowReviewTab) {
+                    try {
+                        writeDocuSignLoadingTab(signNowReviewTab.document);
                     } catch {
                         /* ignore */
                     }
@@ -5996,6 +6064,8 @@ const PDFViewerModal = ({
                         setSignNowEmbedUrl(embedUrl);
                         setSignNowReviewVisible(true);
                         setSignNowReviewComplete(false);
+                        signNowReviewTabConsumed = true;
+                        openSignNowReviewTab(embedUrl, signNowReviewTab);
                         return;
                     }
                 }
@@ -6166,8 +6236,10 @@ const PDFViewerModal = ({
                     setSignNowEmbedUrl(embedUrl);
                     setSignNowReviewVisible(true);
                     setSignNowReviewComplete(false);
+                    signNowReviewTabConsumed = true;
+                    openSignNowReviewTab(embedUrl, signNowReviewTab);
                     toast.info(
-                        "Review the contract in SignNow, then click Finish. You will stay in the CRM.",
+                        "SignNow opened in a new tab. Click Finish there, then come back and click Send via SignNow.",
                         {
                             toastId: SIGNNOW_REVIEW_TOAST_ID,
                             autoClose: 8000,
@@ -6268,6 +6340,13 @@ const PDFViewerModal = ({
             }
             toast.error(msg);
         } finally {
+            if (signNowReviewTab && !signNowReviewTabConsumed) {
+                try {
+                    if (!signNowReviewTab.closed) signNowReviewTab.close();
+                } catch {
+                    /* ignore */
+                }
+            }
             sendingLockRef.current = false;
             setIsSending(false);
         }
@@ -6292,75 +6371,20 @@ const PDFViewerModal = ({
         setSignNowReviewComplete(true);
         signNowCachedEmbedUrlRef.current = null;
         awaitingDocuSignSendRef.current = false;
+        // The embedded-complete page closes itself when SignNow redirects to it;
+        // this covers the manual "I've clicked Finish" and the status poll.
+        closeSignNowReviewTab();
         toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
         if (signNowCompleteToastShownRef.current) return;
         signNowCompleteToastShownRef.current = true;
         toast.success(
             "SignNow review finished. Click Send via SignNow to email the merchant.",
         );
-    }, []);
-
-    const handleSignNowIframeLoad = useCallback(() => {
-        const timingId = getActiveSignNowReviewTimingId();
-        if (timingId) markSignNowReviewIframeLoad(timingId);
-        setSignNowEmbedLoading(false);
-        if (signNowReviewCompleteRef.current) return;
-        signNowIframeLoadCountRef.current += 1;
-        try {
-            const href = String(signNowIframeRef.current?.contentWindow?.location.href || "");
-            if (href.includes("embedded-complete")) {
-                markSignNowReviewComplete();
-                return;
-            }
-        } catch {
-            /* Cross-origin SignNow page — URL is not readable. */
-        }
-        /**
-         * A second load event is NOT a finish.
-         *
-         * SignNow's embedded filler navigates on its own — it bootstraps the
-         * session, swaps in the document viewer, and its front loader reloads
-         * whenever an asset fetch from `snfiller-cdn.signnow.com` fails. Every
-         * one of those fired this heuristic and dropped the preparer onto
-         * "Owner review complete / Send via SignNow" over a document they had
-         * never seen. Finish is now read from the `/embedded-complete`
-         * redirect, its postMessage, and the server-side review-status poll,
-         * all three of which describe what actually happened in SignNow.
-         */
-    }, [markSignNowReviewComplete]);
+    }, [closeSignNowReviewTab]);
 
     useEffect(() => {
-        signNowIframeLoadCountRef.current = 0;
         signNowCompleteToastShownRef.current = false;
-        setSignNowEmbedBlocked(false);
-        setSignNowEmbedSlow(false);
-        setSignNowEmbedLoading(Boolean(signNowEmbedUrl));
-        if (!signNowEmbedUrl) return;
-        const onCsp = (event: SecurityPolicyViolationEvent) => {
-            const directive = `${event.effectiveDirective} ${event.violatedDirective}`;
-            if (!/frame-src|default-src|child-src/.test(directive)) return;
-            const blocked = String(event.blockedURI || event.documentURI || "");
-            if (/signnow\.com/i.test(blocked) || /signnow\.com/i.test(signNowEmbedUrl)) {
-                setSignNowEmbedBlocked(true);
-            }
-        };
-        document.addEventListener("securitypolicyviolation", onCsp);
-        /**
-         * SignNow's embedded filler pulls its own bundle and manifest from
-         * `snfiller-cdn.signnow.com`. When one of those fetches is blocked or
-         * dropped the frame just sits on the SignNow logo forever, with no
-         * error of any kind reaching the CRM. Surface that instead of leaving
-         * the preparer staring at an empty pane.
-         */
-        const slowTimer = window.setTimeout(
-            () => setSignNowEmbedSlow(true),
-            SIGNNOW_EMBED_SLOW_MS,
-        );
-        return () => {
-            document.removeEventListener("securitypolicyviolation", onCsp);
-            window.clearTimeout(slowTimer);
-        };
-    }, [signNowEmbedUrl, signNowEmbedReloadKey]);
+    }, [signNowEmbedUrl]);
 
     useEffect(() => {
         if (!signNowEmbedUrl) return;
@@ -7683,13 +7707,14 @@ const PDFViewerModal = ({
             signNowCachedEmbedUrlRef.current = null;
             setSignNowEmbedUrl(null);
             setSignNowReviewVisible(false);
+            closeSignNowReviewTab();
             return;
         }
         // Claim before the async call so effect re-runs from unstable callback deps
         // cannot stack the same sync + toast while a request is in flight / failed.
         draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
         void syncPrefillToDraftEnvelopeRef.current({ envelopeId: eid });
-    }, [prefillDraftFingerprint]);
+    }, [prefillDraftFingerprint, closeSignNowReviewTab]);
 
     const applyDisclosureCalculation = useCallback(
         async (args: {
@@ -13927,7 +13952,7 @@ const PDFViewerModal = ({
                                             <p className="text-[11px] font-medium text-slate-700">
                                                 {signNowReviewComplete
                                                     ? "Owner review is done. Send to the merchant, go back into SignNow, or change details first."
-                                                    : "Review as Owner. Deal fields are already filled. Click Finish in SignNow, then Send via SignNow so the merchant only has to sign."}
+                                                    : "SignNow is open in a separate tab. Deal fields are already filled. Click Finish there, then Send via SignNow so the merchant only has to sign."}
                                             </p>
                                             <div className="flex shrink-0 items-center gap-1.5">
                                                 {signNowReviewComplete ? null : (
@@ -13948,6 +13973,7 @@ const PDFViewerModal = ({
                                                         signNowForceFreshReviewRef.current = false;
                                                         setSignNowReviewVisible(false);
                                                         setSignNowReviewComplete(false);
+                                                        closeSignNowReviewTab();
                                                         toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
                                                     }}
                                                 >
@@ -13956,30 +13982,7 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
                                         <div className="relative min-h-0 flex-1">
-                                            {signNowEmbedBlocked ? (
-                                                <div className="absolute inset-0 flex items-center justify-center bg-slate-50 px-6">
-                                                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-lg">
-                                                        <h3 className="text-lg font-semibold text-slate-900">
-                                                            SignNow cannot open in this pane
-                                                        </h3>
-                                                        <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                                                            The live site is blocking SignNow inside an iframe.
-                                                            Open the template in a new tab to review it, then
-                                                            return here and send.
-                                                        </p>
-                                                        <Button
-                                                            type="button"
-                                                            className="mt-6 h-11 w-full cursor-pointer border-0 bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
-                                                            onClick={() =>
-                                                                window.open(signNowEmbedUrl, "nitro-signnow-review")
-                                                            }
-                                                        >
-                                                            <ExternalLink className="mr-2 h-4 w-4" aria-hidden />
-                                                            Open template in SignNow
-                                                        </Button>
-                                                    </div>
-                                                </div>
-                                            ) : isSending ? (
+                                            {isSending ? (
                                                 <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/90 px-6">
                                                     <div className="max-w-sm text-center">
                                                         <p className="text-sm font-semibold text-slate-900">
@@ -13994,78 +13997,40 @@ const PDFViewerModal = ({
                                             ) : signNowReviewComplete ? (
                                                 <div className="absolute inset-0 bg-slate-100" aria-hidden />
                                             ) : (
-                                            <>
-                                            <iframe
-                                                ref={signNowIframeRef}
-                                                key={`${signNowEmbedUrl}#${signNowEmbedReloadKey}`}
-                                                title="SignNow Document Verification"
-                                                src={signNowEmbedUrl}
-                                                className="absolute inset-0 h-full w-full border-0"
-                                                allow="clipboard-write; fullscreen; storage-access *"
-                                                referrerPolicy="strict-origin-when-cross-origin"
-                                                onLoad={handleSignNowIframeLoad}
-                                            />
-                                            {signNowEmbedLoading ? (
-                                                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/95 px-6">
-                                                    <div className="pointer-events-auto max-w-sm text-center">
-                                                        <Loader2
-                                                            className="mx-auto h-6 w-6 animate-spin text-[var(--brand)]"
-                                                            aria-hidden
-                                                        />
-                                                        <p className="mt-3 text-sm font-semibold text-slate-900">
-                                                            Opening the package in SignNow…
+                                                <div className="absolute inset-0 flex items-center justify-center bg-slate-50 px-6">
+                                                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-lg">
+                                                        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100">
+                                                            <ExternalLink
+                                                                className="h-7 w-7 text-[var(--brand)]"
+                                                                aria-hidden
+                                                            />
+                                                        </div>
+                                                        <h3 className="text-lg font-semibold text-slate-900">
+                                                            SignNow opened in a new tab
+                                                        </h3>
+                                                        <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                                                            Review the package there and click Finish. The deal
+                                                            stays open here — the CRM switches to Send via
+                                                            SignNow on its own once the review is finished.
                                                         </p>
-                                                        <p className="mt-2 text-xs leading-relaxed text-slate-600">
-                                                            SignNow loads the agreement and every addendum
-                                                            before it shows the first page. This can take
-                                                            several seconds on a full package.
-                                                        </p>
-                                                        {signNowEmbedSlow ? (
-                                                            <div className="mt-5 space-y-2 text-left">
-                                                                <p className="text-xs leading-relaxed text-amber-700">
-                                                                    Still blank. SignNow&apos;s own assets are
-                                                                    not loading — an ad blocker, a proxy or
-                                                                    blocked third-party cookies will do this.
-                                                                    Reload the frame, or open the review in a
-                                                                    new tab and come back here to send.
-                                                                </p>
-                                                                <div className="flex gap-2">
-                                                                    <Button
-                                                                        type="button"
-                                                                        variant="outline"
-                                                                        className="h-8 flex-1 text-xs"
-                                                                        onClick={() => {
-                                                                            setSignNowEmbedSlow(false);
-                                                                            setSignNowEmbedLoading(true);
-                                                                            setSignNowEmbedReloadKey((n) => n + 1);
-                                                                        }}
-                                                                    >
-                                                                        Reload SignNow
-                                                                    </Button>
-                                                                    <Button
-                                                                        type="button"
-                                                                        variant="outline"
-                                                                        className="h-8 flex-1 text-xs"
-                                                                        onClick={() =>
-                                                                            window.open(
-                                                                                signNowEmbedUrl,
-                                                                                "nitro-signnow-review",
-                                                                            )
-                                                                        }
-                                                                    >
-                                                                        <ExternalLink
-                                                                            className="mr-1.5 h-3.5 w-3.5"
-                                                                            aria-hidden
-                                                                        />
-                                                                        Open in new tab
-                                                                    </Button>
-                                                                </div>
-                                                            </div>
-                                                        ) : null}
+                                                        <Button
+                                                            type="button"
+                                                            className="mt-6 h-11 w-full cursor-pointer border-0 bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
+                                                            onClick={() => openSignNowReviewTab(signNowEmbedUrl)}
+                                                        >
+                                                            <ExternalLink className="mr-2 h-4 w-4" aria-hidden />
+                                                            Open SignNow tab
+                                                        </Button>
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            className="mt-3 h-10 w-full cursor-pointer text-sm font-medium"
+                                                            onClick={markSignNowReviewComplete}
+                                                        >
+                                                            I&apos;ve clicked Finish
+                                                        </Button>
                                                     </div>
                                                 </div>
-                                            ) : null}
-                                            </>
                                             )}
                                             {signNowReviewComplete ? (
                                                 <div
