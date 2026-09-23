@@ -588,6 +588,12 @@ model Document {
   /// embedded invite, which otherwise reads as "owner review still open" and would
   /// be rolled back to draft by revertPrematureSentIfOwnerReview.
   portalSentAt      DateTime?
+  /// CC addresses this envelope was sent to, captured at send time.
+  /// The CC list only ever lived in the send request body, so once the signers
+  /// finished there was nothing left to tell the completion notice who had been
+  /// copied. Persisting it here lets the signed-package email reach the same
+  /// people who received the unsigned copy.
+  ccEmails          String[]    @default([])
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   userId            Int

@@ -7371,12 +7371,26 @@ class ApplicationController {
                 });
             }
 
-            const ok = await reinitiateContractForApplication(String((application as any).id), {
-                user: authUser,
-                req,
-                actorName: String((req as any).user?.name || ''),
-                source: 'applicationController.reinitiateContract',
-            });
+            /**
+             * The Contract tab's "Resend New Contract" drives the same archive/reset, but the
+             * user is regenerating right now: the deal must not be parked in the ISO
+             * re-approval bucket, and every cached prefill value has to go so the new package
+             * picks up the edited offer / application / owner details.
+             */
+            const resend = (req.body as { resend?: unknown })?.resend === true;
+
+            const ok = await reinitiateContractForApplication(
+                String((application as any).id),
+                {
+                    user: authUser,
+                    req,
+                    actorName: String((req as any).user?.name || ''),
+                    source: resend
+                        ? 'applicationController.reinitiateContract:resend'
+                        : 'applicationController.reinitiateContract',
+                },
+                resend ? { clearFieldOverrides: true, flagForReinitiation: false } : undefined,
+            );
             if (!ok) {
                 return res.status(404).json({
                     success: false,
@@ -7404,7 +7418,9 @@ class ApplicationController {
 
             return res.status(200).json({
                 success: true,
-                message: 'Contract reinitiated. Generate a new contract when ready.',
+                message: resend
+                    ? 'Previous contract archived. Generating a new contract from the current values.'
+                    : 'Contract reinitiated. Generate a new contract when ready.',
                 data: mapApplicationToApi(refreshed),
             });
         } catch (error: any) {

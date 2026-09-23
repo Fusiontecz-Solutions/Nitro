@@ -163,12 +163,30 @@ export async function reconcileStaleContractReinitiationFlags(): Promise<number>
  * Archive the current main-contract envelope, reset CRM contract/document rows,
  * and mark the deal as needing a fresh contract after ISO re-approves updated terms.
  */
+export type ContractReinitiationOptions = {
+    /**
+     * Drop every saved prefill field override so the replacement package re-derives each
+     * value from the live offer / application / owner records. Used by the Contract tab's
+     * "Resend New Contract", where the whole point is that edited deal data must win.
+     */
+    clearFieldOverrides?: boolean;
+    /**
+     * Leave `needsContractReinitiation` set (default) so the deal sits in the ISO
+     * re-approval bucket until someone regenerates. A user-driven resend passes false:
+     * it regenerates immediately, so the flag would only be raised and cleared again.
+     */
+    flagForReinitiation?: boolean;
+};
+
 export async function reinitiateContractForApplication(
     applicationId: string,
     logContext?: ContractWorkflowLogContext,
+    options?: ContractReinitiationOptions,
 ): Promise<boolean> {
     const appId = String(applicationId || '').trim();
     if (!appId) return false;
+    const flagForReinitiation = options?.flagForReinitiation !== false;
+    const clearFieldOverrides = options?.clearFieldOverrides === true;
 
     const applicationBefore = await prisma.application.findUnique({
         where: { id: appId },
@@ -226,7 +244,11 @@ export async function reinitiateContractForApplication(
     });
 
     if (!contract) {
-        await flagNeedsContractReinitiation(appId);
+        if (flagForReinitiation) {
+            await flagNeedsContractReinitiation(appId);
+        } else {
+            await clearNeedsContractReinitiation(appId);
+        }
         await prisma.application.update({
             where: { id: appId },
             data: {
@@ -276,13 +298,26 @@ export async function reinitiateContractForApplication(
     }
 
     /**
+     * Re-read the prefill blob: `archiveMainContractEnvelopeToHistory` has just written the
+     * archived send onto it, and resetting from the pre-archive snapshot read above would
+     * drop that entry — the prior send would vanish from Contracts Generated.
+     */
+    const contractAfterArchive = await prisma.contract.findUnique({
+        where: { id: contract.id },
+        select: { contractPrefillOverrides: true },
+    });
+    const prefillAfterArchive =
+        contractAfterArchive?.contractPrefillOverrides ?? contract.contractPrefillOverrides;
+
+    /**
      * Pointers at the package that was just archived. The send HISTORY is deliberately
      * kept, but these name the live envelope for the main contract and for each document
      * mapping — left in place, the regenerated package would attach the superseded
      * documents instead of building fresh ones.
      */
-    const clearedPrefillOverrides = clearLiveEnvelopePointers(
-        contract.contractPrefillOverrides,
+    const clearedPrefillOverrides = resetPrefillOverridesForReinitiation(
+        prefillAfterArchive,
+        { clearFieldOverrides },
     );
 
     await prisma.contract.update({
@@ -304,7 +339,11 @@ export async function reinitiateContractForApplication(
         console.error('reinitiateContractForApplication: offer value sync failed', syncErr);
     }
 
-    await flagNeedsContractReinitiation(appId);
+    if (flagForReinitiation) {
+        await flagNeedsContractReinitiation(appId);
+    } else {
+        await clearNeedsContractReinitiation(appId);
+    }
 
     await prisma.application.update({
         where: { id: appId },
@@ -355,6 +394,70 @@ const LIVE_ENVELOPE_POINTER_KEYS = [
     'achAuthorizationDocuSign',
     'standalonePackageDocuSign',
 ] as const;
+
+/**
+ * Prefill keys that survive a "start from scratch" resend even though they look like
+ * ordinary overrides. `includeWireFee` is a deal-level toggle rather than a document value,
+ * and `exhibitCEntities` is a JSON string of hand-entered extra account holders that exists
+ * nowhere else — re-deriving it from the application is not possible.
+ */
+const PRESERVED_SCALAR_PREFILL_KEYS = new Set(['includeWireFee', 'exhibitCEntities']);
+
+/**
+ * Object-valued prefill keys that ARE snapshots of deal data rather than history, so a
+ * resend must drop them: per-document prefill captured at the last send, and the signer
+ * roster chosen for it. Left behind, a renamed owner or a corrected email would keep
+ * sending under the superseded identity.
+ */
+const RESEND_CLEARED_SNAPSHOT_KEYS = [
+    'documentTemplatePrefillByMappingId',
+    'contractSignerOverrides',
+] as const;
+
+/**
+ * Drop every saved prefill field override so the replacement package re-derives from live
+ * data. Send history and the preserved keys above are kept; everything scalar is a cached
+ * document value and goes.
+ */
+export function clearPrefillFieldOverrides(
+    overrides: unknown,
+): Record<string, unknown> | undefined {
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+        return undefined;
+    }
+    const source = overrides as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    let changed = false;
+    for (const [key, value] of Object.entries(source)) {
+        if (PRESERVED_SCALAR_PREFILL_KEYS.has(key)) {
+            next[key] = value;
+            continue;
+        }
+        const isContainer = value !== null && typeof value === 'object';
+        if (!isContainer || (RESEND_CLEARED_SNAPSHOT_KEYS as readonly string[]).includes(key)) {
+            changed = true;
+            continue;
+        }
+        next[key] = value;
+    }
+    return changed ? next : undefined;
+}
+
+/**
+ * The prefill blob a re-initiated contract starts from: live envelope pointers always go,
+ * and a resend additionally discards every cached field value.
+ */
+export function resetPrefillOverridesForReinitiation(
+    overrides: unknown,
+    options?: { clearFieldOverrides?: boolean },
+): Prisma.InputJsonValue | undefined {
+    const withoutPointers = clearLiveEnvelopePointers(overrides);
+    if (options?.clearFieldOverrides !== true) return withoutPointers;
+    const base = withoutPointers ?? overrides;
+    const withoutFields = clearPrefillFieldOverrides(base);
+    if (withoutFields !== undefined) return withoutFields as Prisma.InputJsonValue;
+    return withoutPointers;
+}
 
 export function clearLiveEnvelopePointers(
     overrides: unknown,

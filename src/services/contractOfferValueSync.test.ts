@@ -47,6 +47,11 @@ describe('resolveOfferDerivedContractValues', () => {
       approvedAmount: 10000,
       totalAmount: 14990,
       termDays: 15,
+      // A "15" weekly term is 15 weeks, so the disclosure's estimated term is
+      // 105 calendar days rather than the 15 payment periods above.
+      disclosureTermDays: 105,
+      // Only a refi carries a previous balance; this one is a new deal.
+      refinanceAmount: null,
       purchaseAmount: '10000',
       purchasePrice: '14990',
       remittance: '999.33',

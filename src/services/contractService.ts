@@ -1494,12 +1494,21 @@ class ContractService {
     const businessCity = firstNonEmptyString(client?.businessCity, biz?.city);
     const businessState = firstNonEmptyString(client?.businessState, biz?.state);
     const businessZip = firstNonEmptyString(client?.businessZipCode, biz?.zipCode, biz?.zip);
+    /**
+     * Owner 1's home address. Kept strictly separate from the business physical
+     * address above — the contract's merchant contact block prints this one, and
+     * falling back to the business address here is what made the two print the
+     * same value. When the owner has no address on file these stay null so the
+     * widget is left for the signer rather than stamped with the wrong address.
+     */
+    const firstOwnerSeed = seedOwners[0];
     const ownerHomeAddress = firstNonEmptyString(
       [client?.ownerAddress1, client?.ownerAddress2].filter(Boolean).join(', '),
+      firstOwnerSeed?.address,
     );
-    const ownerHomeCity = firstNonEmptyString(client?.ownerCity);
-    const ownerHomeState = firstNonEmptyString(client?.ownerState);
-    const ownerHomeZip = firstNonEmptyString(client?.ownerZipCode);
+    const ownerHomeCity = firstNonEmptyString(client?.ownerCity, firstOwnerSeed?.city);
+    const ownerHomeState = firstNonEmptyString(client?.ownerState, firstOwnerSeed?.state);
+    const ownerHomeZip = firstNonEmptyString(client?.ownerZipCode, firstOwnerSeed?.zip);
     const purchaseAmount = derivedApprovedAmount != null ? String(derivedApprovedAmount) : '';
     const purchasePrice = derivedTotalAmount != null ? String(derivedTotalAmount) : '';
     const legalName = firstNonEmptyString(client?.businessName, biz?.clientBusinessName);
@@ -1736,10 +1745,14 @@ class ContractService {
                   sanitizePaymentFrequencyForPersist(offer?.frequency) || null,
                 dba: dba || null,
                 phone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
-                address: businessAddress || null,
-                city: businessCity || null,
-                state: businessState || null,
-                zip: businessZip || null,
+                // ACH account-holder address is Owner 1's address, not the
+                // business physical address — the ACH form prints the business
+                // address on its own line, so seeding both from the business
+                // made the two fields repeat the same street.
+                address: ownerHomeAddress || null,
+                city: ownerHomeCity || null,
+                state: ownerHomeState || null,
+                zip: ownerHomeZip || null,
                 bankBranchCity: null,
                 bankState: null,
                 bankZip: null,

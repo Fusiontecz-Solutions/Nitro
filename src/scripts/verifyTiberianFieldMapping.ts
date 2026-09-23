@@ -1,6 +1,8 @@
 /**
- * READ-ONLY: run the SignNow field map against the live Tiberian Funding
- * contract template and report, per widget, what value it would receive.
+ * READ-ONLY: run the SignNow field map against a live Tiberian Funding SignNow
+ * template and report, per widget, what value it would receive. Defaults to the
+ * contract; pass a template id to check an addendum instead — the Exhibit C
+ * Addendum is `52b24e67e0664f1da8eec3d364015fc9c314334a`.
  *
  * Every widget lands in exactly one bucket:
  *   MAPPED   — prefilled from CRM data
@@ -27,7 +29,15 @@ const PREFILL: Record<string, string> = {
   doing_business_as: 'ACME WIDGETS',
   entity_type: 'Limited Liability Company',
   security_tax_ein: '12-3456789',
-  business_address: '100 Main St, Hartford, CT 06103',
+  business_address: '100 Main St',
+  business_address_city: 'Hartford',
+  business_address_state: 'CT',
+  business_address_zip: '06103',
+  /** Merchant contact block — Owner 1's home address, never the business's. */
+  business_address_contract: '12 Oak Ln',
+  business_address_contract_city: 'New Haven',
+  business_address_contract_state: 'CT',
+  business_address_contract_zip: '06510',
   agreement_date: '09/21/2026',
   purchase_price: '50,000.00',
   purchased_amount: '72,500.00',
@@ -41,7 +51,10 @@ const PREFILL: Record<string, string> = {
   client_email: 'jane@acmewidgets.com',
   client_phone: '8605551234',
   guaranty_guarantor1_ss: '123-45-6789',
-  guarantor_address: '12 Oak Ln, Hartford, CT 06103',
+  guarantor_address: '12 Oak Ln',
+  guarantor_address_city: 'New Haven',
+  guarantor_address_state: 'CT',
+  guarantor_address_zip: '06510',
   owner2_guarantor_name: 'JOHN OWNER2',
   owner2_print_title: 'Member',
   owner2_email: 'john@acmewidgets.com',
@@ -49,6 +62,19 @@ const PREFILL: Record<string, string> = {
   guaranty_guarantor2_ss: '987-65-4321',
   owner2_address: '14 Oak Ln, Hartford, CT 06103',
   ach_authorization_account_holder_name: 'ACME WIDGETS LLC',
+  /** Exhibit C ACH block — the holder / bank lines the CRM owns. */
+  ach_authorization_account_holder_dba: 'ACME WIDGETS',
+  ach_authorization_account_holder_address: '100 Main St, Hartford, CT 06103',
+  ach_authorization_account_holder_bank_name: 'FIRST NATIONAL BANK',
+  ach_authorization_account_holder_bank_account_number: '000123456789',
+  ach_authorization_account_holder_bank_routing_number: '011000015',
+  /** EPA Addendum — the early-payoff ledger rows the CRM owns (EPO holds 3). */
+  epo_received_date_1: '10/15/2026',
+  epo_amount_received_1: '5,000.00',
+  epo_received_date_2: '11/15/2026',
+  epo_amount_received_2: '7,500.00',
+  epo_received_date_3: '12/15/2026',
+  epo_amount_received_3: '10,000.00',
   case_id: 'CASE-4821',
   funder_name: 'Tiberian Funding',
 };

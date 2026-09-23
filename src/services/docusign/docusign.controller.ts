@@ -622,6 +622,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       funderProfileId,
       contractState,
       structureOnly,
+      includeWireFee,
     } = req.body;
 
     if (!roles?.length) {
@@ -672,6 +673,11 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
             ? funderProfileId.trim()
             : undefined,
         timingRequestId: timingRequestId || undefined,
+        // Live "$25 wire fee" checkbox from the contract modal. It is not a document
+        // field, so it cannot arrive in `prefillFields`; without it the server reads
+        // the contract row, which still says "on" until the prefill editor is saved,
+        // and re-adds $25 to TOTAL FEES / NET AMOUNT on every document in the package.
+        includeWireFee,
         // Pre-warm: copy/attach the document group only — no prefill, no invite,
         // no review URL. Lets the UI build the package before the user clicks
         // Review, so the click only has to prefill and mint the link. The service

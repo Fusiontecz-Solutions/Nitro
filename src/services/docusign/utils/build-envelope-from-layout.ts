@@ -177,23 +177,27 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'guaranty_client_name',
     'security_guarantor',
   ],
-  business_address: [
-    'security_business_address',
-    'recipient_address',
-    'recipient_address1',
-    'ach_authorization_account_holder_address',
+  /**
+   * No `ach_authorization_account_holder_*` fallback: the ACH account holder
+   * address is Owner 1's address, not the business physical address, so pulling
+   * it in here printed the owner's home address in the business block.
+   */
+  business_address: ['security_business_address', 'recipient_address', 'recipient_address1'],
+  business_address_city: ['security_business_address_city'],
+  business_address_state: ['security_business_address_state'],
+  business_address_zip: ['security_business_address_zip'],
+  ach_authorization_account_holder_address: ['business_address_contract', 'guarantor_address'],
+  ach_authorization_account_holder_city: [
+    'business_address_contract_city',
+    'guarantor_address_city',
   ],
-  business_address_city: [
-    'security_business_address_city',
-    'ach_authorization_account_holder_city',
+  ach_authorization_account_holder_state: [
+    'business_address_contract_state',
+    'guarantor_address_state',
   ],
-  business_address_state: [
-    'security_business_address_state',
-    'ach_authorization_account_holder_state',
-  ],
-  business_address_zip: [
-    'security_business_address_zip',
-    'ach_authorization_account_holder_zip',
+  ach_authorization_account_holder_zip: [
+    'business_address_contract_zip',
+    'guarantor_address_zip',
   ],
   /** Owner 1 home / contact — keep distinct from business location. */
   business_address_contract: ['guarantor_address'],

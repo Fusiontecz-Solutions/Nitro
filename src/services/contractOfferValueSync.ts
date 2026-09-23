@@ -109,6 +109,8 @@ export type OfferDecisionValueSource = {
   frequency?: unknown;
   repayPerPeriod?: unknown;
   fees?: unknown;
+  /** Balance of the deal this one refinances, when it is a refi. */
+  refinanceAmount?: unknown;
 };
 
 export type OfferDerivedContractValues = {
@@ -126,6 +128,12 @@ export type OfferDerivedContractValues = {
   remittance: string | null;
   appendixUnderwritingFees: string | null;
   frequency: string | null;
+  /**
+   * Previous-deal balance this advance pays off. The state disclosure's page-3
+   * itemization needs it to split the advance between the recipient and the
+   * refinanced lender; a new deal has none.
+   */
+  refinanceAmount: number | null;
 };
 
 /**
@@ -141,6 +149,7 @@ export function resolveOfferDerivedContractValues(
   const totalAmount = numberOrNull(offer.totalRemit);
   const termDays = parseContractLengthDaysFromOfferTerm(offer.term);
   const disclosureTermDays = parseDisclosureTermDaysFromOffer(offer.term, offer.frequency);
+  const refinanceAmount = numberOrNull(offer.refinanceAmount);
   return {
     approvedAmount,
     totalAmount,
@@ -151,6 +160,7 @@ export function resolveOfferDerivedContractValues(
     purchasePrice: moneyString(totalAmount),
     remittance: resolveRemittance(offer),
     appendixUnderwritingFees: resolveOfferFeeDollars(approvedAmount, offer.fees),
+    refinanceAmount: refinanceAmount != null && refinanceAmount > 0 ? refinanceAmount : null,
     /**
      * `OfferDecision.frequency` is a separately-set column that can go stale or blank
      * when the deal was re-scrubbed — the same drift `deriveFrequencyFromTerm.ts`
@@ -284,6 +294,7 @@ export async function loadOfferDerivedValuesForContract(target: {
             frequency: true,
             repayPerPeriod: true,
             fees: true,
+            refinanceAmount: true,
           },
         },
       },

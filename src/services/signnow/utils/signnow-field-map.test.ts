@@ -5,6 +5,10 @@ import {
   formatSignNowPrefillValue,
   CONTRACT_P22_REQUIRED_UNIQUE_NAMES,
   EXHIBIT_C_REQUIRED_UNIQUE_NAMES,
+  TIBERIAN_ACH_DAILY_FIELD_NAMES,
+  TIBERIAN_EPA_FIELD_NAMES,
+  TIBERIAN_EXHIBIT_A_FIELD_NAMES,
+  TIBERIAN_EXHIBIT_C_FIELD_NAMES,
   isDedicatedContractP22RequiredField,
   isDedicatedExhibitCRequiredField,
   isMerchantRequiredExhibitCField,
@@ -15,7 +19,9 @@ import {
   isMonthlyFeeForcedBlankField,
   isSupplementalSignNowDocumentName,
   resolveSignNowPrefillValue,
+  signNowDocumentFieldCanons,
   shouldSkipSignNowPrefill,
+  hasDisclosureFieldSignature,
   signNowPrefillDocumentKind,
   signNowPrefillOptionsForDocument,
 } from './signnow-field-map';
@@ -586,6 +592,384 @@ describe('signnow-field-map', () => {
     ).toBe(false);
   });
 
+  /**
+   * Tiberian Funding's Exhibit C ships the *named* layout (the same unique names
+   * as Nitro's copy), not Obsidian's numbered one, and its document is titled
+   * "EXHIBIT C -" with no funder in the name. This walks the live widget
+   * inventory (see `TIBERIAN_EXHIBIT_C_FIELD_NAMES`) and asserts every CRM-owned
+   * line is filled from the same ids Obsidian's positional slots resolve to, so
+   * the two funders' copies of the page can never drift apart.
+   */
+  it('fills every Tiberian Exhibit C widget from the same CRM ids as Obsidian', () => {
+    const names = [...TIBERIAN_EXHIBIT_C_FIELD_NAMES];
+    const opts = signNowPrefillOptionsForDocument('EXHIBIT C -', names);
+    expect(opts?.documentKind).toBe('exhibit_c');
+    // The title carries no funder, so the field-name signature must carry it.
+    expect(signNowPrefillDocumentKind(undefined, names)).toBe('exhibit_c');
+
+    const prefill = {
+      agreement_date: '09/22/2026',
+      client_legal_name: 'RE-NEW-IT RENOVATIONS, LLC',
+      client_name: 'MARY IRVIN',
+      ach_authorization_account_holder_name: 'RE-NEW-IT RENOVATIONS, LLC',
+      ach_authorization_account_holder_dba: 'RE-NEW-IT',
+      ach_authorization_account_holder_address: '3273 COVE CREEK ROAD',
+      ach_authorization_account_holder_bank_name: 'SBI MORGAN',
+      ach_authorization_account_holder_bank_account_number: '123456789',
+      ach_authorization_account_holder_bank_routing_number: '987654321',
+    };
+    const filled = new Map(
+      buildSignNowDocumentPrefillTexts(names, prefill, opts).map((row) => [
+        row.field_name,
+        row.prefilled_text,
+      ]),
+    );
+    expect(Object.fromEntries(filled)).toEqual({
+      agreement_date_p1: '09/22/2026',
+      client_legal_name_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+      client_name_p1: 'MARY IRVIN',
+      ach_account_holder_name_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+      ach_account_holder_dba_p1: 'RE-NEW-IT',
+      ach_account_holder_address_p1: '3273 COVE CREEK ROAD',
+      ach_bank_name_p1: 'SBI MORGAN',
+      ach_bank_account_p1: '123456789',
+      ach_bank_routing_p1: '987654321',
+    });
+
+    // Obsidian's numbered slots resolve to the very same values, line for line.
+    const obsidian = [1, 2, 3, 4, 6, 7].map((n) =>
+      resolveSignNowPrefillValue(`Text Field ${n}`, prefill, opts),
+    );
+    expect(obsidian).toEqual([
+      filled.get('ach_account_holder_name_p1'),
+      filled.get('ach_account_holder_dba_p1'),
+      filled.get('ach_account_holder_address_p1'),
+      filled.get('ach_bank_name_p1'),
+      filled.get('ach_bank_account_p1'),
+      filled.get('ach_bank_routing_p1'),
+    ]);
+  });
+
+  /**
+   * Tiberian left `ach_bank_portal_p1` on the Owner role where Nitro assigns it
+   * to Recipient 1. The portal, credentials and security answers are still the
+   * merchant's to type on every funder's copy, so the mapping must not start
+   * stamping them just because the template role differs.
+   */
+  it('keeps the Tiberian Exhibit C credential slots merchant-filled', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    for (const name of [
+      'ach_bank_portal_p1',
+      'ach_username_p1',
+      'ach_password_p1',
+      'ach_security_q1_p1',
+      'ach_security_q2_p1',
+      'ach_account_holder_name_p1',
+    ]) {
+      expect(TIBERIAN_EXHIBIT_C_FIELD_NAMES).toContain(name);
+      expect(isMerchantRequiredExhibitCField(name, 0, opts)).toBe(true);
+      expect(isMerchantRequiredSignerField(name, 0, opts)).toBe(true);
+      expect(usesAddendumFillableFont(name, 0, opts)).toBe(true);
+    }
+    // The initials are the signer's own widgets, never prefill targets.
+    for (const name of ['initial_g1_p1', 'initial_g2_p1']) {
+      expect(buildSignNowDocumentPrefillTexts([name], {}, opts)).toEqual([]);
+    }
+  });
+
+  /**
+   * Tiberian Funding's Exhibit A Addendum ("EXHIBIT A TF-", template 1dd030c4…)
+   * carries the same 39 widget names as the Nitro / Obsidian copy
+   * ("Exhibit A - Nitro Advance", a3f75789…), so it must resolve from the same
+   * CRM ids with no funder-specific mapping. This walks the live inventory (see
+   * `TIBERIAN_EXHIBIT_A_FIELD_NAMES`) and asserts the two titles fill
+   * identically, line for line.
+   */
+  describe('Tiberian Exhibit A Addendum', () => {
+    const names = [...TIBERIAN_EXHIBIT_A_FIELD_NAMES];
+    const prefill = {
+      agreement_date: '09/22/2026',
+      client_legal_name: 'RE-NEW-IT RENOVATIONS, LLC',
+      doing_business_as: 'RE-NEW-IT',
+      exhibit_a_value_1: 'RE-NEW-IT RENOVATIONS, LLC',
+      exhibit_a_value_2: 'RE-NEW-IT HOLDINGS LLC',
+      exhibit_a_value_3: 'COVE CREEK SUPPLY CO',
+      addendum_ein_1: '12-3456789',
+      addendum_ein_2: '98-7654321',
+      addendum_ein_3: '55-5555555',
+      addendum_type_of_entity_1: 'Limited Liability Company',
+      addendum_type_of_entity_2: 'Limited Liability Company',
+      addendum_type_of_entity_3: 'Corporation',
+      client_name: 'MARY IRVIN',
+      guaranty_guarantor1_ss: '123-45-6789',
+      owner_print_title: 'Managing Member',
+    };
+    const filledFor = (documentName: string) =>
+      Object.fromEntries(
+        buildSignNowDocumentPrefillTexts(
+          names,
+          prefill,
+          signNowPrefillOptionsForDocument(documentName, names),
+        ).map((row) => [row.field_name, row.prefilled_text]),
+      );
+
+    it('is read as a plain addendum, never as an Exhibit C or a Tiberian agreement', () => {
+      for (const documentName of ['EXHIBIT A TF-', 'Exhibit A - Nitro Advance']) {
+        expect(signNowPrefillDocumentKind(documentName, names)).toBeUndefined();
+        expect(isSupplementalSignNowDocumentName(documentName)).toBe(true);
+      }
+    });
+
+    it('fills every CRM-owned widget from the same ids as the Nitro copy', () => {
+      const tiberian = filledFor('EXHIBIT A TF-');
+      expect(tiberian).toEqual({
+        agreement_date_p1: '09/22/2026',
+        client_legal_name_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+        doing_business_as_p1: 'RE-NEW-IT',
+        exhibit_a_value_1_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+        addendum_ein_1_p1: '12-3456789',
+        addendum_type_of_entity_1_p1: 'Limited Liability Company',
+        exhibit_a_value_2_p1: 'RE-NEW-IT HOLDINGS LLC',
+        addendum_ein_2_p1: '98-7654321',
+        addendum_type_of_entity_2_p1: 'Limited Liability Company',
+        exhibit_a_value_3_p1: 'COVE CREEK SUPPLY CO',
+        addendum_ein_3_p1: '55-5555555',
+        addendum_type_of_entity_3_p1: 'Corporation',
+        exhibit_owner_name_p1: 'MARY IRVIN',
+        guaranty_ss_p1: '123456789',
+        owner_print_title_p1: 'Managing Member',
+      });
+      // Same template, two funders: the Nitro / Obsidian copy must not drift.
+      expect(filledFor('Exhibit A - Nitro Advance')).toEqual(tiberian);
+    });
+
+    it('leaves the signature and initials widgets untouched', () => {
+      const opts = signNowPrefillOptionsForDocument('EXHIBIT A TF-', names);
+      for (const name of ['signature_p1', 'Initials 1', 'Initials 2']) {
+        expect(buildSignNowDocumentPrefillTexts([name], prefill, opts)).toEqual([]);
+      }
+    });
+
+    /**
+     * `Addendum` stores three sellers, so rows 4-11 have no CRM source on either
+     * funder's copy. They must stay empty rather than pick up a stray alias.
+     */
+    it('leaves the seller rows the CRM has no data for empty', () => {
+      const tiberian = filledFor('EXHIBIT A TF-');
+      for (const name of names) {
+        if (!/_(4|5|6|7|8|9|10|11)_p1$/.test(name)) continue;
+        expect(tiberian[name]).toBeUndefined();
+      }
+    });
+  });
+
+  /**
+   * Tiberian Funding's EPA Addendum ("EPA TF CT", template 6af7ebdf…) carries
+   * the same 18 widget names as the Obsidian copy ("EPA- OBSIDIAN CAPITAL
+   * GROUP", fbb2f217…) and the Nitro catalog copy ("EPA Nitro Advance",
+   * 084719db…), so it must resolve from the same CRM ids with no
+   * funder-specific mapping. This walks the live inventory (see
+   * `TIBERIAN_EPA_FIELD_NAMES`) and asserts all three titles fill identically,
+   * line for line.
+   */
+  describe('Tiberian EPA Addendum', () => {
+    const names = [...TIBERIAN_EPA_FIELD_NAMES];
+    const prefill = {
+      agreement_date: '09/22/2026',
+      client_legal_name: 'RE-NEW-IT RENOVATIONS, LLC',
+      client_name: 'MARY IRVIN',
+      owner2_guarantor_name: 'JOHN IRVIN',
+      guaranty_guarantor1_ss: '123-45-6789',
+      guaranty_guarantor2_ss: '987-65-4321',
+      epo_received_date_1: '10/15/2026',
+      epo_amount_received_1: '5,000.00',
+      epo_received_date_2: '11/15/2026',
+      epo_amount_received_2: '7,500.00',
+      epo_received_date_3: '12/15/2026',
+      epo_amount_received_3: '10,000.00',
+    };
+    const filledFor = (documentName: string) =>
+      Object.fromEntries(
+        buildSignNowDocumentPrefillTexts(
+          names,
+          prefill,
+          signNowPrefillOptionsForDocument(documentName, names),
+        ).map((row) => [row.field_name, row.prefilled_text]),
+      );
+
+    /**
+     * "EPA TF CT" carries no funder name, so it must not be read as the
+     * Tiberian *agreement* — that layout would claim these widgets. It is also
+     * not an Exhibit C, a disclosure or a monthly fee.
+     *
+     * Obsidian's copy is titled "EPA- OBSIDIAN CAPITAL GROUP", which used to be
+     * read as `obsidian_agreement` purely because it carries the funder name.
+     * A funder name alone no longer classifies a document as that funder's
+     * agreement — the title has to say "agreement" or "contract" as well —
+     * so the EPA is now correctly unclassified, like the other two copies.
+     */
+    it('is read as a plain addendum, never as an Exhibit C or a funder agreement', () => {
+      for (const documentName of [
+        'EPA TF CT',
+        'EPA Nitro Advance',
+        'EPA- OBSIDIAN CAPITAL GROUP',
+      ]) {
+        expect(signNowPrefillDocumentKind(documentName, names)).toBeUndefined();
+      }
+      for (const documentName of [
+        'EPA TF CT',
+        'EPA- OBSIDIAN CAPITAL GROUP',
+        'EPA Nitro Advance',
+      ]) {
+        expect(isSupplementalSignNowDocumentName(documentName)).toBe(true);
+        expect(signNowPrefillDocumentKind(documentName, names)).not.toBe('exhibit_c');
+        expect(signNowPrefillDocumentKind(documentName, names)).not.toBe(
+          'tiberian_agreement',
+        );
+      }
+    });
+
+    it('fills every CRM-owned widget from the same ids as the Obsidian copy', () => {
+      const tiberian = filledFor('EPA TF CT');
+      expect(tiberian).toEqual({
+        agreement_date_p1: '09/22/2026',
+        client_legal_name_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+        epo_received_date_1_p1: '10/15/2026',
+        epo_amount_received_1_p1: '5,000.00',
+        epo_received_date_2_p1: '11/15/2026',
+        epo_amount_received_2_p1: '7,500.00',
+        epo_received_date_3_p1: '12/15/2026',
+        epo_amount_received_3_p1: '10,000.00',
+        owner1_guarantor_name_p1: 'MARY IRVIN',
+        owner2_guarantor_name_p1: 'JOHN IRVIN',
+        guaranty_ss_p1: '123456789',
+        guaranty_owner2_ss_p1: '987654321',
+      });
+      // Same page, three funders: Obsidian's and Nitro's copies must not drift.
+      expect(filledFor('EPA- OBSIDIAN CAPITAL GROUP')).toEqual(tiberian);
+      expect(filledFor('EPA Nitro Advance')).toEqual(tiberian);
+    });
+
+    it('leaves the two signature widgets untouched', () => {
+      const opts = signNowPrefillOptionsForDocument('EPA TF CT', names);
+      for (const name of ['signature_p1', 'Signature 2']) {
+        expect(buildSignNowDocumentPrefillTexts([name], prefill, opts)).toEqual([]);
+      }
+    });
+
+    /**
+     * `EPO` stores three payments, so ledger rows 4 and 5 have no CRM source on
+     * any funder's copy. They must stay empty rather than pick up a stray alias
+     * (the disclosure money row resolves `text field N` names the same way).
+     */
+    it('leaves the ledger rows the CRM has no data for empty', () => {
+      const tiberian = filledFor('EPA TF CT');
+      for (const name of names) {
+        if (!/_(4|5)_p1$/.test(name)) continue;
+        expect(tiberian[name]).toBeUndefined();
+      }
+    });
+  });
+
+  /**
+   * Tiberian Funding's ACH Daily Addendum ("ACH Daily", template d68dd23d…)
+   * carries the same 14 widget names as the Nitro (5741b00c…) and Obsidian
+   * (634cbdac…) copies of the same page, so it must resolve from the same CRM
+   * ids with no funder-specific mapping. This walks the live inventory (see
+   * `TIBERIAN_ACH_DAILY_FIELD_NAMES`) and asserts all three titles fill
+   * identically, line for line.
+   */
+  describe('Tiberian ACH Daily Addendum', () => {
+    const names = [...TIBERIAN_ACH_DAILY_FIELD_NAMES];
+    const prefill = {
+      client_name: 'MARY IRVIN',
+      client_legal_name: 'RE-NEW-IT RENOVATIONS, LLC',
+      agreement_date: '09/22/2026',
+      purchase_amount: '25,000.00',
+      remittance: '1,250.00',
+      remittance_start_date: '09/29/2026',
+      business_address: '3273 COVE CREEK ROAD, ASHEVILLE, NC 28805',
+      merchant_contact_phone: '5615778267',
+      merchant_contact_email: 'mary@renewit.com',
+      ach_authorization_account_holder_name: 'RE-NEW-IT RENOVATIONS, LLC',
+      ach_authorization_account_holder_bank_name: 'CHASE',
+      ach_authorization_account_holder_bank_account_number: '725307998',
+      ach_authorization_account_holder_bank_routing_number: '322271627',
+    };
+
+    const filledFor = (documentName: string) =>
+      Object.fromEntries(
+        buildSignNowDocumentPrefillTexts(
+          names,
+          prefill,
+          signNowPrefillOptionsForDocument(documentName, names),
+        ).map((row) => [row.field_name, row.prefilled_text]),
+      );
+
+    /**
+     * An ACH *Daily* title must never be read as an Exhibit C (some funders'
+     * copies are titled "Extra Exhibit C …"), as an ACH Weekly, or — once the
+     * row is registered under a funder-badged Settings name — as that funder's
+     * agreement. All three copies are left without a documentKind so they share
+     * one mapping.
+     */
+    it('is read as a plain addendum, never as an Exhibit C, ACH Weekly or Tiberian agreement', () => {
+      for (const title of [
+        'ACH Daily',
+        'RECURRING BANK (ACH) PAYMENT AUTHORIZATION - Daily..',
+        'ACH DAILY TIBERIAN FUNDING',
+      ]) {
+        expect(signNowPrefillDocumentKind(title, names)).toBeUndefined();
+        expect(isSupplementalSignNowDocumentName(title)).toBe(true);
+      }
+      expect(signNowPrefillDocumentKind(undefined, names)).toBeUndefined();
+    });
+
+    it('fills every Tiberian ACH Daily widget from the same CRM ids as Obsidian', () => {
+      const tiberian = filledFor('ACH Daily');
+      expect(tiberian).toEqual({
+        client_name_p1_ach: 'MARY IRVIN',
+        remittance_p1_ach: '1,250.00',
+        // resolveRemittanceStartDate: "Starting On" always follows the
+        // agreement date, on every funder's copy of this page.
+        remittance_start_date_p1_ach: '09/22/2026',
+        purchase_amount_p1_ach: '25,000.00',
+        business_address_p1_ach: '3273 COVE CREEK ROAD, ASHEVILLE, NC 28805',
+        merchant_contact_phone_p1_ach: '5615778267',
+        merchant_contact_email_p1_ach: 'mary@renewit.com',
+        ach_account_holder_name_p1_ach: 'RE-NEW-IT RENOVATIONS, LLC',
+        ach_bank_name_p1_ach: 'CHASE',
+        ach_bank_account_p1_ach: '725307998',
+        ach_bank_routing_p1_ach: '322271627',
+        signature_date_p1_ach: '09/22/2026',
+        authorization_client_name_print_p1_ach: 'MARY IRVIN',
+      });
+      expect(filledFor('RECURRING BANK (ACH) PAYMENT AUTHORIZATION - Daily..')).toEqual(
+        tiberian,
+      );
+      expect(filledFor('ACH DAILY TIBERIAN FUNDING')).toEqual(tiberian);
+    });
+
+    /**
+     * ACH Daily names its bottom Date / Printed Name pair correctly, so the
+     * ACH Weekly positional remap must not reach it: the date belongs in the
+     * date box and the printed name in the printed-name box.
+     */
+    it('keeps the bottom Date / Printed Name pair off the ACH Weekly remap', () => {
+      const tiberian = filledFor('ACH Daily');
+      expect(tiberian.signature_date_p1_ach).toBe('09/22/2026');
+      expect(tiberian.authorization_client_name_print_p1_ach).toBe('MARY IRVIN');
+      expect(tiberian.signature_date_p1_ach).not.toBe(
+        tiberian.authorization_client_name_print_p1_ach,
+      );
+    });
+
+    it('leaves the signature widget to the signer', () => {
+      expect(filledFor('ACH Daily').signature_p1_ach).toBeUndefined();
+      expect(buildSignNowDocumentPrefillTexts(['signature_p1_ach'], prefill)).toEqual([]);
+    });
+  });
+
   it('marks contract page 22 reference fields as required for the merchant signer', () => {
     for (const name of CONTRACT_P22_REQUIRED_UNIQUE_NAMES) {
       expect(isDedicatedContractP22RequiredField(name)).toBe(true);
@@ -757,7 +1141,7 @@ describe('signnow-field-map', () => {
       funding_provided: '10000.00',
       client_legal_name: 'FUSIONTECZ',
       client_phone: '08827688283',
-      business_address_contract: '123 MAIN ST',
+      business_address: '123 MAIN ST',
       ach_authorization_account_holder_name: 'TEST USER',
       doing_business_as: 'FUSION DBA',
       ach_authorization_account_holder_bank_name: 'CHASE',
@@ -816,18 +1200,17 @@ describe('signnow-field-map', () => {
     ).toBe(currentSignNowUsDate());
   });
 
-  it('adds the ACH program fee to page-2 TOTAL FEES only when the ACH box is checked', () => {
+  it('keeps the ACH program fee out of page-2 TOTAL FEES', () => {
     const base = { origination_fee: '1,000.00' };
-    // Unchecked: underwriting fee alone.
+    // TOTAL FEES is the underwriting fee (wire fee included upstream) alone.
     expect(resolveSignNowPrefillValue('total_fees_p2', base)).toBe('1,000.00');
-    // Checked with no CRM amount: flat $25.
+    // The ACH box is a separate recurring charge — it must not move TOTAL FEES.
     expect(
       resolveSignNowPrefillValue('total_fees_p2', { ...base, ach_enabled: 'true' }),
-    ).toBe('1,025.00');
-    // CRM-supplied program fee wins over the flat default.
+    ).toBe('1,000.00');
     expect(
       resolveSignNowPrefillValue('total_fees_p2', { ...base, ach_program_fee: '49.00' }),
-    ).toBe('1,049.00');
+    ).toBe('1,000.00');
     // A zero grand total must not print $0.00.
     expect(
       resolveSignNowPrefillValue('total_fees_p2', { ...base, total_fees: '0.00' }),
@@ -889,7 +1272,7 @@ describe('signnow-field-map', () => {
       client_legal_name: 'FUSIONTECZ',
       client_name: 'TEST USER',
       client_phone: '08827688283',
-      business_address_contract: '123 MAIN ST',
+      business_address: '123 MAIN ST',
       ach_authorization_account_holder_bank_name: 'CHASE',
       disclosure_page3_line_2: '900.00',
       funder_name: 'NITRO ADVANCE',
@@ -1393,5 +1776,388 @@ describe('funder disclosure templates', () => {
         'p1_totalfee',
       ]),
     ).toBe('tiberian_agreement');
+  });
+});
+
+/**
+ * Tiberian's copy of the state disclosure is titled just "TIBERIAN FUNDING", so
+ * the funder-name test claimed it as that funder's agreement and the agreement's
+ * numbered-widget table was free to stamp contract values into the disclosure's
+ * money row.
+ */
+describe('a funder-named disclosure is never that funder\'s agreement', () => {
+  const DISCLOSURE_FIELDS = [
+    'Text Field 1',
+    'Text Field 8',
+    'disclouser_pg2_frequency',
+    'estimated_term_p2',
+    'finance_charge_p2',
+    'disclosure_page3_net_p3',
+  ];
+
+  it('classifies "TIBERIAN FUNDING" by its widgets, not its title', () => {
+    expect(hasDisclosureFieldSignature(DISCLOSURE_FIELDS)).toBe(true);
+    expect(signNowPrefillDocumentKind('TIBERIAN FUNDING', DISCLOSURE_FIELDS)).toBeUndefined();
+  });
+
+  it('does the same for an Obsidian-titled copy', () => {
+    expect(
+      signNowPrefillDocumentKind('OBSIDIAN CAPITAL GROUP', DISCLOSURE_FIELDS),
+    ).toBeUndefined();
+  });
+
+  it('still reads the Tiberian agreement as the Tiberian agreement', () => {
+    expect(hasDisclosureFieldSignature(['merchant_pg22', 'p1_totalfee'])).toBe(false);
+    expect(
+      signNowPrefillDocumentKind('CONTRACT TIBERIAN FUNDING', ['merchant_pg22', 'p1_totalfee']),
+    ).toBe('tiberian_agreement');
+  });
+
+  it('resolves the disclosure term from the offer override, not the payload', () => {
+    const values = { estimated_term_p2: '20', estimated_term: '140', disclosure_term_days: '140' };
+    const opts = signNowPrefillOptionsForDocument('TIBERIAN FUNDING', DISCLOSURE_FIELDS);
+    // The override wins because `buildOfferPrefillOverrides` now writes the widget
+    // name itself; the point here is that the disclosure kind no longer diverts it.
+    expect(opts?.documentKind).toBeUndefined();
+    expect(resolveSignNowPrefillValue('estimated_term_p2', { ...values, estimated_term_p2: '140' }, opts)).toBe('140');
+  });
+  describe('business vs merchant address separation', () => {
+    /**
+     * The business physical address (Application → Business) and the merchant
+     * contact address (Owner 1's home) are two different CRM entries. They used
+     * to alias each other — and the contract's contact line was explicitly
+     * mirrored onto the business address — so both blocks printed whichever one
+     * was populated. These cover the split on every funder's package.
+     */
+    const prefill = {
+      business_address: '218 LAUREL WOODS',
+      business_address_city: 'WARNER ROBINS',
+      business_address_state: 'GA',
+      business_address_zip: '31088',
+      business_address_contract: '77 PINE RIDGE DR',
+      business_address_contract_city: 'MACON',
+      business_address_contract_state: 'GA',
+      business_address_contract_zip: '31201',
+    };
+    const businessFull = '218 LAUREL WOODS, WARNER ROBINS, GA 31088';
+    const ownerFull = '77 PINE RIDGE DR, MACON, GA 31201';
+
+    it('composes the business block from the business address, street + city/state/zip', () => {
+      expect(resolveSignNowPrefillValue('business_address', prefill)).toBe(businessFull);
+      expect(resolveSignNowPrefillValue('business_address_p1', prefill)).toBe(businessFull);
+      expect(resolveSignNowPrefillValue('business_address_p2', prefill)).toBe(businessFull);
+      expect(resolveSignNowPrefillValue('business_address_p1_ach', prefill)).toBe(businessFull);
+    });
+
+    it('composes the merchant block from the owner address, street + city/state/zip', () => {
+      expect(resolveSignNowPrefillValue('business_address_contract', prefill)).toBe(ownerFull);
+      expect(resolveSignNowPrefillValue('business_address_contract_p2', prefill)).toBe(ownerFull);
+      // The guarantor block has its own city/state/zip widgets on the page, so it
+      // stays street-only — but the street is still the owner's, not the business's.
+      expect(resolveSignNowPrefillValue('guarantor_address_p1', prefill)).toBe(
+        '77 PINE RIDGE DR',
+      );
+      expect(resolveSignNowPrefillValue('guarantor_address_city_p1', prefill)).toBe('MACON');
+    });
+
+    it('never lets one address stand in for the other when only one is on file', () => {
+      const businessOnly = {
+        business_address: prefill.business_address,
+        business_address_city: prefill.business_address_city,
+        business_address_state: prefill.business_address_state,
+        business_address_zip: prefill.business_address_zip,
+      };
+      expect(resolveSignNowPrefillValue('business_address_contract', businessOnly)).toBe('');
+      const ownerOnly = {
+        business_address_contract: prefill.business_address_contract,
+        business_address_contract_city: prefill.business_address_contract_city,
+        business_address_contract_state: prefill.business_address_contract_state,
+        business_address_contract_zip: prefill.business_address_contract_zip,
+      };
+      expect(resolveSignNowPrefillValue('business_address', ownerOnly)).toBe('');
+      // The ACH holder line is Owner 1's address, so a package that only carries
+      // the business address leaves it blank rather than repeating that address.
+      expect(resolveSignNowPrefillValue('ach_account_holder_address_p1', businessOnly)).toBe('');
+    });
+
+    it('keeps the ACH account-holder block on Owner 1 and billing on the business', () => {
+      expect(resolveSignNowPrefillValue('ach_account_holder_address_p1', prefill)).toBe(
+        ownerFull,
+      );
+      // ACH Weekly's billing block has its own city/state/zip widgets, so the
+      // street stands alone there — it just has to be the business street.
+      expect(resolveSignNowPrefillValue('billing_address_p1_ach', prefill)).toBe(
+        '218 LAUREL WOODS',
+      );
+      expect(resolveSignNowPrefillValue('billing_city_p1_ach', prefill)).toBe('WARNER ROBINS');
+      expect(resolveSignNowPrefillValue('billing_zip_p1_ach', prefill)).toBe('31088');
+    });
+
+    /**
+     * Every funder's addendums (ACH Daily, ACH Weekly, Exhibit C, Monthly Fee)
+     * carry the merchant address as one widget with no city/state/zip boxes
+     * beside it, and the CRM sends that street under the holder key or under the
+     * widget's own name while the city/state/zip only travel under
+     * `business_address_*`. The siblings are pulled through the alias chain so
+     * those pages print the whole address instead of a bare street.
+     */
+    describe('addendum address widgets', () => {
+      const cityStateZip = {
+        business_address_city: 'WARNER ROBINS',
+        business_address_state: 'GA',
+        business_address_zip: '31088',
+      };
+      const ownerCityStateZip = {
+        business_address_contract_city: 'MACON',
+        business_address_contract_state: 'GA',
+        business_address_contract_zip: '31201',
+      };
+
+      it('composes the Exhibit C / Monthly Fee holder address from Owner 1 city keys', () => {
+        const addendum = {
+          ...ownerCityStateZip,
+          ach_account_holder_address: '77 PINE RIDGE DR',
+        };
+        expect(resolveSignNowPrefillValue('ach_account_holder_address_p1', addendum)).toBe(
+          ownerFull,
+        );
+        expect(
+          resolveSignNowPrefillValue('Text Field 3', addendum, { documentKind: 'exhibit_c' }),
+        ).toBe(ownerFull);
+      });
+
+      it('composes an ACH page whose street arrives under the widget name itself', () => {
+        expect(
+          resolveSignNowPrefillValue('business_address_p1_ach', {
+            ...cityStateZip,
+            business_address_p1_ach: '218 LAUREL WOODS',
+          }),
+        ).toBe(businessFull);
+      });
+
+      /**
+       * The CRM screen mirrored whatever was typed into the business street onto
+       * `achAuthorizationAccountHolderAddress`, so the Monthly Fee and Exhibit C
+       * addendums printed the business street on the account-holder line — and
+       * then composed it with Owner 1's city/state/zip, because those are the
+       * only siblings the holder key has. The holder line is Owner 1's address.
+       */
+      describe('a holder address that is only a copy of the business address', () => {
+        const mirrored = {
+          ...prefill,
+          ach_authorization_account_holder_address: prefill.business_address,
+        };
+
+        it('falls through to Owner 1 on the Monthly Fee addendum', () => {
+          expect(resolveSignNowPrefillValue('ach_account_holder_address_p1', mirrored)).toBe(
+            ownerFull,
+          );
+        });
+
+        it('falls through to Owner 1 on Exhibit C', () => {
+          expect(
+            resolveSignNowPrefillValue('Text Field 3', mirrored, {
+              documentKind: 'exhibit_c',
+            }),
+          ).toBe(ownerFull);
+        });
+
+        it('never pairs the business street with Owner 1 city/state/zip', () => {
+          expect(
+            resolveSignNowPrefillValue('ach_account_holder_address_p1', mirrored),
+          ).not.toContain('218 LAUREL WOODS');
+        });
+
+        it('keeps a holder address that is genuinely its own', () => {
+          const ownItsOwn = {
+            ...prefill,
+            ach_authorization_account_holder_address: '9 OAK ST',
+          };
+          expect(resolveSignNowPrefillValue('ach_account_holder_address_p1', ownItsOwn)).toBe(
+            '9 OAK ST, MACON, GA 31201',
+          );
+        });
+
+        it('keeps the mirrored value when Owner 1 has no address of his own', () => {
+          const noOwner = {
+            business_address: prefill.business_address,
+            business_address_city: prefill.business_address_city,
+            business_address_state: prefill.business_address_state,
+            business_address_zip: prefill.business_address_zip,
+            ach_authorization_account_holder_address: prefill.business_address,
+          };
+          // Street-only, as it has always been: the holder key has no city/state/zip
+          // siblings of its own, and the business block's are not its to borrow.
+          expect(resolveSignNowPrefillValue('ach_account_holder_address_p1', noOwner)).toBe(
+            prefill.business_address,
+          );
+        });
+
+        it('leaves the business line itself on the business address', () => {
+          expect(resolveSignNowPrefillValue('business_address_p1', mirrored)).toBe(businessFull);
+        });
+      });
+
+      it('leaves a street that already ends in a zip alone', () => {
+        expect(
+          resolveSignNowPrefillValue('ach_account_holder_address_p1', {
+            ...ownerCityStateZip,
+            ach_account_holder_address: '9 OAK ST, MACON, GA 31201',
+          }),
+        ).toBe('9 OAK ST, MACON, GA 31201');
+      });
+    });
+
+    /**
+     * The OWNER/GUARANTOR #1 block and the page-23 service-of-process line carry
+     * one address widget with no city/state/zip boxes beside them, while Owner
+     * 2's address arrives as a single line — so Owner 1 printed a bare street
+     * next to Owner 2's full address. The document's own widget list decides:
+     * companion boxes on the page means street-only, none means compose.
+     */
+    describe('standalone guarantor address widgets', () => {
+      it('composes the guarantor address on a page with no city/state/zip boxes', () => {
+        const names = ['guarantor_address_p23', 'guarantor_address_p23_g2'];
+        expect(
+          resolveSignNowPrefillValue('guarantor_address_p23', prefill, {
+            documentFieldCanons: signNowDocumentFieldCanons(names),
+          }),
+        ).toBe(ownerFull);
+      });
+
+      it('leaves it street-only on a page that has its own city/state/zip boxes', () => {
+        const names = [
+          'guarantor_address_p1',
+          'guarantor_address_city_p1',
+          'guarantor_address_state_p1',
+          'guarantor_address_zip_p1',
+        ];
+        const opts = { documentFieldCanons: signNowDocumentFieldCanons(names) };
+        expect(resolveSignNowPrefillValue('guarantor_address_p1', prefill, opts)).toBe(
+          '77 PINE RIDGE DR',
+        );
+        expect(resolveSignNowPrefillValue('guarantor_address_city_p1', prefill, opts)).toBe(
+          'MACON',
+        );
+      });
+
+      it('stays street-only when the document field list is unknown', () => {
+        expect(resolveSignNowPrefillValue('guarantor_address_p23', prefill)).toBe(
+          '77 PINE RIDGE DR',
+        );
+      });
+
+      it('leaves Owner 2 alone — that address already arrives as one line', () => {
+        const names = ['guarantor_address_p23_g2'];
+        expect(
+          resolveSignNowPrefillValue(
+            'guarantor_address_p23_g2',
+            {
+              ...prefill,
+              client_name: 'MARY IRVIN',
+              owner2_guarantor_name: 'PIYUSHKUMAR V PATEL',
+              owner2_address: '11000 DELAWAKRE PKWY, APT 2201, KANSAS CITY, KS, 66109',
+            },
+            { documentFieldCanons: signNowDocumentFieldCanons(names) },
+          ),
+        ).toBe('11000 DELAWAKRE PKWY, APT 2201, KANSAS CITY, KS, 66109');
+      });
+    });
+
+    it('resolves the merchant address from the guarantor keys the CRM sends', () => {
+      const fromGuarantor = {
+        guarantor_address: '77 PINE RIDGE DR',
+        guarantor_address_city: 'MACON',
+        guarantor_address_state: 'GA',
+        guarantor_address_zip: '31201',
+      };
+      expect(resolveSignNowPrefillValue('business_address_contract', fromGuarantor)).toBe(
+        ownerFull,
+      );
+    });
+  });
+});
+
+/**
+ * The bank block on every funder's addendums.
+ *
+ * Account Holder Bank Name / Account Number / Routing Number reached SignNow
+ * from the CRM screen's payload alone, so a package the screen posted without
+ * them went out with "Enter text" on all three lines of the Monthly Fee page,
+ * Exhibit C and the ACH authorization. `loadContractPrefillDefaults` now
+ * publishes the deal's own bank block under the ids below; these are the widget
+ * names those ids have to reach, taken from the live Nitro and Tiberian
+ * templates.
+ */
+describe('the bank block reaches every addendum', () => {
+  /** Exactly what the server publishes for a deal whose bank is on file. */
+  const bankDefaults = {
+    authorization_client_bank_name: 'SBI Morgan',
+    ach_authorization_account_holder_bank_name: 'SBI Morgan',
+    ach_bank_name: 'SBI Morgan',
+    authorization_client_bank_account: '123456789',
+    ach_authorization_account_holder_bank_account_number: '123456789',
+    ach_bank_account: '123456789',
+    authorization_client_bank_routing: '987654321',
+    ach_authorization_account_holder_bank_routing_number: '987654321',
+    ach_bank_routing: '987654321',
+  };
+
+  it('fills the Monthly Fee bank lines', () => {
+    const opts = { documentKind: 'monthly_fee' as const };
+    expect(
+      resolveSignNowPrefillValue('authorization_client_bank_name_p1', bankDefaults, opts),
+    ).toBe('SBI Morgan');
+    expect(
+      resolveSignNowPrefillValue('authorization_client_bank_account_p1', bankDefaults, opts),
+    ).toBe('123456789');
+    expect(
+      resolveSignNowPrefillValue('authorization_client_bank_routing_p1', bankDefaults, opts),
+    ).toBe('987654321');
+  });
+
+  it('fills the Monthly Fee bank lines on a funder using the numbered layout', () => {
+    // Text Field 7 / 8 / 9 are the bank name / routing / account slots.
+    const opts = { documentKind: 'monthly_fee' as const };
+    expect(resolveSignNowPrefillValue('Text Field 7', bankDefaults, opts)).toBe('SBI Morgan');
+    expect(resolveSignNowPrefillValue('Text Field 8', bankDefaults, opts)).toBe('987654321');
+    expect(resolveSignNowPrefillValue('Text Field 9', bankDefaults, opts)).toBe('123456789');
+  });
+
+  it('fills the Exhibit C bank lines', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    expect(resolveSignNowPrefillValue('ach_bank_name_p1', bankDefaults, opts)).toBe('SBI Morgan');
+    expect(resolveSignNowPrefillValue('ach_bank_account_p1', bankDefaults, opts)).toBe(
+      '123456789',
+    );
+    expect(resolveSignNowPrefillValue('ach_bank_routing_p1', bankDefaults, opts)).toBe(
+      '987654321',
+    );
+  });
+
+  it('fills the ACH authorization bank lines', () => {
+    const opts = { documentKind: 'ach_weekly' as const };
+    expect(resolveSignNowPrefillValue('ach_bank_name_p1_ach', bankDefaults, opts)).toBe(
+      'SBI Morgan',
+    );
+    expect(resolveSignNowPrefillValue('ach_bank_account_p1_ach', bankDefaults, opts)).toBe(
+      '123456789',
+    );
+    expect(resolveSignNowPrefillValue('ach_bank_routing_p1_ach', bankDefaults, opts)).toBe(
+      '987654321',
+    );
+  });
+
+  it('never prints the routing number where the account number belongs', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    expect(resolveSignNowPrefillValue('ach_bank_account_p1', bankDefaults, opts)).not.toBe(
+      bankDefaults.ach_bank_routing,
+    );
+  });
+
+  it('leaves the lines blank when the deal has no bank on file', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    expect(resolveSignNowPrefillValue('ach_bank_name_p1', {}, opts)).toBe('');
+    expect(resolveSignNowPrefillValue('ach_bank_account_p1', {}, opts)).toBe('');
   });
 });

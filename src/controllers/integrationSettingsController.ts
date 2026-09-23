@@ -29,6 +29,12 @@ import prisma from '../config/prismaClient';
 import { invalidateStoredTemplatePdf } from '../services/signnow/utils/signnow-template-pdf-archive';
 import { extractSignNowTemplateId } from '../services/signnow/utils/signnow-client';
 import type { FunderSupplementalLayoutType } from '../utils/funderContractLayout';
+import { parseFunderProfileBody } from './funderProfileBodyParser';
+import {
+  describeShareResult,
+  isFunderTemplateKind,
+  shareFunderTemplates as shareFunderTemplatesService,
+} from '../services/funderTemplateShareService';
 
 function handleError(res: Response, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -72,215 +78,6 @@ function getUploadedSupplementalFile(
 /** Platform supplemental layout uploads removed — use funder named-addendum upload instead. */
 const SUPPLEMENTAL_UPLOAD_FIELDS: Record<string, FunderSupplementalLayoutType> = {};
 
-function parseAllowedStates(raw: unknown): string[] | undefined {
-  if (raw == null || raw === '') return undefined;
-  if (Array.isArray(raw)) {
-    return raw.map((s) => String(s).trim()).filter(Boolean);
-  }
-  const text = String(raw).trim();
-  if (!text) return [];
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) {
-      return parsed.map((s) => String(s).trim()).filter(Boolean);
-    }
-  } catch {
-    // fall through to comma-separated
-  }
-  return text
-    .split(/[,;\n]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInput {
-  const allowedStates = parseAllowedStates(body.allowedStates);
-  const excludedStates = parseAllowedStates(body.excludedStates);
-  const isActiveRaw = body.isActive;
-  const isActive =
-    isActiveRaw === undefined || isActiveRaw === null || isActiveRaw === ''
-      ? undefined
-      : isActiveRaw === true || isActiveRaw === 'true';
-
-  const assignsDealIdRaw = body.assignsDealId;
-  const assignsDealId =
-    assignsDealIdRaw === undefined || assignsDealIdRaw === null || assignsDealIdRaw === ''
-      ? undefined
-      : assignsDealIdRaw === true || assignsDealIdRaw === 'true';
-
-  const payload: FunderProfileInput = {
-    name: String(body.name || '').trim(),
-    displayName: body.displayName ? String(body.displayName).trim() : undefined,
-    dealIdPrefix: body.dealIdPrefix ? String(body.dealIdPrefix).trim() : undefined,
-    assignsDealId,
-    mainContractLayoutKey: body.mainContractLayoutKey
-      ? String(body.mainContractLayoutKey).trim()
-      : undefined,
-    contractPdfFileName: body.contractPdfFileName
-      ? String(body.contractPdfFileName).trim()
-      : undefined,
-    organization: body.organization ? String(body.organization).trim() : undefined,
-    legalName: body.legalName ? String(body.legalName).trim() : undefined,
-    contactEmail:
-      body.contactEmail !== undefined && body.contactEmail !== null
-        ? String(body.contactEmail).trim() || null
-        : undefined,
-    contactPhone:
-      body.contactPhone !== undefined && body.contactPhone !== null
-        ? String(body.contactPhone).trim() || null
-        : undefined,
-    defaultCcEmail:
-      body.defaultCcEmail !== undefined && body.defaultCcEmail !== null
-        ? String(body.defaultCcEmail).trim() || null
-        : undefined,
-    addressLine1:
-      body.addressLine1 !== undefined && body.addressLine1 !== null
-        ? String(body.addressLine1).trim() || null
-        : undefined,
-    addressCity:
-      body.addressCity !== undefined && body.addressCity !== null
-        ? String(body.addressCity).trim() || null
-        : undefined,
-    addressState:
-      body.addressState !== undefined && body.addressState !== null
-        ? String(body.addressState).trim() || null
-        : undefined,
-    addressZip:
-      body.addressZip !== undefined && body.addressZip !== null
-        ? String(body.addressZip).trim() || null
-        : undefined,
-    docusignAccountProfileId:
-      body.docusignAccountProfileId === '' || body.docusignAccountProfileId == null
-        ? null
-        : String(body.docusignAccountProfileId),
-    sortOrder:
-      body.sortOrder != null && body.sortOrder !== ''
-        ? Number(body.sortOrder)
-        : undefined,
-    isActive,
-  };
-
-  if (body.documentsSource !== undefined && body.documentsSource !== null && body.documentsSource !== '') {
-    payload.documentsSource = String(body.documentsSource).trim();
-  }
-  if (body.sharedDocumentsFunderId !== undefined) {
-    payload.sharedDocumentsFunderId =
-      body.sharedDocumentsFunderId === '' || body.sharedDocumentsFunderId == null
-        ? null
-        : String(body.sharedDocumentsFunderId);
-  }
-  if (
-    body.addendumDocumentsSource !== undefined &&
-    body.addendumDocumentsSource !== null &&
-    body.addendumDocumentsSource !== ''
-  ) {
-    payload.addendumDocumentsSource = String(body.addendumDocumentsSource).trim();
-  }
-  if (
-    body.disclosureDocumentsSource !== undefined &&
-    body.disclosureDocumentsSource !== null &&
-    body.disclosureDocumentsSource !== ''
-  ) {
-    payload.disclosureDocumentsSource = String(body.disclosureDocumentsSource).trim();
-  }
-  if (body.sharedAddendumFunderId !== undefined) {
-    payload.sharedAddendumFunderId =
-      body.sharedAddendumFunderId === '' || body.sharedAddendumFunderId == null
-        ? null
-        : String(body.sharedAddendumFunderId);
-  }
-  if (body.sharedDisclosureFunderId !== undefined) {
-    payload.sharedDisclosureFunderId =
-      body.sharedDisclosureFunderId === '' || body.sharedDisclosureFunderId == null
-        ? null
-        : String(body.sharedDisclosureFunderId);
-  }
-
-  const optionalTrimmed = (
-    key:
-      | 'letterCompanyName'
-      | 'letterLogoUrl'
-      | 'letterWatermarkUrl'
-      | 'letterAccentStripLight'
-      | 'letterAccentStripDark'
-      | 'letterInfoTableIconBg'
-      | 'letterWireBankName'
-      | 'letterWireAddressLine1'
-      | 'letterWireCityStateZip'
-      | 'letterWireRoutingNumber'
-      | 'letterWireAccountNumber',
-  ) => {
-    if (body[key] === undefined) return;
-    payload[key] =
-      body[key] === null || body[key] === ''
-        ? null
-        : String(body[key]).trim() || null;
-  };
-  optionalTrimmed('letterCompanyName');
-  optionalTrimmed('letterLogoUrl');
-  optionalTrimmed('letterWatermarkUrl');
-  optionalTrimmed('letterAccentStripLight');
-  optionalTrimmed('letterAccentStripDark');
-  optionalTrimmed('letterInfoTableIconBg');
-  optionalTrimmed('letterWireBankName');
-  optionalTrimmed('letterWireAddressLine1');
-  optionalTrimmed('letterWireCityStateZip');
-  optionalTrimmed('letterWireRoutingNumber');
-  optionalTrimmed('letterWireAccountNumber');
-
-  if (body.signnowContractTemplateLink !== undefined) {
-    payload.signnowContractTemplateLink =
-      body.signnowContractTemplateLink === null || body.signnowContractTemplateLink === ''
-        ? null
-        : String(body.signnowContractTemplateLink).trim() || null;
-  }
-
-  const parseTemplateLinkList = (raw: unknown) => {
-    if (raw == null || raw === '') return [];
-    if (Array.isArray(raw)) return raw;
-    if (typeof raw === 'string') {
-      try {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  };
-
-  if (body.signnowAddendumTemplates !== undefined) {
-    payload.signnowAddendumTemplates = parseTemplateLinkList(
-      body.signnowAddendumTemplates,
-    ).map((item) => {
-      const row = (item || {}) as Record<string, unknown>;
-      return {
-        name: String(row.name ?? '').trim(),
-        link: String(row.link ?? row.url ?? '').trim(),
-      };
-    });
-  }
-  if (body.signnowDisclosureTemplates !== undefined) {
-    payload.signnowDisclosureTemplates = parseTemplateLinkList(
-      body.signnowDisclosureTemplates,
-    ).map((item) => {
-      const row = (item || {}) as Record<string, unknown>;
-      return {
-        name: String(row.name ?? '').trim(),
-        link: String(row.link ?? row.url ?? '').trim(),
-      };
-    });
-  }
-
-  if (allowedStates !== undefined) {
-    payload.allowedStates = allowedStates;
-  }
-  if (excludedStates !== undefined) {
-    payload.excludedStates = excludedStates;
-  }
-
-  return payload;
-}
 
 async function saveFunderWithOptionalAssets(
   req: Request,
@@ -465,10 +262,13 @@ export const getFunder = async (req: Request, res: Response) => {
 export const createFunder = async (req: Request, res: Response) => {
   try {
     const input = parseFunderProfileBody((req.body || {}) as Record<string, unknown>);
-    if (!input.name) {
+    const name = String(input.name ?? '').trim();
+    if (!name) {
       return res.status(400).json({ success: false, message: 'Funder name is required.' });
     }
-    const data = await saveFunderWithOptionalAssets(req, () => createFunderProfile(input));
+    const data = await saveFunderWithOptionalAssets(req, () =>
+      createFunderProfile({ ...input, name }),
+    );
     return res.status(201).json({ success: true, data });
   } catch (error) {
     return handleError(res, error);
@@ -521,6 +321,57 @@ export const updateFunder = async (req: Request, res: Response) => {
       await invalidateStoredTemplatePdf(templateId);
     }
     return res.json({ success: true, data });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+/**
+ * POST /integration-settings/funders/:id/share-templates
+ *
+ * Copies selected SignNow addendum / disclosure templates from this funder onto
+ * other funders. Deliberately not routed through PATCH /funders/:id: that path
+ * replaces a funder's whole template list from the client's view of it, which
+ * would drop anything another admin added in the meantime. Here the server
+ * merges against each target's live row instead.
+ */
+export const shareFunderTemplates = async (req: Request, res: Response) => {
+  try {
+    const sourceFunderId = String(req.params.id);
+    const body = (req.body || {}) as Record<string, unknown>;
+
+    const kind = body.kind;
+    if (!isFunderTemplateKind(kind)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "kind must be 'addendum' or 'disclosure'." });
+    }
+
+    const templates = Array.isArray(body.templates) ? body.templates : [];
+    const targetFunderIds = Array.isArray(body.targetFunderIds) ? body.targetFunderIds : [];
+    if (!templates.length) {
+      return res
+        .status(400)
+        .json({ success: false, message: `Select at least one ${kind} to share.` });
+    }
+    if (!targetFunderIds.length) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Select at least one funder to share with.' });
+    }
+
+    const result = await shareFunderTemplatesService({
+      sourceFunderId,
+      kind,
+      templates: templates as never,
+      targetFunderIds: targetFunderIds.map((id) => String(id)),
+    });
+
+    return res.json({
+      success: true,
+      data: result,
+      message: describeShareResult(result),
+    });
   } catch (error) {
     return handleError(res, error);
   }

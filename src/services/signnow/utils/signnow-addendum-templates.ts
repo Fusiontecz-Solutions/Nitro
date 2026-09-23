@@ -182,7 +182,13 @@ export function exhibitCInstanceIndexFromDocumentName(documentName: unknown): nu
   if (!n) return null;
   // ACH Daily must not consume Exhibit C entity slots.
   if (/\bach\b/.test(n) && /daily/.test(n) && !/weekly/.test(n)) return null;
-  if (!(n.includes('exhibit') && n.includes('c')) && !n.includes('exhibit_c')) {
+  /**
+   * The C has to be the exhibit's own letter. Testing for "exhibit" plus a `c`
+   * anywhere in the title matched "Exhibit A - Nitro Advance" on the `c` in
+   * "Advance", so Exhibit A was handed Exhibit C copy 1's entity overlay — and
+   * a second Exhibit A would have been isolated as Exhibit C copy 2.
+   */
+  if (!/exhibit[\s_-]*c\b/.test(n) && !n.includes('exhibitc')) {
     return null;
   }
   const m = n.match(/\((\d+)\)\s*$/);
@@ -352,7 +358,7 @@ export function getSignNowSupplementalTemplates(): SignNowAddendumTemplate[] {
   return [...getSignNowAddendumTemplates(), ...getSignNowDisclosureTemplates()];
 }
 
-function slugifyTemplateName(name: string): string {
+export function slugifyTemplateName(name: string): string {
   return String(name || '')
     .trim()
     .toLowerCase()
@@ -362,7 +368,7 @@ function slugifyTemplateName(name: string): string {
 }
 
 /** Map Settings labels to known Create Contract layout keys (same rules as FE). */
-function knownLayoutKeyFromSettingsName(
+export function knownLayoutKeyFromSettingsName(
   name: string,
   type: 'addendum' | 'disclosure',
 ): string {

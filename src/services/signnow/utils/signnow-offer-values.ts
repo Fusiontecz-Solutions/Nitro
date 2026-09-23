@@ -1,4 +1,4 @@
-import { resolveAchProgramFeeAmount } from './signnow-field-map';
+import { buildDisclosurePrefillDefaults } from './signnow-disclosure-values';
 import {
   CONTRACT_WIRE_FEE_USD,
   type ContractOfferPrefillSource,
@@ -30,9 +30,9 @@ function parseMoney(value: string | undefined): number | null {
 /**
  * Build the override map for a package's prefill values.
  *
- * `current` is read only to recover the deal's ACH program fee, which is a document-level
- * charge (the checkbox on the deal) rather than part of the offer, and which TOTAL FEES
- * and NET AMOUNT both have to include to stay self-consistent.
+ * `current` is read only as a floor for the state disclosure's money row; the deal's ACH
+ * program fee is a separate recurring charge on the ACH addendum and is deliberately kept
+ * out of TOTAL FEES and NET AMOUNT.
  *
  * Note the column/PDF naming inversion: on the PDF, PURCHASE PRICE is the funded advance
  * and PURCHASED AMOUNT is the payback — the reverse of the `purchasePrice` /
@@ -90,6 +90,15 @@ export function buildOfferPrefillOverrides(
     const termDaysText = String(derived.disclosureTermDays);
     put('disclosure_term_days', termDaysText);
     put('estimated_term', termDaysText);
+    /**
+     * The disclosure's own widget is `estimated_term_p2`, and an exact widget
+     * name outranks every alias. The CRM screen posts that key with the offer's
+     * raw term (`20` on a 10-week deal), so publishing only the aliases left the
+     * page showing the cadence's own unit while the rest of the disclosure had
+     * already been scaled to days. Every funder's disclosure — Nitro, Obsidian,
+     * Tiberian — names the slot identically, so one override covers all three.
+     */
+    put('estimated_term_p2', termDaysText);
   }
 
   const origination = parseMoney(derived.appendixUnderwritingFees ?? undefined);
@@ -99,16 +108,34 @@ export function buildOfferPrefillOverrides(
     // dropped a checked "$25 wire fee" from TOTAL FEES and NET AMOUNT.
     const underwriting = origination + wireFee;
     put('appendix_underwriting_fees', money(underwriting));
-    const achFee = resolveAchProgramFeeAmount(
-      new Map(Object.entries(current).map(([key, value]) => [key.toLowerCase(), value])),
-    );
-    const totalFees = underwriting + achFee;
+    /**
+     * TOTAL FEES is the origination fee plus the $25 wire fee when the deal's
+     * checkbox is ticked — nothing else. The ACH/monthly program fee used to be
+     * folded in here, which silently inflated TOTAL FEES (and deflated NET
+     * AMOUNT) by the program fee on every funder, so the printed row disagreed
+     * with the CRM's own fee/recipient-funds figures.
+     */
+    const totalFees = underwriting;
     // Only publish the derived totals while they still describe a real deal; a fee at or
     // above the advance means the inputs disagree, and a wrong NET is worse than a stale one.
     if (funded != null && totalFees < funded) {
       put('total_fees', money(totalFees));
       put('net_to_merchant', money(funded - totalFees));
     }
+  }
+
+  /**
+   * The state disclosure's own money row. Unlike everything above it, these are
+   * layered UNDER the payload (see `buildDisclosurePrefillDefaults`): the CRM
+   * screen's disclosure calculator sees the bank analyses and the per-state
+   * itemization rules and is still the better source when it posts them. It is
+   * only when it does not that the page needs a floor, which is what left the
+   * whole disclosure blank in Review on every funder.
+   */
+  for (const [key, value] of Object.entries(
+    buildDisclosurePrefillDefaults(source, { ...current, ...out }),
+  )) {
+    if (!String(out[key] ?? '').trim()) out[key] = value;
   }
 
   return out;

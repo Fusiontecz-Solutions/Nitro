@@ -8,6 +8,7 @@ jest.mock('puppeteer', () => ({ __esModule: true, default: {} }));
 import {
   exhibitCDocumentPrefillValues,
   exhibitCEntityRowHasData,
+  signNowDocumentPrefillValues,
 } from './signnow.service';
 
 /** Package-wide CRM values, as every Exhibit C copy sees them before isolation. */
@@ -101,5 +102,97 @@ describe('exhibitCDocumentPrefillValues', () => {
     expect(values.ach_bank_routing).toBe('');
     expect(values.ach_account_holder_dba).toBe('');
     expect(values.ach_account_holder_address).toBe('');
+  });
+});
+
+/**
+ * `ignoreExistingFieldValues` is driven by this flag. Setting it for every copy
+ * is what let a thin package payload empty an Exhibit C page down to the bare
+ * agreement date the overlay always stamps, on Nitro, Obsidian and Tiberian
+ * alike, while every other document quietly kept its previous widget values.
+ */
+describe('isolation is reported per copy, not per Exhibit C', () => {
+  it('never isolates the first copy, even when its slot names a business', () => {
+    const { isolated, entityIndex } = exhibitCDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [OTHER_ENTITY],
+      'EXHIBIT C TIBERIAN FUNDING',
+    );
+    expect(entityIndex).toBe(0);
+    expect(isolated).toBe(false);
+  });
+
+  it('isolates an extra copy that names its own business', () => {
+    const { isolated, values } = exhibitCDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [{}, OTHER_ENTITY],
+      'EXHIBIT C TIBERIAN FUNDING (2)',
+    );
+    expect(isolated).toBe(true);
+    expect(values.ach_bank_name).toBe('WELLS FARGO');
+  });
+
+  it('leaves an extra copy with no entity of its own un-isolated', () => {
+    const { isolated, values } = exhibitCDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [OTHER_ENTITY],
+      'EXHIBIT C TIBERIAN FUNDING (2)',
+    );
+    expect(isolated).toBe(false);
+    expect(values.ach_bank_name).toBe('CHASE');
+  });
+
+  it('reports no isolation for a document that is not an Exhibit C', () => {
+    expect(
+      exhibitCDocumentPrefillValues(MERCHANT_VALUES, [OTHER_ENTITY], 'CONTRACT TIBERIAN FUNDING')
+        .isolated,
+    ).toBe(false);
+  });
+});
+
+describe('signNowDocumentPrefillValues', () => {
+  const TABS = [
+    {
+      mappingId: 'm1',
+      templateName: 'Flex Addendum',
+      layoutKey: 'flex_addendum',
+      values: { installment_day_1_p1: '1', client_name: 'TAB OVERRIDE' },
+    },
+  ];
+
+  it('leaves a document with no tab of its own on the package values', () => {
+    const { values } = signNowDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [],
+      'Exhibit A - Nitro Advance',
+      TABS,
+    );
+    expect(values).toBe(MERCHANT_VALUES);
+  });
+
+  it('layers a document own tab over the package values, for that document only', () => {
+    const { values } = signNowDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [],
+      'Flex addendum - Nitro Advance',
+      TABS,
+    );
+    expect(values.installment_day_1_p1).toBe('1');
+    // What was typed against the document wins over the package-wide value.
+    expect(values.client_name).toBe('TAB OVERRIDE');
+    // …and the rest of the deal still travels with it.
+    expect(values.ach_bank_name).toBe('CHASE');
+    expect(MERCHANT_VALUES.client_name).toBe('MARY IRVIN');
+  });
+
+  it('still isolates an Exhibit C copy that carries its own entity', () => {
+    const { isolated, values } = signNowDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [{}, OTHER_ENTITY],
+      'Exhibit C (2)',
+      TABS,
+    );
+    expect(isolated).toBe(true);
+    expect(values.ach_bank_name).toBe('WELLS FARGO');
   });
 });

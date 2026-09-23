@@ -16,6 +16,7 @@ import {
   uploadFunderDisclosure,
   uploadFunderAddendum,
   removeFunderDocument,
+  shareFunderTemplates,
   updateDocuSignProfile,
   updateFunder,
 } from '../controllers/integrationSettingsController';
@@ -49,6 +50,12 @@ router.delete('/funders/:id', authenticateToken, requireSuperAdmin, removeFunder
 router.get('/funders/:id/documents', authenticateToken, requireSuperAdmin, listFunderDocuments);
 router.post('/funders/:id/disclosures', authenticateToken, requireSuperAdmin, uploadFunderDisclosure);
 router.post('/funders/:id/addendums', authenticateToken, requireSuperAdmin, uploadFunderAddendum);
+router.post(
+  '/funders/:id/share-templates',
+  authenticateToken,
+  requireSuperAdmin,
+  shareFunderTemplates,
+);
 router.delete(
   '/funders/:id/documents/:templateId',
   authenticateToken,

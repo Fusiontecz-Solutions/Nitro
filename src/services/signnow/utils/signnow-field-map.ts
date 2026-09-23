@@ -73,6 +73,16 @@ const ALIASES: Record<string, string[]> = {
   guarantor_phone: ['client_phone', 'merchant_contact_phone'],
   guarantor2_phone: ['owner2_phone', 'client_phone2'],
   guarantor2_address: ['owner2_address', 'guarantor2_address'],
+  /**
+   * Owner 2's address widget when the template names it with the `_g2` / `_s2`
+   * signer suffix (e.g. `guarantor_address_p23_g2`). Without this the widget
+   * canonicalised to a name nothing answered, so Owner 2's address line came
+   * back empty — and it must never fall back to Owner 1's keys.
+   */
+  guarantor_address_s2: ['owner2_address', 'guarantor2_address'],
+  guarantor_address_city_s2: ['owner2_address_city', 'guarantor2_address_city'],
+  guarantor_address_state_s2: ['owner2_address_state', 'guarantor2_address_state'],
+  guarantor_address_zip_s2: ['owner2_address_zip', 'guarantor2_address_zip'],
   client_phone2: ['owner2_phone', 'guarantor2_phone'],
   client_email_s2: ['owner2_email', 'client_email', 'merchant_contact_email'],
   owner_print_title_s2: ['owner2_print_title'],
@@ -104,10 +114,39 @@ const ALIASES: Record<string, string[]> = {
     'security_doing_business_as',
     'client_legal_name',
   ],
+  /**
+   * The ACH account holder address is Owner 1's address, not the business
+   * physical address: the ACH block already prints the business address on its
+   * own line, so resolving both from `business_address` printed the same street
+   * twice. It resolves from the holder keys the CRM sends first, then from
+   * Owner 1's address (`business_address_contract` / `guarantor_address`), and
+   * never from `business_address`.
+   */
   ach_account_holder_address: [
     'ach_authorization_account_holder_address',
-    'business_address',
     'business_address_contract',
+    'guarantor_address',
+    'owner1_address',
+    'owner_address',
+    'owner_home_address',
+  ],
+  ach_account_holder_address_city: [
+    'ach_authorization_account_holder_city',
+    'business_address_contract_city',
+    'guarantor_address_city',
+    'owner1_address_city',
+  ],
+  ach_account_holder_address_state: [
+    'ach_authorization_account_holder_state',
+    'business_address_contract_state',
+    'guarantor_address_state',
+    'owner1_address_state',
+  ],
+  ach_account_holder_address_zip: [
+    'ach_authorization_account_holder_zip',
+    'business_address_contract_zip',
+    'guarantor_address_zip',
+    'owner1_address_zip',
   ],
   ach_bank_name: [
     'ach_authorization_account_holder_bank_name',
@@ -199,11 +238,49 @@ const ALIASES: Record<string, string[]> = {
     'ach_authorization_reference_number3',
     'ach_authorization_reference_number_3',
   ],
-  business_address: [
-    'business_address_contract',
-    'ach_account_holder_address',
-    'ach_authorization_account_holder_address',
+  /**
+   * Business (Application → Business section) physical address. Deliberately has
+   * no `business_address_contract` fallback: that key is the Merchant / Owner 1
+   * home address and the two are separate entries in the CRM, so aliasing them
+   * made both widgets print whichever one happened to be populated.
+   */
+  business_address: ['security_business_address'],
+  business_address_city: ['security_business_address_city'],
+  business_address_state: ['security_business_address_state'],
+  business_address_zip: ['security_business_address_zip'],
+  /**
+   * Merchant / Owner 1 home address — the "Merchant" block on the agreement and
+   * the addendums' contact-address line. Resolves from the owner/guarantor keys
+   * only, never from `business_address`.
+   */
+  business_address_contract: [
+    'guarantor_address',
+    'owner1_address',
+    'owner_address',
+    'owner_home_address',
   ],
+  business_address_contract_city: [
+    'guarantor_address_city',
+    'owner1_address_city',
+    'owner_address_city',
+    'owner_home_address_city',
+  ],
+  business_address_contract_state: [
+    'guarantor_address_state',
+    'owner1_address_state',
+    'owner_address_state',
+    'owner_home_address_state',
+  ],
+  business_address_contract_zip: [
+    'guarantor_address_zip',
+    'owner1_address_zip',
+    'owner_address_zip',
+    'owner_home_address_zip',
+  ],
+  guarantor_address: ['business_address_contract', 'owner1_address', 'owner_address'],
+  guarantor_address_city: ['business_address_contract_city', 'owner1_address_city'],
+  guarantor_address_state: ['business_address_contract_state', 'owner1_address_state'],
+  guarantor_address_zip: ['business_address_contract_zip', 'owner1_address_zip'],
   case_id: ['application_id', 'case_id'],
   appendix_underwriting_fees: [
     'total_fees',
@@ -272,14 +349,10 @@ const ALIASES: Record<string, string[]> = {
   installmentblock_frequency: ['frequency', 'paymentterms', 'payment_terms'],
   // ACH Weekly addendum — same CRM ids as PCM_CONTRACT, unique names use `_p1_ach`.
   billing_name: ['client_name', 'ach_account_holder_name', 'merchant_contact_name'],
-  billing_address: [
-    'business_address',
-    'business_address_contract',
-    'ach_account_holder_address',
-  ],
-  billing_city: ['business_address_city', 'business_address_contract_city'],
-  billing_state: ['business_address_state', 'business_address_contract_state'],
-  billing_zip: ['business_address_zip', 'business_address_contract_zip'],
+  billing_address: ['business_address'],
+  billing_city: ['business_address_city'],
+  billing_state: ['business_address_state'],
+  billing_zip: ['business_address_zip'],
   billing_phone: ['client_phone', 'merchant_contact_phone'],
   billing_email: ['client_email', 'merchant_contact_email'],
   bank_name: [
@@ -323,6 +396,13 @@ const ALIASES: Record<string, string[]> = {
   total_amount_fund_disbursed: ['disclosure_recipient_funds'],
   disclosure_finance_charge: ['total_dollar_cost', 'finance_charge'],
   total_dollar_cost: ['disclosure_finance_charge'],
+  /**
+   * The disclosure's page-2 widget is `finance_charge_p2`, which canonicalizes to
+   * `finance_charge`. Without this reverse alias the line only ever filled when
+   * the CRM posted that exact id, so the page-2 FINANCE CHARGE box was blank on
+   * every funder whenever the value arrived as `disclosure_finance_charge`.
+   */
+  finance_charge: ['disclosure_finance_charge', 'total_dollar_cost'],
   disclosure_estimated_payment: [
     'estimated_payment_amount',
     'estimated_payment',
@@ -344,6 +424,16 @@ const ALIASES: Record<string, string[]> = {
   ],
   percent_of_business_income: ['disclosure_payment_terms', 'payment_exceeded_percent'],
   payment_exceeded_percent: ['disclosure_payment_terms', 'percent_of_business_income'],
+  /**
+   * Every funder's disclosure names this widget `payement_exceeded_percent_p2_s1`
+   * — the template's own misspelling. Only the correctly spelled id was aliased,
+   * so the "percent of business income" line resolved nothing and stayed blank.
+   */
+  payement_exceeded_percent: [
+    'disclosure_payment_terms',
+    'percent_of_business_income',
+    'payment_exceeded_percent',
+  ],
   disclosure_apr: ['estimated_annual_percentage_rate'],
   estimated_annual_percentage_rate: ['disclosure_apr'],
   disclosure_avg_monthly_revenue: [
@@ -433,7 +523,13 @@ const ALIASES: Record<string, string[]> = {
     'disclosure_recipient_funds',
     'net_to_merchant',
   ],
-  disclosure_page3_subtotal: ['disclosure_page3_subtotal'],
+  disclosure_page3_subtotal: [
+    'disclosure_page3_subtotal',
+    // The itemization always adds back up to the advance (see
+    // `buildDisclosurePrefillDefaults`), so the advance is the right floor here.
+    'disclosure_amount_financed',
+    'funding_provided',
+  ],
   disclouser_pg2_frequency: [
     'disclouser_pg2_frequency',
     'disclosure_payment_frequency',
@@ -459,10 +555,16 @@ const ALIASES: Record<string, string[]> = {
     'monthly_income',
   ],
   'text field 5': ['disclosure_finance_charge', 'finance_charge', 'total_dollar_cost'],
+  /**
+   * TOTAL AMOUNT TO BE PAID — the payback, so it must never fall back to
+   * `purchase_price`, which is the funded advance and printed the wrong number
+   * on the page-1 money row whenever the CRM posted no disclosure total.
+   */
   'text field 6': [
     'disclosure_total_payment',
     'payment_total',
-    'purchase_price',
+    'purchased_amount',
+    'payback_amount',
   ],
   'text field 7': ['disclosure_monthly_cost', 'estimated_monthly_cost'],
   'text field 8': [
@@ -560,6 +662,55 @@ export const MONTHLY_FEE_TEXT_FIELD_CRM_IDS = [
   'authorization_client_name_print',
 ];
 
+/**
+ * Monthly Fee "Account Holder Information" block — the **Authorized Holder
+ * Name** line.
+ *
+ * The block prints two names side by side: "(Authorized Holder Name)" and
+ * "(Authorized Holder Business Name)". The second one is the business
+ * (`ach_account_holder_dba`); the first is Owner 1, the person who authorizes
+ * the debit. But `ach_account_holder_name`'s alias chain leads with the CRM's
+ * ACH-block holder field and `authorization_client_name`, both of which carry
+ * the business legal name, so both lines came out reading
+ * "RE-NEW-IT RENOVATIONS, LLC".
+ *
+ * These CRM ids are Owner 1's personal name only — no business-name key is in
+ * the list, so the line can never fall back to the value already printed
+ * beside it.
+ */
+export const MONTHLY_FEE_HOLDER_NAME_CRM_IDS = [
+  'client_name',
+  'owner1_guarantor_name',
+  'guaranty_guarantor1_name',
+  'merchant_contact_name',
+] as const;
+
+/**
+ * True for the Monthly Fee block's Authorized Holder Name widget, in both of
+ * the places that block appears: the standalone "Monthly Fee" addendum and the
+ * same block printed at the end of the agreement itself (verified against the
+ * live Obsidian templates — agreement bb15a185… and addendum 343d2d92… both
+ * name it `ach_account_holder_name_p1`).
+ *
+ * Deliberately narrow. The agreement's own page-20 ACH block
+ * (`ach_account_holder_name_p19`), the ACH Daily / Weekly authorizations
+ * (`ach_account_holder_name_p1_ach`) and Exhibit C are bank-authorization forms
+ * whose account holder is legitimately the business, and they keep resolving
+ * through the unchanged `ach_account_holder_name` chain.
+ */
+export function isMonthlyFeeAccountHolderNameField(
+  fieldName: string,
+  options?: SignNowPrefillOptions,
+): boolean {
+  if (options?.documentKind === 'exhibit_c') return false;
+  const n = String(fieldName || '').trim().toLowerCase();
+  if (n === 'ach_account_holder_name_p1') return true;
+  return (
+    options?.documentKind === 'monthly_fee' &&
+    canonicalizeSignNowFieldName(n) === 'ach_account_holder_name'
+  );
+}
+
 export function isMonthlyFeeForcedBlankField(fieldName: string): boolean {
   const numbered = String(fieldName || '')
     .trim()
@@ -609,6 +760,24 @@ export function isAchWeeklyDocumentName(value: unknown): boolean {
 }
 
 /**
+ * The recurring-bank (ACH) payment authorization page, daily or weekly. Every
+ * funder ships its own copy — "ACH Daily", "RECURRING BANK (ACH) PAYMENT
+ * AUTHORIZATION - Daily..", "ACH DAILY TIBERIAN FUNDING" — and all of them carry
+ * byte-identical widget names (`*_p1_ach`). Those names are shared across
+ * funders, so, exactly as with the disclosures, an ACH authorization must never
+ * be classified by the funder in its title: the agreement layouts keyed off that
+ * funder name (`OBSIDIAN_AGREEMENT_TEXT_FIELDS`, `TIBERIAN_AGREEMENT_TEXT_FIELDS`)
+ * would then claim the page's widgets and stamp contract values into its bank row.
+ */
+export function isAchAuthorizationDocumentName(value: unknown): boolean {
+  const n = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!n) return false;
+  return /\bach\b/.test(n) && /(daily|week)/.test(n);
+}
+
+/**
  * Every funder ships its own copy of the state disclosure ("Disclosure Obsidian
  * Capital Group", "Tiberian Funding - Disclosure", "Disclosure - Nitro Advance")
  * and all three carry byte-identical widget names — the CA page-1 `Text Field 1`-`8`
@@ -624,6 +793,24 @@ export function isDisclosureDocumentName(value: unknown): boolean {
     .toLowerCase();
   if (!n) return false;
   return n.includes('disclosure') || n.includes('disclouser');
+}
+
+/**
+ * Field-name signature of the state disclosure, for the copies whose title
+ * carries only the funder ("TIBERIAN FUNDING") and so never matches
+ * `isDisclosureDocumentName`. All three funders' disclosures ship byte-identical
+ * widget names, and `estimated_term_p2` / `disclouser_pg2_frequency` exist on no
+ * other document in the package, so the pair cannot match an agreement.
+ */
+export function hasDisclosureFieldSignature(fieldNames?: string[]): boolean {
+  const names = new Set(
+    (fieldNames || []).map((n) => String(n || '').trim().toLowerCase()),
+  );
+  if (!names.size) return false;
+  return (
+    names.has('estimated_term_p2') &&
+    (names.has('disclouser_pg2_frequency') || names.has('disclosure_page3_net_p3'))
+  );
 }
 
 export function isObsidianDocumentName(value: unknown): boolean {
@@ -655,7 +842,28 @@ export type SignNowPrefillDocumentKind =
   | 'exhibit_c'
   | 'ach_weekly';
 
-export type SignNowPrefillOptions = { documentKind?: SignNowPrefillDocumentKind };
+export type SignNowPrefillOptions = {
+  documentKind?: SignNowPrefillDocumentKind;
+  /**
+   * Canonical names of every widget the document actually carries. It is what
+   * lets an address widget know whether the page has companion city/state/zip
+   * boxes beside it: a guarantor address block that has them stays street-only,
+   * while the same widget on a page that has none is composed into the full
+   * `street, city, state zip` line instead of printing half an address.
+   */
+  documentFieldCanons?: ReadonlySet<string>;
+};
+
+/** Canonical widget names of the fields a document carries, for `documentFieldCanons`. */
+export function signNowDocumentFieldCanons(fieldNames?: string[]): Set<string> | undefined {
+  if (!Array.isArray(fieldNames) || !fieldNames.length) return undefined;
+  const out = new Set<string>();
+  for (const name of fieldNames) {
+    const canon = canonicalizeSignNowFieldName(String(name || ''));
+    if (canon) out.add(canon);
+  }
+  return out.size ? out : undefined;
+}
 
 /**
  * Obsidian Agreement 1 still uses default "Text Field N" names on the page-1
@@ -775,6 +983,40 @@ export const TIBERIAN_PG22_FIELD_CRM_IDS: Record<string, string> = {
 };
 
 /**
+ * "Addendum to Contract — Waiver of Personal Service" page (viewer page 23;
+ * page index 22 on the Nitro and Obsidian agreements, 23 on Tiberian, which
+ * inserts an extra Declaration page ahead of it).
+ *
+ * The page carries two service-of-process blocks. Item 3 is the MERCHANT's —
+ * the business's own email and its physical address — and item 4 is the
+ * GUARANTOR's, which is Owner 1's personal email and home address. But the
+ * template names the merchant's two widgets `client_email_p23` and
+ * `business_address_contract_p23`, and both of those canonicalise to Owner 1
+ * keys (`client_email` is Owner 1's email; `business_address_contract` is the
+ * Merchant / Owner 1 home address). So the page went out with Owner 1's email
+ * and Owner 1's home address printed on *both* blocks, and the merchant's own
+ * service address never appeared at all.
+ *
+ * These are the exact live widget names, verified against all three funder
+ * templates (Nitro group 15308be2…, Tiberian 13ab1bd4…, Obsidian) — every
+ * funder ships the same four names, so one table fixes every funder. They are
+ * matched on the raw widget name *before* canonicalisation, so the override
+ * cannot reach `client_email` / `business_address_contract` anywhere else in
+ * the package: page 2's merchant block and the ACH / Exhibit C addendums keep
+ * resolving exactly as they do today.
+ *
+ * Only the merchant block is listed. `guarantor_email_p23` and
+ * `guarantor_address_p23` already resolve to Owner 1 through the normal alias
+ * chain, which is what item 4 is supposed to print.
+ */
+export const WAIVER_OF_SERVICE_MERCHANT_FIELD_CRM_IDS: Record<string, string[]> = {
+  /** Item 3 — "MERCHANT … ACCEPT SERVICE … BY ELECTRONIC MAIL ("EMAIL") AT ___". */
+  client_email_p23: ['business_email', 'client_email'],
+  /** Item 3 — "… OR BY UNITED STATES POSTAL SERVICE AT ___" (business physical address). */
+  business_address_contract_p23: ['business_address'],
+};
+
+/**
  * Exhibit C ACH block, by position.
  *
  * Nitro's Exhibit C names every widget (`ach_account_holder_dba_p1`, …), but the
@@ -820,6 +1062,346 @@ export const EXHIBIT_C_TEXT_FIELD_CRM_IDS: Record<number, string> = {
   11: '',
 };
 
+/**
+ * Tiberian Funding's Exhibit C (template 52b24e67…, document a1ff8038…,
+ * "EXHIBIT C -") is the third copy of this page, and it is the *named* layout,
+ * not the numbered one: every widget carries the same unique name as Nitro's
+ * template, on the same lines (within 4pt), so nothing here needs a positional
+ * table and `EXHIBIT_C_TEXT_FIELD_CRM_IDS` above stays Obsidian-only.
+ *
+ * Verified against the live template:
+ *
+ *   y=64   agreement_date_p1              y=468  ach_bank_name_p1
+ *   y=79   client_legal_name_p1           y=493  ach_bank_portal_p1      (signer)
+ *   y=79   client_name_p1                 y=519  ach_bank_account_p1
+ *   y=334  ach_account_holder_name_p1     y=546  ach_bank_routing_p1
+ *   y=358  ach_account_holder_dba_p1      y=572  ach_username_p1         (signer)
+ *   y=386  ach_account_holder_address_p1  y=595  ach_password_p1         (signer)
+ *                                         y=621  ach_security_q1_p1      (signer)
+ *                                         y=644  ach_security_q2_p1      (signer)
+ *   y=722  initial_g1_p1                  y=731  initial_g2_p1
+ *
+ * The only divergence from Nitro's copy is a SignNow role: Tiberian left
+ * `ach_bank_portal_p1` on the Owner role where Nitro assigns it to Recipient 1.
+ * That is deliberately *not* mirrored into the mapping — the bank portal is a
+ * credential the CRM never holds, so `EXHIBIT_C_REQUIRED_UNIQUE_NAMES` keeps it
+ * an empty merchant-filled widget on every funder's copy, exactly as the
+ * Obsidian `Text Field 5` slot is. The role is corrected at publish time by the
+ * same reassignment that covers the other merchant-required ACH widgets.
+ *
+ * This list is asserted end to end in `signnow-field-map.test.ts` so a rename on
+ * the Tiberian template fails a test instead of silently emptying the page.
+ */
+export const TIBERIAN_EXHIBIT_C_FIELD_NAMES = [
+  'agreement_date_p1',
+  'client_legal_name_p1',
+  'client_name_p1',
+  'ach_account_holder_name_p1',
+  'ach_account_holder_dba_p1',
+  'ach_account_holder_address_p1',
+  'ach_bank_name_p1',
+  'ach_bank_portal_p1',
+  'ach_bank_account_p1',
+  'ach_bank_routing_p1',
+  'ach_username_p1',
+  'ach_password_p1',
+  'ach_security_q1_p1',
+  'ach_security_q2_p1',
+  'initial_g1_p1',
+  'initial_g2_p1',
+] as const;
+
+/**
+ * Tiberian Funding's Exhibit A Addendum (template 1dd030c4…, document
+ * 62f8e35e…, "EXHIBIT A TF-") is the second copy of the Nitro Advance Exhibit A
+ * page, and — like the Tiberian Exhibit C — it ships the *named* layout: every
+ * one of its 39 widgets carries the exact same unique name as the Nitro /
+ * Obsidian template (a3f75789…, document 2c50504c…, "Exhibit A - Nitro
+ * Advance"), on the same lines. The two name sets were diffed against the live
+ * SignNow API and are identical, so the Tiberian copy needs no funder-specific
+ * mapping at all: it resolves through the same aliases Obsidian's copy does and
+ * `signNowPrefillDocumentKind` leaves both without a documentKind (the title
+ * carries no funder, and "Exhibit A" is not an Exhibit C / disclosure / monthly
+ * fee name).
+ *
+ * The inventory below is the live order, top to bottom:
+ *
+ *   y=106  agreement_date_p1             y=396  exhibit_a_value_7_p1
+ *   y=146  client_legal_name_p1          y=435  exhibit_a_value_8_p1
+ *   y=161  doing_business_as_p1          y=480  exhibit_a_value_9_p1
+ *   y=188  exhibit_a_value_1_p1          y=522  exhibit_a_value_10_p1
+ *   …      addendum_ein_N_p1             y=560  exhibit_a_value_11_p1
+ *   …      addendum_type_of_entity_N_p1  y=602  signature_p1      (Recipient 1)
+ *                                        y=647  exhibit_owner_name_p1
+ *                                        y=667  guaranty_ss_p1
+ *                                        y=689  owner_print_title_p1
+ *                                        y=710  Initials 1 / 2    (signers)
+ *
+ * Two quirks are the PDF's own and are mirrored on both funders' templates:
+ * the seller table skips `exhibit_a_value_6_p1`, and from row 7 down the EIN
+ * column runs one behind the legal-name column (`exhibit_a_value_7_p1` sits
+ * beside `addendum_ein_6_p1`). Neither changes what the CRM resolves.
+ *
+ * Rows 4-11 stay empty on *both* funders' copies: `Addendum` only stores three
+ * sellers (`legalName1..3` / `ein1..3` / `typeOfEntity1..3`), which is what
+ * `loadContractPrefillDefaults` reads into `exhibit_a_value_1..3`,
+ * `addendum_ein_1..3` and `addendum_type_of_entity_1..3`. Tiberian additionally
+ * marks several of those empty rows `required` on the Owner role; the merchant
+ * publish already clears `required` on any un-prefilled Owner widget, so the
+ * flag cannot block a send.
+ *
+ * This list is asserted end to end in `signnow-field-map.test.ts` so a rename on
+ * the Tiberian template fails a test instead of silently emptying the page.
+ */
+export const TIBERIAN_EXHIBIT_A_FIELD_NAMES = [
+  'agreement_date_p1',
+  'client_legal_name_p1',
+  'doing_business_as_p1',
+  'exhibit_a_value_1_p1',
+  'addendum_ein_1_p1',
+  'addendum_type_of_entity_1_p1',
+  'exhibit_a_value_2_p1',
+  'addendum_ein_2_p1',
+  'addendum_type_of_entity_2_p1',
+  'exhibit_a_value_3_p1',
+  'addendum_ein_3_p1',
+  'addendum_type_of_entity_3_p1',
+  'exhibit_a_value_4_p1',
+  'addendum_ein_4_p1',
+  'addendum_type_of_entity_4_p1',
+  'exhibit_a_value_5_p1',
+  'addendum_ein_5_p1',
+  'addendum_type_of_entity_5_p1',
+  'exhibit_a_value_7_p1',
+  'addendum_ein_6_p1',
+  'addendum_type_of_entity_7_p1',
+  'exhibit_a_value_8_p1',
+  'addendum_ein_7_p1',
+  'addendum_type_of_entity_8_p1',
+  'exhibit_a_value_9_p1',
+  'addendum_ein_8_p1',
+  'addendum_type_of_entity_9_p1',
+  'exhibit_a_value_10_p1',
+  'addendum_ein_9_p1',
+  'addendum_type_of_entity_10_p1',
+  'exhibit_a_value_11_p1',
+  'addendum_ein_10_p1',
+  'addendum_type_of_entity_11_p1',
+  'signature_p1',
+  'exhibit_owner_name_p1',
+  'guaranty_ss_p1',
+  'owner_print_title_p1',
+  'Initials 1',
+  'Initials 2',
+] as const;
+
+/**
+ * Exhibit A's seller table, one entry per printed row, in the order the live
+ * template lays them out. Every funder's Exhibit A ships the same names (the
+ * inventories were diffed through `src/scripts/inspectAddendumWidgets.ts`), so
+ * this table is funder-agnostic.
+ *
+ * The three columns are NOT numbered in step: the legal-name column skips
+ * `exhibit_a_value_6_p1`, so from row 6 down it runs one ahead of the EIN
+ * column (`exhibit_a_value_7_p1` sits beside `addendum_ein_6_p1`). Pairing the
+ * columns by their numeric suffix would therefore print row 6's EIN against
+ * row 7's name; they are paired by printed row here instead.
+ */
+export const EXHIBIT_A_ENTITY_ROWS: ReadonlyArray<{
+  legalNameKey: string;
+  einKey: string;
+  entityTypeKey: string;
+}> = [
+  { legalNameKey: 'exhibit_a_value_1', einKey: 'addendum_ein_1', entityTypeKey: 'addendum_type_of_entity_1' },
+  { legalNameKey: 'exhibit_a_value_2', einKey: 'addendum_ein_2', entityTypeKey: 'addendum_type_of_entity_2' },
+  { legalNameKey: 'exhibit_a_value_3', einKey: 'addendum_ein_3', entityTypeKey: 'addendum_type_of_entity_3' },
+  { legalNameKey: 'exhibit_a_value_4', einKey: 'addendum_ein_4', entityTypeKey: 'addendum_type_of_entity_4' },
+  { legalNameKey: 'exhibit_a_value_5', einKey: 'addendum_ein_5', entityTypeKey: 'addendum_type_of_entity_5' },
+  { legalNameKey: 'exhibit_a_value_7', einKey: 'addendum_ein_6', entityTypeKey: 'addendum_type_of_entity_7' },
+  { legalNameKey: 'exhibit_a_value_8', einKey: 'addendum_ein_7', entityTypeKey: 'addendum_type_of_entity_8' },
+  { legalNameKey: 'exhibit_a_value_9', einKey: 'addendum_ein_8', entityTypeKey: 'addendum_type_of_entity_9' },
+  { legalNameKey: 'exhibit_a_value_10', einKey: 'addendum_ein_9', entityTypeKey: 'addendum_type_of_entity_10' },
+  { legalNameKey: 'exhibit_a_value_11', einKey: 'addendum_ein_10', entityTypeKey: 'addendum_type_of_entity_11' },
+];
+
+type ExhibitAEntityColumn = 'legal_name' | 'ein' | 'entity_type';
+
+const EXHIBIT_A_ENTITY_CELL_BY_CANON = (() => {
+  const map = new Map<string, { rowIndex: number; column: ExhibitAEntityColumn }>();
+  EXHIBIT_A_ENTITY_ROWS.forEach((row, rowIndex) => {
+    map.set(row.legalNameKey, { rowIndex, column: 'legal_name' });
+    map.set(row.einKey, { rowIndex, column: 'ein' });
+    map.set(row.entityTypeKey, { rowIndex, column: 'entity_type' });
+  });
+  return map;
+})();
+
+/**
+ * The Exhibit A seller row a widget belongs to, or `null` for anything else on
+ * the page (the header legal name, the signature block).
+ */
+export function exhibitAEntityCellForCanon(
+  canon: string,
+): { rowIndex: number; column: ExhibitAEntityColumn } | null {
+  return EXHIBIT_A_ENTITY_CELL_BY_CANON.get(canon) || null;
+}
+
+/**
+ * Resolve one cell of the Exhibit A seller table.
+ *
+ * A row prints only when it has a seller of its own. Row 1 is the merchant on
+ * the deal, so it falls back to the contract's own legal name / EIN; rows 2-10
+ * are the ADDITIONAL entities and have no fallback at all — they come from the
+ * `Addendum` record's `legalName{n}` / `ein{n}` / `typeOfEntity{n}` columns or
+ * they stay blank.
+ *
+ * Without that rule every `addendum_ein_{n}` widget matched
+ * `isBusinessEinField` and picked up the application's EIN through the generic
+ * `ein` / `tax_id` fallback chain, so Exhibit A printed the merchant's EIN on
+ * all ten rows beside nine empty legal-name lines.
+ */
+function resolveExhibitAEntityCell(
+  cell: { rowIndex: number; column: ExhibitAEntityColumn },
+  map: Map<string, string>,
+): string {
+  const row = EXHIBIT_A_ENTITY_ROWS[cell.rowIndex];
+  if (!row) return '';
+  const isPrimary = cell.rowIndex === 0;
+  const legalName =
+    mapGet(map, row.legalNameKey) ||
+    (isPrimary
+      ? mapGet(map, 'client_legal_name') ||
+        mapGet(map, 'legal_name') ||
+        mapGet(map, 'business_legal_name')
+      : '');
+  // No seller on this line — the EIN and entity-type boxes beside it stay empty.
+  if (!legalName) return '';
+  if (cell.column === 'legal_name') return legalName;
+  if (cell.column === 'ein') {
+    return (
+      mapGet(map, row.einKey) ||
+      (isPrimary
+        ? mapGet(map, 'federal_tax_id_ein') ||
+          mapGet(map, 'security_tax_ein') ||
+          mapGet(map, 'ein') ||
+          mapGet(map, 'tax_id')
+        : '')
+    );
+  }
+  return mapGet(map, row.entityTypeKey);
+}
+
+/**
+ * Tiberian Funding's EPA Addendum (early-payoff schedule; template 6af7ebdf…,
+ * document 245bb4d1…, "EPA TF CT") is the third copy of this page, and — like
+ * the Tiberian Exhibit C and Exhibit A — it ships the *named* layout: all 18 of
+ * its widgets carry the exact same unique names as the Nitro catalog copy
+ * (084719db…, document 056c5d2a…, "EPA Nitro Advance") and the Obsidian copy
+ * (fbb2f217…, document 1817868a…, "EPA- OBSIDIAN CAPITAL GROUP"), on the same
+ * lines. The three name sets were diffed against the live SignNow API and are
+ * identical, so the Tiberian copy needs no funder-specific mapping at all: it
+ * resolves through the same ids Obsidian's does, and `signNowPrefillDocumentKind`
+ * leaves all three without a documentKind — "EPA TF CT" carries no funder name,
+ * and an EPA is not an Exhibit C / disclosure / monthly-fee title.
+ *
+ * The inventory below is the live order, top to bottom:
+ *
+ *   y=211  agreement_date_p1             y=456  epo_received_date_4_p1
+ *   y=231  client_legal_name_p1          y=456  epo_amount_received_4_p1
+ *   y=392  epo_amount_received_1_p1      y=477  epo_received_date_5_p1
+ *   y=394  epo_received_date_1_p1        y=477  epo_amount_received_5_p1
+ *   y=416  epo_received_date_2_p1        y=573  signature_p1    (Recipient 1)
+ *   y=416  epo_amount_received_2_p1      y=573  Signature 2     (Recipient 2)
+ *   y=434  epo_amount_received_3_p1      y=605  owner1_guarantor_name_p1
+ *   y=435  epo_received_date_3_p1        y=605  owner2_guarantor_name_p1
+ *                                        y=622  guaranty_ss_p1
+ *                                        y=622  guaranty_owner2_ss_p1
+ *
+ * Ledger rows 4 and 5 stay empty on *all three* funders' copies, the same way
+ * Exhibit A rows 4-11 do: `EPO` only stores three payments
+ * (`amountReceived1..3` / `receivedDate1..3`), which is what
+ * `loadContractPrefillDefaults` reads into `epo_amount_received_1..3` and
+ * `epo_received_date_1..3`. Rows 4/5 are therefore left to the signer rather
+ * than stamped, and adding them would need an `EPO` schema change first.
+ *
+ * This list is asserted end to end in `signnow-field-map.test.ts` so a rename on
+ * the Tiberian template fails a test instead of silently emptying the page.
+ */
+export const TIBERIAN_EPA_FIELD_NAMES = [
+  'agreement_date_p1',
+  'client_legal_name_p1',
+  'epo_received_date_1_p1',
+  'epo_amount_received_1_p1',
+  'epo_received_date_2_p1',
+  'epo_amount_received_2_p1',
+  'epo_received_date_3_p1',
+  'epo_amount_received_3_p1',
+  'epo_received_date_4_p1',
+  'epo_amount_received_4_p1',
+  'epo_received_date_5_p1',
+  'epo_amount_received_5_p1',
+  'signature_p1',
+  'Signature 2',
+  'owner1_guarantor_name_p1',
+  'owner2_guarantor_name_p1',
+  'guaranty_ss_p1',
+  'guaranty_owner2_ss_p1',
+] as const;
+
+/**
+ * Tiberian Funding's ACH Daily Addendum ("ACH Daily", template d68dd23d…,
+ * document 4e472889…) is a third copy of the same RECURRING BANK (ACH) PAYMENT
+ * AUTHORIZATION page Nitro (5741b00c…) and Obsidian (634cbdac…, "RECURRING BANK
+ * (ACH) PAYMENT AUTHORIZATION - Daily..") already ship. All three carry the
+ * *same* 14 widget names — the live inventories were diffed through
+ * `src/scripts/inspectAchDailyTemplates.ts` and share every name, with none on
+ * either side — so the Tiberian copy needs no funder-specific mapping: it
+ * resolves through the same `_p1_ach` aliases Obsidian's copy does, and
+ * `signNowPrefillDocumentKind` leaves all three without a documentKind (the
+ * titles carry no funder, and an ACH *Daily* name is deliberately excluded from
+ * `isExhibitCDocumentName` and never matches `isAchWeeklyDocumentName`).
+ *
+ * The inventory below is the live order, top to bottom:
+ *
+ *   y=200  client_name_p1_ach             y=363  ach_account_holder_name_p1_ach
+ *   y=218  remittance_p1_ach              y=379  ach_bank_name_p1_ach
+ *   y=218  remittance_start_date_p1_ach   y=393  ach_bank_account_p1_ach
+ *   y=232  purchase_amount_p1_ach         y=393  ach_bank_routing_p1_ach
+ *   y=279  business_address_p1_ach        y=649  signature_p1_ach  (Recipient 1)
+ *   y=297  merchant_contact_phone_p1_ach  y=663  signature_date_p1_ach
+ *   y=297  merchant_contact_email_p1_ach  y=681  authorization_client_name_print_p1_ach
+ *
+ * `signature_p1_ach` is the signer's own widget and is never a prefill target.
+ * `signature_date_p1_ach` and `authorization_client_name_print_p1_ach` are the
+ * bottom Date / Printed Name pair; unlike ACH Weekly — whose template misnames
+ * that pair and needs the `ACH_WEEKLY_POSITIONAL_FIELD_CRM_IDS` remap — ACH
+ * Daily names both correctly on every funder's copy, so no remap applies.
+ *
+ * The only divergence from Obsidian's copy is that Tiberian leaves the Owner
+ * text widgets `required: false` where Obsidian marks them `required: true`.
+ * That changes nothing here: the merchant publish clears `required` on any
+ * un-prefilled Owner widget, and every one of these is CRM-filled anyway.
+ *
+ * This list is asserted end to end in `signnow-field-map.test.ts` so a rename on
+ * the Tiberian template fails a test instead of silently emptying the page.
+ */
+export const TIBERIAN_ACH_DAILY_FIELD_NAMES = [
+  'client_name_p1_ach',
+  'remittance_p1_ach',
+  'remittance_start_date_p1_ach',
+  'purchase_amount_p1_ach',
+  'business_address_p1_ach',
+  'merchant_contact_phone_p1_ach',
+  'merchant_contact_email_p1_ach',
+  'ach_account_holder_name_p1_ach',
+  'ach_bank_name_p1_ach',
+  'ach_bank_account_p1_ach',
+  'ach_bank_routing_p1_ach',
+  'signature_p1_ach',
+  'signature_date_p1_ach',
+  'authorization_client_name_print_p1_ach',
+] as const;
+
 /** Exhibit C numbered slots the merchant fills — kept as empty signer widgets. */
 const EXHIBIT_C_MERCHANT_TEXT_FIELD_NUMBERS = new Set([1, 5, 8, 9, 10, 11]);
 
@@ -833,6 +1415,24 @@ export function exhibitCTextFieldNumber(fieldName: string): number {
   return Number.isFinite(num) ? num : 0;
 }
 
+/**
+ * True when the title itself says the document is the main agreement.
+ *
+ * `hasDisclosureFieldSignature` is the other half of this guard, and it can
+ * only see widget names — which a merchant publish deletes as it bakes their
+ * values into page text. So on a resend the Tiberian disclosure, titled just
+ * "TIBERIAN FUNDING", arrived with no widget names left and nothing but the
+ * funder name in its title, and `isTiberianDocumentName` claimed it as that
+ * funder's agreement.
+ *
+ * Requiring the word as well means a funder name alone never classifies a
+ * document as an agreement; the field-name signatures further down still
+ * recognise an agreement that arrives with no usable title.
+ */
+function looksLikeAgreementDocumentName(value: unknown): boolean {
+  return /agreement|contract/i.test(String(value || '').trim());
+}
+
 export function signNowPrefillDocumentKind(
   documentName?: unknown,
   fieldNames?: string[],
@@ -840,8 +1440,15 @@ export function signNowPrefillDocumentKind(
   if (isMonthlyFeeDocumentName(documentName)) return 'monthly_fee';
   if (isExhibitCDocumentName(documentName)) return 'exhibit_c';
   // A funder's disclosure carries the funder name too — never let it be read as
-  // that funder's agreement (see `isDisclosureDocumentName`).
-  if (!isDisclosureDocumentName(documentName)) {
+  // that funder's agreement (see `isDisclosureDocumentName`). Tiberian's copy is
+  // titled just "TIBERIAN FUNDING", with no word the title test can see, so the
+  // widget signature has to carry the same protection.
+  if (
+    !isDisclosureDocumentName(documentName) &&
+    !hasDisclosureFieldSignature(fieldNames) &&
+    !isAchAuthorizationDocumentName(documentName) &&
+    looksLikeAgreementDocumentName(documentName)
+  ) {
     if (isObsidianDocumentName(documentName)) return 'obsidian_agreement';
     if (isTiberianDocumentName(documentName)) return 'tiberian_agreement';
   }
@@ -887,7 +1494,12 @@ export function signNowPrefillOptionsForDocument(
   fieldNames?: string[],
 ): SignNowPrefillOptions | undefined {
   const documentKind = signNowPrefillDocumentKind(documentName, fieldNames);
-  return documentKind ? { documentKind } : undefined;
+  const documentFieldCanons = signNowDocumentFieldCanons(fieldNames);
+  if (!documentKind && !documentFieldCanons) return undefined;
+  return {
+    ...(documentKind ? { documentKind } : {}),
+    ...(documentFieldCanons ? { documentFieldCanons } : {}),
+  };
 }
 
 /** Page-20 ACH bank slots the merchant signer must complete. */
@@ -1345,9 +1957,13 @@ function isTruthyPrefillFlag(value: string): boolean {
 }
 
 /**
- * ACH program fee to fold into TOTAL FEES: the CRM amount when it sends one,
+ * The deal's standalone ACH program fee: the CRM amount when it sends one,
  * otherwise the flat $25 whenever the deal's ACH box is checked. Zero/blank
- * amount with no flag means the box is unchecked — nothing is added.
+ * amount with no flag means the box is unchecked.
+ *
+ * This is a recurring charge on the ACH addendum, NOT part of the agreement's
+ * TOTAL FEES column — that column is the origination fee plus the optional $25
+ * wire fee only.
  */
 export function resolveAchProgramFeeAmount(map: Map<string, string>): number {
   for (const key of [
@@ -1433,7 +2049,6 @@ function resolveForcedContractMoneyField(
     const explicitTotal = first('total_fees');
     if (explicitTotal && !isZeroMoneyPrefill(explicitTotal)) return explicitTotal;
 
-    const achFee = resolveAchProgramFeeAmount(map);
     const offer = parsePrefillMoney(
       first(
         'purchase_amount',
@@ -1457,22 +2072,25 @@ function resolveForcedContractMoneyField(
     // (PURCHASE PRICE − TOTAL FEES = NET AMOUNT), so fall through to the net instead.
     // An absent amount parses as 0 here, so only a positive offer can veto the fee.
     const offerForFeeCheck = offer != null && offer > 0 ? offer : null;
+    // TOTAL FEES is the origination fee (which already carries the $25 wire fee
+    // when the deal's checkbox is ticked). The ACH/monthly program fee is billed
+    // separately and must NOT be added here — doing so inflated the printed
+    // TOTAL FEES past the CRM's own figure on every funder.
     if (
       underwriting != null &&
       underwriting > 0 &&
-      (offerForFeeCheck == null || underwriting + achFee < offerForFeeCheck)
+      (offerForFeeCheck == null || underwriting < offerForFeeCheck)
     ) {
-      return formatPrefillMoney(underwriting + achFee);
+      return formatPrefillMoney(underwriting);
     }
 
     const net = parsePrefillMoney(
       first('net_to_merchant', 'funding_provided_direct', 'disbursement_amount'),
     );
     if (offer != null && net != null && offer >= net && offer - net > 0) {
-      // offer − net already nets out every deducted fee, ACH included.
+      // offer − net already nets out every deducted fee.
       return formatPrefillMoney(offer - net);
     }
-    if (achFee > 0) return formatPrefillMoney(achFee);
     return explicitTotal || '';
   }
 
@@ -1787,18 +2405,36 @@ export function resolveSignNowPrefillValue(
     }
   }
 
-  if (isRemittanceStartDateField(raw)) {
-    return resolveRemittanceStartDate(map);
+  /**
+   * Waiver-of-Personal-Service page: the MERCHANT block resolves from the
+   * business's own email / physical address, never from Owner 1's (see
+   * `WAIVER_OF_SERVICE_MERCHANT_FIELD_CRM_IDS`). Returning '' when the business
+   * has neither is deliberate — falling through to the generic aliases is what
+   * printed Owner 1's home address on the merchant line in the first place.
+   */
+  const waiverMerchantIds = WAIVER_OF_SERVICE_MERCHANT_FIELD_CRM_IDS[lower];
+  if (waiverMerchantIds) {
+    for (const crmId of waiverMerchantIds) {
+      const resolved = resolveSignNowPrefillValue(crmId, prefill, options);
+      if (resolved) return resolved;
+    }
+    return '';
   }
 
   /**
-   * Mailing Address always mirrors Physical Address on the contract — the two
-   * are never allowed to disagree, so the Mailing Address widget resolves as
-   * the full Physical Address value (street + its own city/state/zip) rather
-   * than composing from its own, separately-entered mailing fields.
+   * Monthly Fee Authorized Holder Name — Owner 1, never the business name
+   * printed beside it (see `MONTHLY_FEE_HOLDER_NAME_CRM_IDS`).
    */
-  if (canon === 'business_address_contract') {
-    return resolveSignNowPrefillValue('business_address', prefill, options);
+  if (isMonthlyFeeAccountHolderNameField(raw, options)) {
+    for (const crmId of MONTHLY_FEE_HOLDER_NAME_CRM_IDS) {
+      const holder = mapGet(map, crmId);
+      if (holder) return formatSignNowPrefillValue(holder, fieldName);
+    }
+    return '';
+  }
+
+  if (isRemittanceStartDateField(raw)) {
+    return resolveRemittanceStartDate(map);
   }
 
   const securityMatch = canon.match(/^ach_security_q([123])$/);
@@ -1834,6 +2470,18 @@ export function resolveSignNowPrefillValue(
   }
 
   /**
+   * Exhibit A's seller table resolves by printed row, never through the generic
+   * alias chain: its EIN boxes would otherwise all inherit the merchant's EIN.
+   */
+  const exhibitAEntityCell = exhibitAEntityCellForCanon(canon);
+  if (exhibitAEntityCell) {
+    return formatSignNowPrefillValue(
+      resolveExhibitAEntityCell(exhibitAEntityCell, map),
+      fieldName,
+    );
+  }
+
+  /**
    * TOTAL FEES must be the underwriting fee plus the ACH program fee, so it is
    * computed here rather than let the alias chain return the bare fee field.
    */
@@ -1848,7 +2496,7 @@ export function resolveSignNowPrefillValue(
     party2Field && distinctParty2 && !allowOwner1Party2Fallback && !einField
       ? aliases.filter((key) => !isOwner1ContactAlias(key))
       : aliases;
-  const tryKeys = [
+  const candidateKeys = [
     raw,
     lower,
     canon,
@@ -1869,6 +2517,19 @@ export function resolveSignNowPrefillValue(
       ? []
       : party2Aliases),
   ];
+  /**
+   * The ACH account holder's address is Owner 1's address, never the business
+   * physical address (see the `ach_account_holder_address` alias chain). The CRM
+   * screen mirrored the business street onto the holder key, so the Monthly Fee
+   * and Exhibit C addendums printed the same street on both lines — and then
+   * composed it with Owner 1's city/state/zip, because those are the only
+   * siblings the holder key has. When the holder value is that duplicate and
+   * Owner 1 has an address of his own, the holder keys drop out and the widget
+   * resolves through Owner 1 like the chain always intended.
+   */
+  const tryKeys = achHolderAddressShouldFollowOwner1(canon, map)
+    ? candidateKeys.filter((key) => !isAchHolderAddressSourceKey(key))
+    : candidateKeys;
   const nameField = isNameLikeField(canon, raw);
   const dateField = isSendDayDateField(canon, raw);
   /**
@@ -1925,43 +2586,87 @@ export function resolveSignNowPrefillValue(
     return stripInstallmentFrequencyFromAmount(hit);
   }
   /**
-   * The contract page-2 business physical/mailing address line
-   * (`business_address` / `business_address_contract`) has no companion
-   * city/state/zip widgets on that page, unlike other address blocks in the
-   * package — so leaving it street-only prints an incomplete address with no
-   * way to fix it from a nearby field. Fold in the matching city/state/zip
-   * prefill values whenever the resolved value looks like a bare street (no
-   * comma already composed in by the CRM). Guarantor / Signer 1 / Recipient 1
-   * address widgets are deliberately left untouched.
+   * The merchant / business address line on the contract page 2 and on every
+   * addendum that carries one (ACH Daily, ACH Weekly, Exhibit C, Monthly Fee)
+   * is a single widget with no companion city/state/zip widgets beside it,
+   * unlike the address blocks elsewhere in the package — so leaving it
+   * street-only prints an incomplete address with no way to fix it from a
+   * nearby field. Fold in the matching city/state/zip prefill values whenever
+   * the resolved value is still a bare street. Guarantor / Signer 1 /
+   * Recipient 1 address widgets are deliberately left untouched.
    */
-  if (isFullAddressField(canon)) {
-    // City/state/zip live under whichever key actually supplied the street — not
-    // necessarily `canon` itself, since `business_address` and
-    // `business_address_contract` alias each other. Pulling the canon's own
-    // companions regardless of which one matched paired one address's street
-    // with the OTHER address's city/state/zip.
-    // `hitKey` can be the raw/lowercased widget name itself (e.g. `business_address_p2`)
-    // when the prefill map happens to hold that exact key; only a genuine CRM alias
-    // (the canon itself or one of its aliases) has real `_city`/`_state`/`_zip` siblings.
-    const prefix =
-      hitKey === canon || aliases.includes(hitKey) ? hitKey.toLowerCase() : canon;
-    const zip = String(mapGet(map, `${prefix}_zip`) || mapGet(map, `${canon}_zip`) || '').trim();
-    // A comma alone (e.g. a suite typed into address line 2) does not mean the
-    // street already carries city/state/zip — only the zip actually appearing
-    // in it does. Checking for any comma wrongly skipped composition whenever
-    // the street itself happened to contain one.
-    const alreadyComposed = Boolean(zip) && hit.includes(zip);
-    if (!alreadyComposed) {
-      const composed = composeFullAddress(
-        hit,
-        mapGet(map, `${prefix}_city`) || mapGet(map, `${canon}_city`),
-        mapGet(map, `${prefix}_state`) || mapGet(map, `${canon}_state`),
-        zip,
-      );
-      if (composed) return composed;
-    }
+  if (isFullAddressField(canon) || isStandaloneAddressWidget(canon, options)) {
+    const composed = composeFullAddressFromSiblings(hit, canon, hitKey, aliases, map);
+    if (composed) return composed;
   }
   return hit;
+}
+
+/**
+ * The CRM keys and canons that carry the ACH account holder's OWN address, in
+ * either spelling the prefill map uses for them.
+ */
+function isAchHolderAddressSourceKey(key: unknown): boolean {
+  return /^ach_(?:authorization_)?account_holder_(?:address|city|state|zip)(?:_|$)/.test(
+    String(key || '').trim().toLowerCase(),
+  );
+}
+
+/** Address parts the holder block and Owner 1's block both split across. */
+const ACH_HOLDER_ADDRESS_PART_SUFFIXES = ['', '_city', '_state', '_zip'] as const;
+
+function achHolderAddressPartSuffix(canon: string): string | null {
+  for (const suffix of ACH_HOLDER_ADDRESS_PART_SUFFIXES) {
+    if (
+      canon === `ach_account_holder_address${suffix}` ||
+      canon === `ach_authorization_account_holder_address${suffix}`
+    ) {
+      return suffix;
+    }
+  }
+  // The CRM spells the holder's city/state/zip without the `address` segment.
+  for (const suffix of ACH_HOLDER_ADDRESS_PART_SUFFIXES.slice(1)) {
+    if (canon === `ach_authorization_account_holder${suffix}`) return suffix;
+  }
+  return null;
+}
+
+function normalizedAddressText(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[.,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * True when the ACH account-holder address on this deal is nothing but a copy of
+ * the business physical address and Owner 1 has a real address of his own.
+ *
+ * Business, Owner 1 and ACH account-holder addresses are three separate CRM
+ * entries that must never stand in for one another; a holder value identical to
+ * the business street is the CRM screen having mirrored one onto the other, not
+ * a deal whose holder really banks from the shop.
+ */
+function achHolderAddressShouldFollowOwner1(canon: string, map: Map<string, string>): boolean {
+  if (achHolderAddressPartSuffix(canon) == null) return false;
+  const holderStreet = normalizedAddressText(
+    mapGet(map, 'ach_authorization_account_holder_address') ||
+      mapGet(map, 'ach_account_holder_address'),
+  );
+  if (!holderStreet) return false;
+  const businessStreet = normalizedAddressText(
+    mapGet(map, 'business_address') || mapGet(map, 'security_business_address'),
+  );
+  if (!businessStreet || holderStreet !== businessStreet) return false;
+  const ownerStreet = normalizedAddressText(
+    mapGet(map, 'business_address_contract') ||
+      mapGet(map, 'guarantor_address') ||
+      mapGet(map, 'owner1_address') ||
+      mapGet(map, 'owner_address'),
+  );
+  return Boolean(ownerStreet) && ownerStreet !== businessStreet;
 }
 
 const FULL_ADDRESS_CANON_KEYS = new Set([
@@ -1971,8 +2676,106 @@ const FULL_ADDRESS_CANON_KEYS = new Set([
   'ach_authorization_account_holder_address',
 ]);
 
+/** A street that already ends in a zip (`… GA 31088`, `… 31088-1234`) is composed. */
+function streetAlreadyCarriesZip(street: string, zip: string): boolean {
+  const value = String(street || '').trim();
+  if (!value) return false;
+  // A comma alone (e.g. a suite typed into address line 2) does not mean the
+  // street already carries city/state/zip — only a zip actually appearing in it
+  // does. Checking for any comma wrongly skipped composition whenever the street
+  // itself happened to contain one.
+  if (zip && value.includes(zip)) return true;
+  return /\d{5}(?:-\d{4})?$/.test(value);
+}
+
+/**
+ * Composes `street, city, state zip` for an address widget, reading the
+ * `_city` / `_state` / `_zip` siblings from the first prefill key that actually
+ * has them: the key that supplied the street, then the canon, then the canon's
+ * own alias chain.
+ *
+ * The alias fallback is what makes an addendum print a full address. The CRM
+ * sends the Monthly Fee / Exhibit C holder address under
+ * `ach_account_holder_address` and the ACH pages under the widget's own name
+ * (`business_address_p1_ach`), while the city/state/zip only ever travel under
+ * `business_address_*` — so looking at the street's own prefix alone left those
+ * pages street-only. Walking the alias chain is safe because an address canon's
+ * aliases stay inside one address family by construction: the business physical
+ * address and Owner 1's home address (`business_address_contract`) never alias
+ * each other, so a fallback cannot pair one address's street with the other's
+ * city.
+ */
+function composeFullAddressFromSiblings(
+  street: string,
+  canon: string,
+  hitKey: string,
+  aliases: string[],
+  map: Map<string, string>,
+): string {
+  const prefixes: string[] = [];
+  const push = (key: unknown) => {
+    const value = String(key || '')
+      .trim()
+      .toLowerCase();
+    if (value && !prefixes.includes(value)) prefixes.push(value);
+  };
+  // `hitKey` can be the raw widget name itself (e.g. `business_address_p1_ach`) when
+  // the prefill map holds that exact key; only a genuine CRM alias (the canon itself
+  // or one of its aliases) has real `_city`/`_state`/`_zip` siblings.
+  if (hitKey === canon || aliases.includes(hitKey)) push(hitKey);
+  push(canon);
+  for (const alias of aliases) {
+    // `business_address_contract` is an address key whose name does not end in
+    // "address", and it is where Owner 1's city/state/zip live — the holder
+    // address resolves through it, so it has to be walked like any other.
+    if (/address(_contract)?$/.test(alias)) push(alias);
+  }
+  for (const prefix of prefixes) {
+    const city = mapGet(map, `${prefix}_city`);
+    const state = mapGet(map, `${prefix}_state`);
+    const zip = mapGet(map, `${prefix}_zip`);
+    if (!city && !state && !zip) continue;
+    if (streetAlreadyCarriesZip(street, zip)) return '';
+    return composeFullAddress(street, city, state, zip);
+  }
+  return '';
+}
+
 function isFullAddressField(canon: string): boolean {
   return FULL_ADDRESS_CANON_KEYS.has(canon);
+}
+
+/**
+ * Address widgets that carry companion city/state/zip boxes on some pages and
+ * stand alone on others — the guarantor / owner blocks. Owner 1's address is
+ * stored split across `business_address_contract{,_city,_state,_zip}` while
+ * Owner 2's arrives as one line, so a standalone Owner 1 widget printed a bare
+ * street ("3205 COVE CREEK ROAD") next to Owner 2's full address.
+ */
+const STANDALONE_ADDRESS_CANON_KEYS = new Set([
+  'guarantor_address',
+  'guarantor_address_s2',
+  'guarantor2_address',
+  'owner1_address',
+  'owner2_address',
+  'owner_address',
+  'owner_home_address',
+  'merchant_contact_address',
+  'recipient_address',
+]);
+
+/**
+ * True when the widget is one of those blocks *and* the document it sits on has
+ * no `_city` / `_state` / `_zip` widget of its own for it. Without the
+ * document's field list we cannot tell the two layouts apart, so the widget is
+ * left street-only — composing blindly would duplicate the city on the pages
+ * that do have the companion boxes.
+ */
+function isStandaloneAddressWidget(canon: string, options?: SignNowPrefillOptions): boolean {
+  if (!STANDALONE_ADDRESS_CANON_KEYS.has(canon)) return false;
+  const canons = options?.documentFieldCanons;
+  if (!canons) return false;
+  return !['_city', '_state', '_zip'].some((suffix) => canons.has(`${canon}${suffix}`));
 }
 
 /** Match CRM values onto the unique names that actually exist on a SignNow document. */
@@ -1985,6 +2788,12 @@ export function buildSignNowDocumentPrefillTexts(
   options = options?.documentKind
     ? options
     : signNowPrefillOptionsForDocument(undefined, fieldNames) || options;
+  // A caller that passed its own options (document kind from the title) still
+  // needs the document's widget list for the standalone-address decision.
+  if (options && !options.documentFieldCanons) {
+    const documentFieldCanons = signNowDocumentFieldCanons(fieldNames);
+    if (documentFieldCanons) options = { ...options, documentFieldCanons };
+  }
   const out: Array<{ field_name: string; prefilled_text: string }> = [];
   const seen = new Set<string>();
   for (const name of fieldNames) {

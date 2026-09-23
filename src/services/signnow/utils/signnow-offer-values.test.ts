@@ -37,12 +37,12 @@ describe('buildOfferPrefillOverrides', () => {
     expect(overrides.net_to_merchant).toBe('1,800.00');
   });
 
-  it('folds the ACH program fee into TOTAL FEES and NET AMOUNT', () => {
+  it('keeps the ACH program fee out of TOTAL FEES and NET AMOUNT', () => {
     const overrides = buildOfferPrefillOverrides(source(LIVE_OFFER, false), {
       ach_enabled: 'true',
     });
-    expect(overrides.total_fees).toBe('225.00');
-    expect(overrides.net_to_merchant).toBe('1,775.00');
+    expect(overrides.total_fees).toBe('200.00');
+    expect(overrides.net_to_merchant).toBe('1,800.00');
   });
 
   it('adds the $25 wire fee when the deal has it switched on', () => {
@@ -59,13 +59,13 @@ describe('buildOfferPrefillOverrides', () => {
     expect(overrides.net_to_merchant).toBe('1,800.00');
   });
 
-  it('keeps the wire fee and the ACH program fee as separate charges', () => {
+  it('charges the wire fee but never the ACH program fee in TOTAL FEES', () => {
     const overrides = buildOfferPrefillOverrides(source(LIVE_OFFER, true), {
       ach_program_fee: '49.00',
     });
-    // 200 origination + 25 wire + 49 ACH program.
-    expect(overrides.total_fees).toBe('274.00');
-    expect(overrides.net_to_merchant).toBe('1,726.00');
+    // 200 origination + 25 wire. The $49 ACH program fee is billed separately.
+    expect(overrides.total_fees).toBe('225.00');
+    expect(overrides.net_to_merchant).toBe('1,775.00');
   });
 
   it('reproduces the reported $10,000 deal with the wire fee checked', () => {
@@ -78,6 +78,21 @@ describe('buildOfferPrefillOverrides', () => {
     // The document printed 1,000.00 / 9,000.00 — the checked $25 had gone missing.
     expect(overrides.total_fees).toBe('1,025.00');
     expect(overrides.net_to_merchant).toBe('8,975.00');
+  });
+
+  /**
+   * Tiberian, $50,000 @ 10%: the CRM screen showed $5,025.00 of fees and
+   * $44,975.00 of recipient funds, while the agreement printed $5,035.00 /
+   * $44,965.00 — the deal's $10 ACH program fee had been folded into TOTAL FEES.
+   */
+  it('prints the CRM total when the deal carries an ACH program fee', () => {
+    const overrides = buildOfferPrefillOverrides(
+      source({ offer: 50000, totalRemit: 74950, term: '10 Weeks', frequency: 'Weekly', fees: 10 }, true),
+      { ach_program_fee: '10.00' },
+    );
+    expect(overrides.appendix_underwriting_fees).toBe('5,025.00');
+    expect(overrides.total_fees).toBe('5,025.00');
+    expect(overrides.net_to_merchant).toBe('44,975.00');
   });
 
   it('keeps the printed row self-consistent: price − fees = net', () => {
@@ -162,8 +177,8 @@ describe('buildOfferPrefillOverrides', () => {
 
 describe('TOTAL FEES regression — fee scaled against a superseded offer', () => {
   it('never prints a fee that exceeds the purchase price', () => {
-    // 10% of a $10,000 advance left on a deal since cut to $1,000, plus the $25 ACH fee:
-    // this printed $1,025.00 of fees against a $1,000.00 purchase price and an $875 net.
+    // 10% of a $10,000 advance left on a deal since cut to $1,000: this printed
+    // $1,000.00+ of fees against a $1,000.00 purchase price and an $875 net.
     const value = resolveSignNowPrefillValue('total_fees', {
       purchase_price: '1,000.00',
       appendix_underwriting_fees: '1,000.00',
@@ -173,13 +188,48 @@ describe('TOTAL FEES regression — fee scaled against a superseded offer', () =
     expect(value).toBe('125.00');
   });
 
-  it('still adds the ACH fee to a fee that fits inside the purchase price', () => {
+  it('prints the underwriting fee alone when the ACH box is checked', () => {
     expect(
       resolveSignNowPrefillValue('total_fees', {
         purchase_price: '2,000.00',
         appendix_underwriting_fees: '200.00',
         ach_enabled: 'true',
       }),
-    ).toBe('225.00');
+    ).toBe('200.00');
+  });
+});
+
+/**
+ * Tiberian Funding's disclosure printed "Estimated Term 20" on a weekly deal
+ * whose disclosure term is 140 days. The scaling was already right; the page
+ * never saw it, because the CRM screen posts the disclosure's own widget name
+ * and an exact widget name outranks every alias.
+ */
+describe('disclosure estimated term on a weekly deal', () => {
+  const WEEKLY_OFFER = {
+    offer: 10000,
+    totalRemit: 14990,
+    term: '20 Weeks',
+    frequency: 'Weekly',
+    repayPerPeriod: 749.5,
+    fees: 10,
+  };
+
+  it('publishes the term in days onto the disclosure widget the page reads', () => {
+    const overrides = buildOfferPrefillOverrides(source(WEEKLY_OFFER), {});
+    expect(overrides.disclosure_term_days).toBe('140');
+    expect(overrides.estimated_term).toBe('140');
+    expect(overrides.estimated_term_p2).toBe('140');
+  });
+
+  it('outranks the raw cadence count the CRM screen posts', () => {
+    const payload = { estimated_term_p2: '20' };
+    const values = { ...payload, ...buildOfferPrefillOverrides(source(WEEKLY_OFFER), payload) };
+    expect(resolveSignNowPrefillValue('estimated_term_p2', values)).toBe('140');
+  });
+
+  it('leaves a daily deal counting in days', () => {
+    const overrides = buildOfferPrefillOverrides(source(LIVE_OFFER), {});
+    expect(overrides.estimated_term_p2).toBe('10');
   });
 });
