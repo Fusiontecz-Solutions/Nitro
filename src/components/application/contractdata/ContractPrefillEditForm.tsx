@@ -624,7 +624,48 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
     {
         id: "street",
         label: "Business street",
-        keys: ["businessAddress", "achAuthorizationAccountHolderAddress"],
+        // The ACH account holder address is deliberately NOT here: it is Owner 1's
+        // home address, a separate CRM entry. Mirroring the business street onto it
+        // is what made the Monthly Fee / Exhibit C addendums print the same street on
+        // the business line and the account-holder line, then compose that street
+        // with Owner 1's city/state/zip.
+        keys: ["businessAddress"],
+    },
+    {
+        id: "owner1Street",
+        label: "Owner 1 / account holder street",
+        keys: [
+            "businessAddressContract",
+            "guarantorAddress",
+            "achAuthorizationAccountHolderAddress",
+        ],
+    },
+    {
+        id: "owner1City",
+        label: "Owner 1 / account holder city",
+        keys: [
+            "businessAddressContractCity",
+            "guarantorAddressCity",
+            "achAuthorizationAccountHolderCity",
+        ],
+    },
+    {
+        id: "owner1State",
+        label: "Owner 1 / account holder state",
+        keys: [
+            "businessAddressContractState",
+            "guarantorAddressState",
+            "achAuthorizationAccountHolderState",
+        ],
+    },
+    {
+        id: "owner1Zip",
+        label: "Owner 1 / account holder ZIP",
+        keys: [
+            "businessAddressContractZip",
+            "guarantorAddressZip",
+            "achAuthorizationAccountHolderZip",
+        ],
     },
     {
         id: "offerAmount",

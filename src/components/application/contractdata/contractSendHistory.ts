@@ -691,6 +691,24 @@ export function canVoidContractSendTableRow(
     return false;
 }
 
+/**
+ * True when a main-contract package has gone out to the merchant at least once — which is
+ * what gates "Resend New Contract".
+ *
+ * Archived rows count. A resend deletes the `Document` row and moves the send into
+ * `contractSendHistory`, so a predicate that only looked at the current row hid the button
+ * on exactly the deals that had just been resent. There is no cap on how many times a deal
+ * may be resent, so every archived send keeps the button available.
+ */
+export function hasEverSentMainContract(
+    contract: Record<string, unknown> | null | undefined,
+): boolean {
+    return buildContractSendTableRows(contract).some(
+        (row) =>
+            row.rowType === "contract" && String(row.envelopeId ?? "").trim().length > 0,
+    );
+}
+
 /** True when at least one envelope left DocuSign draft (main, ACH, or standalone package). */
 export function hasVisibleContractSendTableRows(
     contract: Record<string, unknown> | null | undefined,

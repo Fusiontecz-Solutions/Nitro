@@ -16,7 +16,9 @@
     "test:offer-refresh": "npx --yes tsx src/components/application/contractdata/offerValueRefresh.acceptance.test.ts",
     "test:tiberian-disclosure": "npx --yes tsx src/components/application/contractdata/tiberianDisclosure.acceptance.test.ts",
     "test:tiberian-payoff": "npx --yes tsx src/components/application/contractdata/tiberianPayoffAddendum.acceptance.test.ts",
-    "test": "npm run test:ach-daily && npm run test:disclosure && npm run test:tiberian-disclosure && npm run test:tiberian-payoff && npm run test:wire-fee && npm run test:offer-refresh"
+    "test:merchant-address": "npx --yes tsx src/components/application/contractdata/merchantAddressPrefill.acceptance.test.ts",
+    "test:funder-template-sharing": "npx --yes tsx src/pages/settings/funderTemplateSharing.acceptance.test.ts",
+    "test": "npm run test:ach-daily && npm run test:disclosure && npm run test:tiberian-disclosure && npm run test:tiberian-payoff && npm run test:wire-fee && npm run test:offer-refresh && npm run test:funder-template-sharing && npm run test:merchant-address"
   },
   "overrides": {
     "vite": "npm:rolldown-vite@7.3.1"

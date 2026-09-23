@@ -2219,6 +2219,21 @@ const PDFViewerModal = ({
         setPdfRightPaneTab(initial);
     }, [isOpen, initialRightPaneTab]);
 
+    /**
+     * The modal stays mounted between openings, so `activeStep` survived a close and the
+     * wizard reopened wherever it was left — after "Resend New Contract" that meant landing
+     * on Summary or Sent instead of running the package build from the top. Every opening
+     * now starts at Documents; a deal whose contract is already out is moved on to Sent by
+     * the effect that watches `sentStepUnlocked`, so viewing a sent contract is unchanged.
+     */
+    const wasOpenRef = useRef(false);
+    useEffect(() => {
+        const wasOpen = wasOpenRef.current;
+        wasOpenRef.current = isOpen;
+        if (!isOpen || wasOpen) return;
+        setActiveStep("documents");
+    }, [isOpen]);
+
     /** Includes state-specific funders and any saved profile not in the active list. */
     const funderSelectOptions = useMemo(() => {
         const base = funderSelectEntries;
@@ -3826,24 +3841,38 @@ const PDFViewerModal = ({
             }
             setSelectedState(stateVal);
             if (!userSelectedFunderRef.current) {
-                const nitro = fundersRef.current.find(
-                    (f) => f.isActive !== false && isWoodmereFunderProfile(f),
-                );
-                if (nitro) {
-                    setSelectedFunderProfileId(nitro.id);
-                    setSelectedFunder(nitro.name);
-                } else {
-                    const rawFunder = String(c?.funderName ?? "").trim();
-                    const profile = findFunderProfile(fundersRef.current, rawFunder, stateVal);
+                /**
+                 * The funder stored on the contract row wins over the platform default. It
+                 * is the one the deal was last built and sent under and it survives a
+                 * resend, so forcing Nitro Advance here dropped a deal funded by anyone
+                 * else back to the wrong funder every time the wizard reopened.
+                 */
+                const rawFunder = String(c?.funderName ?? "").trim();
+                const savedProfile = rawFunder
+                    ? findFunderProfile(fundersRef.current, rawFunder, stateVal)
+                    : null;
+                if (savedProfile) {
+                    setSelectedFunderProfileId(savedProfile.id);
+                    setSelectedFunder(savedProfile.name);
+                } else if (rawFunder) {
                     const funderName =
                         pickFunderForSelect(
                             rawFunder,
                             funderNamesForContractState(fundersRef.current, stateVal),
                         ) || rawFunder;
-                    const resolvedProfile =
-                        profile ?? findFunderProfile(fundersRef.current, funderName, stateVal);
+                    const resolvedProfile = findFunderProfile(
+                        fundersRef.current,
+                        funderName,
+                        stateVal,
+                    );
                     setSelectedFunderProfileId(resolvedProfile?.id ?? "");
                     setSelectedFunder(resolvedProfile?.name ?? funderName);
+                } else {
+                    const nitro = fundersRef.current.find(
+                        (f) => f.isActive !== false && isWoodmereFunderProfile(f),
+                    );
+                    setSelectedFunderProfileId(nitro?.id ?? "");
+                    setSelectedFunder(nitro?.name ?? "");
                 }
             }
             setContractPrefillFromDb(
@@ -5343,7 +5372,14 @@ const PDFViewerModal = ({
         findFunderById,
     ]);
 
-    /** Always keep Nitro Advance selected when it is the platform funder or the only option. */
+    /**
+     * Default to Nitro Advance when it is the platform funder or the only option — but only
+     * for a deal that has not already been built under a funder of its own.
+     *
+     * `Contract.funderName` survives a resend, and this effect used to overwrite it on every
+     * reopen, so a deal last sent under another funder silently reverted to Nitro Advance
+     * and the replacement package went out on the wrong paper.
+     */
     useEffect(() => {
         if (!isOpen || fundersLoading) return;
         const nitro = funders.find(
@@ -5356,6 +5392,18 @@ const PDFViewerModal = ({
         if (!target) return;
         const onlyOneFunder = funderSelectEntries.length <= 1;
         if (!onlyOneFunder && userSelectedFunderRef.current) return;
+        if (!onlyOneFunder) {
+            const savedFunder = String(
+                (resolvedContract as { funderName?: unknown } | null)?.funderName ?? "",
+            ).trim();
+            const savedProfile = savedFunder
+                ? findFunderProfile(funders, savedFunder, selectedState)
+                : null;
+            // The deal already names a funder that is not the platform default — leave it.
+            if (savedFunder && !funderNamesEquivalent(savedFunder, target.name)) {
+                if (!savedProfile || savedProfile.id !== target.id) return;
+            }
+        }
         if (
             selectedFunderProfileId === target.id &&
             selectedFunder === target.name
@@ -5373,6 +5421,8 @@ const PDFViewerModal = ({
         funderSelectEntries,
         selectedFunder,
         selectedFunderProfileId,
+        selectedState,
+        resolvedContract,
         findFunderById,
     ]);
 
@@ -5604,7 +5654,15 @@ const PDFViewerModal = ({
         }
         setIsResendingNewContract(true);
         try {
-            await dispatch(reinitiateContractAction(appId)).unwrap();
+            /**
+             * `resend: true` makes the backend discard every cached prefill value along with
+             * the archived envelope. Without it the replacement package reused the values
+             * captured at the previous send, so the addendum and state-disclosure documents
+             * went back out carrying the superseded offer amounts.
+             */
+            await dispatch(
+                reinitiateContractAction({ applicationId: appId, resend: true }),
+            ).unwrap();
 
             // Drop every handle on the archived package before the wizard reopens, so no
             // part of the previous send can be reused or shown against the new one.
@@ -5625,7 +5683,7 @@ const PDFViewerModal = ({
              */
             sentStepUnlockedRef.current = false;
             sentAtRef.current = null;
-            activeStepRef.current = "info";
+            activeStepRef.current = "documents";
             contractWasSentRef.current = false;
             awaitingDocuSignSendRef.current = false;
             pendingCcForSentRef.current = [];
@@ -5638,10 +5696,12 @@ const PDFViewerModal = ({
             /** Step 4 is empty until the new package is sent — never bounce back to it. */
             didSuggestSentTabThisOpenRef.current = true;
 
-            // Land on Info Required straight away rather than after the refresh round trip,
-            // so the user never watches the Sent step while the new draft is prepared.
+            // Land on Documents straight away rather than after the refresh round trip, so
+            // the user never watches the Sent step while the new draft is prepared. The
+            // replacement runs the whole wizard again from step 1 — document selection
+            // included — rather than resuming halfway through the previous package.
             setPdfRightPaneTab("template");
-            setActiveStep("info");
+            setActiveStep("documents");
 
             await refreshContractSigningState(false, {
                 syncDocuSign: false,
@@ -7187,10 +7247,22 @@ const PDFViewerModal = ({
             prevContractStatusRef.current = "";
             pendingCcForSentRef.current = [];
             ccEmailDeliveredRef.current = false;
-            if (!sentStepUnlockedRef.current) {
-                contractWasSentRef.current = false;
-                setSentAt(null);
-            }
+            /**
+             * Every trace of "this session sent something" goes on close. It used to be held
+             * back by the sticky step-4 unlock, which nothing ever cleared, so `sentAt`
+             * outlived the send it belonged to. `isContractAlreadySent` short-circuits on a
+             * session `sentAt`, so the next opening judged the deal sent no matter what the
+             * contract row said — after a resend archived the envelope the wizard offered no
+             * Review in SignNow at all, and a second resend was impossible.
+             *
+             * Nothing is lost: the open branch below re-derives the sent state from the
+             * contract row, which is where a real send is recorded.
+             */
+            contractWasSentRef.current = false;
+            setSentAt(null);
+            setSentStepUnlocked(false);
+            setSessionEnvelopeId(null);
+            setSentCcEmails([]);
             return;
         }
         if (contractModalWasOpenRef.current) return;
@@ -7199,13 +7271,16 @@ const PDFViewerModal = ({
         const awaitingSignNowMerchantEmail = Boolean(
             signNowEmbedUrlRef.current || signNowReviewCompleteRef.current,
         );
+        // The contract row alone decides this on a fresh open — see the close branch above.
         const alreadySent = awaitingSignNowMerchantEmail
             ? false
-            : sentStepUnlockedRef.current ||
-              isContractAlreadySent(resolvedContract, sentAtRef.current);
+            : isContractAlreadySent(resolvedContract, null);
         if (alreadySent) {
             setSentStepUnlocked(true);
             hydrateSentAtFromContract(resolvedContract);
+        } else {
+            setSentStepUnlocked(false);
+            setSentAt(null);
         }
         contractWasSentRef.current = alreadySent;
         prevContractStatusRef.current = String(resolvedContract?.status ?? "")
@@ -7903,7 +7978,16 @@ const PDFViewerModal = ({
             didSuggestSentTabThisOpenRef.current = false;
             return;
         }
-        if (!sentStepUnlocked && !isContractAlreadySent(resolvedContract, sentAt)) return;
+        if (!sentStepUnlocked && !isContractAlreadySent(resolvedContract, sentAt)) {
+            /**
+             * Nothing is out for signature any more — a resend archived the envelope, or the
+             * jump below fired against the contract snapshot from before the refresh landed.
+             * Step 4 has nothing to show, so return the wizard to step 1 rather than stranding
+             * the user on an empty Sent step with no way to build the replacement package.
+             */
+            if (activeStep === "sent") setActiveStep("documents");
+            return;
+        }
         if (didSuggestSentTabThisOpenRef.current) return;
         if (activeStep !== "documents") return;
         setActiveStep("sent");

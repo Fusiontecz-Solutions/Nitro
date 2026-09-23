@@ -1040,10 +1040,22 @@ export const sendApprovalEmail = createAsyncThunk(
 
 export const reinitiateContract = createAsyncThunk(
     'application/reinitiateContract',
-    async (applicationId: string | number, { rejectWithValue }) => {
+    async (
+        arg: string | number | { applicationId: string | number; resend?: boolean },
+        { rejectWithValue },
+    ) => {
+        const applicationId =
+            typeof arg === 'object' && arg !== null ? arg.applicationId : arg;
+        /**
+         * A user-driven "Resend New Contract" archives the prior send AND discards every
+         * cached prefill value, so the replacement package is built from the offer,
+         * application and owner details as they stand right now.
+         */
+        const resend = typeof arg === 'object' && arg !== null ? arg.resend === true : false;
         try {
             const response = await axiosPost('/applications/reinitiate-contract', {
                 applicationId,
+                ...(resend ? { resend: true } : {}),
             });
             await invalidateApplicationsListCache();
             return response.data;

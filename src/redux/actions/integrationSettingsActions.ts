@@ -4,6 +4,7 @@ import type {
   DocuSignAccountProfileInput,
   FunderProfile,
   FunderProfileInput,
+  SignNowTemplateLinkItem,
 } from "@/types/integrationSettingsTypes";
 
 const DEFAULT_CONTRACT_FILENAME = "Contract.pdf";
@@ -264,6 +265,51 @@ export async function uploadFunderAddendumDocument(
 
 export async function deleteFunderDocument(funderId: string, templateId: string): Promise<void> {
   await axiosDelete(`/integration-settings/funders/${funderId}/documents/${templateId}`);
+}
+
+export type FunderTemplateKind = "addendum" | "disclosure";
+
+export type ShareFunderTemplatesTargetResult = {
+  funderId: string;
+  funderName: string;
+  added: SignNowTemplateLinkItem[];
+  skipped: SignNowTemplateLinkItem[];
+  totalAfter: number;
+};
+
+export type ShareFunderTemplatesResult = {
+  kind: FunderTemplateKind;
+  sourceFunderId: string;
+  sourceFunderName: string;
+  shared: SignNowTemplateLinkItem[];
+  updated: ShareFunderTemplatesTargetResult[];
+  unchanged: ShareFunderTemplatesTargetResult[];
+  addedCount: number;
+};
+
+/**
+ * Copies selected SignNow addendum / disclosure templates from one funder onto
+ * other funders. The server merges each target against its live row, so this
+ * cannot drop templates another admin added since this page was loaded.
+ */
+export async function shareFunderTemplates(
+  sourceFunderId: string,
+  input: {
+    kind: FunderTemplateKind;
+    templates: SignNowTemplateLinkItem[];
+    targetFunderIds: string[];
+  },
+): Promise<{ result: ShareFunderTemplatesResult; message: string }> {
+  const res = await axiosPost(
+    `/integration-settings/funders/${sourceFunderId}/share-templates`,
+    input,
+  );
+  const body = (res as { data?: { data?: ShareFunderTemplatesResult; message?: string } })
+    ?.data;
+  return {
+    result: body?.data as ShareFunderTemplatesResult,
+    message: body?.message ?? "Templates shared.",
+  };
 }
 
 export async function createFunderProfile(

@@ -61,6 +61,10 @@ import {
     type AchWeeklyContractPrefillFields,
 } from "./ACH_WEEKLY";
 import { buildAchDailyContractPrefillFields } from "./ACH_DAILY";
+import {
+    ACCOUNT_HOLDER_ADDRESS_STREET_IDS,
+    resolveMerchantFullAddress,
+} from "./merchantAddress";
 import type { AchDailyContractPrefillFields } from "./ACH_DAILY";
 import {
     buildExhibitCContractPrefillFields,
@@ -1360,9 +1364,15 @@ function buildAddendumAchWeeklyComputed(
             str(c.totalAmount),
         billingName,
         billingAddress:
-            get("business_address", "business_address_contract", "ach_authorization_account_holder_address") ||
-            sctx.recipientAddress ||
-            "",
+            resolveMerchantFullAddress(
+                get,
+                [
+                    "business_address",
+                    "business_address_contract",
+                    "ach_authorization_account_holder_address",
+                ],
+                sctx.recipientAddress,
+            ) || "",
         billingCity: get(
             "business_address_city",
             "business_address_contract_city",
@@ -1468,13 +1478,10 @@ function buildAddendumAchDailyComputed(
             legalName ||
             guarantor,
         accountHolderDba: dbaFromContractAndGet(c, get),
-        accountHolderAddress:
-            get(
-                "ach_authorization_account_holder_address",
-                "ach_account_holder_address",
-                "business_address",
-                "business_address_contract",
-            ) || sctx.recipientAddress,
+        accountHolderAddress: resolveMerchantFullAddress(
+            get,
+            ACCOUNT_HOLDER_ADDRESS_STREET_IDS,
+        ),
         bankName:
             get(
                 "ach_authorization_account_holder_bank_name",
@@ -1592,13 +1599,7 @@ function buildAddendumExhibitCComputed(
             str(primaryEntity?.accountHolderDba) || dbaFromContractAndGet(c, get),
         accountHolderAddress:
             str(primaryEntity?.accountHolderAddress) ||
-            get(
-                "ach_authorization_account_holder_address",
-                "ach_account_holder_address",
-                "business_address",
-                "business_address_contract",
-            ) ||
-            sctx.recipientAddress,
+            resolveMerchantFullAddress(get, ACCOUNT_HOLDER_ADDRESS_STREET_IDS),
         bankName:
             str(primaryEntity?.bankName) ||
             get(
@@ -1841,12 +1842,20 @@ function buildAddendumMonthlyFeeComputed(
             "client_phone",
             "merchant_contact_phone",
         ),
-        businessAddress:
-            get("business_address", "business_address_contract") || sctx.recipientAddress,
+        businessAddress: resolveMerchantFullAddress(
+            get,
+            ["business_address", "business_address_contract"],
+            sctx.recipientAddress,
+        ),
         holderName,
         holderDba: dbaFromContractAndGet(c, get) || businessName,
-        holderAddress:
-            get("ach_account_holder_address", "business_address") || sctx.recipientAddress,
+        // Account holder address is the GUARANTOR's, not the business location
+        // — see ACCOUNT_HOLDER_ADDRESS_STREET_IDS. On this form it also stops
+        // the holder line from repeating the business line printed just above.
+        holderAddress: resolveMerchantFullAddress(
+            get,
+            ACCOUNT_HOLDER_ADDRESS_STREET_IDS,
+        ),
         bankName:
             get(
                 "authorization_client_bank_name",

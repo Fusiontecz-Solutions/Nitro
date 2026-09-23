@@ -670,14 +670,27 @@ async function syncContractAchFromPrefill(
         str(prefill.remittance) ||
         str(prefill.achAuthorizationAccountHolderBankTransactionFee);
     const frequency = sanitizePaymentFrequencyForPersist(prefill.frequency);
+    /**
+     * The ACH account holder's address is Owner 1's home address, not the business
+     * physical address — the ACH block already prints the business address on its own
+     * line, so falling back to it printed the same street twice on every addendum.
+     */
     const address =
-        str(prefill.achAuthorizationAccountHolderAddress) || str(prefill.businessAddress);
+        str(prefill.achAuthorizationAccountHolderAddress) ||
+        str(prefill.businessAddressContract) ||
+        str(prefill.guarantorAddress);
     const city =
-        str(prefill.achAuthorizationAccountHolderCity) || str(prefill.businessAddressCity);
+        str(prefill.achAuthorizationAccountHolderCity) ||
+        str(prefill.businessAddressContractCity) ||
+        str(prefill.guarantorAddressCity);
     const state =
-        str(prefill.achAuthorizationAccountHolderState) || str(prefill.businessAddressState);
+        str(prefill.achAuthorizationAccountHolderState) ||
+        str(prefill.businessAddressContractState) ||
+        str(prefill.guarantorAddressState);
     const zip =
-        str(prefill.achAuthorizationAccountHolderZip) || str(prefill.businessAddressZip);
+        str(prefill.achAuthorizationAccountHolderZip) ||
+        str(prefill.businessAddressContractZip) ||
+        str(prefill.guarantorAddressZip);
 
     const data: Record<string, unknown> = {};
     if (bankName) data.bankName = bankName;

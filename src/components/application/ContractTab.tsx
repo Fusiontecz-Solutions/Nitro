@@ -148,6 +148,7 @@ import {
 } from "./contractdata/achAuthorizationDocuSign";
 import {
     buildContractSendTableRows,
+    hasEverSentMainContract,
     canVoidContractSendTableRow,
     formatAchTableStatusLabel,
     getContractSendRowTermsSnapshot,
@@ -1122,6 +1123,20 @@ export default function ContractTab({
         [fetchedContract],
     );
 
+    /**
+     * The merchant has been sent a main-contract envelope at some point. Draft rows never
+     * reach this table, so any main-contract row — current or archived — means a package
+     * went out, which is when "Resend New Contract" becomes available.
+     *
+     * Archived rows have to count: a resend deletes the Document row and moves the send
+     * into `contractSendHistory`, so requiring `isCurrent` hid the button on exactly the
+     * deals that had just been resent and still needed another attempt.
+     */
+    const hasSentContract = useMemo(
+        () => hasEverSentMainContract(contractRecordForActions),
+        [contractRecordForActions],
+    );
+
     const offerRecord =
         offerDecision != null && typeof offerDecision === "object"
             ? (offerDecision as Record<string, unknown>)
@@ -2088,7 +2103,13 @@ export default function ContractTab({
         }
     };
 
-    const handleGenerateContract = async () => {
+    /**
+     * `forceNew` is passed by "Resend New Contract": the deal already has a contract row and
+     * a sent envelope, so the "re-open what exists" shortcuts below must be skipped and a
+     * fresh draft built from the current offer / application / owner values instead.
+     */
+    const startContractGeneration = async (options?: { forceNew?: boolean }) => {
+        const forceNew = options?.forceNew === true;
         enableContractSupportData();
         if (isReadOnly) {
             const opened = await tryOpenExistingDraftViewer();
@@ -2141,7 +2162,7 @@ export default function ContractTab({
             } finally {
                 setRegeneratingContract(false);
             }
-        } else if (hasLocalContract) {
+        } else if (hasLocalContract && !forceNew) {
             // Re-open without waiting on createContract so SENT/VIEWED/SIGNED is never reset to DRAFT.
             openContractViewerImmediately({
                 contract:
@@ -2150,7 +2171,7 @@ export default function ContractTab({
                         : null,
             });
             return;
-        } else if (!contractLookupDoneRef.current) {
+        } else if (!forceNew && !contractLookupDoneRef.current) {
             const reopenedExisting = await tryOpenExistingDraftViewer();
             if (reopenedExisting) return;
         }
@@ -2283,6 +2304,63 @@ export default function ContractTab({
         } finally {
             setCreatingEnvelope(false);
         }
+    };
+
+    const handleGenerateContract = () => {
+        void startContractGeneration();
+    };
+
+    /**
+     * Archive the contract that is already out, then run the whole generate flow again from
+     * the top. The backend drops every cached prefill value with it, so an offer, business
+     * or owner detail edited since the first send is what the new SignNow package carries —
+     * previously the replacement reused the stored values and went out with the old terms.
+     * The prior send stays in Contracts Generated as a history row.
+     */
+    const handleResendNewContract = async () => {
+        if (isReadOnly || !applicationUuid) return;
+        if (creatingEnvelope || regeneratingContract) return;
+        if (
+            typeof window !== "undefined" &&
+            !window.confirm(
+                "Start a new contract? The contract already sent will be archived in Contracts Generated, and the new one is built from the current offer, application and owner details. Values edited by hand on the prefill form are discarded.",
+            )
+        ) {
+            return;
+        }
+
+        setRegeneratingContract(true);
+        try {
+            await dispatch(
+                reinitiateContract({ applicationId: String(applicationUuid), resend: true }),
+            ).unwrap();
+            // Pull the archived/reset contract and the live application back before rebuilding,
+            // so the new draft is seeded from current data rather than the pre-resend cache.
+            await dispatch(getApplicationById(String(applicationUuid)));
+            const byApp = await dispatch(
+                getByApplicationIdContract(String(applicationUuid)),
+            ).unwrap();
+            const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
+            if (contract && typeof contract === "object") {
+                setFetchedContract(contract);
+                const contractId = Number((contract as { id?: unknown }).id);
+                setSelectedContractId(
+                    Number.isFinite(contractId) && contractId > 0 ? contractId : null,
+                );
+            }
+        } catch (error: unknown) {
+            const message =
+                typeof error === "string"
+                    ? error
+                    : (error as { message?: string })?.message ||
+                      "Failed to archive the sent contract before starting a new one.";
+            toast.error(String(message));
+            return;
+        } finally {
+            setRegeneratingContract(false);
+        }
+
+        await startContractGeneration({ forceNew: true });
     };
 
     const getPrimaryRecipientEmail = () =>
@@ -3312,6 +3390,19 @@ export default function ContractTab({
                 ...(String(sendPayload.timingRequestId || "").trim()
                     ? { timingRequestId: String(sendPayload.timingRequestId).trim() }
                     : {}),
+                /**
+                 * The live "$25 wire fee" checkbox. It is a deal-level preference, not a
+                 * document field, so it cannot ride along in `prefillFields` — and the
+                 * server otherwise resolves it from the contract row, which still says
+                 * "on" until the prefill editor has been saved. Sending it keeps TOTAL
+                 * FEES and NET AMOUNT on every document in step with the box.
+                 */
+                includeWireFee: resolveIncludeWireFeePreference(
+                    sendPayload.includeWireFee,
+                    contractRecordForActions,
+                )
+                    ? "true"
+                    : "false",
             };
             console.log(
                 standaloneAchOnly
@@ -4394,6 +4485,23 @@ export default function ContractTab({
                                     ? "View Contract"
                                     : "Generate Contract"}
                         </Button>
+
+                        {!isReadOnly && hasSentContract && !needsContractReinitiation ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleResendNewContract()}
+                                disabled={creatingEnvelope || regeneratingContract}
+                                title="Archive the contract already sent and build a new one from the current offer, application and owner details"
+                                className={`rounded-md px-6 py-2 h-10 font-medium cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed ${
+                                    isDark
+                                        ? "border-[#5AACEA] text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                        : "border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                                }`}
+                            >
+                                Resend New Contract
+                            </Button>
+                        ) : null}
 
                     </div>
                 </div>

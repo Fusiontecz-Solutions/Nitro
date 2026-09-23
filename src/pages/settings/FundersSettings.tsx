@@ -7,10 +7,16 @@ import {
   createFunderProfile,
   deleteFunderProfile,
   fetchFunderProfiles,
+  shareFunderTemplates,
   updateFunderProfile,
   type FunderProfileFiles,
+  type FunderTemplateKind,
 } from "@/redux/actions/integrationSettingsActions";
-import type { FunderProfile, FunderProfileInput } from "@/types/integrationSettingsTypes";
+import type {
+  FunderProfile,
+  FunderProfileInput,
+  SignNowTemplateLinkItem,
+} from "@/types/integrationSettingsTypes";
 import FunderProfileModal from "./FunderProfileModal";
 
 function DetailRow({ label, value }: { label: string; value?: string | null | number }) {
@@ -66,6 +72,34 @@ export default function FundersSettings() {
     } finally {
       setSaving(false);
     }
+  };
+
+  /**
+   * Sends a share to the server, which merges the templates into each target
+   * funder's live row. The returned rows are folded back into local state so
+   * the card counts and the dialog's "already has this" hints stay accurate.
+   */
+  const handleShareTemplates = async (input: {
+    sourceFunderId: string;
+    kind: FunderTemplateKind;
+    templates: SignNowTemplateLinkItem[];
+    targetFunderIds: string[];
+  }) => {
+    const { sourceFunderId, ...body } = input;
+    const { result, message } = await shareFunderTemplates(sourceFunderId, body);
+    const field =
+      body.kind === "addendum"
+        ? "signnowAddendumTemplates"
+        : "signnowDisclosureTemplates";
+    const byId = new Map(result.updated.map((entry) => [entry.funderId, entry]));
+    setRows((prev) =>
+      prev.map((row) => {
+        const entry = byId.get(row.id);
+        if (!entry) return row;
+        return { ...row, [field]: [...(row[field] ?? []), ...entry.added] };
+      }),
+    );
+    return message;
   };
 
   const handleDelete = async (row: FunderProfile) => {
@@ -168,11 +202,14 @@ export default function FundersSettings() {
         open={modalOpen}
         saving={saving}
         initial={editing}
+        allFunders={rows}
         onClose={() => {
           setModalOpen(false);
           setEditing(null);
         }}
         onSave={handleSave}
+        onShareTemplates={handleShareTemplates}
+        onShareComplete={(message) => toast.success(message)}
       />
     </div>
   );
