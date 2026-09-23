@@ -167,6 +167,181 @@ export function signNowPrefillTextPayload(
   return out;
 }
 
+/**
+ * Baked `texts[]` stamps are plain page text: SignNow renders them on one line
+ * from `x`/`y` and ignores the widget's `width`/`height`, so a long value (an
+ * owner's full street address) runs straight across the page and over whatever
+ * sits in the next column — the Owner #1 address printing through the Owner #2
+ * "Address:" label. Enlarging the widget in the template cannot fix it, because
+ * nothing about the box reaches the stamp. So the wrapping has to happen here:
+ * measure the value, and emit one stamp per line inside the widget's box.
+ *
+ * Times New Roman advance widths, in 1/1000 em (Adobe's Times-Roman metrics).
+ * Only the characters CRM values actually contain are listed; anything else
+ * falls back to a middling 500.
+ */
+const TIMES_CHAR_WIDTHS: Record<string, number> = {
+  ' ': 250, '!': 333, '"': 408, '#': 500, '$': 500, '%': 833, '&': 778, "'": 180,
+  '(': 333, ')': 333, '*': 500, '+': 564, ',': 250, '-': 333, '.': 250, '/': 278,
+  '0': 500, '1': 500, '2': 500, '3': 500, '4': 500, '5': 500, '6': 500, '7': 500,
+  '8': 500, '9': 500, ':': 278, ';': 278, '<': 564, '=': 564, '>': 564, '?': 444,
+  '@': 921, 'A': 722, 'B': 667, 'C': 667, 'D': 722, 'E': 611, 'F': 556, 'G': 722,
+  'H': 722, 'I': 333, 'J': 389, 'K': 722, 'L': 611, 'M': 889, 'N': 722, 'O': 722,
+  'P': 556, 'Q': 722, 'R': 667, 'S': 556, 'T': 611, 'U': 722, 'V': 722, 'W': 944,
+  'X': 722, 'Y': 722, 'Z': 611, '[': 333, ']': 333, '_': 500, 'a': 444, 'b': 500,
+  'c': 444, 'd': 500, 'e': 444, 'f': 333, 'g': 500, 'h': 500, 'i': 278, 'j': 278,
+  'k': 500, 'l': 278, 'm': 778, 'n': 500, 'o': 500, 'p': 500, 'q': 500, 'r': 333,
+  's': 389, 't': 278, 'u': 500, 'v': 500, 'w': 722, 'x': 500, 'y': 500, 'z': 444,
+};
+
+const DEFAULT_CHAR_WIDTH = 500;
+/** Line spacing as a multiple of the font size, matching the template's face. */
+const BAKED_LINE_SPACING = 1.2;
+/** Never shrink a stamp past this — below it the value stops being readable. */
+const MIN_BAKED_FONT_SIZE = 7;
+/**
+ * The widget box is drawn a little wider than the printed rule, and SignNow's
+ * renderer is not pixel-identical to these metrics, so leave a small margin
+ * rather than filling the box to its last point.
+ */
+const BAKED_WIDTH_MARGIN = 2;
+
+export function measureSignNowTextWidth(text: string, size: number): number {
+  let units = 0;
+  for (const char of String(text ?? '')) {
+    units += TIMES_CHAR_WIDTHS[char] ?? DEFAULT_CHAR_WIDTH;
+  }
+  return (units / 1000) * (Number(size) || DEFAULT_FONT_SIZE);
+}
+
+/**
+ * Greedy word wrap on the measured width. A single word too long for the line
+ * (an unbroken email or URL) is split by character rather than left to overflow,
+ * because overflow is what collides with the neighbouring column.
+ */
+export function wrapSignNowText(
+  text: string,
+  width: number,
+  size: number,
+): string[] {
+  const value = String(text ?? '').trim();
+  const limit = Number(width) || 0;
+  if (!value) return [];
+  if (limit <= 0 || measureSignNowTextWidth(value, size) <= limit) return [value];
+  const lines: string[] = [];
+  let line = '';
+  const push = () => {
+    if (line) lines.push(line);
+    line = '';
+  };
+  for (const word of value.split(/\s+/)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (measureSignNowTextWidth(candidate, size) <= limit) {
+      line = candidate;
+      continue;
+    }
+    push();
+    if (measureSignNowTextWidth(word, size) <= limit) {
+      line = word;
+      continue;
+    }
+    let chunk = '';
+    for (const char of word) {
+      if (chunk && measureSignNowTextWidth(chunk + char, size) > limit) {
+        lines.push(chunk);
+        chunk = '';
+      }
+      chunk += char;
+    }
+    line = chunk;
+  }
+  push();
+  return lines.length ? lines : [value];
+}
+
+/**
+ * Fit a value into the widget's box: wrap onto as many lines as the height
+ * allows, and when even that is not enough, step the font size down until it
+ * fits. The value is never truncated — a slightly smaller stamp is always
+ * better than a lost or overlapping one.
+ */
+export function fitSignNowTextToBox(
+  data: string,
+  width: number,
+  height: number,
+  size: number,
+): { lines: string[]; size: number; lineHeight: number } {
+  const boxWidth = Math.max(0, (Number(width) || 0) - BAKED_WIDTH_MARGIN);
+  const boxHeight = Number(height) || 0;
+  const startSize = Number(size) || DEFAULT_FONT_SIZE;
+  if (!boxWidth) {
+    return {
+      lines: [String(data ?? '').trim()],
+      size: startSize,
+      lineHeight: startSize * BAKED_LINE_SPACING,
+    };
+  }
+  /**
+   * A widget only as tall as its own line (the ACH and page-23 address rules)
+   * has no room for a second line: wrapping there would print over whatever
+   * follows underneath. Those values are shrunk to fit instead.
+   */
+  const singleLineOnly = boxHeight < 2 * startSize * BAKED_LINE_SPACING;
+  if (singleLineOnly) {
+    let fontSize = startSize;
+    while (
+      fontSize > MIN_BAKED_FONT_SIZE &&
+      measureSignNowTextWidth(data, fontSize) > boxWidth
+    ) {
+      fontSize -= 1;
+    }
+    return {
+      lines: [String(data ?? '').trim()],
+      size: fontSize,
+      lineHeight: fontSize * BAKED_LINE_SPACING,
+    };
+  }
+  let fontSize = startSize;
+  let lines = wrapSignNowText(data, boxWidth, fontSize);
+  while (fontSize > MIN_BAKED_FONT_SIZE) {
+    const lineHeight = fontSize * BAKED_LINE_SPACING;
+    const maxLines = Math.max(1, Math.floor(boxHeight / lineHeight));
+    if (lines.length <= maxLines) {
+      return { lines, size: fontSize, lineHeight };
+    }
+    fontSize -= 1;
+    lines = wrapSignNowText(data, boxWidth, fontSize);
+  }
+  return { lines, size: fontSize, lineHeight: fontSize * BAKED_LINE_SPACING };
+}
+
+/**
+ * One stamp per wrapped line, each offset by the line height from the widget's
+ * own anchor. Single-line values (the overwhelming majority) come back as the
+ * one row `toSignNowCompletedText` has always produced.
+ */
+export function toSignNowCompletedTexts(
+  field: Record<string, unknown>,
+  options?: { maxSize?: number },
+): Record<string, unknown>[] {
+  const row = toSignNowCompletedText(field, options);
+  if (!row) return [];
+  const fit = fitSignNowTextToBox(
+    String(row.data ?? ''),
+    Number(field.width) || 0,
+    Number(field.height) || 0,
+    Number(row.size) || DEFAULT_FONT_SIZE,
+  );
+  if (fit.lines.length <= 1 && fit.size === Number(row.size)) return [row];
+  const top = Number(row.y) || 0;
+  return fit.lines.map((line, index) => ({
+    ...row,
+    data: line,
+    size: fit.size,
+    y: index === 0 ? top : Math.round(top + index * fit.lineHeight),
+  }));
+}
+
 export function toSignNowCompletedText(
   field: Record<string, unknown>,
   options?: { maxSize?: number },
@@ -282,8 +457,9 @@ export function splitPrefillPutPayload(
       fillable.push(next);
       continue;
     }
-    const text = toSignNowCompletedText(field, options);
-    if (text) texts.push(text);
+    for (const text of toSignNowCompletedTexts(field, options)) {
+      texts.push(text);
+    }
   }
   return { fields: fillable, texts: dropOverlappingDuplicateTexts(texts) };
 }

@@ -10,6 +10,9 @@ import {
   signNowPrefillTextPayload,
   splitPrefillPutPayload,
   toSignNowCompletedText,
+  toSignNowCompletedTexts,
+  measureSignNowTextWidth,
+  wrapSignNowText,
 } from './signnow-prefill-put';
 import {
   collectCommittedSignNowTexts,
@@ -778,5 +781,74 @@ describe('dropOverlappingDuplicateTexts', () => {
       true,
     );
     expect(split.texts).toHaveLength(1);
+  });
+  it('wraps a baked address onto the lines its widget box allows', () => {
+    // Owner #1 address widget on the Nitro / Obsidian / Tiberian contract page.
+    const rows = toSignNowCompletedTexts({
+      type: 'text',
+      name: 'guarantor_address',
+      prefilled_text: '3205 COVE CREEK ROAD, GWALIOR, NORTH CAROLINA 28078',
+      x: 121,
+      y: 659,
+      page_number: 1,
+      width: 203,
+      height: 60,
+    });
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(
+        measureSignNowTextWidth(String(row.data), Number(row.size)),
+      ).toBeLessThanOrEqual(203);
+      expect(row.x).toBe(121);
+      expect(row.page_number).toBe(1);
+    }
+    // Nothing is dropped, and the lines run down the box in order.
+    expect(rows.map((row) => row.data).join(' ')).toBe(
+      '3205 COVE CREEK ROAD, GWALIOR, NORTH CAROLINA 28078',
+    );
+    expect(Number(rows[0].y)).toBe(659);
+    expect(Number(rows[1].y)).toBeGreaterThan(659);
+    expect(Number(rows[rows.length - 1].y)).toBeLessThanOrEqual(659 + 60);
+  });
+
+  it('shrinks a baked value that has to stay on one line', () => {
+    const rows = toSignNowCompletedTexts({
+      type: 'text',
+      name: 'ach_account_holder_address_p19',
+      prefilled_text:
+        '12345 SOUTHWEST DELAWAKRE PARKWAY, APT 2201, KANSAS CITY, KANSAS, 66109',
+      x: 249,
+      y: 385,
+      page_number: 18,
+      width: 200,
+      height: 13,
+    });
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0].size)).toBeLessThan(10);
+  });
+
+  it('leaves a value that already fits exactly as it was', () => {
+    const field = {
+      type: 'text',
+      name: 'merchant_contact_name',
+      prefilled_text: 'MARY IRVIN',
+      x: 100,
+      y: 200,
+      page_number: 0,
+      width: 203,
+      height: 14,
+    };
+    expect(toSignNowCompletedTexts(field)).toEqual([
+      toSignNowCompletedText(field),
+    ]);
+  });
+
+  it('breaks an unbroken run of characters rather than letting it overflow', () => {
+    const lines = wrapSignNowText('A'.repeat(80), 60, 10);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(measureSignNowTextWidth(line, 10)).toBeLessThanOrEqual(60);
+    }
+    expect(lines.join('')).toBe('A'.repeat(80));
   });
 });
