@@ -20,6 +20,7 @@ jest.mock('puppeteer', () => ({ __esModule: true, default: {} }));
 jest.mock('./utils/signnow-template-store', () => ({
   readStoredTemplateDocument: jest.fn(async () => null),
   writeStoredTemplateDocument: jest.fn(async () => undefined),
+  invalidateStoredTemplateDocument: jest.fn(async () => undefined),
   signNowTemplateStoreTtlMs: () => 60_000,
 }));
 

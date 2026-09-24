@@ -161,6 +161,7 @@ import {
   resolveSignNowReviewStatus,
 } from './utils/signnow-review-status';
 import {
+  invalidateStoredTemplateDocument,
   readStoredTemplateDocument,
   writeStoredTemplateDocument,
 } from './utils/signnow-template-store';
@@ -909,24 +910,49 @@ function toSignNowPutField(
   return row;
 }
 
-function overlayTemplateFieldFace(
+/**
+ * The template face is read through a 24h cache, so the snapshot it overlays can
+ * be older than the template itself. Copying `height`/`width` from a stale
+ * snapshot shrinks a box the funder has since enlarged in SignNow back to its
+ * old size — that is what clipped the Owner address on the Tiberian agreement
+ * (cached w=184 h=13 over a live w=201 h=67 widget) while Nitro, whose snapshot
+ * happened to be refetched after the same edit, rendered fine.
+ *
+ * The live document is copied from the template when the group is created, so a
+ * live box BIGGER than the snapshot can only mean the template grew since the
+ * snapshot was taken. Those boxes are left alone and reported back, so the
+ * caller can drop the stale snapshot and refetch on the next publish.
+ */
+export function overlayTemplateFieldFace(
   fields: Record<string, unknown>[],
   templateFields: Record<string, unknown>[],
-): void {
+): { staleBoxes: number } {
   const byName = new Map<string, Record<string, unknown>>();
   for (const field of templateFields) {
     const name = String(field.name || '').trim().toLowerCase();
     if (name && !byName.has(name)) byName.set(name, field);
   }
+  let staleBoxes = 0;
   for (const field of fields) {
     if (SIGN_FIELD_TYPES.has(String(field.type || ''))) continue;
     const src = byName.get(String(field.name || '').trim().toLowerCase());
     if (!src) continue;
     if (isDedicatedExhibitCRequiredField(String(field.name || ''))) continue;
-    for (const key of ['font', 'font_size', 'size', 'height', 'width'] as const) {
+    for (const key of ['font', 'font_size', 'size'] as const) {
       if (src[key] != null && src[key] !== '') field[key] = src[key];
     }
+    for (const key of ['height', 'width'] as const) {
+      if (src[key] == null || src[key] === '') continue;
+      const fromTemplate = Number(src[key]) || 0;
+      const onDocument = Number(field[key]) || 0;
+      if (onDocument > fromTemplate) {
+        staleBoxes += 1;
+        continue;
+      }
+      field[key] = src[key];
+    }
   }
+  return { staleBoxes };
 }
 
 /** Copy page-20 / Exhibit C bank widgets from the template when a live copy dropped them. */
@@ -1883,6 +1909,19 @@ export class SignNowService {
       });
     templateDocumentInflight.set(id, work);
     return work;
+  }
+
+  /**
+   * Drop both layers of the template-face cache for one template: the durable
+   * row and this process's copy. Called when a live document turns out to carry
+   * a widget box the cached snapshot does not know about, which means the
+   * template was edited after the snapshot was taken.
+   */
+  private async invalidateTemplateDocumentCache(templateId: string): Promise<void> {
+    const id = String(templateId || '').trim();
+    if (!id) return;
+    templateDocumentCache.delete(id);
+    await invalidateStoredTemplateDocument(id);
   }
 
   private async resolveExhibitCDocumentId(
@@ -4851,7 +4890,20 @@ export class SignNowService {
               pageCount || templatePages,
             );
             if (!pageCount || !templatePages || templatePages === pageCount) {
-              overlayTemplateFieldFace(sourceFields, fromTemplate);
+              const face = overlayTemplateFieldFace(sourceFields, fromTemplate);
+              if (face.staleBoxes > 0) {
+                /**
+                 * The snapshot is behind the template the live copy was made
+                 * from. Drop it so the next publish reads the current widget
+                 * boxes instead of shrinking them again for another 24h.
+                 */
+                await this.invalidateTemplateDocumentCache(templateId);
+                console.info('[SignNow] refreshed stale template face cache', {
+                  documentId,
+                  templateId,
+                  staleBoxes: face.staleBoxes,
+                });
+              }
               if (signCount === 0) {
                 const fromSigns = fromTemplate.filter((field) =>
                   SIGN_FIELD_TYPES.has(String(field.type || '')),
