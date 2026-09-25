@@ -149,6 +149,43 @@ export function sanitizeSignNowPutFields(
   });
 }
 
+/** Suffix a relabel adds; stripped first so a reused draft does not stack them. */
+const EXHIBIT_C_COPY_LABEL_SUFFIX = /\s*\(copy \d+\)\s*$/i;
+
+/**
+ * Give every widget on an Exhibit C copy a label no other document carries.
+ *
+ * SignNow links widgets that share a label inside one signer's session, and
+ * every Exhibit C copy is made from the same template, so in the Owner review
+ * `Exhibit C (2)` showed `Exhibit C`'s values over its own prefill. The merchant
+ * send never showed it because the values are baked as page text there. Only
+ * the label changes — the widget `name` is what the prefill resolves against.
+ *
+ * `copyNumber` is 1-based (`Exhibit C (2)` → 2). Returns how many were relabelled.
+ */
+export function labelExhibitCCopyFieldsForReview(
+  fields: Record<string, unknown>[],
+  copyNumber: number,
+): number {
+  if (!Number.isFinite(copyNumber) || copyNumber < 2) return 0;
+  let relabelled = 0;
+  for (const field of fields) {
+    const type = String(field.type || 'text').toLowerCase();
+    if (SIGN_TYPES.has(type)) continue;
+    const base = String(field.label || field.name || '')
+      .replace(EXHIBIT_C_COPY_LABEL_SUFFIX, '')
+      .trim();
+    if (!base) continue;
+    const label = `${base} (copy ${copyNumber})`;
+    field.label = label;
+    if (field.json_attributes && typeof field.json_attributes === 'object') {
+      field.json_attributes = { ...(field.json_attributes as Record<string, unknown>), label };
+    }
+    relabelled += 1;
+  }
+  return relabelled;
+}
+
 export function signNowPrefillTextPayload(
   fields: Record<string, unknown>[],
 ): Array<{ field_name: string; prefilled_text: string }> {

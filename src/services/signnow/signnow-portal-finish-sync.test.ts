@@ -40,6 +40,7 @@ jest.mock('./signnow.service', () => ({
 import { sendSendGridMail } from '../../config/nodemailer';
 import {
   PORTAL_SIGNING_QUEUE_KEY,
+  advancePortalSigningQueue,
   syncPortalEnvelopeAfterSignerFinished,
 } from './signnow-portal-send.service';
 
@@ -138,6 +139,64 @@ describe('syncPortalEnvelopeAfterSignerFinished', () => {
     expect(getGroupStatus).not.toHaveBeenCalled();
   });
 
+  it('completes a parallel send once SignNow closed the invites of signers who all signed', async () => {
+    // Both merchants were emailed together; neither finish was recorded, and
+    // SignNow no longer lists their embedded invites.
+    contract.findFirst.mockResolvedValue(queueWith([emailed('a@example.com'), emailed('b@example.com')]));
+    embeddedInvites.get.mockResolvedValue({ status: 200, data: { data: [] } });
+    getGroupStatus.mockResolvedValue({ envelopeId: GROUP, status: 'completed' });
+
+    const result = await syncPortalEnvelopeAfterSignerFinished(GROUP, NO_DELAY, 'b@example.com');
+
+    expect(result.status).toBe('completed');
+    expect(getGroupStatus).toHaveBeenCalledTimes(1);
+    expect(sendSendGridMail).not.toHaveBeenCalled();
+  });
+
+  it('records every finished signer of a parallel send without re-emailing anyone', async () => {
+    contract.findFirst.mockResolvedValue(queueWith([emailed('a@example.com'), emailed('b@example.com')]));
+    embeddedInvites.get.mockResolvedValue({
+      status: 200,
+      data: {
+        data: [
+          { signers: [{ email: 'a@example.com', status: 'fulfilled' }] },
+          { signers: [{ email: 'b@example.com', status: 'fulfilled' }] },
+        ],
+      },
+    });
+    getGroupStatus.mockResolvedValue({ envelopeId: GROUP, status: 'completed' });
+
+    const result = await syncPortalEnvelopeAfterSignerFinished(GROUP, NO_DELAY, 'b@example.com');
+
+    expect(result.status).toBe('completed');
+    expect(result.queue.done).toBe(true);
+    expect(sendSendGridMail).not.toHaveBeenCalled();
+    const saved = (contract.update.mock.calls[0] as any[])[0].data.contractPrefillOverrides[
+      PORTAL_SIGNING_QUEUE_KEY
+    ];
+    expect(saved.recipients.every((row: any) => row.completedAt)).toBe(true);
+  });
+
+  it('stops after one read when another signer of a parallel send has not signed yet', async () => {
+    contract.findFirst.mockResolvedValue(queueWith([emailed('a@example.com'), emailed('b@example.com')]));
+    embeddedInvites.get.mockResolvedValue({
+      status: 200,
+      data: {
+        data: [
+          { signers: [{ email: 'a@example.com', status: 'fulfilled' }] },
+          { signers: [{ email: 'b@example.com', status: 'pending' }] },
+        ],
+      },
+    });
+
+    const result = await syncPortalEnvelopeAfterSignerFinished(GROUP, NO_DELAY, 'a@example.com');
+
+    expect(result.status).toBeNull();
+    expect(embeddedInvites.get).toHaveBeenCalledTimes(1);
+    expect(getGroupStatus).not.toHaveBeenCalled();
+    expect(sendSendGridMail).not.toHaveBeenCalled();
+  });
+
   it('reads the group status directly for an envelope without a signing queue', async () => {
     contract.findFirst.mockResolvedValue({ id: 7, contractPrefillOverrides: {} });
     getGroupStatus.mockResolvedValue({ envelopeId: GROUP, status: 'completed' });
@@ -146,5 +205,29 @@ describe('syncPortalEnvelopeAfterSignerFinished', () => {
 
     expect(result.status).toBe('completed');
     expect(embeddedInvites.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('advancePortalSigningQueue in verified-webhook mode', () => {
+  it('emails a signer the send never reached without calling SignNow', async () => {
+    contract.findFirst.mockResolvedValue(
+      queueWith([emailed('a@example.com'), { ...emailed('b@example.com'), emailedAt: null }]),
+    );
+
+    const result = await advancePortalSigningQueue(GROUP, { readSignNow: false });
+
+    expect(result).toEqual({ advanced: true, emailed: 'b@example.com', done: false });
+    expect(embeddedInvites.get).not.toHaveBeenCalled();
+    expect(sendSendGridMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes no SignNow call when every signer was already emailed', async () => {
+    contract.findFirst.mockResolvedValue(queueWith([emailed('a@example.com'), emailed('b@example.com')]));
+
+    const result = await advancePortalSigningQueue(GROUP, { readSignNow: false });
+
+    expect(result.done).toBe(false);
+    expect(embeddedInvites.get).not.toHaveBeenCalled();
+    expect(sendSendGridMail).not.toHaveBeenCalled();
   });
 });

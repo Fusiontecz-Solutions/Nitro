@@ -111,6 +111,30 @@ describe('missingReviewPrefillFields', () => {
     };
     expect(missingReviewPrefillFields(remote, ['bank_name'])).toEqual([]);
   });
+
+  it('treats a 0.00 placeholder as empty where the CRM holds a real amount', () => {
+    const remote = {
+      fields: [
+        { type: 'text', json_attributes: { name: 'Text Field 1', prefilled_text: '0.00' } },
+        { type: 'text', json_attributes: { name: 'Text Field 3', prefilled_text: '180.00' } },
+        { type: 'text', json_attributes: { name: 'disclosure_page3_line_2_p3', prefilled_text: '0.00' } },
+        { type: 'text', json_attributes: { name: 'client_name', prefilled_text: '0' } },
+      ],
+    };
+    expect(
+      missingReviewPrefillFields(
+        remote,
+        ['Text Field 1', 'Text Field 3', 'disclosure_page3_line_2_p3', 'client_name'],
+        {
+          'Text Field 1': '50,000.00',
+          'Text Field 3': '180.00',
+          // Zero is the real amount on a deal with no refinance.
+          disclosure_page3_line_2_p3: '0.00',
+          client_name: 'ACME LLC',
+        },
+      ),
+    ).toEqual(['Text Field 1']);
+  });
 });
 
 describe('reviewPrefillIsComplete', () => {

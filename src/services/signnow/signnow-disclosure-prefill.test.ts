@@ -3,7 +3,11 @@ import {
   signNowPrefillOptionsForDocument,
 } from './utils/signnow-field-map';
 import { buildOfferPrefillOverrides } from './utils/signnow-offer-values';
-import { buildDisclosurePrefillDefaults } from './utils/signnow-disclosure-values';
+import {
+  buildDisclosurePrefillDefaults,
+  dropZeroDisclosurePlaceholders,
+  layerContractPrefillDefaults,
+} from './utils/signnow-disclosure-values';
 import { resolveOfferDerivedContractValues } from '../contractOfferValueSync';
 
 /**
@@ -144,6 +148,105 @@ describe('the state disclosure fills from the offer alone', () => {
     expect(out['Text Field 5']).toBe('19,000.00');
     expect(out.finance_charge_p2).toBe('19,000.00');
     expect(out.disclosure_page3_net_p3).toBe('47,050.00');
+  });
+
+  it('fills real amounts over the 0.00 a calculator without inputs posted', () => {
+    // What the screen posts when its disclosure calculator ran before the deal
+    // loaded: every line 0.00, under the CRM id AND the widget's own name.
+    const zeros: Record<string, string> = {};
+    for (const key of [
+      'disclosure_amount_financed',
+      'disclosure_recipient_funds',
+      'disclosure_apr',
+      'disclosure_finance_charge',
+      'disclosure_total_payment',
+      'disclosure_estimated_payment',
+      'disclosure_monthly_cost',
+      'disclosure_payment_terms',
+      'disclosure_page3_line_1',
+      'disclosure_page3_subtotal',
+      'disclosure_broker_fee',
+      'disclosure_page3_net',
+      'funding_provided_direct',
+      'Text Field 1',
+      'Text Field 2',
+      'Text Field 3',
+      'Text Field 5',
+      'Text Field 6',
+      'Text Field 7',
+      'Text Field 8',
+      'finance_charge_p2',
+      'payement_exceeded_percent_p2_s1',
+      'disclosure_recipient_funds_p3',
+      'disclosure_page3_line_1_p3',
+      'disclosure_page3_subtotal_p3',
+      'disclosure_broker_fee_p3',
+      'disclosure_page3_net_p3',
+    ]) {
+      zeros[key] = '0.00';
+    }
+    const out = filled('Disclosure - Nitro Advance', backendOnlyValues(OFFER, zeros));
+    expect(out).toEqual(filled('Disclosure - Nitro Advance'));
+    expect(out['Text Field 1']).toBe('50,000.00');
+    expect(out['Text Field 3']).toBe('180.00');
+    expect(out.finance_charge_p2).toBe('22,500.00');
+    expect(out.payement_exceeded_percent_p2_s1).toBe('21.65');
+    expect(out.disclosure_page3_net_p3).toBe('48,525.00');
+  });
+
+  it('keeps the declared revenue when the revenue line is posted as 0.00', () => {
+    const values: Record<string, string> = {
+      disclosure_avg_monthly_revenue: '0.00',
+      avarage_monthly_income: '0.00',
+      monthly_income: '0.00',
+      'Text Field 4': '0.00',
+    };
+    // `loadContractPrefillDefaults` holds Client.businessMonthlyRevenue.
+    layerContractPrefillDefaults(values, {
+      disclosure_avg_monthly_revenue: '120,000.00',
+      avarage_monthly_income: '120,000.00',
+      monthly_income: '120,000.00',
+      purchase_price: '1.00',
+    }, { disclosureAmountsOnly: true });
+    expect(values.purchase_price).toBeUndefined();
+    const out = filled('Disclosure - Nitro Advance', backendOnlyValues(OFFER, values));
+    expect(out['Text Field 4']).toBe('120,000.00');
+    expect(out.payement_exceeded_percent_p2_s1).toBe('21.65');
+  });
+
+  it('keeps a zero where zero is the real amount', () => {
+    const out = filled(
+      'Disclosure - Nitro Advance',
+      backendOnlyValues(OFFER, {
+        disclosure_page3_line_2: '0.00',
+        disclosure_page3_third_parties: '0.00',
+        'Text Field 4': '0.00',
+        disclosure_avg_monthly_revenue: '0.00',
+        avarage_monthly_income: '',
+        monthly_income: '',
+      }),
+    );
+    expect(out.disclosure_page3_line_2_p3).toBe('0.00');
+    expect(out.disclosure_page3_third_parties_p3).toBe('0.00');
+    // No revenue anywhere on the deal: nothing better to print.
+    expect(out['Text Field 4']).toBe('0.00');
+  });
+
+  it('does not let a saved tab 0.00 bury a real amount', () => {
+    const base = backendOnlyValues();
+    const tab = {
+      disclosure_avg_monthly_revenue: '0.00',
+      disclosure_apr: '41.23',
+      disclosure_page3_third_parties: '0.00',
+      disclosure_date: '09/22/2026',
+    };
+    expect(dropZeroDisclosurePlaceholders(tab, base)).toEqual({
+      disclosure_apr: '41.23',
+      disclosure_page3_third_parties: '0.00',
+      disclosure_date: '09/22/2026',
+    });
+    // A zero with nothing real beneath it is still the tab's value.
+    expect(dropZeroDisclosurePlaceholders(tab, {})).toEqual(tab);
   });
 
   it('splits the page-3 itemization across a refinanced balance', () => {

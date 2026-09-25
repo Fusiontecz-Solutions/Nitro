@@ -109,6 +109,7 @@ import {
   collectCommittedSignNowTexts,
   copySignNowTemplateStyle,
   dropBakedTextsAlreadyStamped,
+  labelExhibitCCopyFieldsForReview,
   mergeCommittedSignNowTexts,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
@@ -150,6 +151,10 @@ import {
   alignDisclosureWireFeeWithTotalFees,
   buildOfferPrefillOverrides,
 } from './utils/signnow-offer-values';
+import {
+  dropZeroDisclosurePlaceholders,
+  layerContractPrefillDefaults,
+} from './utils/signnow-disclosure-values';
 import {
   buildSignNowPackageFingerprint,
   embeddedReviewRolesForDocument,
@@ -665,9 +670,14 @@ export function signNowDocumentPrefillValues(
   // A tab saved under the other "$25 wire fee" choice must not undo the
   // contract's TOTAL FEES on the disclosure (see the helper).
   if (!tabs) return { ...base, values: alignDisclosureWireFeeWithTotalFees(base.values) };
+  // A disclosure tab saved from a calculation that ran without inputs holds
+  // 0.00 placeholders; they must not bury the deal's real amounts.
   return {
     ...base,
-    values: alignDisclosureWireFeeWithTotalFees({ ...base.values, ...tabs }),
+    values: alignDisclosureWireFeeWithTotalFees({
+      ...base.values,
+      ...dropZeroDisclosurePlaceholders(tabs, base.values),
+    }),
   };
 }
 
@@ -2336,9 +2346,7 @@ export class SignNowService {
         appId,
         Number(options.contractId) || undefined,
       );
-      for (const [key, value] of Object.entries(defaults)) {
-        if (!String(values[key] ?? '').trim()) values[key] = value;
-      }
+      layerContractPrefillDefaults(values, defaults);
     }
     const liveOffer = await loadOfferDerivedValuesForContract({
       contractId: options.contractId,
@@ -3874,6 +3882,27 @@ export class SignNowService {
       });
     } catch (err) {
       console.warn(`[SignNow] could not record CC signed notice for ${id}:`, err);
+      return;
+    }
+    // Tick the application's "Signed copy sent to CC" box in open browsers
+    // without a reload.
+    try {
+      const doc = await prisma.document.findFirst({
+        where: { envelopeId: id },
+        select: { applicationId: true },
+      });
+      const applicationId = String(doc?.applicationId || '').trim();
+      if (applicationId) {
+        const { emitContractSigningStatusRealtime } = await import('../contractSigningStatusEffects');
+        await emitContractSigningStatusRealtime({
+          applicationId,
+          envelopeId: id,
+          status: 'completed',
+          provider: 'signnow',
+        });
+      }
+    } catch (err) {
+      console.warn(`[SignNow] CC signed notice realtime push failed for ${id}:`, err);
     }
   }
 
@@ -4308,6 +4337,13 @@ export class SignNowService {
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error }),
     );
+    // The disclosure amounts Review filled from the contract (the business's
+    // declared revenue under a 0.00 calculator placeholder) must bake the same.
+    // Never rejects: the loader swallows its own failures.
+    const contractDefaultsPromise = this.loadContractPrefillDefaults(
+      id,
+      options.applicationId ?? appIdEarly,
+    );
     const client = await createSignNowApiClient();
     const groupRes = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
     if (groupRes.status >= 400) {
@@ -4385,6 +4421,9 @@ export class SignNowService {
     // text baked onto the merchant PDF cannot carry a superseded offer.
     const offerDerived = await offerDerivedPromise;
     if (!offerDerived.ok) throw offerDerived.error;
+    layerContractPrefillDefaults(values, (await contractDefaultsPromise).defaults, {
+      disclosureAmountsOnly: true,
+    });
     Object.assign(
       values,
       buildOfferPrefillOverrides(
@@ -4751,43 +4790,11 @@ export class SignNowService {
     const client = await createSignNowApiClient();
     const res = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
     const status = await this.resolveRemoteGroupStatus(client, id, res.data);
-    const documentStatus = status === 'voided' ? 'revoked' : status;
-    const mappedInternal = status === 'voided' ? 'revoked' : status;
 
     // Persist completed / voided into CRM the first time SignNow reports it.
     // Later polls must not reach here — readTerminalGroupStatusFromCrm returns first.
     if (status === 'completed' || status === 'voided') {
-      const isPackageEnvelope = await isStandalonePackageEnvelope(id, {
-        applicationId: applicationId || undefined,
-      });
-      if (isPackageEnvelope) {
-        await updateStandalonePackageDocuSignStatus(id, mappedInternal, {
-          applicationId: applicationId || undefined,
-        });
-      } else {
-        await prisma.document.updateMany({
-          where: { envelopeId: id },
-          data: {
-            status: documentStatus,
-            ...(status === 'completed' ? { completedAt: new Date() } : {}),
-          } as any,
-        });
-        await this.syncContractSigningFromGroupStatus(
-          id,
-          mappedInternal,
-          applicationId,
-        );
-        if (status === 'completed') {
-          // Warm the Cloudinary archive as soon as SignNow reports completion
-          // (webhook or manual refresh) so the "eye" preview never needs a live
-          // SignNow GET for a finished contract. The same buffer then rides
-          // along on the CRM completion notice, so the contracts inbox gets one
-          // email whose subject actually names the deal.
-          void this.notifyContractsInboxOnCompletion(id, applicationId, res.data).catch((err) =>
-            console.warn(`[SignNow] completion notice failed for ${id}:`, err),
-          );
-        }
-      }
+      await this.persistTerminalGroupStatus(id, status, applicationId, res.data);
       return { envelopeId: id, status };
     }
 
@@ -4814,6 +4821,70 @@ export class SignNowService {
     }
 
     return { envelopeId: id, status };
+  }
+
+  /**
+   * Write a final SignNow status onto Document + Contract, move the deal
+   * (Contract Signed / voided) and, on completion, archive the signed PDF and
+   * send the completion / CC notice. Shared by the live status read and the
+   * verified webhook, which already knows the group finished.
+   */
+  private async persistTerminalGroupStatus(
+    id: string,
+    status: 'completed' | 'voided',
+    applicationId: string | undefined,
+    groupPayload: unknown,
+  ): Promise<void> {
+    const mappedInternal = status === 'voided' ? 'revoked' : status;
+    const isPackageEnvelope = await isStandalonePackageEnvelope(id, {
+      applicationId: applicationId || undefined,
+    });
+    if (isPackageEnvelope) {
+      await updateStandalonePackageDocuSignStatus(id, mappedInternal, {
+        applicationId: applicationId || undefined,
+      });
+      return;
+    }
+    await prisma.document.updateMany({
+      where: { envelopeId: id },
+      data: {
+        status: mappedInternal,
+        ...(status === 'completed' ? { completedAt: new Date() } : {}),
+      } as any,
+    });
+    await this.syncContractSigningFromGroupStatus(id, mappedInternal, applicationId);
+    if (status === 'completed') {
+      // Warm the Cloudinary archive as soon as SignNow reports completion
+      // (webhook or manual refresh) so the "eye" preview never needs a live
+      // SignNow GET for a finished contract. The same buffer then rides
+      // along on the CRM completion notice, so the contracts inbox gets one
+      // email whose subject actually names the deal.
+      void this.notifyContractsInboxOnCompletion(id, applicationId, groupPayload).catch((err) =>
+        console.warn(`[SignNow] completion notice failed for ${id}:`, err),
+      );
+    }
+  }
+
+  /**
+   * A `document_group.complete` / `…invite.declined` webhook whose HMAC
+   * signature checked out.
+   *
+   * SignNow only sends completion once every document in the group is signed,
+   * and the signature proves SignNow sent it, so the final status is persisted
+   * straight away — no `GET /documentgroup` round trip (which can still read
+   * "sent" for a few seconds after the event). Already-final contracts are
+   * left alone, so SignNow's retries are no-ops.
+   */
+  async applyVerifiedGroupStatus(
+    groupId: string,
+    status: 'completed' | 'voided',
+    applicationId?: string,
+  ): Promise<{ envelopeId: string; status: string; source: string }> {
+    const id = String(groupId || '').trim();
+    const cached = await this.readTerminalGroupStatusFromCrm(id, applicationId);
+    if (cached) return { envelopeId: id, status: cached, source: 'crm' };
+    await this.persistTerminalGroupStatus(id, status, applicationId, null);
+    return { envelopeId: id, status, source: 'webhook' };
   }
 
   /**
@@ -5189,15 +5260,15 @@ export class SignNowService {
           remote?.document_name || remote?.name || documentName,
           fieldNames,
         );
-        const resolvable = fieldNames.filter(
-          (name) =>
-            !shouldSkipSignNowPrefill(name, prefillOpts) &&
-            Boolean(
-              formatSignNowPrefillValue(
-                resolveSignNowPrefillValue(name, outcome.plan.values, prefillOpts),
-              ),
-            ),
-        );
+        const expected: Record<string, string> = {};
+        const resolvable = fieldNames.filter((name) => {
+          if (shouldSkipSignNowPrefill(name, prefillOpts)) return false;
+          const value = formatSignNowPrefillValue(
+            resolveSignNowPrefillValue(name, outcome.plan.values, prefillOpts),
+          );
+          if (value) expected[name] = value;
+          return Boolean(value);
+        });
         const required = requiredReviewPrefillFields({
           resolvable,
           planned: outcome.plannedFieldNames,
@@ -5208,7 +5279,7 @@ export class SignNowService {
           remote,
           check: {
             ...base,
-            missing: missingReviewPrefillFields(remote, required),
+            missing: missingReviewPrefillFields(remote, required, expected),
             withoutFields:
               options.requireFields &&
               countSignNowDocumentFields(remote) === 0 &&
@@ -5845,6 +5916,20 @@ export class SignNowService {
       fields.push(next);
     }
     const putFields = fieldsOnExistingPages(sanitizeSignNowPutFields(fields), pageCount);
+    /**
+     * Owner review only: Exhibit C (2), (3)… are copies of one template, so their
+     * widgets share labels with the first Exhibit C, and SignNow's session shows
+     * the first copy's values on every copy. Unique labels break that link; the
+     * field PUT below is what writes them, so it must not be skipped.
+     */
+    const exhibitCCopyIndex = isExhibitC
+      ? exhibitCInstanceIndexFromDocumentName(documentName)
+      : null;
+    const relabelledExhibitCCopy =
+      !exposeToMerchant &&
+      exhibitCCopyIndex != null &&
+      exhibitCCopyIndex > 0 &&
+      labelExhibitCCopyFieldsForReview(putFields, exhibitCCopyIndex + 1) > 0;
     console.info('[SignNow] field roles before merchant publish', {
       documentId,
       roleCounts,
@@ -6011,7 +6096,12 @@ export class SignNowService {
           role.toLowerCase() !== 'owner'
         );
       });
-    if (!exposeToMerchant && textsApplied > 0 && !needsMerchantRequiredReviewPut) {
+    if (
+      !exposeToMerchant &&
+      textsApplied > 0 &&
+      !needsMerchantRequiredReviewPut &&
+      !relabelledExhibitCCopy
+    ) {
       console.info('[SignNow] review prefill complete via prefill-texts (skipped field PUT)', {
         documentId,
         textsApplied,
@@ -8662,9 +8752,7 @@ export class SignNowService {
     // Latest CRM values from the database, under whatever the caller sent — except the
     // offer-derived amounts, which go over it so a resend cannot re-bake an old offer.
     const { defaults: fromDb, offerSource } = await this.loadContractPrefillDefaults(id);
-    for (const [key, value] of Object.entries(fromDb)) {
-      if (!String(values[key] ?? '').trim()) values[key] = value;
-    }
+    layerContractPrefillDefaults(values, fromDb);
     Object.assign(
       values,
       buildOfferPrefillOverrides(

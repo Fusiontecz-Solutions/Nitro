@@ -8,6 +8,8 @@ import {
   syncPortalEnvelopeAfterSignerFinished,
   verifyPortalAccess,
 } from '../services/signnow/signnow-portal-send.service';
+import { markSignNowEnvelopeActive } from '../cron-job/signNowContractStatusJob';
+import { signNowWebhooksVerified } from '../services/signnow/utils/signnow-webhook-mode';
 
 function fail(res: Response, error: any) {
   const status = Number(error?.status) || 500;
@@ -86,7 +88,8 @@ class SigningPortalController {
       // Safety net for sequential signing: if the signer ahead of this one has
       // finished but the completion callback never arrived, hand the contract on.
       try {
-        await advancePortalSigningQueue(envelopeId);
+        // Webhook mode: only email anyone never reached — no SignNow read.
+        await advancePortalSigningQueue(envelopeId, { readSignNow: !signNowWebhooksVerified() });
       } catch (queueError) {
         console.warn('[SignNow] portal queue advance on summary failed', queueError);
       }
@@ -130,6 +133,8 @@ class SigningPortalController {
       const email = String(req.body?.email ?? '').trim();
       const token = String(req.body?.token ?? '').trim();
       const verified = await verifyPortalAccess({ envelopeId, email, token });
+      // The signer is opening SignNow now: check this contract every status-job tick.
+      markSignNowEnvelopeActive(verified.envelopeId);
       const url = await mintPortalSigningLink({
         envelopeId: verified.envelopeId,
         signerEmail: verified.email,
@@ -155,7 +160,19 @@ class SigningPortalController {
       const email = String(req.body?.email ?? '').trim();
       const token = String(req.body?.token ?? '').trim();
       const verified = await verifyPortalAccess({ envelopeId, email, token });
-      void syncPortalEnvelopeAfterSignerFinished(verified.envelopeId)
+      markSignNowEnvelopeActive(verified.envelopeId);
+      if (signNowWebhooksVerified()) {
+        // The signed SignNow webhook reports this finish (and the group's
+        // completion), so the return trip spends no SignNow API calls.
+        void advancePortalSigningQueue(verified.envelopeId, { readSignNow: false }).catch((err) =>
+          console.warn('[SignNow] portal queue email step failed', {
+            envelopeId: verified.envelopeId,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        return res.json({ success: true, data: { accepted: true } });
+      }
+      void syncPortalEnvelopeAfterSignerFinished(verified.envelopeId, undefined, verified.email)
         .then(({ queue, status }) =>
           console.info('[SignNow] portal finish synced', {
             envelopeId: verified.envelopeId,

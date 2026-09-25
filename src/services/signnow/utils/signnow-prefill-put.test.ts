@@ -5,6 +5,7 @@ import {
   CONTRACT_FILLABLE_MIN_HEIGHT,
   FILLABLE_FONT_SIZE,
   canLockSignNowPrefill,
+  labelExhibitCCopyFieldsForReview,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
@@ -850,5 +851,42 @@ describe('dropOverlappingDuplicateTexts', () => {
       expect(measureSignNowTextWidth(line, 10)).toBeLessThanOrEqual(60);
     }
     expect(lines.join('')).toBe('A'.repeat(80));
+  });
+});
+
+describe('labelExhibitCCopyFieldsForReview', () => {
+  it('gives a copy unique labels without touching widget names or signatures', () => {
+    const fields: Record<string, unknown>[] = [
+      { type: 'text', name: 'business_name', label: 'business_name', prefilled_text: 'Acme 2' },
+      { type: 'text', name: 'Text Field 3' },
+      { type: 'text', name: 'bank_name', json_attributes: { label: 'Bank' }, label: 'Bank' },
+      { type: 'signature', name: 'merchant_signature', label: 'Sign' },
+    ];
+    expect(labelExhibitCCopyFieldsForReview(fields, 2)).toBe(3);
+    expect(fields.map((f) => f.name)).toEqual([
+      'business_name',
+      'Text Field 3',
+      'bank_name',
+      'merchant_signature',
+    ]);
+    expect(fields[0].label).toBe('business_name (copy 2)');
+    expect(fields[1].label).toBe('Text Field 3 (copy 2)');
+    expect((fields[2].json_attributes as Record<string, unknown>).label).toBe('Bank (copy 2)');
+    expect(fields[3].label).toBe('Sign');
+    expect(fields[0].prefilled_text).toBe('Acme 2');
+  });
+
+  it('does not stack suffixes on a reused draft', () => {
+    const fields: Record<string, unknown>[] = [
+      { type: 'text', name: 'dba', label: 'dba (copy 3)' },
+    ];
+    labelExhibitCCopyFieldsForReview(fields, 3);
+    expect(fields[0].label).toBe('dba (copy 3)');
+  });
+
+  it('leaves the first Exhibit C alone', () => {
+    const fields: Record<string, unknown>[] = [{ type: 'text', name: 'dba', label: 'dba' }];
+    expect(labelExhibitCCopyFieldsForReview(fields, 1)).toBe(0);
+    expect(fields[0].label).toBe('dba');
   });
 });

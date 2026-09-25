@@ -3,6 +3,10 @@ import { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import { signNowService } from '../services/signnow/signnow.service';
 import { advancePortalSigningQueue } from '../services/signnow/signnow-portal-send.service';
+import {
+  isSignNowGroupCompleteEvent,
+  scheduleSignNowCompletionRecheck,
+} from '../services/signnow/signnow-completion-recheck';
 
 /**
  * SignNow delivers events as `{ meta: { event }, content: { … } }`. Which id
@@ -135,6 +139,51 @@ export async function handleSignNowWebhook(req: Request, res: Response): Promise
     return;
   }
 
+  // Verified-webhook mode (the secret is configured and the signature matched):
+  // the event itself is the status. Nothing here reads the SignNow API, so the
+  // account's hourly limit is left for sending contracts.
+  if (expectedSecret) {
+    const finalStatus = isSignNowGroupCompleteEvent(event)
+      ? 'completed'
+      : /declined$/i.test(event)
+        ? 'voided'
+        : null;
+    try {
+      if (finalStatus) {
+        const applied = await signNowService.applyVerifiedGroupStatus(
+          resolved.envelopeId,
+          finalStatus,
+          resolved.applicationId || undefined,
+        );
+        console.info('[SignNow webhook] verified status persisted', {
+          event,
+          envelopeId: resolved.envelopeId,
+          applicationId: resolved.applicationId || null,
+          status: applied.status,
+          source: applied.source,
+        });
+        res.status(200).json({ success: true, envelopeId: resolved.envelopeId, status: applied.status });
+        return;
+      }
+      // One signer finished: the group's own `complete` event reports the end.
+      // Only email a signer the send never reached — no SignNow read.
+      await advancePortalSigningQueue(resolved.envelopeId, { readSignNow: false });
+      console.info('[SignNow webhook] verified signer event recorded', {
+        event,
+        envelopeId: resolved.envelopeId,
+      });
+      res.status(200).json({ success: true, envelopeId: resolved.envelopeId, status: 'sent' });
+    } catch (err) {
+      console.error('[SignNow webhook] verified event failed', {
+        event,
+        envelopeId: resolved.envelopeId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ success: false, message: 'Status sync failed' });
+    }
+    return;
+  }
+
   try {
     // A signer who finished without the portal redirect (closed the tab, or
     // signed from SignNow's own email) still releases the next signer.
@@ -154,6 +203,23 @@ export async function handleSignNowWebhook(req: Request, res: Response): Promise
       status: status.status,
       source: status.source || 'signnow',
     });
+    // SignNow sends the completion callback before its API reports the group
+    // finished. Re-read shortly instead of dropping the event.
+    if (
+      isSignNowGroupCompleteEvent(event) &&
+      status.status !== 'completed' &&
+      status.status !== 'voided'
+    ) {
+      const scheduled = scheduleSignNowCompletionRecheck(
+        resolved.envelopeId,
+        resolved.applicationId || undefined,
+      );
+      console.info('[SignNow webhook] completion event ahead of SignNow API; re-check scheduled', {
+        envelopeId: resolved.envelopeId,
+        status: status.status,
+        scheduled,
+      });
+    }
     res.status(200).json({ success: true, envelopeId: resolved.envelopeId, status: status.status });
   } catch (err) {
     // 5xx so SignNow retries a transient API/database failure.

@@ -13,6 +13,7 @@ import { startApplicationApprovalWorker } from './workers/applicationApprovalWor
 import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
 import { activityLogger } from './middleware/activityLogger';
 import { getDefaultMailFrom, isSendGridConfigured } from './config/nodemailer';
+import { startSignNowContractStatusJob } from './cron-job/signNowContractStatusJob';
 
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err);
@@ -195,6 +196,9 @@ void (async () => {
   httpServer.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
     console.log(`Socket.IO server initialized`);
+    // Moves signed SignNow contracts to Contract Signed and chases missing CC
+    // notices without anyone clicking the contract's refresh button.
+    startSignNowContractStatusJob();
   });
 })();
 

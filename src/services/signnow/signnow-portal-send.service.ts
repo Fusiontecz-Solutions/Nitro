@@ -423,26 +423,33 @@ async function emailPortalInvite(input: {
   });
 }
 
-/** True when SignNow reports this signer (or their +alias) as finished. */
-async function signerHasFinished(envelopeId: string, email: string): Promise<boolean> {
-  const base = emailAliasBase(email);
+type SignerFinishState = 'finished' | 'pending';
+
+/**
+ * Finish state of every signer on the group's embedded invites, keyed by
+ * `emailAliasBase`, from one SignNow read. `null` when SignNow returned
+ * nothing usable — which is also what a completed group can look like, since
+ * SignNow may close the embedded invites once everyone signed.
+ */
+async function readSignerFinishStates(
+  envelopeId: string,
+): Promise<Map<string, SignerFinishState> | null> {
   const done = new Set(['fulfilled', 'completed', 'signed', 'finished', 'done']);
   const client = await createSignNowApiClient();
   const res = await client.get(`/v2/document-groups/${envelopeId}/embedded-invites`, {
     validateStatus: () => true,
   });
-  if (res.status >= 400) return false;
+  if (res.status >= 400) return null;
   const rows =
     (Array.isArray(res.data?.data) && res.data.data) ||
     (Array.isArray(res.data?.invites) && res.data.invites) ||
     (Array.isArray(res.data) && res.data) ||
     [];
-  let matched = false;
-  let allDone = true;
+  const states = new Map<string, SignerFinishState>();
   const walk = (signer: any) => {
     if (!signer || typeof signer !== 'object') return;
-    if (emailAliasBase(signer.email) !== base) return;
-    matched = true;
+    const base = emailAliasBase(signer.email);
+    if (!base) return;
     const status = String(signer.status || signer.state || signer.invite_status || '')
       .trim()
       .toLowerCase();
@@ -450,7 +457,9 @@ async function signerHasFinished(envelopeId: string, email: string): Promise<boo
     const docsDone =
       docs.length > 0 &&
       docs.every((doc: any) => done.has(String(doc?.status || '').trim().toLowerCase()));
-    if (!done.has(status) && !docsDone) allDone = false;
+    // One open invite for the signer (or any +alias of theirs) keeps them pending.
+    if (!(done.has(status) || docsDone)) states.set(base, 'pending');
+    else if (!states.has(base)) states.set(base, 'finished');
   };
   for (const row of rows) {
     for (const signer of Array.isArray(row?.signers) ? row.signers : []) walk(signer);
@@ -458,17 +467,40 @@ async function signerHasFinished(envelopeId: string, email: string): Promise<boo
       for (const signer of Array.isArray(inner?.signers) ? inner.signers : []) walk(signer);
     }
   }
-  return matched && allDone;
+  return states.size ? states : null;
 }
 
+export type PortalQueueAdvanceResult = {
+  advanced: boolean;
+  emailed: string | null;
+  done: boolean;
+  queued?: false;
+  /**
+   * Emailed signers SignNow has not confirmed as finished: `pending` while
+   * their invite is still open, `unknown` when SignNow no longer lists it.
+   */
+  waitingOn?: Array<{ email: string; state: 'pending' | 'unknown' }>;
+};
+
 /**
- * Sequential signing: email the next merchant only once the current one is done.
- * Safe to call repeatedly (portal open, status sync, webhook) Ã¢â‚¬â€ it is a no-op
- * unless SignNow confirms the signer who currently holds the contract finished.
+ * Record which merchants have finished and email anyone who was never reached.
+ * Safe to call repeatedly (portal open, status sync, webhook).
+ *
+ * Merchants are emailed together and sign in parallel, so every emailed signer
+ * is checked — not only the first one in the list — and nobody already emailed
+ * is emailed again. A signer whose invite email failed is sent once everyone
+ * ahead of them has finished, which also keeps older sequential queues (one
+ * signer emailed at a time) working.
+ *
+ * `readSignNow: false` (verified-webhook mode) makes no SignNow call at all: it
+ * only emails signers who were never reached and leaves finish tracking to the
+ * webhook.
  */
 export async function advancePortalSigningQueue(
   envelopeId: string,
-): Promise<{ advanced: boolean; emailed: string | null; done: boolean; queued?: false }> {
+  options: { readSignNow?: boolean } = {},
+): Promise<PortalQueueAdvanceResult> {
+  const readSignNow = options.readSignNow !== false;
   const id = String(envelopeId || '').trim();
   if (!id) return { advanced: false, emailed: null, done: false, queued: false };
   const contract = await findContractForEnvelope(id);
@@ -476,56 +508,58 @@ export async function advancePortalSigningQueue(
   const queue = readQueue(contract.overrides, id);
   if (!queue) return { advanced: false, emailed: null, done: false, queued: false };
 
-  const pending = queue.recipients.find((row) => !row.completedAt);
-  if (!pending) return { advanced: false, emailed: null, done: true };
-  // The signer holding the contract was never emailed (a send failed part-way):
-  // deliver to them instead of skipping ahead.
-  if (!pending.emailedAt) {
-    await emailPortalInvite({
-      envelopeId: id,
-      recipient: pending,
-      contractLabel: queue.contractLabel,
-      emailSubject: queue.emailSubject,
-      funderName: queue.funderName,
-      replyToEmail: queue.replyToEmail,
-    });
-    pending.emailedAt = new Date().toISOString();
-    await saveQueue(contract.id, contract.overrides, queue);
-    return { advanced: true, emailed: pending.email, done: false };
+  let states: Map<string, SignerFinishState> | null | undefined;
+  let changed = false;
+  let blocked = false;
+  const waitingOn: NonNullable<PortalQueueAdvanceResult['waitingOn']> = [];
+
+  for (const row of queue.recipients) {
+    if (row.completedAt) continue;
+    if (!row.emailedAt) {
+      if (blocked) continue;
+      await emailPortalInvite({
+        envelopeId: id,
+        recipient: row,
+        contractLabel: queue.contractLabel,
+        emailSubject: queue.emailSubject,
+        funderName: queue.funderName,
+        replyToEmail: queue.replyToEmail,
+      });
+      row.emailedAt = new Date().toISOString();
+      await saveQueue(contract.id, contract.overrides, queue);
+      console.info('[SignNow] portal signing queue advanced', { envelopeId: id, emailed: row.email });
+      return { advanced: true, emailed: row.email, done: false };
+    }
+    if (!readSignNow) {
+      // Finish state is the webhook's job; keep looking for anyone unreached.
+      waitingOn.push({ email: row.email, state: 'unknown' });
+      continue;
+    }
+    // One SignNow read covers every signer on this pass.
+    if (states === undefined) states = await readSignerFinishStates(id);
+    const state = states?.get(emailAliasBase(row.email));
+    if (state === 'finished') {
+      row.completedAt = new Date().toISOString();
+      changed = true;
+      continue;
+    }
+    blocked = true;
+    waitingOn.push({ email: row.email, state: state === 'pending' ? 'pending' : 'unknown' });
   }
-  if (!(await signerHasFinished(id, pending.email))) {
-    return { advanced: false, emailed: null, done: false };
+
+  if (changed) await saveQueue(contract.id, contract.overrides, queue);
+  if (!waitingOn.length) {
+    if (changed) console.info('[SignNow] portal signing queue complete', { envelopeId: id });
+    return { advanced: changed, emailed: null, done: true };
   }
-  pending.completedAt = new Date().toISOString();
-  const next = queue.recipients.find((row) => !row.completedAt);
-  if (!next) {
-    await saveQueue(contract.id, contract.overrides, queue);
-    console.info('[SignNow] portal signing queue complete', { envelopeId: id });
-    return { advanced: true, emailed: null, done: true };
-  }
-  await emailPortalInvite({
-    envelopeId: id,
-    recipient: next,
-    contractLabel: queue.contractLabel,
-    emailSubject: queue.emailSubject,
-    funderName: queue.funderName,
-    replyToEmail: queue.replyToEmail,
-  });
-  next.emailedAt = new Date().toISOString();
-  await saveQueue(contract.id, contract.overrides, queue);
-  console.info('[SignNow] portal signing queue advanced', {
-    envelopeId: id,
-    completed: pending.email,
-    emailed: next.email,
-  });
-  return { advanced: true, emailed: next.email, done: false };
+  return { advanced: changed, emailed: null, done: false, waitingOn };
 }
 
 /**
  * SignNow settles a signature a few seconds after the signer is redirected back,
  * so the first read can still report the signer (or the group) as pending.
  */
-const PORTAL_FINISH_SYNC_DELAYS_MS = [0, 4_000, 10_000];
+const PORTAL_FINISH_SYNC_DELAYS_MS = [0, 5_000, 10_000, 20_000, 30_000];
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -535,33 +569,27 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
  * SignNow's event webhook cannot reach a CRM that is not publicly reachable,
  * and the Contract tab only syncs on demand, so the deal sat on Contract Sent
  * after the last merchant signed. The portal redirect is a signal the CRM gets
- * regardless: it releases the next signer and, once nobody is left, reads the
- * group status — which persists Contract Signed, pushes the realtime update and
- * sends the signed copy to the CC list. Bounded retries cover SignNow's settling
+ * regardless: it records the finish and, once nobody is left, reads the group
+ * status — which persists Contract Signed, pushes the realtime update and sends
+ * the signed copy to the CC list. Bounded retries cover SignNow's settling
  * delay; nothing here polls.
+ *
+ * `finishedEmail` is the signer who just returned. While some *other* signer's
+ * invite is still open the contract cannot be complete, so the sync stops at
+ * once — that signer's own return runs it again. When SignNow no longer lists
+ * an invite at all (it may close them on completion), the group status decides.
  */
 export async function syncPortalEnvelopeAfterSignerFinished(
   envelopeId: string,
   delaysMs: number[] = PORTAL_FINISH_SYNC_DELAYS_MS,
-): Promise<{ queue: Awaited<ReturnType<typeof advancePortalSigningQueue>>; status: string | null }> {
+  finishedEmail?: string,
+): Promise<{ queue: PortalQueueAdvanceResult; status: string | null }> {
   const id = String(envelopeId || '').trim();
-  let queue: Awaited<ReturnType<typeof advancePortalSigningQueue>> = {
-    advanced: false,
-    emailed: null,
-    done: false,
-  };
+  let queue: PortalQueueAdvanceResult = { advanced: false, emailed: null, done: false };
   if (!id) return { queue, status: null };
+  const finishedBase = finishedEmail ? emailAliasBase(finishedEmail) : '';
 
-  for (const delay of delaysMs) {
-    if (delay > 0) await wait(delay);
-    queue = await advancePortalSigningQueue(id);
-    // No sequential queue (sent before queues existed): the group status alone decides.
-    if (!queue.done && queue.queued !== false) {
-      // The next signer was just invited: the contract is not finished yet.
-      if (queue.advanced) return { queue, status: null };
-      // SignNow has not registered this signer's finish yet.
-      continue;
-    }
+  const readTerminalGroupStatus = async (): Promise<string | null> => {
     const document = await prisma.document.findUnique({
       where: { envelopeId: id },
       select: { applicationId: true },
@@ -570,9 +598,32 @@ export async function syncPortalEnvelopeAfterSignerFinished(
       id,
       document?.applicationId ? String(document.applicationId) : undefined,
     );
-    if (result.status === 'completed' || result.status === 'voided') {
-      return { queue, status: result.status };
+    return result.status === 'completed' || result.status === 'voided' ? result.status : null;
+  };
+
+  for (const delay of delaysMs) {
+    if (delay > 0) await wait(delay);
+    queue = await advancePortalSigningQueue(id);
+    // No signing queue (sent before queues existed), or every signer finished.
+    if (queue.queued === false || queue.done) {
+      const status = await readTerminalGroupStatus();
+      if (status) return { queue, status };
+      continue;
     }
+    // A signer who had never been reached was just emailed.
+    if (queue.emailed) return { queue, status: null };
+
+    const waiting = queue.waitingOn ?? [];
+    const anotherSignerStillOpen =
+      Boolean(finishedBase) &&
+      waiting.some((row) => row.state === 'pending' && emailAliasBase(row.email) !== finishedBase);
+    if (anotherSignerStillOpen) return { queue, status: null };
+
+    if (waiting.some((row) => row.state === 'unknown')) {
+      const status = await readTerminalGroupStatus();
+      if (status) return { queue, status };
+    }
+    // Otherwise SignNow has not registered this signer's finish yet.
   }
   return { queue, status: null };
 }

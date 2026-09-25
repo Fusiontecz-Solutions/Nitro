@@ -122,13 +122,34 @@ export function requiredReviewPrefillFields(input: {
   return out;
 }
 
-/** Required widgets that read back without a value. */
+function amountOf(value: unknown): number | null {
+  const text = String(value ?? '').trim();
+  if (!/^[$\s]*-?[\d,]*\.?\d+\s*%?$/.test(text)) return null;
+  const n = Number(text.replace(/[$,%\s]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Required widgets that read back without a value.
+ *
+ * `expected` is the value the CRM resolved for each widget. A widget reading
+ * back as a zero amount where the CRM holds a real one is not prefilled either:
+ * `0.00` is a placeholder (the pre-warm's empty-map write, a calculator run
+ * without inputs), and letting it through is how Review opened a disclosure
+ * showing 0.00 on lines the send then baked correctly.
+ */
 export function missingReviewPrefillFields(
   remote: unknown,
   required: readonly string[],
+  expected?: Readonly<Record<string, string>>,
 ): string[] {
   const values = readSignNowWidgetValues(remote);
-  return required.filter((name) => !values.has(nameKey(name)));
+  return required.filter((name) => {
+    const read = values.get(nameKey(name));
+    if (!read) return true;
+    const want = expected ? amountOf(expected[name]) : null;
+    return want != null && want !== 0 && amountOf(read) === 0;
+  });
 }
 
 export function reviewPrefillIsComplete(checks: readonly SignNowReviewPrefillCheck[]): boolean {
