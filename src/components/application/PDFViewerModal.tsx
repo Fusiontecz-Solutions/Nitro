@@ -320,15 +320,13 @@ import {
 } from "./contractdata/multiInstanceAddendum";
 
 const SIGNNOW_REVIEW_TOAST_ID = "signnow-review-hint";
-/** How often the CRM asks SignNow whether Owner Review has been finished. */
+/** How often the locked screen re-reads the saved review state (CRM database only). */
 const SIGNNOW_REVIEW_POLL_MS = 4000;
 /** Named window for the Owner Review tab, so a reopen reuses the same tab. */
 const SIGNNOW_REVIEW_TAB_NAME = "nitro-signnow-review";
 /** Slower cadence once the review has been open a while. */
 const SIGNNOW_REVIEW_POLL_SLOW_MS = 12000;
 const SIGNNOW_REVIEW_POLL_BACKOFF_AFTER_MS = 3 * 60 * 1000;
-/** Stop polling a review tab that was opened and abandoned. */
-const SIGNNOW_REVIEW_POLL_MAX_MS = 45 * 60 * 1000;
 /** Quiet period on the Summary step before the SignNow package is pre-warmed. */
 const SIGNNOW_PREWARM_IDLE_MS = 2500;
 /** Hard cap on background package copies per modal session (daily document limit). */
@@ -441,6 +439,24 @@ function writeDocuSignLoadingTab(doc: Document): void {
 @keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="spin"></div><p>Opening ${provider}…</p></div></body></html>`);
     doc.close();
 }
+
+/**
+ * Placeholder for the review tab while the package is prepared. The server only
+ * mints the SignNow link once every document reads back with its CRM values, so
+ * this page can stay up for several seconds — it says why instead of "Opening…".
+ */
+function writeSignNowPreparingTab(doc: Document): void {
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Preparing documents…</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc;color:#334155}
+.box{text-align:center;padding:2rem;max-width:30rem}.spin{width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 1rem}
+.hint{font-size:.875rem;color:#64748b}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="spin"></div>
+<p><strong>Preparing documents…</strong></p><p class="hint">Filling and validating the Disclosure, Contract and Addendum fields. SignNow opens here once every field is confirmed.</p></div></body></html>`);
+    doc.close();
+}
+
+/** What the Review button is waiting on before SignNow may open. */
+type SignNowPreparePhase = "preparing" | "validating";
 
 function resolveDealStateFromApplication(applicationData: unknown): string {
     const ad = applicationData as Record<string, unknown> | null | undefined;
@@ -2016,6 +2032,13 @@ const PDFViewerModal = ({
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
     const [isSending, setIsSending] = useState(false);
+    /**
+     * Set from the Review click until SignNow opens (or fails): the package is
+     * built and every document's fields confirmed server-side first, and the
+     * button stays locked for all of it — not just once the request is sent.
+     */
+    const [signNowPreparePhase, setSignNowPreparePhase] =
+        useState<SignNowPreparePhase | null>(null);
     /** "Send via SendGrid" — CRM signing portal, independent of the SignNow invite. */
     const [isSendingViaSendGrid, setIsSendingViaSendGrid] = useState(false);
     const sendingLockRef = useRef(false);
@@ -2026,6 +2049,15 @@ const PDFViewerModal = ({
     const [signNowEmbedUrl, setSignNowEmbedUrl] = useState<string | null>(null);
     const [signNowReviewVisible, setSignNowReviewVisible] = useState(false);
     const [signNowReviewComplete, setSignNowReviewComplete] = useState(false);
+    /**
+     * Package whose Owner review the backend reports as open but not finished,
+     * when this tab holds no review of its own (it was refreshed, reopened or
+     * the modal remounted). Keeps the screen locked on "click Finish first"
+     * instead of falling back to "Review in SignNow" and rebuilding the package.
+     */
+    const [persistedReviewEnvelopeId, setPersistedReviewEnvelopeId] = useState<string | null>(null);
+    const [isRecordingSignNowFinish, setIsRecordingSignNowFinish] = useState(false);
+    const [isReopeningSignNowTab, setIsReopeningSignNowTab] = useState(false);
     const signNowEmbedUrlRef = useRef<string | null>(null);
     const signNowReviewCompleteRef = useRef(false);
     signNowEmbedUrlRef.current = signNowEmbedUrl;
@@ -2154,8 +2186,7 @@ const PDFViewerModal = ({
         const prev = stepSequence[activeStepIndex - 1];
         if (prev === "documents") didSuggestSentTabThisOpenRef.current = true;
         if (prev === "documents" || prev === "info") {
-            signNowForceFreshReviewRef.current = false;
-            resetSignNowReviewUi({ keepCachedEmbed: true });
+            discardSignNowReviewForEdit();
         }
         setActiveStep(prev);
     };
@@ -3541,7 +3572,9 @@ const PDFViewerModal = ({
             return "Resend new contract";
         }
         if (isSignNowContractUiEnabled()) {
-            if (signNowReviewOpen || signNowReviewComplete) return "Send via SignNow";
+            // Only a finished review can be sent. Offering Send while the review
+            // was merely open is how a package went out before the Owner's Finish.
+            if (signNowReviewComplete) return "Send via SignNow";
             return includeMainContractInSend || !canSendWithoutContract
                 ? "Review in SignNow"
                 : "Review documents in SignNow";
@@ -3557,6 +3590,16 @@ const PDFViewerModal = ({
         signNowReviewOpen,
         signNowReviewComplete,
     ]);
+
+    const reviewSendButtonLabel = (() => {
+        if (signNowPreparePhase === "validating") return "Validating document fields…";
+        if (signNowPreparePhase === "preparing") return "Preparing documents…";
+        if (!isSending) return docuSignPrimaryActionLabel;
+        if (!isSignNowContractUiEnabled()) return "Preparing DocuSign…";
+        return signNowEmbedUrl || signNowReviewComplete
+            ? "Sending via SignNow…"
+            : "Opening SignNow…";
+    })();
 
     /**
      * Full CRM → DocuSign prefill list (every field id). Must NOT run through
@@ -4072,6 +4115,17 @@ const PDFViewerModal = ({
     const draftPreparedSignerRolesRef = useRef<string | null>(null);
     const draftPreparedOwnerCountRef = useRef<number | null>(null);
     const draftPreparedPackageFingerprintRef = useRef<string | null>(null);
+    /**
+     * The package THIS modal session built and prefilled through a Review.
+     *
+     * `sessionEnvelopeId` is also seeded from the contract's linked document,
+     * and after the background pre-warm that is an empty copy nobody has
+     * prefilled. Review's "same draft — just reopen it" shortcut used to accept
+     * that id, minted a review link on the empty copy without any prefill, and
+     * the Owner finished (and the merchant received) a blank contract on every
+     * funder. The shortcut is now only taken for the package recorded here.
+     */
+    const draftPreparedEnvelopeRef = useRef<string | null>(null);
     const autoSeededSignersKeyRef = useRef<string>("");
     const includeMainContractInSendRef = useRef(includeMainContractInSend);
     includeMainContractInSendRef.current = includeMainContractInSend;
@@ -4129,6 +4183,7 @@ const PDFViewerModal = ({
         draftPreparedSignerRolesRef.current = null;
         draftPreparedOwnerCountRef.current = null;
         draftPreparedPackageFingerprintRef.current = null;
+        draftPreparedEnvelopeRef.current = null;
     }, []);
 
     /** Saved signer overrides changed after a draft was prepared — force a new envelope on next send. */
@@ -4158,6 +4213,12 @@ const PDFViewerModal = ({
     const flushAddendumMappingsRef = useRef<() => Promise<void>>(async () => {});
     /** Latest build of the CRM → SignNow prefill payload, callable after an `await`. */
     const buildPrefillFieldsPayloadRef = useRef<() => ContractPrefillField[]>(() => []);
+    /**
+     * Live "$25 wire fee" checkbox for the send calls. It is not a document field,
+     * so it cannot ride along in `prefillFields`; without it the backend bakes the
+     * merchant copy from the contract row and re-adds an unchecked $25.
+     */
+    const includeWireFeeForSendRef = useRef<unknown>(undefined);
 
     /**
      * Everything the SignNow package is prefilled from: the contract row with its saved
@@ -5743,6 +5804,11 @@ const PDFViewerModal = ({
             );
             return;
         }
+        if (isSignNowContractUiEnabled() && !signNowReviewCompleteRef.current) {
+            // Sending before the Owner's Finish tears the review down half-way.
+            toast.info("Click Finish in the SignNow tab first, then Send via SignNow.");
+            return;
+        }
         const roles = buildDocuSignRolesForSync();
         const validation = validateDocuSignSignerRoles(roles);
         if (!validation.valid) {
@@ -5759,6 +5825,15 @@ const PDFViewerModal = ({
                     applicationData,
                 ) || "",
             ).trim() || "Your funding agreement";
+        if (sendingLockRef.current) return;
+        /**
+         * Hold the send lock for the whole request, as the SignNow invite send
+         * does. It silences every review-status check this modal runs (the
+         * review poll, the focus re-check, the Finish confirmation), so none of
+         * them compete with SignNow while the backend commits the contract
+         * values — the publish that, when it lost, left the agreement blank.
+         */
+        sendingLockRef.current = true;
         setIsSendingViaSendGrid(true);
         try {
             const ccForSend = mergeWithDefaultCcEmails(ccEmails, contractCcMergeOptions);
@@ -5772,16 +5847,39 @@ const PDFViewerModal = ({
                 // whatever Owner review had written, so a contract edited after
                 // review still emailed its previous amounts.
                 prefillFields: buildDocuSignPrefillFieldsPayload(),
+                includeWireFee: includeWireFeeForSendRef.current,
                 // Copy-only recipients — the backend emails them the contract
                 // package once merchants are sent (never a signer).
                 ccEmails: ccForSend,
+            }, {
+                // The backend waits for SignNow to finish committing the Owner
+                // review before publishing, which can outlast the default timeout.
+                timeout: 300_000,
             });
+            /**
+             * The review is over: drop every trace of it, exactly as the SignNow
+             * invite send does. Left in place, the embed URL / review-complete
+             * flag read as "still waiting to send", so the Sent step never
+             * treated the contract as sent and its SignNow PDF only appeared
+             * after closing and reopening the modal.
+             */
+            resetSignNowReviewUi();
+            awaitingDocuSignSendRef.current = false;
             contractWasSentRef.current = true;
             setSentStepUnlocked(true);
             setSentAt(new Date());
             setActiveStep("sent");
+            setPdfRightPaneTab("docusign");
             signNowReviewEnvelopeIdRef.current = null;
+            prefilledPdfCachedForEnvelopeRef.current = null;
+            invalidateDocuSignPdfCache();
             onContractDocumentsChanged?.();
+            // Load the sent row first so the preview targets the sent package,
+            // then fetch its PDF — the refresh itself skips the load because this
+            // session already counts as sent.
+            void refreshContractSigningStateRef
+                .current(true, { syncDocuSign: false, forceDocuSignSync: false })
+                .then(() => loadPrefilledPdfRef.current(undefined, { maxAttempts: 2 }));
             toast.success(
                 "Signing link emailed to the merchant. They can sign from that link — no SignNow account needed.",
             );
@@ -5793,6 +5891,7 @@ const PDFViewerModal = ({
                 "Could not email the signing link.";
             toast.error(String(message));
         } finally {
+            sendingLockRef.current = false;
             setIsSendingViaSendGrid(false);
         }
     };
@@ -5813,9 +5912,17 @@ const PDFViewerModal = ({
             return;
         }
         sendingLockRef.current = true;
+        // A Review (not the Send of a finished one) locks the button and says so
+        // from the click on: the data wait below can take a moment on its own.
+        const startsSignNowReview =
+            isSignNowContractUiEnabled() && !signNowReviewComplete;
+        if (startsSignNowReview) {
+            flushSync(() => setSignNowPreparePhase("preparing"));
+        }
         await flushAddendumMappingsRef.current();
         if (!fileUrl) {
             sendingLockRef.current = false;
+            setSignNowPreparePhase(null);
             return;
         }
         const packageIncludesMainContract =
@@ -5851,7 +5958,7 @@ const PDFViewerModal = ({
         }
         const sendingOpenSignNowDraft =
             sendViaSignNowApi &&
-            Boolean(signNowReviewOpen || signNowReviewComplete) &&
+            Boolean(signNowReviewComplete) &&
             !forceFreshSignNowReview &&
             Boolean(
                 String(
@@ -5863,6 +5970,7 @@ const PDFViewerModal = ({
             );
         if (!canReviewAndSendCurrentPackage && !sendingOpenSignNowDraft) {
             sendingLockRef.current = false;
+            setSignNowPreparePhase(null);
             toast.info(
                 packageIncludesMainContract
                     ? "This contract cannot be sent right now."
@@ -5895,7 +6003,7 @@ const PDFViewerModal = ({
                 signNowReviewTab = window.open("about:blank", SIGNNOW_REVIEW_TAB_NAME);
                 if (signNowReviewTab) {
                     try {
-                        writeDocuSignLoadingTab(signNowReviewTab.document);
+                        writeSignNowPreparingTab(signNowReviewTab.document);
                     } catch {
                         /* ignore */
                     }
@@ -5996,7 +6104,7 @@ const PDFViewerModal = ({
                     : String(sessionEnvelopeId || "").trim() || null;
                 if (
                     sendViaSignNowApi &&
-                    (signNowReviewComplete || signNowReviewOpen) &&
+                    signNowReviewComplete &&
                     !forceFreshSignNowReview
                 ) {
                     const envelopeId = String(
@@ -6024,6 +6132,7 @@ const PDFViewerModal = ({
                             roles: signerRolesForSend,
                             ccEmails: toSend,
                             prefillFields: buildPrefillFieldsPayloadRef.current(),
+                            includeWireFee: includeWireFeeForSendRef.current,
                             funderName:
                                 String(
                                     selectedFunderRef.current || selectedFunder || "",
@@ -6097,6 +6206,7 @@ const PDFViewerModal = ({
                 if (
                     sendViaSignNowApi &&
                     sessionEnv &&
+                    sessionEnv === draftPreparedEnvelopeRef.current &&
                     !isResendAfterSigned &&
                     signNowFingerprintsMatch
                 ) {
@@ -6181,6 +6291,11 @@ const PDFViewerModal = ({
                         includeAddendum: addendumTemplateIds.length > 0,
                         includeDisclosure: Boolean(disclosureDocumentRef),
                     };
+                    if (sendViaSignNowApi) {
+                        // The server prefills every document, reads each one back and
+                        // only returns a review link once all their fields are filled.
+                        setSignNowPreparePhase("validating");
+                    }
                     const prepared = await onPrepareDocuSignDraft({
                         ccEmails: toSend,
                         // Only the legacy fallback: `addendumTemplateId` is
@@ -6246,6 +6361,7 @@ const PDFViewerModal = ({
                         draftPreparedSignerRolesRef.current = signerFingerprintForSend;
                         draftPreparedOwnerCountRef.current = currentOwnerCount;
                         draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
+                        draftPreparedEnvelopeRef.current = envelopeId;
                         if (!sendViaSignNowApi) {
                             void persistContractEnvelopeHistory(envelopeId, "draft");
                         }
@@ -6408,6 +6524,7 @@ const PDFViewerModal = ({
                 }
             }
             sendingLockRef.current = false;
+            setSignNowPreparePhase(null);
             setIsSending(false);
         }
     };
@@ -6420,15 +6537,37 @@ const PDFViewerModal = ({
         void handleSend();
     };
 
-    const handleChangeDetailsBeforeSend = () => {
+    /**
+     * The user walked back to edit the deal: the finished (or open) review no
+     * longer matches what will be sent. The CRM forgets it, and so must the
+     * backend — otherwise the next modal load would restore "Send via SignNow"
+     * for a review of the old details.
+     */
+    const discardSignNowReviewForEdit = useCallback(() => {
+        const envelopeId = String(
+            signNowReviewEnvelopeIdRef.current || linkedEnvelopeIdRef.current || "",
+        ).trim();
+        const hadReview = Boolean(
+            signNowReviewCompleteRef.current || signNowEmbedUrlRef.current,
+        );
         signNowForceFreshReviewRef.current = false;
         resetSignNowReviewUi({ keepCachedEmbed: true });
+        if (hadReview && envelopeId && isSignNowEnvelopeId(envelopeId)) {
+            void axiosPost("/docusign/signnow-review-reset", { envelopeId }).catch(() => {
+                /* Best-effort: the next Review mints a new link, which resets it too. */
+            });
+        }
+    }, [resetSignNowReviewUi]);
+
+    const handleChangeDetailsBeforeSend = () => {
+        discardSignNowReviewForEdit();
         setActiveStep("info");
         toast.info("Update the contract details, then click Review in SignNow before sending.");
     };
 
     const markSignNowReviewComplete = useCallback(() => {
         setSignNowReviewComplete(true);
+        setPersistedReviewEnvelopeId(null);
         signNowCachedEmbedUrlRef.current = null;
         awaitingDocuSignSendRef.current = false;
         // The embedded-complete page closes itself when SignNow redirects to it;
@@ -6446,105 +6585,281 @@ const PDFViewerModal = ({
         signNowCompleteToastShownRef.current = false;
     }, [signNowEmbedUrl]);
 
+    /** The package the open (or restored) review belongs to. */
+    const currentReviewEnvelopeId = useCallback(
+        () =>
+            String(
+                // Only ids that belong to a review: a minted link in this tab, or a
+                // review the server has on record. Never the linked document alone
+                // — after a pre-warm that is an unprefilled copy.
+                signNowReviewEnvelopeIdRef.current || persistedReviewEnvelopeIdRef.current || "",
+            ).trim(),
+        [],
+    );
+    const persistedReviewEnvelopeIdRef = useRef<string | null>(null);
+    persistedReviewEnvelopeIdRef.current = persistedReviewEnvelopeId;
+
+    /**
+     * Restore the Owner review from the backend (CRM database only — no SignNow
+     * call, so polling it costs nothing against the SignNow API budget).
+     *
+     * Review state used to live only in this component, so returning from the
+     * SignNow tab after a refresh, a reopened modal or an expired session put
+     * the footer back on "Review in SignNow" — and the next click rebuilt the
+     * whole package. The backend records the review against the package:
+     *   in_review        → keep the screen locked on "click Finish first";
+     *   review_complete  → "Send via SignNow", however often the page reloads.
+     */
+    const persistedReviewSyncInFlightRef = useRef(false);
+    const lastPersistedReviewSyncAtRef = useRef(0);
+    const syncPersistedSignNowReview = useCallback(
+        async (options: { advanceToSummary?: boolean } = {}) => {
+            if (!isSignNowContractUiEnabled()) return;
+            if (signNowReviewCompleteRef.current) return;
+            if (sendingLockRef.current) return;
+            const appId = String(applicationIdForLookupRef.current || "").trim();
+            if (!appId || persistedReviewSyncInFlightRef.current) return;
+            persistedReviewSyncInFlightRef.current = true;
+            lastPersistedReviewSyncAtRef.current = Date.now();
+            try {
+                const res = await axiosGet(
+                    `/docusign/signnow-review-state?applicationId=${encodeURIComponent(appId)}`,
+                    { skipCache: true },
+                );
+                const state = res?.data as
+                    | { envelopeId?: string | null; phase?: string; reviewComplete?: boolean }
+                    | undefined;
+                if (sendingLockRef.current || signNowReviewCompleteRef.current) return;
+                const envelopeId = String(state?.envelopeId || "").trim();
+                const phase = String(state?.phase || "");
+                if (envelopeId && (phase === "in_review" || phase === "review_complete")) {
+                    // The answer is for the package linked to this application;
+                    // make it the one Send targets, as a review opened here would.
+                    signNowReviewEnvelopeIdRef.current = envelopeId;
+                    if (!linkedEnvelopeIdRef.current) linkedEnvelopeIdRef.current = envelopeId;
+                    if (options.advanceToSummary) {
+                        setActiveStep((step) =>
+                            step === "documents" || step === "info" ? "summary" : step,
+                        );
+                    }
+                }
+                if (envelopeId && phase === "review_complete") {
+                    markSignNowReviewComplete();
+                    return;
+                }
+                if (envelopeId && phase === "in_review") {
+                    setPersistedReviewEnvelopeId(envelopeId);
+                    return;
+                }
+                // Nothing open on the server. An open review in THIS tab keeps its
+                // own lock (its row may simply not be linked yet).
+                setPersistedReviewEnvelopeId(null);
+            } catch {
+                /* Transient — the next tick, focus or modal load asks again. */
+            } finally {
+                persistedReviewSyncInFlightRef.current = false;
+            }
+        },
+        [markSignNowReviewComplete],
+    );
+
+    /**
+     * Record the Finish on the server, then show "Send via SignNow".
+     *
+     * Called when the SignNow tab reports Finish and when the preparer confirms
+     * it with "I've clicked Finish". A CRM database write only.
+     */
+    const recordSignNowFinish = useCallback(async () => {
+        const envelopeId = currentReviewEnvelopeId();
+        setIsRecordingSignNowFinish(true);
+        try {
+            if (envelopeId && isSignNowEnvelopeId(envelopeId)) {
+                await axiosPost("/docusign/signnow-review-finished", { envelopeId });
+            }
+        } catch {
+            /* The in-tab state still moves on; the next Finish report re-records it. */
+        } finally {
+            setIsRecordingSignNowFinish(false);
+        }
+        if (envelopeId) signNowReviewEnvelopeIdRef.current = envelopeId;
+        markSignNowReviewComplete();
+    }, [currentReviewEnvelopeId, markSignNowReviewComplete]);
+
+    const markSignNowReviewCompleteAndPersist = useCallback(() => {
+        void recordSignNowFinish();
+    }, [recordSignNowFinish]);
+
+    /**
+     * "Open SignNow tab" from the lock screen.
+     *
+     * Refocuses the review tab the CRM opened — found again by its window name
+     * even after this page was refreshed — and only when that tab is really
+     * gone asks for a fresh review link for the SAME package. It never rebuilds
+     * the package, so it costs at most one SignNow call.
+     */
+    const focusOrReopenSignNowReviewTab = useCallback(async () => {
+        const existing = signNowReviewTabRef.current;
+        if (existing && !existing.closed) {
+            try {
+                existing.focus();
+                return;
+            } catch {
+                /* fall through */
+            }
+        }
+        // Synchronous, inside the click: a pop-up opened after an await is blocked.
+        const named = window.open("", SIGNNOW_REVIEW_TAB_NAME);
+        let alive = false;
+        if (named) {
+            try {
+                alive = named.location.href !== "about:blank";
+            } catch {
+                // Cross-origin: the tab is still on signnow.com — it is the review.
+                alive = true;
+            }
+        }
+        if (named && alive) {
+            signNowReviewTabRef.current = named;
+            try {
+                named.focus();
+            } catch {
+                /* already open */
+            }
+            return;
+        }
+        const envelopeId = currentReviewEnvelopeId();
+        if (!envelopeId) {
+            named?.close();
+            toast.error("The SignNow review could not be found. Cancel the review and start it again.");
+            return;
+        }
+        setIsReopeningSignNowTab(true);
+        try {
+            if (named) {
+                try {
+                    writeDocuSignLoadingTab(named.document);
+                } catch {
+                    /* ignore */
+                }
+            }
+            const minted = await fetchDocuSignSenderViewUrl(
+                envelopeId,
+                mergeWithDefaultCcEmails(ccEmails, contractCcMergeOptions),
+                buildDocuSignRolesForSync(),
+            );
+            const url = String(minted.url || "").trim();
+            if (!url || isSignNowLoginWebappUrl(url)) {
+                named?.close();
+                toast.error(minted.error || "SignNow did not return a review link. Try again in a moment.");
+                return;
+            }
+            signNowReviewEnvelopeIdRef.current = envelopeId;
+            signNowCachedEmbedUrlRef.current = url;
+            setSignNowEmbedUrl(url);
+            setSignNowReviewVisible(true);
+            openSignNowReviewTab(url, named);
+        } finally {
+            setIsReopeningSignNowTab(false);
+        }
+    }, [
+        currentReviewEnvelopeId,
+        fetchDocuSignSenderViewUrl,
+        ccEmails,
+        contractCcMergeOptions,
+        buildDocuSignRolesForSync,
+        openSignNowReviewTab,
+    ]);
+
+    /** "Cancel review" from the lock screen: drop the open review everywhere. */
+    const cancelOpenSignNowReview = useCallback(() => {
+        const envelopeId = currentReviewEnvelopeId();
+        signNowForceFreshReviewRef.current = false;
+        resetSignNowReviewUi({ keepCachedEmbed: false });
+        setPersistedReviewEnvelopeId(null);
+        if (envelopeId && isSignNowEnvelopeId(envelopeId)) {
+            void axiosPost("/docusign/signnow-review-reset", { envelopeId }).catch(() => {
+                /* The next Review mints a new link, which resets it too. */
+            });
+        }
+    }, [currentReviewEnvelopeId, resetSignNowReviewUi]);
+
+    // Modal open: restore an open or finished review from an earlier session / tab.
     useEffect(() => {
-        if (!signNowEmbedUrl) return;
+        if (!isOpen) {
+            setPersistedReviewEnvelopeId(null);
+            return;
+        }
+        if (!applicationIdForLookup) return;
+        void syncPersistedSignNowReview({ advanceToSummary: true });
+    }, [isOpen, applicationIdForLookup, syncPersistedSignNowReview]);
+
+    // Returning to the CRM tab (from the SignNow tab or anywhere else).
+    useEffect(() => {
+        if (!isOpen) return;
+        const onReturn = () => {
+            if (document.visibilityState === "hidden") return;
+            if (Date.now() - lastPersistedReviewSyncAtRef.current < 1500) return;
+            void syncPersistedSignNowReview();
+        };
+        window.addEventListener("focus", onReturn);
+        document.addEventListener("visibilitychange", onReturn);
+        return () => {
+            window.removeEventListener("focus", onReturn);
+            document.removeEventListener("visibilitychange", onReturn);
+        };
+    }, [isOpen, syncPersistedSignNowReview]);
+
+    // The review tab's completion page: only a real Finish marks the review done.
+    useEffect(() => {
+        if (!isOpen) return;
         const onMessage = (event: MessageEvent) => {
             if (event.origin !== window.location.origin) return;
             if (!isSignNowEmbeddedCompleteMessage(event.data)) return;
-            markSignNowReviewComplete();
+            // It already recorded the Finish on the server; this records it again
+            // (idempotent) in case that request did not make it, then unlocks.
+            void recordSignNowFinish();
         };
         window.addEventListener("message", onMessage);
         return () => {
             window.removeEventListener("message", onMessage);
         };
-    }, [signNowEmbedUrl, markSignNowReviewComplete, onContractDocumentsChanged]);
+    }, [isOpen, recordSignNowFinish]);
+
+    /** Locked while an Owner review is open (here or on the server) and not finished. */
+    const signNowReviewLocked =
+        isOpen &&
+        isSignNowContractUiEnabled() &&
+        !signNowReviewComplete &&
+        !isSending &&
+        !isSendingViaSendGrid &&
+        Boolean(signNowEmbedUrl || persistedReviewEnvelopeId);
 
     /**
-     * Ask SignNow directly whether the preparer has finished Owner Review.
-     *
-     * The two signals above are both lossy. SignNow only redirects the iframe to
-     * `/embedded-complete` when the CRM origin is publicly reachable, so on some
-     * deployments the postMessage never arrives; and the "the iframe navigated
-     * again" fallback misfires on SignNow's own in-app navigations. Whenever the
-     * finish went unnoticed the footer stayed on "Review in SignNow", and the
-     * next click rebuilt the package from the beginning instead of sending —
-     * which is exactly the loop users hit after clicking Finish.
-     *
-     * This poll cannot be lost: the backend reads the group's embedded invites
-     * and reports whether any signer is fulfilled.
+     * While locked, re-read the server state (CRM database only) so a Finish
+     * recorded by the SignNow tab unlocks this screen even if its message was
+     * lost. Previously this poll asked SignNow twice every 4 seconds through a
+     * route SignNow does not have — API budget spent for no answer.
      */
     useEffect(() => {
-        if (!signNowEmbedUrl || signNowReviewComplete) return;
-        // The package this review opened on, first. `sessionEnvelopeId` is nulled
-        // whenever the signer-roles fingerprint shifts — which a background
-        // contract refresh does on its own — and losing it mid-review stopped the
-        // poll dead, leaving Finish undetected for the rest of the session.
-        const envelopeId = String(
-            signNowReviewEnvelopeIdRef.current ||
-                sessionEnvelopeId ||
-                linkedEnvelopeId ||
-                linkedEnvelopeIdRef.current ||
-                "",
-        ).trim();
-        if (!envelopeId) return;
+        if (!signNowReviewLocked) return;
         let cancelled = false;
         let timer: number | undefined;
         const startedAt = Date.now();
-        // Tight while the preparer is actually reading, then slower, and it gives
-        // up on a review tab that was left open and walked away from. The iframe
-        // signals still apply for the whole time the review is open.
-        const nextDelay = () => {
-            const openFor = Date.now() - startedAt;
-            if (openFor > SIGNNOW_REVIEW_POLL_MAX_MS) return null;
-            return openFor > SIGNNOW_REVIEW_POLL_BACKOFF_AFTER_MS
+        const nextDelay = () =>
+            Date.now() - startedAt > SIGNNOW_REVIEW_POLL_BACKOFF_AFTER_MS
                 ? SIGNNOW_REVIEW_POLL_SLOW_MS
                 : SIGNNOW_REVIEW_POLL_MS;
-        };
         const poll = async () => {
             if (cancelled) return;
-            try {
-                const res = await axiosGet(
-                    // `since` scopes the answer to THIS review session. A reused
-                    // draft group still carries the signature widgets the
-                    // preparer filled during an earlier review, and without a
-                    // cut-off the very first poll read those as a finish and
-                    // threw the UI onto the Send screen while the iframe was
-                    // still loading the first page.
-                    `/docusign/signnow-review-status?envelopeId=${encodeURIComponent(envelopeId)}&since=${startedAt}`,
-                    // This is a liveness poll: the answer changes the moment the
-                    // preparer clicks Finish. The shared GET cache would replay
-                    // the first `in_review` body for its whole TTL, so every
-                    // later poll re-read a snapshot taken before the click and
-                    // the UI never left the Review step.
-                    { skipCache: true },
-                );
-                const complete = Boolean(
-                    (res?.data as { reviewComplete?: boolean } | undefined)?.reviewComplete,
-                );
-                if (complete && !cancelled) {
-                    markSignNowReviewComplete();
-                    return;
-                }
-            } catch {
-                /* Transient — keep polling; the iframe signals still apply. */
-            }
-            const delay = cancelled ? null : nextDelay();
-            if (delay != null) timer = window.setTimeout(poll, delay);
+            await syncPersistedSignNowReview();
+            if (!cancelled) timer = window.setTimeout(poll, nextDelay());
         };
         timer = window.setTimeout(poll, SIGNNOW_REVIEW_POLL_MS);
         return () => {
             cancelled = true;
             if (timer) window.clearTimeout(timer);
         };
-    }, [
-        signNowEmbedUrl,
-        signNowReviewComplete,
-        sessionEnvelopeId,
-        // Reading the id only through a ref meant a review opened before the
-        // contract's envelope id had loaded never started polling at all.
-        linkedEnvelopeId,
-        markSignNowReviewComplete,
-    ]);
+    }, [signNowReviewLocked, syncPersistedSignNowReview]);
 
     /**
      * Auto-upload a single required document as soon as the user picks/drops it.
@@ -7710,6 +8025,10 @@ const PDFViewerModal = ({
      * from the closure it captured when the button was clicked.
      */
     buildPrefillFieldsPayloadRef.current = buildDocuSignPrefillFieldsPayload;
+    includeWireFeeForSendRef.current = mergeContractPrefillOverrideLayers(
+        contractPrefillOverrides,
+        contractPrefillLoaded ? contractPrefillFromDb : null,
+    ).includeWireFee;
 
     const syncPrefillToDraftEnvelope = useCallback(
         async (options?: { envelopeId?: string | null }) => {
@@ -10487,6 +10806,67 @@ const PDFViewerModal = ({
         <>
             <Dialog open={isOpen} onOpenChange={onClose}>
                 <DialogContent className="flex h-[min(98vh,calc(100dvh-0.5rem))] max-h-[min(98vh,calc(100dvh-0.5rem))] min-h-0 w-[min(1920px,98vw)] max-w-[98vw] flex-col gap-0 overflow-hidden bg-white p-0 dark:bg-slate-900 dark:text-slate-100">
+                    {signNowReviewLocked ? (
+                        <div
+                            className="absolute inset-0 z-[60] flex items-center justify-center bg-slate-900/60 px-4 backdrop-blur-[2px]"
+                            role="alertdialog"
+                            aria-modal="true"
+                            aria-labelledby="signnow-review-lock-title"
+                        >
+                            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+                                <p
+                                    id="signnow-review-lock-title"
+                                    className="text-lg font-semibold text-slate-900 dark:text-slate-100"
+                                >
+                                    Finish the review in SignNow first
+                                </p>
+                                <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                                    The Owner review is still open in the SignNow tab. Click{" "}
+                                    <span className="font-semibold">Finish</span> there — this screen
+                                    unlocks by itself and shows{" "}
+                                    <span className="font-semibold">Send via SignNow</span>. Your review
+                                    is saved, so switching tabs or refreshing does not lose it.
+                                </p>
+                                <div className="mt-5 flex flex-col gap-2">
+                                    <Button
+                                        type="button"
+                                        className="w-full bg-[var(--brand)] text-white hover:opacity-90"
+                                        disabled={isReopeningSignNowTab || isRecordingSignNowFinish}
+                                        onClick={() => {
+                                            void focusOrReopenSignNowReviewTab();
+                                        }}
+                                    >
+                                        {isReopeningSignNowTab ? "Opening SignNow…" : "Open SignNow tab"}
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="w-full"
+                                        disabled={isRecordingSignNowFinish || isReopeningSignNowTab}
+                                        onClick={markSignNowReviewCompleteAndPersist}
+                                    >
+                                        {isRecordingSignNowFinish ? "Saving…" : "I've clicked Finish"}
+                                    </Button>
+                                    <button
+                                        type="button"
+                                        className="mt-1 text-xs font-medium text-slate-500 underline-offset-2 hover:underline disabled:opacity-50"
+                                        disabled={isRecordingSignNowFinish || isReopeningSignNowTab}
+                                        onClick={() => {
+                                            if (
+                                                window.confirm(
+                                                    "Cancel this SignNow review? You will need to click Review in SignNow again before sending.",
+                                                )
+                                            ) {
+                                                cancelOpenSignNowReview();
+                                            }
+                                        }}
+                                    >
+                                        Cancel review
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    ) : null}
 
                     {/* 1. Header with Stepper & Title */}
                     <div className="flex shrink-0 flex-col border-b bg-white px-4 py-2 dark:border-slate-700 dark:bg-slate-900">
@@ -10522,8 +10902,7 @@ const PDFViewerModal = ({
                                             type="button"
                                             onClick={() => {
                                                 didSuggestSentTabThisOpenRef.current = true;
-                                                signNowForceFreshReviewRef.current = false;
-                                                resetSignNowReviewUi({ keepCachedEmbed: true });
+                                                discardSignNowReviewForEdit();
                                                 setActiveStep("documents");
                                             }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${docGreenActive
@@ -10550,8 +10929,7 @@ const PDFViewerModal = ({
                                         <button
                                             type="button"
                                             onClick={() => {
-                                                signNowForceFreshReviewRef.current = false;
-                                                resetSignNowReviewUi({ keepCachedEmbed: true });
+                                                discardSignNowReviewForEdit();
                                                 setActiveStep("info");
                                             }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${infoGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
@@ -14044,7 +14422,7 @@ const PDFViewerModal = ({
                                                         type="button"
                                                         variant="outline"
                                                         className="h-7 px-2 text-[11px] font-semibold text-[var(--brand)]"
-                                                        onClick={markSignNowReviewComplete}
+                                                        onClick={markSignNowReviewCompleteAndPersist}
                                                     >
                                                         I&apos;ve clicked Finish
                                                     </Button>
@@ -14056,7 +14434,9 @@ const PDFViewerModal = ({
                                                     onClick={() => {
                                                         signNowForceFreshReviewRef.current = false;
                                                         setSignNowReviewVisible(false);
-                                                        setSignNowReviewComplete(false);
+                                                        // Closing the pane is not a walk-back: a finished
+                                                        // review stays finished (and persisted), so the
+                                                        // footer keeps offering Send via SignNow.
                                                         closeSignNowReviewTab();
                                                         toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
                                                     }}
@@ -14109,7 +14489,7 @@ const PDFViewerModal = ({
                                                             type="button"
                                                             variant="outline"
                                                             className="mt-3 h-10 w-full cursor-pointer text-sm font-medium"
-                                                            onClick={markSignNowReviewComplete}
+                                                            onClick={markSignNowReviewCompleteAndPersist}
                                                         >
                                                             I&apos;ve clicked Finish
                                                         </Button>
@@ -14525,15 +14905,13 @@ const PDFViewerModal = ({
                                     variant="default"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
                                     onClick={handleSend}
-                                    disabled={isSending || isCancellingContract}
+                                    disabled={
+                                        isSending ||
+                                        signNowPreparePhase !== null ||
+                                        isCancellingContract
+                                    }
                                 >
-                                    {isSending
-                                        ? isSignNowContractUiEnabled()
-                                            ? signNowEmbedUrl || signNowReviewComplete
-                                                ? "Sending via SignNow…"
-                                                : "Opening SignNow…"
-                                            : "Preparing DocuSign…"
-                                        : docuSignPrimaryActionLabel}
+                                    {reviewSendButtonLabel}
                                 </Button>
                             ) : null}
                             </div>

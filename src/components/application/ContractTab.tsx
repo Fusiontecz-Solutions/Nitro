@@ -70,6 +70,7 @@ import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
 import { Ban, Eye, FileText, Landmark, Loader2, RefreshCw } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
     filterBankDetailsForApplication,
 } from "@/lib/bankDetailUtils";
@@ -158,6 +159,7 @@ import {
     mergeMainContractSendPackageIntoPrefill,
     pickContractEnvelopeDocument,
     pickPreservedDocuSignEnvelopeMetaFromPrefill,
+    readContractCcSignedNotice,
     resolveContractSendRowFunderAuth,
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
@@ -1095,6 +1097,40 @@ export default function ContractTab({
         (fetchedContract as { status?: unknown } | null)?.status,
         contractEnvelopeDocument?.status,
     );
+
+    const ccSignedNotice = useMemo(
+        () => readContractCcSignedNotice(contractEnvelopeDocument),
+        [contractEnvelopeDocument],
+    );
+    const ccSignedNoticeSent = Boolean(ccSignedNotice.sentAt);
+
+    // The signed-copy email to the CC list goes out in the background right after
+    // the signing platform reports completion, so the status that first shows the
+    // contract as signed usually predates it. Re-read the contract once shortly
+    // after so the checkbox ticks itself without a page reload.
+    const ccNoticeRecheckedForAppRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!applicationUuid || !contractFullySigned || ccSignedNoticeSent) return;
+        if (!ccSignedNotice.ccEmails.length) return;
+        if (ccNoticeRecheckedForAppRef.current === applicationUuid) return;
+        ccNoticeRecheckedForAppRef.current = applicationUuid;
+        const timer = window.setTimeout(() => {
+            void dispatch(getByApplicationIdContract(String(applicationUuid)))
+                .unwrap()
+                .then((res) => {
+                    const contract = (res as any)?.data ?? res ?? null;
+                    if (contract) setFetchedContract(contract);
+                })
+                .catch(() => undefined);
+        }, 15000);
+        return () => window.clearTimeout(timer);
+    }, [
+        applicationUuid,
+        contractFullySigned,
+        ccSignedNoticeSent,
+        ccSignedNotice.ccEmails.length,
+        dispatch,
+    ]);
 
     const signedWorkflowSyncedForAppRef = useRef<string | null>(null);
     useEffect(() => {
@@ -4924,6 +4960,34 @@ export default function ContractTab({
                         </TableBody>
                     </Table>
                 </div>
+                {contractFullySigned ? (
+                    <div
+                        className={`mt-3 flex items-start gap-2 text-sm ${isDark ? "text-gray-300" : "text-[#374151]"}`}
+                    >
+                        <Checkbox
+                            id="contract-cc-signed-notice"
+                            checked={ccSignedNoticeSent}
+                            disabled
+                            aria-readonly
+                            className="mt-0.5 disabled:opacity-100"
+                        />
+                        <label htmlFor="contract-cc-signed-notice" className="leading-5">
+                            <span className="font-medium">
+                                Signed contract notification sent to CC
+                            </span>
+                            <span className={isDark ? "text-gray-400" : "text-[#687182]"}>
+                                {ccSignedNoticeSent
+                                    ? ` — ${(ccSignedNotice.sentTo.length
+                                          ? ccSignedNotice.sentTo
+                                          : ccSignedNotice.ccEmails
+                                      ).join(", ")} on ${formatTableSentAt(ccSignedNotice.sentAt)}`
+                                    : ccSignedNotice.ccEmails.length
+                                      ? ` — pending for ${ccSignedNotice.ccEmails.join(", ")}`
+                                      : " — no CC email address on this contract"}
+                            </span>
+                        </label>
+                    </div>
+                ) : null}
             </div>
 
             {/* Addendum, EPO, ACH Modals - not rendered in readOnly */}

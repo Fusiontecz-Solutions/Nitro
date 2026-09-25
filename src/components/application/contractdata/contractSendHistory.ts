@@ -235,6 +235,38 @@ export function isContractFullySigned(
     return false;
 }
 
+export type ContractCcSignedNotice = {
+    /** Funder CC the signed notice is sent to (send-time CC list on older API responses). */
+    ccEmails: string[];
+    /** Addresses the signed-contract notice (with the signed PDF) reached. */
+    sentTo: string[];
+    /** When the notice reached the CC list; null until it has. */
+    sentAt: string | null;
+};
+
+function readEmailList(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.map((e) => String(e ?? "").trim()).filter((e) => e.includes("@"))
+        : [];
+}
+
+/** Whether the "contract signed" notice has gone to the envelope's CC list. */
+export function readContractCcSignedNotice(
+    document: Record<string, unknown> | null | undefined,
+): ContractCcSignedNotice {
+    const sentAtRaw = document?.ccSignedNoticeSentAt;
+    // The signed notice goes to the selected funder's CC only; the send-time
+    // `ccEmails` also holds extra addresses that never get the signed copy.
+    const funderCc = document?.ccSignedNoticeCcEmails;
+    return {
+        ccEmails: Array.isArray(funderCc)
+            ? readEmailList(funderCc)
+            : readEmailList(document?.ccEmails),
+        sentTo: readEmailList(document?.ccSignedNoticeEmails),
+        sentAt: sentAtRaw ? String(sentAtRaw) : null,
+    };
+}
+
 /** True when the main contract envelope is fully signed or voided (no manual refresh needed). */
 export function isContractSigningFinished(
     contract: Record<string, unknown> | null | undefined,

@@ -82,9 +82,10 @@ test("Monthly Fee prints the full business and account holder address", () => {
 });
 
 /**
- * The account holder on every funder's addendums is the guarantor, so a deal
- * whose owner lives somewhere other than the business must print the owner's
- * home address in the Account Holder Address widget.
+ * Exhibit C and the ACH authorization print "Account Holder Business Address",
+ * which is the business on every funder — a deal whose owner lives somewhere
+ * else must still print the business there. The Monthly Fee's holder block sits
+ * under a business line of its own and prints the owner's home address.
  */
 const GUARANTOR_CONTRACT: Record<string, unknown> = {
     ...CONTRACT,
@@ -95,14 +96,30 @@ const GUARANTOR_CONTRACT: Record<string, unknown> = {
 };
 const GUARANTOR_FULL = "9 OAK ST, MACON, GA 31201";
 
-test("ACH Daily prints the GUARANTOR address as the account holder address", () => {
-    const rows = rowsFor("ach_daily", "ACH Daily", GUARANTOR_CONTRACT);
-    assert.equal(rows.ach_account_holder_address_p1, GUARANTOR_FULL);
+test("ACH Daily prints the BUSINESS address as the account holder business address", () => {
+    const rows = rowsFor("ach_daily", "ACH Daily", {
+        ...GUARANTOR_CONTRACT,
+        ach_authorization_account_holder_address: "9 OAK ST",
+    });
+    assert.equal(rows.ach_account_holder_address_p1, FULL);
 });
 
-test("Exhibit C prints the GUARANTOR address as the account holder address", () => {
-    const rows = rowsFor("exhibit_c", "Exhibit C", GUARANTOR_CONTRACT);
-    assert.equal(rows.ach_account_holder_address_p1, GUARANTOR_FULL);
+test("Exhibit C prints the BUSINESS address as the account holder business address", () => {
+    const rows = rowsFor("exhibit_c", "Exhibit C", {
+        ...GUARANTOR_CONTRACT,
+        ach_authorization_account_holder_address: "9 OAK ST",
+    });
+    assert.equal(rows.ach_account_holder_address_p1, FULL);
+});
+
+test("Exhibit C ignores the guarantor address mirrored onto its first entity", () => {
+    const rows = rowsFor("exhibit_c", "Exhibit C", {
+        ...GUARANTOR_CONTRACT,
+        exhibitCEntities: JSON.stringify([
+            { id: "e1", accountHolderName: "Erbar Consulting INC", accountHolderAddress: "9 OAK ST" },
+        ]),
+    });
+    assert.equal(rows.ach_account_holder_address_p1, FULL);
 });
 
 test("Monthly Fee prints the GUARANTOR address as the account holder address", () => {

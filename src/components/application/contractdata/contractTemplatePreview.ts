@@ -47,8 +47,10 @@ export function signNowEmbeddedReturnUrl(): string {
 
 export function isSignNowEmbeddedCompleteMessage(data: unknown): boolean {
     if (!data || typeof data !== "object") return false;
+    // Only a Finish counts: a Close or Decline of the review must not unlock Send.
     return (
-        String((data as { source?: unknown }).source || "") === SIGNNOW_EMBEDDED_MESSAGE_SOURCE
+        String((data as { source?: unknown }).source || "") === SIGNNOW_EMBEDDED_MESSAGE_SOURCE &&
+        String((data as { event?: unknown }).event || "") === "complete"
     );
 }
 

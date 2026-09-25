@@ -898,10 +898,9 @@ const EXHIBIT_C_PRIMARY_BANK_MIRROR: Array<{
     { entityKey: "securityQa2", mainKeys: ["achAuthorizationSecurityQuestion2"] },
     { entityKey: "accountHolderName", mainKeys: ["achAuthorizationAccountHolderName"] },
     { entityKey: "accountHolderDba", mainKeys: ["achAuthorizationAccountHolderDba"] },
-    { entityKey: "accountHolderAddress", mainKeys: ["achAuthorizationAccountHolderAddress"] },
-    { entityKey: "accountHolderCity", mainKeys: ["achAuthorizationAccountHolderCity"] },
-    { entityKey: "accountHolderState", mainKeys: ["achAuthorizationAccountHolderState"] },
-    { entityKey: "accountHolderZip", mainKeys: ["achAuthorizationAccountHolderZip"] },
+    // No address rows: Exhibit C prints "Account Holder Business Address" (the
+    // business), while the ACH holder address is Owner 1's home from the KYC —
+    // mirroring it is what put the guarantor's address on Exhibit C.
 ];
 
 const EXHIBIT_C_PRIMARY_MIRROR_BY_ENTITY_KEY = new Map(

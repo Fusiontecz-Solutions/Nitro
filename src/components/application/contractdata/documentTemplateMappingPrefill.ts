@@ -63,6 +63,7 @@ import {
 import { buildAchDailyContractPrefillFields } from "./ACH_DAILY";
 import {
     ACCOUNT_HOLDER_ADDRESS_STREET_IDS,
+    ACCOUNT_HOLDER_BUSINESS_ADDRESS_STREET_IDS,
     resolveMerchantFullAddress,
 } from "./merchantAddress";
 import type { AchDailyContractPrefillFields } from "./ACH_DAILY";
@@ -161,6 +162,9 @@ function resolveMainContractBusinessNameFromPrefill(
 
 /** Stored on `Contract.contractPrefillOverrides` alongside main prefill keys. */
 export const DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY = "documentTemplatePrefillByMappingId";
+
+/** Holder address widget the Monthly Fee shares with Exhibit C / ACH Daily. */
+const MONTHLY_FEE_HOLDER_ADDRESS_FIELD_ID = "ach_account_holder_address_p1";
 
 /** DocuSign envelope ids per `ContractDocumentTemplateMapping.id` (e.g. standalone ACH). */
 export const DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY = "documentTemplateEnvelopeByMappingId";
@@ -1478,9 +1482,10 @@ function buildAddendumAchDailyComputed(
             legalName ||
             guarantor,
         accountHolderDba: dbaFromContractAndGet(c, get),
+        // "Account Holder Business Address" — the business, never the guarantor.
         accountHolderAddress: resolveMerchantFullAddress(
             get,
-            ACCOUNT_HOLDER_ADDRESS_STREET_IDS,
+            ACCOUNT_HOLDER_BUSINESS_ADDRESS_STREET_IDS,
         ),
         bankName:
             get(
@@ -1597,9 +1602,12 @@ function buildAddendumExhibitCComputed(
         accountHolderName: holderName,
         accountHolderDba:
             str(primaryEntity?.accountHolderDba) || dbaFromContractAndGet(c, get),
+        // Printed as "c. Account Holder Business Address:" — the business address.
+        // Entity 1 is the deal's own merchant; its saved address is a mirror of
+        // the ACH holder (Owner 1's home), so it is only a last resort.
         accountHolderAddress:
-            str(primaryEntity?.accountHolderAddress) ||
-            resolveMerchantFullAddress(get, ACCOUNT_HOLDER_ADDRESS_STREET_IDS),
+            resolveMerchantFullAddress(get, ACCOUNT_HOLDER_BUSINESS_ADDRESS_STREET_IDS) ||
+            str(primaryEntity?.accountHolderAddress),
         bankName:
             str(primaryEntity?.bankName) ||
             get(
@@ -3229,6 +3237,16 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             ? expandDisclosureEditorValuesToPdfFields(editorValues)
             : editorValues;
         for (const [id, value] of Object.entries(fieldsToMerge)) {
+            // Monthly Fee's holder address is Owner 1's home, but the widget name
+            // is shared with the Exhibit C / ACH Daily "Account Holder Business
+            // Address" — the flat payload keeps the business for those.
+            if (
+                addendumKindForIndex === "monthly_fee" &&
+                id === MONTHLY_FEE_HOLDER_ADDRESS_FIELD_ID &&
+                String(byId.get(id)?.value ?? "").trim()
+            ) {
+                continue;
+            }
             upsertPrefillFieldValuePreserveMainMoney(byId, id, String(value ?? ""));
         }
         const addendumKind = resolveAddendumKind(

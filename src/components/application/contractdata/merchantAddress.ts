@@ -11,19 +11,31 @@
  */
 
 /**
- * Street ids to read for the "Account Holder Address" widget on EVERY funder's
- * addendums (ACH Daily, Exhibit C, Monthly Fee, …).
+ * Street ids to read for the Monthly Fee's "Account Holder Address" widget.
  *
- * The account holder on these forms is the GUARANTOR — owner 1's home address —
- * not the business location, so `guarantor_address` comes before the business
- * ids. An address explicitly saved on the deal's ACH record still wins, and the
- * business address stays only as a last resort so the widget is never blank.
+ * That holder block sits under the business address the form already prints,
+ * so its address is the GUARANTOR's — owner 1's home address — and
+ * `guarantor_address` comes before the business ids. An address explicitly
+ * saved on the deal's ACH record still wins, and the business address stays
+ * only as a last resort so the widget is never blank.
  */
 export const ACCOUNT_HOLDER_ADDRESS_STREET_IDS = [
     "ach_authorization_account_holder_address",
     "guarantor_address",
     "business_address_contract",
     "business_address",
+];
+
+/**
+ * Street ids for the "Account Holder Business Address" line — Exhibit C and the
+ * ACH authorization on every funder. That line is the business's physical
+ * address, so only the business ids are read: the ACH holder key and the
+ * guarantor ids carry Owner 1's home address (the driver's-licence KYC fills
+ * them), which is exactly what used to be printed there.
+ */
+export const ACCOUNT_HOLDER_BUSINESS_ADDRESS_STREET_IDS = [
+    "business_address",
+    "security_business_address",
 ];
 
 /** Builds `street, city, state zip`, skipping whatever part is missing. */

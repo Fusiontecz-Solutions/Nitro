@@ -27,8 +27,11 @@ import {
   buildDetailHydrationPayload,
   findApplicationListRowForRoute,
   getCachedApplicationDetail,
+  invalidateApplicationDetailCache,
   isApplicationDetailFetchFresh,
 } from "@/lib/applicationDetailCache";
+import { invalidateHttpGetCacheForResource } from "@/lib/httpGetCache";
+import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
 import { isFinalUnderwriterWorkflowQueue } from "@/lib/applicationWorkflowState";
 import { useTheme } from "@/context/ThemeContext";
 import type { user } from "@/redux/slices/authSlice";
@@ -261,6 +264,21 @@ const ApplicationDetails = () => {
             void dispatch(getApplicationById(applicationId));
         }
     }, [applicationId, dispatch]);
+
+    /**
+     * A SignNow/DocuSign webhook moves the deal (e.g. to Contract Signed) with no
+     * action from this tab. The header reads `currentState` from the detail
+     * record, so drop every cached copy of it and fetch it again — otherwise the
+     * fresh-cache short-circuit serves the old stage until a manual refresh.
+     */
+    useContractSigningStatusRealtime(applicationUuid, () => {
+        invalidateApplicationDetailCache(String(applicationUuid));
+        if (applicationId) invalidateApplicationDetailCache(applicationId);
+        const numericId = (applicationData as any)?.applicationId;
+        if (numericId != null) invalidateApplicationDetailCache(String(numericId));
+        invalidateHttpGetCacheForResource("applications");
+        refetchApplicationDetail();
+    });
 
     const { activeTab, handleTabChange } = useTabRouting(
         tabs,

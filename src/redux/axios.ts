@@ -18,7 +18,7 @@ import { invalidateRequestFreshness } from '@/lib/requestOnce';
 // Under Vite the env object always exists, so browser behavior is unchanged.
 const API_BASE_URL =
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) ||
-    'http://localhost:4000/api/v1';
+    'http://localhost:5000/api/v1';
 
 /** Default request budget — many CRM list/aggregate endpoints exceed 25s under load. */
 const DEFAULT_AXIOS_TIMEOUT_MS = 120_000;
