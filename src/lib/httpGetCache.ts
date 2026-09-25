@@ -132,6 +132,14 @@ export function invalidateHttpGetCacheForResource(resource: string): void {
   }
 }
 
+/** Drop the cached GET for exactly this URL (any params / auth tag). */
+export function invalidateHttpGetCacheForUrl(url: string): void {
+  const prefix = `get:${String(url || "")}?`;
+  for (const key of [...memory.keys()]) {
+    if (key.startsWith(prefix)) memory.delete(key);
+  }
+}
+
 /** Drop cached GETs for the mutated resource family only. */
 export function invalidateHttpGetCacheByUrl(url: string): void {
   const path = String(url || "").split("?")[0].replace(/^\//, "");

@@ -28,9 +28,12 @@ import {
   findApplicationListRowForRoute,
   getCachedApplicationDetail,
   invalidateApplicationDetailCache,
-  isApplicationDetailFetchFresh,
 } from "@/lib/applicationDetailCache";
-import { invalidateHttpGetCacheForResource } from "@/lib/httpGetCache";
+import {
+    invalidateHttpGetCacheForResource,
+    invalidateHttpGetCacheForUrl,
+} from "@/lib/httpGetCache";
+import { resolveApplicationTableCurrentQueue } from "@/lib/applicationSummaryStatus";
 import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
 import { isFinalUnderwriterWorkflowQueue } from "@/lib/applicationWorkflowState";
 import { useTheme } from "@/context/ThemeContext";
@@ -55,6 +58,9 @@ import ApplicationProgressBar from "@/components/application/ApplicationProgress
 import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 
+
+/** CRM-only re-read of a deal awaiting signatures (no SignNow calls). */
+const APPLICATION_STAGE_FALLBACK_POLL_MS = 10_000;
 
 const ApplicationDetails = () => {
     const { applicationId } = useParams<{ applicationId: string; tab?: string }>()
@@ -139,6 +145,24 @@ const ApplicationDetails = () => {
         applicationData &&
         routeParamMatchesApplication(applicationId, applicationData),
     );
+
+    /**
+     * Same `currentQueue` the summary Status shows: when the detail and the
+     * applications-list row disagree, the fresher one wins. Without this the bar
+     * read only the detail and could lag the Status right beside it.
+     */
+    const progressBarApplication = useMemo(() => {
+        if (!applicationData || !applicationId) return applicationData as any;
+        const listRow = findApplicationListRowForRoute(applicationId, applicationsListRows);
+        const currentQueue = resolveApplicationTableCurrentQueue(
+            applicationData as any,
+            listRow,
+        );
+        return {
+            ...(applicationData as any),
+            currentQueue: currentQueue === "-" ? (applicationData as any).currentQueue : currentQueue,
+        };
+    }, [applicationData, applicationId, applicationsListRows]);
 
     /**
      * URL `operationsStatus` wins when set to a known stage.
@@ -279,6 +303,30 @@ const ApplicationDetails = () => {
         invalidateHttpGetCacheForResource("applications");
         refetchApplicationDetail();
     });
+
+    /**
+     * Safety net for a missed socket push while the deal waits on signatures:
+     * re-read the detail from the CRM (database only — the backend status job
+     * is what asks SignNow) so the header moves to Contract Signed on its own.
+     */
+    const awaitingSignature =
+        String((applicationData as any)?.currentQueue ?? "")
+            .trim()
+            .toLowerCase() === "contract sent";
+    const numericApplicationId = (applicationData as any)?.applicationId ?? null;
+    useEffect(() => {
+        if (!awaitingSignature) return;
+        const timer = window.setInterval(() => {
+            if (document.visibilityState !== "visible") return;
+            if (applicationUuid) invalidateApplicationDetailCache(String(applicationUuid));
+            if (applicationId) invalidateApplicationDetailCache(applicationId);
+            if (numericApplicationId != null) {
+                invalidateApplicationDetailCache(String(numericApplicationId));
+            }
+            refetchApplicationDetail();
+        }, APPLICATION_STAGE_FALLBACK_POLL_MS);
+        return () => window.clearInterval(timer);
+    }, [awaitingSignature, applicationUuid, applicationId, numericApplicationId, refetchApplicationDetail]);
 
     const { activeTab, handleTabChange } = useTabRouting(
         tabs,
@@ -530,22 +578,23 @@ const ApplicationDetails = () => {
 
     // Fetch separately from cache/list hydration. A fulfilled request patches the applications
     // list, so including that list in this effect would create a request -> list update loop.
+    //
+    // Always revalidate once per open, even when a copy fetched a few minutes ago
+    // is still "fresh": the backend moves the stage on its own (signing webhook,
+    // status job), so a cached detail could show Contract Sent after the list
+    // already shows Contract Signed. The cached copy still paints first.
     useEffect(() => {
         if (!applicationId) return;
         const requestKey = String(applicationId).trim();
-        if (
-            initialDetailRequestRef.current === requestKey ||
-            isApplicationDetailFetchFresh(requestKey)
-        ) {
-            return;
-        }
-        const current = applicationDetailRef.current;
-        if (current && routeParamMatchesApplication(requestKey, current)) {
-            initialDetailRequestRef.current = requestKey;
-            if (isApplicationDetailFetchFresh(requestKey)) return;
-        }
+        if (initialDetailRequestRef.current === requestKey) return;
         initialDetailRequestRef.current = requestKey;
 
+        invalidateApplicationDetailCache(requestKey);
+        invalidateHttpGetCacheForUrl(
+            isNumericApplicationRouteParam(requestKey)
+                ? `/applications/applicationId/${requestKey}`
+                : `/applications/${requestKey}`,
+        );
         if (isNumericApplicationRouteParam(requestKey)) {
             void dispatch(getApplicationByApplicationId(requestKey));
         } else {
@@ -604,7 +653,7 @@ const ApplicationDetails = () => {
             <div className="mx-auto min-w-0 max-w-screen-2xl">
                 {applicationAligned ? (
                     <ApplicationProgressBar
-                        application={applicationData as any}
+                        application={progressBarApplication}
                         className="mb-6"
                     />
                 ) : null}
@@ -676,7 +725,10 @@ const ApplicationDetails = () => {
                                     <BackgroundCheckTab />
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
-                                    <ContractTab readOnly={isAgent || isViewOnlyBrowse} />
+                                    <ContractTab
+                                        readOnly={isAgent || isViewOnlyBrowse}
+                                        active={activeTab === "contract"}
+                                    />
                                 </LazyTabContent>
                             </>
                         ) : showAccessDenied ? (
@@ -841,7 +893,10 @@ const ApplicationDetails = () => {
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
-                                    <ContractTab readOnly={isAgent || isViewOnlyBrowse} />
+                                    <ContractTab
+                                        readOnly={isAgent || isViewOnlyBrowse}
+                                        active={activeTab === "contract"}
+                                    />
                             </LazyTabContent>
                             </>
                         ) : showAccessDenied ? (

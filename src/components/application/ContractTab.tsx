@@ -10,6 +10,7 @@ import {
     updateApplication,
 } from "@/redux/actions/applicationActions";
 import { patchApplicationDetail } from "@/redux/slices/applicationSlice";
+import { refreshApplicationDetailFromServer } from "@/lib/refreshApplicationDetail";
 import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
 import { isContractSignedApplication } from "@/lib/applicationWorkflowState";
 import { isApplicationUuid } from "@/lib/paymentDealApplicationId";
@@ -156,6 +157,7 @@ import {
     isAchSigningFinished,
     isContractFullySigned,
     isContractVoidedOrTerminal,
+    isContractOutForSignature,
     mergeMainContractSendPackageIntoPrefill,
     pickContractEnvelopeDocument,
     pickPreservedDocuSignEnvelopeMetaFromPrefill,
@@ -394,10 +396,19 @@ type PersistedContractValues = {
 interface ContractTabProps {
     /** When true, hide all edit/generate actions (Agent view) */
     readOnly?: boolean;
+    /**
+     * True while the Contract tab is the selected tab. The tab stays mounted
+     * after its first visit, so this is what tells it the user came back.
+     */
+    active?: boolean;
 }
+
+/** CRM-only re-read of a SignNow contract awaiting signature (no SignNow calls). */
+const CONTRACT_STATUS_FALLBACK_POLL_MS = 5_000;
 
 export default function ContractTab({
     readOnly = false,
+    active = true,
 }: ContractTabProps = {}) {
     const { applicationId } = useParams<{ applicationId: string }>();
     const dispatch = useDispatch<AppDispatch>();
@@ -615,7 +626,10 @@ export default function ContractTab({
             }
             try {
                 const res = await dispatch(
-                    getByApplicationIdContract(String(applicationUuid)),
+                    getByApplicationIdContract({
+                        applicationId: String(applicationUuid),
+                        fresh: true,
+                    }),
                 ).unwrap();
                 let contract = (res as any)?.data ?? res ?? null;
                 setFetchedContract(contract);
@@ -1115,7 +1129,12 @@ export default function ContractTab({
         if (ccNoticeRecheckedForAppRef.current === applicationUuid) return;
         ccNoticeRecheckedForAppRef.current = applicationUuid;
         const timer = window.setTimeout(() => {
-            void dispatch(getByApplicationIdContract(String(applicationUuid)))
+            void dispatch(
+                getByApplicationIdContract({
+                    applicationId: String(applicationUuid),
+                    fresh: true,
+                }),
+            )
                 .unwrap()
                 .then((res) => {
                     const contract = (res as any)?.data ?? res ?? null;
@@ -1866,13 +1885,27 @@ export default function ContractTab({
 
     const reloadFetchedContract = useCallback(async () => {
         if (!applicationUuid) return null;
-        const res = await dispatch(getByApplicationIdContract(String(applicationUuid))).unwrap();
+        const res = await dispatch(
+            getByApplicationIdContract({ applicationId: String(applicationUuid), fresh: true }),
+        ).unwrap();
         const contract = (res as { data?: unknown })?.data ?? res ?? null;
         setFetchedContract(contract);
         const contractId = Number((contract as { id?: unknown })?.id);
         if (Number.isFinite(contractId)) setSelectedContractId(contractId);
         return contract;
     }, [applicationUuid, dispatch]);
+
+    /**
+     * The header, progress bar and pipeline stage come from the application
+     * detail, not the contract. Reload it whenever the contract's signing state
+     * moves, so the deal shows Contract Signed without a page reload.
+     */
+    const refreshApplicationStage = useCallback(() => {
+        refreshApplicationDetailFromServer(dispatch, applicationId, [
+            applicationUuid,
+            (applicationData as { applicationId?: string | number } | null)?.applicationId,
+        ]);
+    }, [dispatch, applicationId, applicationUuid, applicationData]);
 
     const refreshContractEnvelopeStatus = useCallback(
         async (silent?: boolean, options?: { force?: boolean }) => {
@@ -1916,6 +1949,7 @@ export default function ContractTab({
                 } catch {
                     /* partial sync still useful */
                 }
+                refreshApplicationStage();
                 if (!silent) setRefreshingSigningStatus(false);
             }
         },
@@ -1924,6 +1958,7 @@ export default function ContractTab({
             contractEnvelopeDocument?.envelopeId,
             contractFullySigned,
             reloadFetchedContract,
+            refreshApplicationStage,
             selectedContractId,
         ],
     );
@@ -2080,6 +2115,72 @@ export default function ContractTab({
     useContractSigningStatusRealtime(applicationUuid, () => {
         void reloadFetchedContract();
     });
+
+    /**
+     * Safety net for a missed socket push: while a SignNow contract is out for
+     * signature — or signed but its CC copy not yet sent — re-read the contract
+     * from the CRM every few seconds. This only reads the CRM database; the
+     * backend status job is what asks SignNow. When the signed state or the CC
+     * notice flips, the application stage is reloaded too.
+     */
+    const awaitingSignNowUpdate =
+        Boolean(mainContractEnvelopeId) &&
+        isSignNowEnvelopeId(String(mainContractEnvelopeId)) &&
+        (isContractOutForSignature(fetchedContract as Record<string, unknown> | null) ||
+            (contractFullySigned && ccSignedNotice.ccEmails.length > 0 && !ccSignedNoticeSent));
+    const signingSnapshotRef = useRef({ signed: contractFullySigned, ccSent: ccSignedNoticeSent });
+    useEffect(() => {
+        const previous = signingSnapshotRef.current;
+        signingSnapshotRef.current = { signed: contractFullySigned, ccSent: ccSignedNoticeSent };
+        if (
+            (contractFullySigned && !previous.signed) ||
+            (ccSignedNoticeSent && !previous.ccSent)
+        ) {
+            refreshApplicationStage();
+        }
+    }, [contractFullySigned, ccSignedNoticeSent, refreshApplicationStage]);
+    useEffect(() => {
+        if (!awaitingSignNowUpdate) return;
+        const timer = window.setInterval(() => {
+            if (document.visibilityState !== "visible") return;
+            void reloadFetchedContract().catch(() => {
+                /* next tick retries */
+            });
+        }, CONTRACT_STATUS_FALLBACK_POLL_MS);
+        return () => window.clearInterval(timer);
+    }, [awaitingSignNowUpdate, reloadFetchedContract]);
+
+    /**
+     * Coming back to the Contract tab re-reads the contract from the CRM, so the
+     * Contracts Generated rows and the CC notice reflect what the backend wrote
+     * while the user was on another tab. The first visit is covered by the
+     * mount fetch above.
+     */
+    const wasActiveRef = useRef(active);
+    useEffect(() => {
+        const cameBack = active && !wasActiveRef.current;
+        wasActiveRef.current = active;
+        if (!cameBack || !applicationUuid) return;
+        void reloadFetchedContract().catch(() => {
+            /* keep the rows already on screen */
+        });
+    }, [active, applicationUuid, reloadFetchedContract]);
+
+    /** Header refresh: re-read only the Contracts Generated section (CRM only, no SignNow call). */
+    const [refreshingContractsTable, setRefreshingContractsTable] = useState(false);
+    const handleRefreshContractsGenerated = useCallback(async () => {
+        if (!applicationUuid) return;
+        setRefreshingContractsTable(true);
+        try {
+            await reloadFetchedContract();
+        } catch (err: unknown) {
+            toast.error(
+                typeof err === "string" && err ? err : "Could not refresh contracts.",
+            );
+        } finally {
+            setRefreshingContractsTable(false);
+        }
+    }, [applicationUuid, reloadFetchedContract]);
 
     const handleVoidSentEnvelopeRow = async (row: ContractSendTableRow) => {
         const envelopeId = String(row.envelopeId ?? "").trim();
@@ -4887,9 +4988,28 @@ export default function ContractTab({
             </div>
 
             {/* Contracts Generated Table */}
-            <div className={contractsCardClass}>
-                <h3 className={contractsHeaderClass}>Contracts Generated</h3>
-                <div className="overflow-x-auto">
+            <div className={contractsCardClass} aria-busy={refreshingContractsTable}>
+                <div className={`${contractsHeaderClass} flex items-center justify-between gap-3`}>
+                    <h3>Contracts Generated</h3>
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void handleRefreshContractsGenerated()}
+                        disabled={refreshingContractsTable || !applicationUuid}
+                        className={`h-8 shrink-0 gap-1.5 px-2.5 text-xs font-medium ${brandActionButtonClass}`}
+                        title="Refresh contracts and CC notification status"
+                    >
+                        <RefreshCw
+                            className={`h-3.5 w-3.5 ${refreshingContractsTable ? "animate-spin" : ""}`}
+                            aria-hidden
+                        />
+                        {refreshingContractsTable ? "Refreshing..." : "Refresh"}
+                    </Button>
+                </div>
+                <div
+                    className={`overflow-x-auto transition-opacity ${refreshingContractsTable ? "pointer-events-none opacity-60" : ""}`}
+                >
                     <Table>
                         <TableHeader>
                             <TableRow className={tableHeaderRowClass}>
@@ -4962,7 +5082,7 @@ export default function ContractTab({
                 </div>
                 {contractFullySigned ? (
                     <div
-                        className={`mt-3 flex items-start gap-2 text-sm ${isDark ? "text-gray-300" : "text-[#374151]"}`}
+                        className={`mt-3 flex items-start gap-2 text-sm transition-opacity ${refreshingContractsTable ? "opacity-60" : ""} ${isDark ? "text-gray-300" : "text-[#374151]"}`}
                     >
                         <Checkbox
                             id="contract-cc-signed-notice"

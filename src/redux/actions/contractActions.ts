@@ -1,6 +1,7 @@
 import { createAsyncThunk } from "@reduxjs/toolkit";
 import type { AxiosProgressEvent } from "axios";
 import { axiosDelete, axiosGet, axiosPost, axiosPostFormData, axiosPut } from "../axios";
+import { invalidateHttpGetCacheForUrl } from "@/lib/httpGetCache";
 
 const CONTRACT_BASE = "/contract";
 
@@ -171,11 +172,17 @@ export const getContractRelatedDataByContractId = createAsyncThunk(
 
 export const getByApplicationIdContract = createAsyncThunk(
     "contract/getByApplicationId",
-    async (applicationId: string, { rejectWithValue }) => {
+    async (
+        arg: string | { applicationId: string; fresh?: boolean },
+        { rejectWithValue },
+    ) => {
+        const applicationId = typeof arg === "string" ? arg : arg.applicationId;
+        const url = `${CONTRACT_BASE}/get_contract_by_application/${applicationId}`;
+        // Signing state and the CC notice are written by the backend (webhook /
+        // status job), so a `fresh` read must not be answered from the GET cache.
+        if (typeof arg !== "string" && arg.fresh) invalidateHttpGetCacheForUrl(url);
         try {
-            const response = await axiosGet(
-                `${CONTRACT_BASE}/get_contract_by_application/${applicationId}`,
-            );
+            const response = await axiosGet(url);
             return response.data;
         } catch (error: any) {
             return rejectWithValue(
