@@ -194,6 +194,8 @@ async function createAndPushNotifications(
     type: string;
     applicationId: string;
     createdById: string | null;
+    importance?: 'low' | 'normal' | 'high' | 'urgent';
+    actionUrl?: string | null;
   },
   meta: Record<string, unknown>,
 ): Promise<void> {
@@ -210,6 +212,8 @@ async function createAndPushNotifications(
           recipientId: r.id,
           applicationId: base.applicationId,
           createdById: base.createdById,
+          ...(base.importance ? { importance: base.importance } : {}),
+          ...(base.actionUrl ? { actionUrl: base.actionUrl } : {}),
         },
         include: NOTIFICATION_INCLUDE,
       }),
@@ -329,28 +333,32 @@ export async function handleContractSigningStatusTransition(
     console.error('[contractSigningStatusEffects] realtime emit failed:', err);
   }
 
-  try {
-    const recipients = await resolveRecipients(applicationId);
-    await createAndPushNotifications(
-      recipients,
-      {
-        title,
-        message,
-        type: 'contract_signing',
-        applicationId,
-        createdById: null,
-      },
-      {
-        realtimeKind: 'contract_signing_status',
-        actionUrl,
-        applicationId,
-        envelopeId: input.envelopeId ?? null,
-        status: next,
-        priorStatus: prior,
-      },
-    );
-  } catch (err) {
-    console.error('[contractSigningStatusEffects] notifications failed:', err);
+  // The "fully signed" inbox notice is owned by the Contract Signed stage sync
+  // (`notifyContractFullySigned`) so every provider sends exactly one.
+  if (next !== 'completed') {
+    try {
+      const recipients = await resolveRecipients(applicationId);
+      await createAndPushNotifications(
+        recipients,
+        {
+          title,
+          message,
+          type: 'contract_signing',
+          applicationId,
+          createdById: null,
+        },
+        {
+          realtimeKind: 'contract_signing_status',
+          actionUrl,
+          applicationId,
+          envelopeId: input.envelopeId ?? null,
+          status: next,
+          priorStatus: prior,
+        },
+      );
+    } catch (err) {
+      console.error('[contractSigningStatusEffects] notifications failed:', err);
+    }
   }
 
   try {
@@ -376,4 +384,72 @@ export async function handleContractSigningStatusTransition(
   } catch (err) {
     console.error('[contractSigningStatusEffects] activity log failed:', err);
   }
+}
+
+const PROVIDER_LABEL: Record<string, string> = {
+  docusign: 'DocuSign',
+  boldsign: 'BoldSign',
+  signnow: 'SignNow',
+};
+
+export interface ContractFullySignedInput {
+  applicationId: string;
+  provider?: 'docusign' | 'boldsign' | 'signnow' | 'crm';
+}
+
+/**
+ * Inbox + realtime push when an application moves to Contract Signed because
+ * every signer finished. Called once per move by the workflow sync (which is
+ * idempotent), so SignNow, DocuSign and BoldSign all produce a single notice.
+ */
+export async function notifyContractFullySigned(input: ContractFullySignedInput): Promise<void> {
+  const applicationId = String(input.applicationId || '').trim();
+  if (!applicationId) return;
+
+  const application = await prisma.application.findUnique({
+    where: { id: applicationId },
+    select: {
+      id: true,
+      applicationId: true,
+      client: { select: { businessName: true, ownerFirstName: true, ownerLastName: true } },
+    },
+  });
+  if (!application) return;
+
+  const appNumber =
+    application.applicationId != null && String(application.applicationId).trim() !== ''
+      ? String(application.applicationId)
+      : '';
+  const appRef = appNumber ? ` #${appNumber}` : '';
+  const client = application.client;
+  const clientName =
+    client?.businessName ||
+    `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
+    'the client';
+  const providerLabel = input.provider ? PROVIDER_LABEL[input.provider] : undefined;
+
+  const recipients = await resolveRecipients(applicationId);
+  await createAndPushNotifications(
+    recipients,
+    {
+      title: `Contract fully signed${appRef}`,
+      message: `All parties have signed the contract for application${appRef} (${clientName})${
+        providerLabel ? ` via ${providerLabel}` : ''
+      }. The deal moved to Contract Signed.`,
+      type: 'contract_signed',
+      applicationId,
+      createdById: null,
+      importance: 'high',
+      actionUrl: deriveActionUrl({
+        applicationNumber: appNumber || null,
+        applicationUuid: applicationId,
+      }),
+    },
+    {
+      realtimeKind: 'contract_fully_signed',
+      applicationId,
+      status: 'completed',
+      provider: input.provider ?? null,
+    },
+  );
 }

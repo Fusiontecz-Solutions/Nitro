@@ -5,6 +5,7 @@ import {
   mintPortalSigningLink,
   resolvePortalRecipients,
   sendContractViaPortal,
+  syncPortalEnvelopeAfterSignerFinished,
   verifyPortalAccess,
 } from '../services/signnow/signnow-portal-send.service';
 
@@ -33,6 +34,7 @@ class SigningPortalController {
         replyToEmail,
         prefillFields,
         ccEmails,
+        includeWireFee,
       } = req.body ?? {};
       const id = String(envelopeId ?? '').trim();
       if (!id) {
@@ -61,6 +63,8 @@ class SigningPortalController {
         ccEmails: Array.isArray(ccEmails)
           ? ccEmails.map((v: unknown) => String(v ?? '').trim()).filter(Boolean)
           : undefined,
+        // Live "$25 wire fee" checkbox; see `withRequestWireFeePreference`.
+        includeWireFee,
       });
       return res.json({ success: true, data: result });
     } catch (error: any) {
@@ -140,7 +144,10 @@ class SigningPortalController {
    * POST /public/signing-portal/:envelopeId/completed
    * Called by the portal page when the signer finishes in the SignNow iframe.
    * Emails the next signer in order — SignNow is asked to confirm the current
-   * signer really finished, so a spoofed call cannot skip anyone ahead.
+   * signer really finished, so a spoofed call cannot skip anyone ahead. When
+   * the last signer is done the CRM moves to Contract Signed right away.
+   * Answered immediately: the sync waits out SignNow's settling delay in the
+   * background and the portal page does not read the result.
    */
   async markCompleted(req: Request, res: Response) {
     try {
@@ -148,8 +155,21 @@ class SigningPortalController {
       const email = String(req.body?.email ?? '').trim();
       const token = String(req.body?.token ?? '').trim();
       const verified = await verifyPortalAccess({ envelopeId, email, token });
-      const result = await advancePortalSigningQueue(verified.envelopeId);
-      return res.json({ success: true, data: result });
+      void syncPortalEnvelopeAfterSignerFinished(verified.envelopeId)
+        .then(({ queue, status }) =>
+          console.info('[SignNow] portal finish synced', {
+            envelopeId: verified.envelopeId,
+            ...queue,
+            status,
+          }),
+        )
+        .catch((err) =>
+          console.warn('[SignNow] portal finish sync failed', {
+            envelopeId: verified.envelopeId,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      return res.json({ success: true, data: { accepted: true } });
     } catch (error: any) {
       return fail(res, error);
     }

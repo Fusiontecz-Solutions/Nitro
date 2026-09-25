@@ -594,6 +594,12 @@ model Document {
   /// copied. Persisting it here lets the signed-package email reach the same
   /// people who received the unsigned copy.
   ccEmails          String[]    @default([])
+  /// When the "contract signed" notice with the signed PDF reached the CC list.
+  /// Null until at least one CC address was emailed, so the application's
+  /// "Signed copy sent to CC" checkbox ticks itself only once delivery happened.
+  ccSignedNoticeSentAt DateTime?
+  /// CC addresses the signed-contract notice was actually delivered to.
+  ccSignedNoticeEmails String[] @default([])
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   userId            Int
@@ -667,6 +673,24 @@ model SignNowInviteSend {
 
   @@index([applicationId])
   @@index([sendStatus])
+}
+
+/// Owner review of a SignNow document group (envelopeId), persisted server-side.
+/// The CRM used to hold "review finished" only in browser memory, so a refresh,
+/// a closed tab or an expired session put the footer back on "Review in SignNow"
+/// for a package the preparer had already finished. `startedAt` is when the
+/// review link was minted (it also scopes SignNow's finish evidence to this
+/// review); `completedAt` is when SignNow confirmed the Finish.
+model SignNowReviewSession {
+  id             String    @id @default(uuid()) @db.Uuid
+  envelopeId     String    @unique
+  startedAt      DateTime
+  completedAt    DateTime?
+  fulfilledRoles String[]  @default([])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([completedAt])
 }
 
 model Addendum {

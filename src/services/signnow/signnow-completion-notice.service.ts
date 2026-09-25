@@ -157,23 +157,85 @@ export interface SendSignNowCompletionNoticeInput {
    * get the signed copy alongside the submissions inbox.
    */
   ccEmails?: string[] | null;
+  /**
+   * Email only the CC list. Used when catching up a CC notice for a package
+   * whose inbox copy already went out, so the submissions inbox is not sent a
+   * duplicate.
+   */
+  ccOnly?: boolean;
+}
+
+export interface SignNowCompletionNoticeResult {
+  emailed: string[];
+  emailedCc: string[];
+  /**
+   * CC addresses that received the notice, whether as a CC or because they are
+   * also on the inbox list (e.g. subs@ CC'd on the send). This is what the
+   * "Signed copy sent to CC" checkbox is recorded from.
+   */
+  ccReached: string[];
+  skippedReason?: string;
+}
+
+/** The entries of `ccEmails` that appear (case-insensitively) in `delivered`. */
+export function ccAddressesReached(ccEmails: string[], delivered: string[]): string[] {
+  const got = new Set(delivered.map((e) => String(e || '').trim().toLowerCase()));
+  return parseEmailList(ccEmails.join(',')).filter((e) => got.has(e.toLowerCase()));
+}
+
+/**
+ * The earliest logged completion notice for this envelope, if any, and which of
+ * `ccEmails` it reached. Lets a notice sent before delivery was recorded on the
+ * Document be recognised instead of being sent a second time.
+ */
+export async function findLoggedSignNowCompletionNotice(
+  groupId: string,
+  ccEmails: string[],
+): Promise<{ sentAt: Date; ccReached: string[] } | null> {
+  const id = String(groupId || '').trim();
+  if (!id) return null;
+  const rows = await prisma.outbound_communications.findMany({
+    where: {
+      AND: [
+        { metadata: { path: ['source'], equals: 'signnow_completion_notice' } },
+        { metadata: { path: ['groupId'], equals: id } },
+      ],
+    },
+    select: { createdAt: true, metadata: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (!rows.length) return null;
+  const delivered: string[] = [];
+  for (const row of rows) {
+    const meta = (row.metadata || {}) as { recipients?: unknown; ccEmails?: unknown };
+    for (const list of [meta.recipients, meta.ccEmails]) {
+      if (Array.isArray(list)) delivered.push(...list.map((e) => String(e || '')));
+    }
+  }
+  const ccReached = ccAddressesReached(ccEmails, delivered);
+  const firstReaching = rows.find((row) => {
+    const meta = (row.metadata || {}) as { recipients?: unknown; ccEmails?: unknown };
+    const lists = [meta.recipients, meta.ccEmails].filter(Array.isArray) as unknown[][];
+    return ccAddressesReached(ccReached, lists.flat().map((e) => String(e || ''))).length > 0;
+  });
+  return { sentAt: (firstReaching || rows[0]).createdAt, ccReached };
 }
 
 export async function sendSignNowCompletionNotice(
   input: SendSignNowCompletionNoticeInput,
-): Promise<{ emailed: string[]; emailedCc: string[]; skippedReason?: string }> {
+): Promise<SignNowCompletionNoticeResult> {
   const groupId = String(input.groupId || '').trim();
-  const recipients = resolveSignNowCompletionNoticeRecipients();
+  const recipients = input.ccOnly ? [] : resolveSignNowCompletionNoticeRecipients();
   const ccRecipients = mergeEmailLists(
     [],
     parseEmailList((input.ccEmails || []).join(',')),
   ).filter((email) => !recipients.some((r) => r.toLowerCase() === email.toLowerCase()));
   if (!recipients.length && !ccRecipients.length) {
-    return { emailed: [], emailedCc: [], skippedReason: 'no_recipients' };
+    return { emailed: [], emailedCc: [], ccReached: [], skippedReason: 'no_recipients' };
   }
   if (!isOutboundSmtpConfigured()) {
     console.warn('[SignNow] completion notice skipped: SMTP not configured.');
-    return { emailed: [], emailedCc: [], skippedReason: 'smtp_not_configured' };
+    return { emailed: [], emailedCc: [], ccReached: [], skippedReason: 'smtp_not_configured' };
   }
 
   const applicationId = String(input.applicationId || '').trim();
@@ -249,5 +311,6 @@ export async function sendSignNowCompletionNotice(
     }
   }
 
-  return { emailed, emailedCc };
+  const ccReached = ccAddressesReached(input.ccEmails || [], [...emailed, ...emailedCc]);
+  return { emailed, emailedCc, ccReached };
 }

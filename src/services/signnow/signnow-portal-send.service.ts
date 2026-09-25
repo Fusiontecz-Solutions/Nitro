@@ -2,7 +2,7 @@ import prisma from '../../config/prismaClient';
 import { sendSendGridMail, isSendGridConfigured, getSendGridMailFrom } from '../../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../../utils/crmFrontendUrl';
 import { createSignNowApiClient } from './utils/signnow-client';
-import { signNowService } from './signnow.service';
+import { assertPackageWasPrefilledByReview, signNowService } from './signnow.service';
 import {
   buildSigningPortalUrl,
   createSigningPortalToken,
@@ -11,14 +11,14 @@ import {
 import { buildSigningPortalEmailHtml } from './utils/signnow-portal-email';
 
 /**
- * CRM signing portal — contracts emailed by SendGrid instead of by SignNow.
+ * CRM signing portal Ã¢â‚¬â€ contracts emailed by SendGrid instead of by SignNow.
  *
  * Mirrors the reference flow: the preparer's existing document-group embedded
  * invite is kept, and each merchant remints a signing session from that SAME
  * invite when they open their portal link. No merchant-specific embedded invite
  * is created, so the review/invite bookkeeping SignNow already holds stays intact.
  *
- * Sending therefore costs no SignNow call at all — only the link remint at the
+ * Sending therefore costs no SignNow call at all Ã¢â‚¬â€ only the link remint at the
  * moment a merchant actually opens the portal.
  */
 
@@ -35,7 +35,7 @@ export type PortalSendResult = {
   recipientEmails: string[];
   sentAt: string;
   resent: boolean;
-  ccPrefilledEmail?: { emailed: string[]; skippedReason?: string };
+  ccPrefilledEmail?: { emailed: string[]; queued?: string[]; skippedReason?: string };
 };
 
 class BadRequest extends Error {
@@ -46,7 +46,7 @@ function normalizeEmail(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
 }
 
-/** Merchant signers only — the preparer is never a portal recipient. */
+/** Merchant signers only Ã¢â‚¬â€ the preparer is never a portal recipient. */
 export function resolvePortalRecipients(
   roles: Array<{ signerEmail?: string; signerName?: string; signerRole?: string }>,
   preparerEmail?: string | null,
@@ -135,7 +135,7 @@ export async function mintPortalSigningLink(input: {
     `/v2/document-groups/${envelopeId}/embedded-invites`,
     { validateStatus: () => true },
   );
-  // A non-2xx here is not proof that the contract has no invite — SignNow also
+  // A non-2xx here is not proof that the contract has no invite Ã¢â‚¬â€ SignNow also
   // answers 404/405 on this listing for some groups. Fall back to the group
   // payload's own invite id before telling the merchant to contact the funder.
   let inviteSigners = invitesRes.status >= 400 ? [] : collectInviteSigners(invitesRes.data);
@@ -290,7 +290,7 @@ export type PortalQueueEntry = {
 type PortalQueue = {
   envelopeId: string;
   contractLabel: string;
-  /** "{Funder} {Deal name} {$Amount}" — the actual email subject sent to signers. */
+  /** "{Funder} {Deal name} {$Amount}" Ã¢â‚¬â€ the actual email subject sent to signers. */
   emailSubject: string;
   funderName: string | null;
   replyToEmail: string | null;
@@ -463,18 +463,18 @@ async function signerHasFinished(envelopeId: string, email: string): Promise<boo
 
 /**
  * Sequential signing: email the next merchant only once the current one is done.
- * Safe to call repeatedly (portal open, status sync, webhook) — it is a no-op
+ * Safe to call repeatedly (portal open, status sync, webhook) Ã¢â‚¬â€ it is a no-op
  * unless SignNow confirms the signer who currently holds the contract finished.
  */
 export async function advancePortalSigningQueue(
   envelopeId: string,
-): Promise<{ advanced: boolean; emailed: string | null; done: boolean }> {
+): Promise<{ advanced: boolean; emailed: string | null; done: boolean; queued?: false }> {
   const id = String(envelopeId || '').trim();
-  if (!id) return { advanced: false, emailed: null, done: false };
+  if (!id) return { advanced: false, emailed: null, done: false, queued: false };
   const contract = await findContractForEnvelope(id);
-  if (!contract) return { advanced: false, emailed: null, done: false };
+  if (!contract) return { advanced: false, emailed: null, done: false, queued: false };
   const queue = readQueue(contract.overrides, id);
-  if (!queue) return { advanced: false, emailed: null, done: false };
+  if (!queue) return { advanced: false, emailed: null, done: false, queued: false };
 
   const pending = queue.recipients.find((row) => !row.completedAt);
   if (!pending) return { advanced: false, emailed: null, done: true };
@@ -522,6 +522,62 @@ export async function advancePortalSigningQueue(
 }
 
 /**
+ * SignNow settles a signature a few seconds after the signer is redirected back,
+ * so the first read can still report the signer (or the group) as pending.
+ */
+const PORTAL_FINISH_SYNC_DELAYS_MS = [0, 4_000, 10_000];
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Mirror a signer's portal finish onto the CRM as soon as they return.
+ *
+ * SignNow's event webhook cannot reach a CRM that is not publicly reachable,
+ * and the Contract tab only syncs on demand, so the deal sat on Contract Sent
+ * after the last merchant signed. The portal redirect is a signal the CRM gets
+ * regardless: it releases the next signer and, once nobody is left, reads the
+ * group status — which persists Contract Signed, pushes the realtime update and
+ * sends the signed copy to the CC list. Bounded retries cover SignNow's settling
+ * delay; nothing here polls.
+ */
+export async function syncPortalEnvelopeAfterSignerFinished(
+  envelopeId: string,
+  delaysMs: number[] = PORTAL_FINISH_SYNC_DELAYS_MS,
+): Promise<{ queue: Awaited<ReturnType<typeof advancePortalSigningQueue>>; status: string | null }> {
+  const id = String(envelopeId || '').trim();
+  let queue: Awaited<ReturnType<typeof advancePortalSigningQueue>> = {
+    advanced: false,
+    emailed: null,
+    done: false,
+  };
+  if (!id) return { queue, status: null };
+
+  for (const delay of delaysMs) {
+    if (delay > 0) await wait(delay);
+    queue = await advancePortalSigningQueue(id);
+    // No sequential queue (sent before queues existed): the group status alone decides.
+    if (!queue.done && queue.queued !== false) {
+      // The next signer was just invited: the contract is not finished yet.
+      if (queue.advanced) return { queue, status: null };
+      // SignNow has not registered this signer's finish yet.
+      continue;
+    }
+    const document = await prisma.document.findUnique({
+      where: { envelopeId: id },
+      select: { applicationId: true },
+    });
+    const result = await signNowService.getGroupStatus(
+      id,
+      document?.applicationId ? String(document.applicationId) : undefined,
+    );
+    if (result.status === 'completed' || result.status === 'voided') {
+      return { queue, status: result.status };
+    }
+  }
+  return { queue, status: null };
+}
+
+/**
  * Email each merchant a signing-portal link via SendGrid.
  * Marks the contract portal-sent so status sync does not read the preparer's
  * embedded invite as an unfinished owner review and revert it to draft.
@@ -535,8 +591,10 @@ export async function sendContractViaPortal(input: {
   /** Current CRM values, built by the same payload builder the SignNow send uses. */
   prefillFields?: Array<{ id: string; value: string }>;
   roles?: Array<{ roleName?: string; name?: string; email?: string }>;
-  /** Copy-only recipients (never a signer) — emailed the contract package once merchants are sent. */
+  /** Copy-only recipients (never a signer) Ã¢â‚¬â€ emailed the contract package once merchants are sent. */
   ccEmails?: string[];
+  /** Live "$25 wire fee" checkbox from the contract modal. */
+  includeWireFee?: unknown;
 }): Promise<PortalSendResult> {
   const envelopeId = String(input.envelopeId || '').trim();
   if (!envelopeId) throw new BadRequest('Missing contract id.');
@@ -557,14 +615,17 @@ export async function sendContractViaPortal(input: {
 
   const existing = await prisma.document.findUnique({
     where: { envelopeId },
-    select: { portalSentAt: true, sentAt: true, applicationId: true },
+    select: { portalSentAt: true, sentAt: true, applicationId: true, prefillFingerprint: true },
   });
   const resent = Boolean(existing?.portalSentAt || existing?.sentAt);
+  // Same guard as the SignNow invite send: an unprefilled package goes out blank.
+  if (!resent) assertPackageWasPrefilledByReview(existing?.prefillFingerprint);
 
-  // "{Selected funder} {Deal name} {$Amount}" — same subject format the SignNow
+  // "{Selected funder} {Deal name} {$Amount}" Ã¢â‚¬â€ same subject format the SignNow
   // group-invite send uses, so a portal send for e.g. Obsidian reads
   // "Obsidian <deal name> $<amount>" instead of the generic contract label.
-  const emailSubject = await signNowService.resolveInviteEmailSubject({
+  // A CRM read, independent of the SignNow publish below Ã¢â‚¬â€ run alongside it.
+  const emailSubjectPromise = signNowService.resolveInviteEmailSubject({
     title: input.contractLabel,
     applicationId: existing?.applicationId || undefined,
     prefillFields: input.prefillFields,
@@ -578,15 +639,30 @@ export async function sendContractViaPortal(input: {
    * reuses the embedded invite minted during Owner review, where every field is
    * still Owner-assigned, so without this the merchant opens a contract showing
    * only signature and initial widgets. `sendEnvelope` does the same publish
-   * before a SignNow group invite — that is why the SignNow send showed the
+   * before a SignNow group invite Ã¢â‚¬â€ that is why the SignNow send showed the
    * reference, landlord and bank-portal fields and the portal send did not.
    */
+  let emailSubject: string;
   try {
-    await signNowService.publishGroupFieldsToMerchant(envelopeId, {
-      keepParty2: recipients.length > 1,
-      prefillFields: input.prefillFields,
-      roles: input.roles as never,
-    });
+    const [published, subject] = await Promise.all([
+      signNowService.publishGroupFieldsToMerchant(envelopeId, {
+        keepParty2: recipients.length > 1,
+        prefillFields: input.prefillFields,
+        roles: input.roles as never,
+        includeWireFee: input.includeWireFee,
+      }),
+      emailSubjectPromise,
+    ]);
+    emailSubject = subject;
+    if (published.failed.length) {
+      // A document whose publish failed still carries Owner-only values, so the
+      // merchant would open it blank. Emailing it is the empty-contract send.
+      const reason = Object.values(published.errors).find(Boolean) || '';
+      throw new Error(
+        `publish failed for ${published.failed.length} of ${published.documentCount} documents` +
+          (reason ? `: ${reason.slice(0, 200)}` : ''),
+      );
+    }
   } catch (publishError) {
     // Emailing a contract whose fields are still Owner-only is worse than a
     // failed send: the merchant signs an incomplete document.
@@ -596,7 +672,7 @@ export async function sendContractViaPortal(input: {
     });
     throw new BadRequest(
       'Could not prepare the contract fields for the merchant. Nothing was emailed. ' +
-        'Run Review in SignNow again, then send — the signing session was cleared ' +
+        'Run Review in SignNow again, then send Ã¢â‚¬â€ the signing session was cleared ' +
         'while the fields were being published.',
     );
   }
@@ -621,28 +697,36 @@ export async function sendContractViaPortal(input: {
 
   const recipientEmails: string[] = [];
   const failedEmails: string[] = [];
-  for (const recipient of queue.recipients) {
-    try {
-      await emailPortalInvite({
+  // Every merchant gets their own message, so there is no reason to wait for
+  // one SendGrid round trip before starting the next.
+  const outcomes = await Promise.allSettled(
+    queue.recipients.map((recipient) =>
+      emailPortalInvite({
         envelopeId,
         recipient,
         contractLabel: queue.contractLabel,
         emailSubject: queue.emailSubject,
         funderName: queue.funderName,
         replyToEmail: queue.replyToEmail,
-      });
+      }),
+    ),
+  );
+  outcomes.forEach((outcome, index) => {
+    const recipient = queue.recipients[index];
+    if (outcome.status === 'fulfilled') {
       recipient.emailedAt = sentAt.toISOString();
       recipientEmails.push(recipient.email);
-    } catch (emailError) {
-      // Leave emailedAt null so advancePortalSigningQueue retries this signer.
-      failedEmails.push(recipient.email);
-      console.warn('[SignNow] portal invite email failed; will retry on queue advance', {
-        envelopeId,
-        email: recipient.email,
-        error: emailError instanceof Error ? emailError.message : String(emailError),
-      });
+      return;
     }
-  }
+    // Leave emailedAt null so advancePortalSigningQueue retries this signer.
+    failedEmails.push(recipient.email);
+    const emailError = outcome.reason;
+    console.warn('[SignNow] portal invite email failed; will retry on queue advance', {
+      envelopeId,
+      email: recipient.email,
+      error: emailError instanceof Error ? emailError.message : String(emailError),
+    });
+  });
   if (!recipientEmails.length) {
     throw new BadRequest('Could not email the signing-portal link to any signer.');
   }
@@ -668,8 +752,10 @@ export async function sendContractViaPortal(input: {
    */
   await syncPortalSendWorkflow(envelopeId);
 
+  // CC copies (package PDF download + SendGrid) are delivered after the
+  // response; only the CC list itself is stored before returning.
   const ccPrefilledEmail = await signNowService
-    .notifyCcRecipientsOnSend(
+    .queueCcRecipientsOnSend(
       envelopeId,
       input.ccEmails,
       recipientEmails,
@@ -677,7 +763,7 @@ export async function sendContractViaPortal(input: {
     )
     .catch((err) => {
       console.warn('[SignNow] portal CC email failed:', err);
-      return { emailed: [] as string[], skippedReason: 'error' };
+      return { emailed: [] as string[], queued: [] as string[], skippedReason: 'error' };
     });
 
   console.info('[SignNow] contract emailed via signing portal', {

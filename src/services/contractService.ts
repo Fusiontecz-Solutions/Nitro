@@ -50,6 +50,7 @@ import {
 } from './contractOfferValueSync';
 import { resolveApplicationWhere } from './applicationService';
 import { resolveFunderProfile } from './funderProfileService';
+import { resolveSignedNoticeFunderCcEmails } from '../utils/contractCcDefaults';
 import { buildPrefixedDealId } from '../utils/applyFunderDealIdPrefix';
 import {
   contractStatesMatch,
@@ -514,6 +515,43 @@ function mapUploadedDocumentForResponse(row: Record<string, unknown>) {
     fileName: parsed.displayFileName || String(row.fileName ?? ''),
     documentType: explicitType || parsed.documentType || 'Other',
   };
+}
+
+/**
+ * Settle the "Signed copy sent to CC" record on a fully signed SignNow contract
+ * before it is returned: a notice already in the outbound log is recorded, and
+ * one that never reached the CC list is sent in the background. Mutates the
+ * selected `document` so this response already shows the recorded state.
+ */
+async function reconcileContractCcSignedNotice(
+  document: Record<string, any>,
+  applicationId?: string | null,
+): Promise<void> {
+  // The signed notice goes to the selected funder's CC only, not every address
+  // CC'd at send. Expose that list so the "Signed contract notification sent to
+  // CC" line names the same people the notice is actually sent to.
+  try {
+    document.ccSignedNoticeCcEmails = await resolveSignedNoticeFunderCcEmails(applicationId);
+  } catch (err) {
+    console.warn('[contract] funder CC for signed notice unavailable:', err);
+    document.ccSignedNoticeCcEmails = [];
+  }
+  const pending =
+    String(document?.status || '').toLowerCase() === 'completed' &&
+    !document?.ccSignedNoticeSentAt &&
+    document.ccSignedNoticeCcEmails.length > 0;
+  if (!pending) return;
+  try {
+    // Loaded lazily: the SignNow service is large and itself reaches into contract code.
+    const { signNowService } = await import('./signnow/signnow.service');
+    const recorded = await signNowService.reconcileCcSignedNotice(
+      String(document.envelopeId || ''),
+      applicationId,
+    );
+    if (recorded) Object.assign(document, recorded);
+  } catch (err) {
+    console.warn('[contract] CC signed notice reconcile failed:', err);
+  }
 }
 
 class ContractService {
@@ -1970,6 +2008,9 @@ class ContractService {
                 status: true,
                 sentAt: true,
                 completedAt: true,
+                ccEmails: true,
+                ccSignedNoticeSentAt: true,
+                ccSignedNoticeEmails: true,
                 updatedAt: true,
               },
             },
@@ -2016,6 +2057,9 @@ class ContractService {
                 status: true,
                 sentAt: true,
                 completedAt: true,
+                ccEmails: true,
+                ccSignedNoticeSentAt: true,
+                ccSignedNoticeEmails: true,
                 updatedAt: true,
               },
             },
@@ -2036,6 +2080,9 @@ class ContractService {
         paymentBank: { select: { id: true, bankName: true } },
       },
     });
+    if (row?.application?.document) {
+      await reconcileContractCcSignedNotice(row.application.document, row.application.id);
+    }
     if (row?.application) {
       await applyContractCompletedSyncToApplicationRecord(
         prisma,

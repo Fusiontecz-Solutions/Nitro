@@ -140,3 +140,124 @@ export function buildOfferPrefillOverrides(
 
   return out;
 }
+
+/**
+ * Disclosure lines that print the deal's total fee (origination + optional wire
+ * fee), by the CRM id and by every widget name the CRM screen posts it under.
+ * Keys are compared canonicalized (lower case, page suffix dropped).
+ */
+const DISCLOSURE_FEE_KEYS = new Set([
+  'disclosure_broker_fee',
+  'disclosure_page3_line_1',
+  'disclosure_fees_deducted',
+  'deducted_at_disbursement',
+  'fees_deducted',
+  'disclosure_origination_fee',
+]);
+
+/**
+ * Disclosure lines that print what is left of the advance after that fee.
+ * `Text Field 2` is the CA-style page 1 "funds provided directly" box, which is
+ * the line the merchant reads first.
+ */
+const DISCLOSURE_NET_KEYS = new Set([
+  'disclosure_page3_net',
+  'disclosure_recipient_funds',
+  'funding_provided_direct',
+  'disclosure_amount_financed',
+  'total_amount_of_fund_disbursed',
+  'total_amount_fund_disbursed',
+  'disbursement_amount',
+  'text field 2',
+]);
+
+function canonicalDisclosureKey(key: string): string {
+  return String(key || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/_p\d+$/, '');
+}
+
+function cents(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Keep the disclosure's fee and net lines on the same "$25 wire fee" choice as
+ * the contract's TOTAL FEES.
+ *
+ * The disclosure's own tab in the prefill editor saves its money lines, and the
+ * CRM screen posts that tab under the CRM ids *and* under the widget names
+ * (`Text Field 2`, `disclosure_recipient_funds_p3`, …). A widget-name key
+ * outranks every alias when a widget resolves, so a tab saved while the box was
+ * ticked kept the $25 after it was unticked: every funder's disclosure printed
+ * "funds provided directly 8,975.00" beside a contract NET AMOUNT of 9,000.00.
+ *
+ * `total_fees` has already been resolved from the live offer and the deal's
+ * wire-fee choice. A disclosure line that is off from it by exactly the wire fee
+ * is that stale toggle: fee lines are set to TOTAL FEES and net lines move by the
+ * same amount the other way. A net line only moves when it really is "advance −
+ * that stale fee (− any refinance)", so a line holding the whole advance, a
+ * refinance balance or a state's own itemization is never touched.
+ */
+export function alignDisclosureWireFeeWithTotalFees(
+  values: Record<string, string>,
+): Record<string, string> {
+  const totalFees = parseMoney(values.total_fees);
+  if (totalFees == null || !(totalFees > 0)) return values;
+  const funded = parseMoney(
+    values.purchase_price || values.approved_amount || values.funding_provided,
+  );
+  const refi = cents(
+    parseMoney(values.disclosure_page3_line_2) ?? parseMoney(values.refinance_amount) ?? 0,
+  );
+  const wire = CONTRACT_WIRE_FEE_USD;
+
+  const feeKeys: string[] = [];
+  const netKeys: string[] = [];
+  for (const key of Object.keys(values)) {
+    const canon = canonicalDisclosureKey(key);
+    if (DISCLOSURE_FEE_KEYS.has(canon)) feeKeys.push(key);
+    else if (DISCLOSURE_NET_KEYS.has(canon)) netKeys.push(key);
+  }
+
+  /** `staleFee − totalFees` when this line was saved under the other choice, else 0. */
+  const feeDrift = (key: string): number => {
+    const fee = parseMoney(values[key]);
+    if (fee == null) return 0;
+    const delta = cents(fee - totalFees);
+    return Math.abs(delta) === wire ? delta : 0;
+  };
+  const netDrift = (key: string): number => {
+    const net = parseMoney(values[key]);
+    if (net == null || !(net > 0) || funded == null || !(funded > 0)) return 0;
+    for (const deducted of refi > 0 ? [0, refi] : [0]) {
+      const delta = cents(funded - totalFees - deducted - net);
+      if (Math.abs(delta) === wire) return delta;
+    }
+    return 0;
+  };
+
+  let drift = 0;
+  for (const key of feeKeys) {
+    drift = feeDrift(key);
+    if (drift) break;
+  }
+  if (!drift) {
+    for (const key of netKeys) {
+      drift = netDrift(key);
+      if (drift) break;
+    }
+  }
+  if (!drift) return values;
+
+  const out = { ...values };
+  for (const key of feeKeys) {
+    if (feeDrift(key) === drift) out[key] = money(totalFees);
+  }
+  for (const key of netKeys) {
+    if (netDrift(key) === drift) out[key] = money((parseMoney(values[key]) as number) + drift);
+  }
+  return out;
+}

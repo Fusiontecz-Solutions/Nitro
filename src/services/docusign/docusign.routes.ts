@@ -27,6 +27,9 @@ import {
   sendEnvelope,
   getSignNowInviteDiagnostics,
   getSignNowReviewStatus,
+  getSignNowReviewState,
+  resetSignNowReviewState,
+  markSignNowReviewFinished,
   syncEnvelopeCc,
   getSignedPdf,
 } from './docusign.controller';
@@ -74,6 +77,10 @@ router.post('/send-envelope', authenticateToken, sendEnvelope);
 router.get('/signnow-invite-status', authenticateToken, requireAdmin, getSignNowInviteDiagnostics);
 /** Polled while the Review iframe is open — tells the CRM when Finish was clicked. */
 router.get('/signnow-review-status', authenticateToken, getSignNowReviewStatus);
+/** Persisted review state — survives CRM refresh, closed tabs and expired sessions. */
+router.get('/signnow-review-state', authenticateToken, getSignNowReviewState);
+router.post('/signnow-review-reset', authenticateToken, resetSignNowReviewState);
+router.post('/signnow-review-finished', authenticateToken, markSignNowReviewFinished);
 router.post('/sync-envelope-cc', authenticateToken, syncEnvelopeCc);
 // Email the contract to signers through the CRM signing portal (SendGrid)
 // instead of a SignNow group invite.

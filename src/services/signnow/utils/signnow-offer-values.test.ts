@@ -1,4 +1,7 @@
-import { buildOfferPrefillOverrides } from './signnow-offer-values';
+import {
+  alignDisclosureWireFeeWithTotalFees,
+  buildOfferPrefillOverrides,
+} from './signnow-offer-values';
 import { resolveOfferDerivedContractValues } from '../../contractOfferValueSync';
 import { resolveSignNowPrefillValue } from './signnow-field-map';
 
@@ -231,5 +234,112 @@ describe('disclosure estimated term on a weekly deal', () => {
   it('leaves a daily deal counting in days', () => {
     const overrides = buildOfferPrefillOverrides(source(LIVE_OFFER), {});
     expect(overrides.estimated_term_p2).toBe('10');
+  });
+});
+
+/**
+ * The deal from the bug report: $10,000 advance, $1,000 origination fee, the
+ * "$25 wire fee" box unticked. The contract read TOTAL FEES 1,000 / NET 9,000,
+ * while the disclosure's saved tab — written while the box was still ticked —
+ * printed 1,025 and "funds provided directly 8,975.00".
+ */
+describe('alignDisclosureWireFeeWithTotalFees', () => {
+  const unticked = {
+    purchase_price: '10,000.00',
+    total_fees: '1,000.00',
+    net_to_merchant: '9,000.00',
+    disclosure_broker_fee: '1,025.00',
+    disclosure_page3_line_1: '1,025.00',
+    disclosure_page3_line_2: '0.00',
+    disclosure_page3_net: '8,975.00',
+    disclosure_recipient_funds: '8,975.00',
+    funding_provided_direct: '8,975.00',
+    disclosure_amount_financed: '8,975.00',
+    disclosure_page3_subtotal: '10,000.00',
+  };
+
+  it('drops the stale $25 from every disclosure fee and net line', () => {
+    const out = alignDisclosureWireFeeWithTotalFees(unticked);
+    expect(out.disclosure_broker_fee).toBe('1,000.00');
+    expect(out.disclosure_page3_line_1).toBe('1,000.00');
+    expect(out.disclosure_page3_net).toBe('9,000.00');
+    expect(out.disclosure_recipient_funds).toBe('9,000.00');
+    expect(out.funding_provided_direct).toBe('9,000.00');
+    expect(out.disclosure_amount_financed).toBe('9,000.00');
+    expect(out.disclosure_page3_subtotal).toBe('10,000.00');
+  });
+
+  it('adds the $25 back when the box is ticked and the tab was saved without it', () => {
+    const out = alignDisclosureWireFeeWithTotalFees({
+      purchase_price: '10,000.00',
+      total_fees: '1,025.00',
+      disclosure_page3_line_1: '1,000.00',
+      disclosure_recipient_funds: '9,000.00',
+    });
+    expect(out.disclosure_page3_line_1).toBe('1,025.00');
+    expect(out.disclosure_recipient_funds).toBe('8,975.00');
+  });
+
+  it('keeps a refinance deduction and never shifts a line holding the whole advance', () => {
+    const out = alignDisclosureWireFeeWithTotalFees({
+      purchase_price: '10,000.00',
+      total_fees: '1,000.00',
+      disclosure_page3_line_1: '1,025.00',
+      disclosure_page3_line_2: '2,000.00',
+      disclosure_recipient_funds: '6,975.00',
+      disclosure_amount_financed: '10,000.00',
+    });
+    expect(out.disclosure_recipient_funds).toBe('7,000.00');
+    expect(out.disclosure_amount_financed).toBe('10,000.00');
+  });
+
+  /**
+   * The CRM screen also posts the saved tab under the widget names, and an exact
+   * widget name outranks every alias — this is the line the merchant saw.
+   */
+  it('corrects the widget-name keys the CRM screen posts, not just the CRM ids', () => {
+    const out = alignDisclosureWireFeeWithTotalFees({
+      purchase_price: '10,000.00',
+      total_fees: '1,000.00',
+      'Text Field 1': '10,000.00',
+      'Text Field 2': '8,975.00',
+      disclosure_recipient_funds_p3: '8,975.00',
+      disclosure_page3_net_p3: '8,975.00',
+      disclosure_page3_line_1_p3: '1,025.00',
+      disclosure_broker_fee_p3: '1,025.00',
+      disclosure_page3_subtotal_p3: '10,000.00',
+    });
+    expect(out['Text Field 2']).toBe('9,000.00');
+    expect(out.disclosure_recipient_funds_p3).toBe('9,000.00');
+    expect(out.disclosure_page3_net_p3).toBe('9,000.00');
+    expect(out.disclosure_page3_line_1_p3).toBe('1,000.00');
+    expect(out.disclosure_broker_fee_p3).toBe('1,000.00');
+    expect(out['Text Field 1']).toBe('10,000.00');
+    expect(out.disclosure_page3_subtotal_p3).toBe('10,000.00');
+  });
+
+  it('detects the stale toggle from the net line alone when no fee line is posted', () => {
+    const out = alignDisclosureWireFeeWithTotalFees({
+      purchase_price: '10,000.00',
+      total_fees: '1,000.00',
+      'Text Field 2': '8,975.00',
+    });
+    expect(out['Text Field 2']).toBe('9,000.00');
+  });
+
+  it('leaves a disclosure that already agrees with TOTAL FEES, or differs by another amount', () => {
+    const lines = (fee: string, net: string) => ({
+      ...unticked,
+      disclosure_broker_fee: fee,
+      disclosure_page3_line_1: fee,
+      disclosure_page3_net: net,
+      disclosure_recipient_funds: net,
+      funding_provided_direct: net,
+      disclosure_amount_financed: net,
+    });
+    const agreeing = lines('1,000.00', '9,000.00');
+    expect(alignDisclosureWireFeeWithTotalFees(agreeing)).toEqual(agreeing);
+    const stateItemized = lines('1,150.00', '8,850.00');
+    expect(alignDisclosureWireFeeWithTotalFees(stateItemized)).toEqual(stateItemized);
   });
 });

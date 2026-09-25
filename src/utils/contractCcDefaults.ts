@@ -116,6 +116,30 @@ export async function resolveContractCcDefaultsForApi(options: {
   };
 }
 
+/**
+ * Who gets the "contract signed" notice: the selected funder's CC only.
+ *
+ * The send-time CC list also holds addresses a user typed into the send dialog
+ * (e.g. admin@ / Mark@). Those receive the unsigned package, but the signed
+ * copy belongs to the funder, so it goes to the funder's CC (linked DocuSign
+ * account CC, else the funder profile CC) and nowhere else. The platform env
+ * default is not the funder's address, so it does not count.
+ */
+export async function resolveSignedNoticeFunderCcEmails(
+  applicationId: string | null | undefined,
+): Promise<string[]> {
+  const appId = String(applicationId || '').trim();
+  if (!appId) return [];
+  const contract = await prisma.contract.findUnique({
+    where: { applicationId: appId },
+    select: { id: true },
+  });
+  if (!contract) return [];
+  const defaults = await resolveContractCcDefaultsForApi({ contractId: contract.id });
+  if (defaults.source !== 'docusign' && defaults.source !== 'funder') return [];
+  return dedupeContractCcEmails(defaults.ccEmails);
+}
+
 export function isDefaultContractCcEmail(
   email: string,
   defaults?: ContractCcDefaultsPayload | null,

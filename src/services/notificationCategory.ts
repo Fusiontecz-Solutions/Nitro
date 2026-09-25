@@ -36,6 +36,7 @@ const TYPE_TO_CATEGORY: Record<string, NotificationCategory> = {
     contract: 'contracts',
     contract_signing: 'contracts',
     contract_signing_status: 'contracts',
+    contract_signed: 'contracts',
     // Collections — merchant repayments / ACH / bank movements.
     ach_authorization: 'collections',
     balance_transfer: 'collections',

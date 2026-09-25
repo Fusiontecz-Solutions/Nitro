@@ -10,6 +10,12 @@ import {
 } from '../signnow/utils/signnow-client';
 import { signNowService } from '../signnow/signnow.service';
 import { resolveSignNowAddendumTemplate } from '../signnow/utils/signnow-addendum-templates';
+import {
+  clearSignNowReviewSession,
+  readSignNowApplicationReviewState,
+  readSignNowReviewSession,
+  recordSignNowReviewCompleted,
+} from '../signnow/utils/signnow-review-session';
 import { isAchStandaloneLayoutRef } from './utils/standalone-package-docusign';
 
 function collectEnvelopeDocumentRefs(body: any): string[] {
@@ -909,6 +915,9 @@ export const sendEnvelope = async (req: Request, res: Response) => {
               }
             : undefined,
         requestId: requestId || undefined,
+        // Same live "$25 wire fee" checkbox the review build receives: without it
+        // the bake reads the contract row and re-adds an unchecked $25.
+        includeWireFee: req.body?.includeWireFee,
       });
       return res.json(result);
     }
@@ -955,6 +964,102 @@ export const getSignNowReviewStatus = async (req: Request, res: Response) => {
   } catch (error: any) {
     return res.status(error.status || 500).json({
       message: error?.message || 'Failed to read SignNow review status',
+    });
+  }
+};
+
+/**
+ * GET /docusign/signnow-review-state?applicationId=&verify=1
+ *
+ * The persisted Owner review state of the SignNow package linked to an
+ * application. The contract modal reads it on open and whenever its tab
+ * regains focus, so "Send via SignNow" survives a refresh, a closed tab or an
+ * expired session. With `verify=1` a review that is still open is checked
+ * against SignNow once, catching a Finish nobody in the CRM saw.
+ */
+export const getSignNowReviewState = async (req: Request, res: Response) => {
+  try {
+    const applicationId = String(req.query.applicationId || '').trim();
+    if (!applicationId) {
+      return res.status(400).json({ message: 'Missing applicationId' });
+    }
+    const state = await readSignNowApplicationReviewState(applicationId);
+    if (!state) {
+      return res.json({
+        applicationId,
+        envelopeId: null,
+        documentStatus: null,
+        phase: 'not_started',
+        reviewComplete: false,
+        reviewStartedAt: null,
+        reviewCompletedAt: null,
+      });
+    }
+    // Database only: this is polled while a review is open, and every SignNow
+    // call it made came out of the account's API budget for no answer — the
+    // invite-status route it asked does not exist. The Finish is recorded by
+    // the review tab's completion page instead (POST /signnow-review-finished).
+    return res.json(state);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to read SignNow review state',
+    });
+  }
+};
+
+/**
+ * POST /docusign/signnow-review-finished { envelopeId }
+ *
+ * The preparer clicked Finish: SignNow redirected the review tab to the CRM's
+ * completion page with `event=finish` (or the preparer confirmed it with
+ * "I've clicked Finish"). Recorded against the open review of that package
+ * only, so it survives the CRM tab being refreshed, closed or logged out.
+ */
+export const markSignNowReviewFinished = async (req: Request, res: Response) => {
+  try {
+    const envelopeId = String(req.body?.envelopeId || '').trim();
+    if (!envelopeId || !isSignNowEnvelopeId(envelopeId)) {
+      return res.status(400).json({ message: 'Missing envelopeId' });
+    }
+    const [session, document] = await Promise.all([
+      readSignNowReviewSession(envelopeId),
+      prisma.document.findUnique({
+        where: { envelopeId },
+        select: { status: true, sentAt: true, portalSentAt: true },
+      }),
+    ]);
+    const status = String(document?.status || '').toLowerCase();
+    const stillDraft =
+      !document || ((status === 'draft' || status === '') && !document.sentAt && !document.portalSentAt);
+    if (!session || !stillDraft) {
+      // No open review for this package (a stale tab, or it was already sent).
+      return res.json({ envelopeId, reviewComplete: false, recorded: false });
+    }
+    await recordSignNowReviewCompleted(envelopeId, ['Owner']);
+    return res.json({ envelopeId, reviewComplete: true, recorded: true });
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to record SignNow review finish',
+    });
+  }
+};
+
+/**
+ * POST /docusign/signnow-review-reset { envelopeId }
+ * The user walked back to change details: the finished review no longer
+ * matches what will be sent, so the CRM must ask for a new one.
+ */
+export const resetSignNowReviewState = async (req: Request, res: Response) => {
+  try {
+    const envelopeId = String(req.body?.envelopeId || '').trim();
+    if (!envelopeId) {
+      return res.status(400).json({ message: 'Missing envelopeId' });
+    }
+    await clearSignNowReviewSession(envelopeId);
+    return res.json({ envelopeId, reset: true });
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to reset SignNow review state',
     });
   }
 };

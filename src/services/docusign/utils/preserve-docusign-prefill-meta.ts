@@ -14,6 +14,14 @@ export const DOCUSIGN_ENVELOPE_PREFILL_META_KEYS = [
   'documentTemplatePrefillByMappingId',
   'lastAchSentFunder',
   'contractSignerOverrides',
+  /**
+   * The "$25 wire fee" choice a SignNow review was built with (see
+   * `persistIncludeWireFeePreference`). The prefill editor always writes it, so
+   * this only keeps it when a save that knows nothing about it — send history,
+   * signer rows — rebuilds the blob from an older copy. Dropping it made Send
+   * fall back to "on" and re-add $25 the review had left out.
+   */
+  'includeWireFee',
 ] as const;
 
 /**

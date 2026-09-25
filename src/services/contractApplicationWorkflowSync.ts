@@ -507,6 +507,18 @@ export async function syncApplicationToContractSignedWhenContractCompleted(
 
   invalidateAllApplicationStatsCache();
 
+  // The most important move of all: without this, a SignNow completion updated
+  // the row but open CRM tabs kept showing Contract Sent until a manual refresh.
+  broadcastStageChange(
+    prismaClient,
+    applicationId,
+    updated.currentQueue,
+    application.currentQueue,
+    meta,
+  );
+
+  notifyFullySigned(prismaClient, applicationId, meta);
+
   console.log('[Contract→Application Sync]', {
     event: 'sync_applied',
     applicationId,
@@ -519,6 +531,33 @@ export async function syncApplicationToContractSignedWhenContractCompleted(
   });
 
   return true;
+}
+
+/**
+ * Inbox + push notice that the contract is fully signed. Fire-and-forget and
+ * held back past a surrounding transaction's commit, like the stage broadcast.
+ */
+function notifyFullySigned(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  meta: ContractWorkflowSyncMeta,
+): void {
+  const delayMs = prismaClient !== prisma ? POST_COMMIT_BROADCAST_DELAY_MS : 0;
+  setTimeout(() => {
+    void import('./contractSigningStatusEffects')
+      .then(({ notifyContractFullySigned }) =>
+        notifyContractFullySigned({
+          applicationId,
+          provider: providerFromSyncSource(meta.source),
+        }),
+      )
+      .catch((err) => {
+        console.warn('[Contract→Application Sync] fully-signed notification failed', {
+          applicationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }, delayMs).unref?.();
 }
 
 /** Backfill sync when reading a contract that is already COMPLETED. */

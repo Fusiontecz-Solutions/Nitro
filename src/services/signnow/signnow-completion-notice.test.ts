@@ -14,7 +14,10 @@
 jest.mock('puppeteer', () => ({ __esModule: true, default: {} }));
 jest.mock('../../config/prismaClient', () => ({
   __esModule: true,
-  default: { application: { findUnique: jest.fn(async () => null) } },
+  default: {
+    application: { findUnique: jest.fn(async () => null) },
+    outbound_communications: { findMany: jest.fn(async () => []) },
+  },
 }));
 jest.mock('../../config/nodemailer', () => ({
   __esModule: true,
@@ -26,7 +29,9 @@ jest.mock('../outboundCommunicationService', () => ({
 }));
 
 import sendMail from '../../config/nodemailer';
+import prisma from '../../config/prismaClient';
 import {
+  findLoggedSignNowCompletionNotice,
   resolveSignNowCompletionNoticeRecipients,
   sendSignNowCompletionNotice,
 } from './signnow-completion-notice.service';
@@ -114,5 +119,69 @@ describe('sendSignNowCompletionNotice', () => {
         ([args]) => String(args.to).toLowerCase() === 'contracts@nitroadvance.com',
       ),
     ).toHaveLength(1);
+  });
+
+  it('counts a CC address that is also an inbox recipient as reached', async () => {
+    const result = await sendSignNowCompletionNotice({
+      groupId: 'group-1',
+      contractLabel: 'Acme LLC',
+      ccEmails: ['Subs@nitroadvance.com', 'broker@example.com'],
+    });
+
+    expect(result.emailedCc).toEqual(['broker@example.com']);
+    expect(result.ccReached).toEqual(['Subs@nitroadvance.com', 'broker@example.com']);
+  });
+
+  it('emails only the CC list on a CC-only catch-up, so the inbox gets no duplicate', async () => {
+    const result = await sendSignNowCompletionNotice({
+      groupId: 'group-1',
+      contractLabel: 'Acme LLC',
+      ccEmails: ['subs@nitroadvance.com', 'broker@example.com'],
+      ccOnly: true,
+    });
+
+    expect(result.emailed).toEqual([]);
+    expect(result.emailedCc).toEqual(['subs@nitroadvance.com', 'broker@example.com']);
+    expect(sendMailMock.mock.calls.map(([args]) => args.to)).toEqual([
+      'subs@nitroadvance.com',
+      'broker@example.com',
+    ]);
+  });
+});
+
+describe('findLoggedSignNowCompletionNotice', () => {
+  const findManyMock = (prisma as any).outbound_communications.findMany as jest.Mock;
+
+  it('recognises a notice logged before delivery was recorded on the Document', async () => {
+    const sentAt = new Date('2026-09-24T18:52:57.168Z');
+    findManyMock.mockResolvedValueOnce([
+      {
+        createdAt: sentAt,
+        metadata: {
+          source: 'signnow_completion_notice',
+          groupId: 'group-1',
+          recipients: ['subs@nitroadvance.com', 'contracts@nitroadvance.com'],
+          ccEmails: ['admin@nitroadvance.com', 'Mark@nitroadvance.com'],
+        },
+      },
+    ]);
+
+    const logged = await findLoggedSignNowCompletionNotice('group-1', [
+      'subs@nitroadvance.com',
+      'admin@nitroadvance.com',
+      'mark@nitroadvance.com',
+    ]);
+
+    expect(logged?.sentAt).toEqual(sentAt);
+    expect(logged?.ccReached).toEqual([
+      'subs@nitroadvance.com',
+      'admin@nitroadvance.com',
+      'mark@nitroadvance.com',
+    ]);
+  });
+
+  it('returns null when no notice was ever logged', async () => {
+    findManyMock.mockResolvedValueOnce([]);
+    expect(await findLoggedSignNowCompletionNotice('group-1', ['a@example.com'])).toBeNull();
   });
 });

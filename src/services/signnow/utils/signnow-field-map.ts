@@ -711,6 +711,35 @@ export function isMonthlyFeeAccountHolderNameField(
   );
 }
 
+/**
+ * The bank-authorization blocks print their holder address as
+ * "c. Account Holder Business Address:" — Exhibit C on every funder (Nitro and
+ * Tiberian's named `ach_account_holder_address_p1`, Obsidian's positional
+ * `Text Field 3`) and the agreement's own ACH page (`ach_account_holder_address_p19`).
+ * That line is the business's physical address. Resolving it through the
+ * `ach_account_holder_address` chain printed Owner 1's home address there.
+ *
+ * The Monthly Fee block is the exception and keeps Owner 1's address: it prints
+ * the business address on a line of its own above the holder block (see
+ * `MONTHLY_FEE_TEXT_FIELD_CRM_IDS`), and it names its holder widget
+ * `ach_account_holder_address_p1` both as a standalone addendum and on the last
+ * page of the agreement — the same rule `isMonthlyFeeAccountHolderNameField`
+ * uses for the holder name beside it.
+ */
+export function isAccountHolderBusinessAddressField(
+  fieldName: string,
+  options?: SignNowPrefillOptions,
+): boolean {
+  const n = String(fieldName || '').trim().toLowerCase();
+  const canon = canonicalizeSignNowFieldName(n);
+  if (canon !== 'ach_account_holder_address' && canon !== 'ach_authorization_account_holder_address') {
+    return false;
+  }
+  if (options?.documentKind === 'exhibit_c') return true;
+  if (options?.documentKind === 'monthly_fee') return false;
+  return n !== 'ach_account_holder_address_p1';
+}
+
 export function isMonthlyFeeForcedBlankField(fieldName: string): boolean {
   const numbered = String(fieldName || '')
     .trim()
@@ -1990,7 +2019,8 @@ export function resolveAchProgramFeeAmount(map: Map<string, string>): number {
 /**
  * Page-2 TOTAL FEES widget. Nitro leaves it on SignNow's default `Text Field 34`
  * (mapped through the alias table); Tiberian names it `p1_totalfee`. Both must
- * reach the computed underwriting + ACH total rather than the bare fee field.
+ * reach the computed TOTAL FEES (underwriting + optional wire fee) rather than
+ * the bare fee field.
  */
 function isTotalFeesField(canon: string): boolean {
   return canon === 'total_fees' || canon === 'p1_totalfee';
@@ -2326,6 +2356,23 @@ export function resolveSignNowPrefillValue(
   if (party2Field && !distinctParty2 && !allowOwner1Party2Fallback && !einField) {
     return '';
   }
+  /**
+   * Exhibit C and ACH Daily print the same `ach_account_holder_address_p1`
+   * widget as their "Account Holder Business Address", so the package-wide value
+   * under that name is the business. The Monthly Fee's holder block is Owner 1,
+   * so it resolves without that shared entry, through the holder / guarantor
+   * alias chain.
+   */
+  if (options?.documentKind === 'monthly_fee' && canon === 'ach_account_holder_address') {
+    const sharedKeys = Object.keys(prefill).filter(
+      (key) => key.trim().toLowerCase() === 'ach_account_holder_address_p1',
+    );
+    if (sharedKeys.length) {
+      const withoutShared = { ...prefill };
+      for (const key of sharedKeys) delete withoutShared[key];
+      return resolveSignNowPrefillValue(fieldName, withoutShared, options);
+    }
+  }
   const map = lookupMap(prefill);
 
   if (options?.documentKind === 'ach_weekly') {
@@ -2362,7 +2409,13 @@ export function resolveSignNowPrefillValue(
       const crmId = MONTHLY_FEE_TEXT_FIELD_CRM_IDS[Number(numbered[1]) - 1];
       if (crmId === '') return '';
       if (crmId) {
-        const fromMonthly = resolveSignNowPrefillValue(crmId, prefill);
+        // The holder address keeps its Monthly Fee meaning (Owner 1); resolved
+        // bare, the crm id would read as an Account Holder Business Address.
+        const fromMonthly = resolveSignNowPrefillValue(
+          crmId,
+          prefill,
+          crmId === 'ach_account_holder_address' ? options : undefined,
+        );
         if (fromMonthly) return fromMonthly;
       }
     }
@@ -2433,6 +2486,16 @@ export function resolveSignNowPrefillValue(
     return '';
   }
 
+  /**
+   * "Account Holder Business Address" — the business physical address, composed
+   * with its city/state/zip, and never Owner 1's (see
+   * `isAccountHolderBusinessAddressField`). A deal with no business address on
+   * file leaves the line blank rather than printing another party's address.
+   */
+  if (isAccountHolderBusinessAddressField(raw, options)) {
+    return resolveSignNowPrefillValue('business_address', prefill);
+  }
+
   if (isRemittanceStartDateField(raw)) {
     return resolveRemittanceStartDate(map);
   }
@@ -2482,8 +2545,9 @@ export function resolveSignNowPrefillValue(
   }
 
   /**
-   * TOTAL FEES must be the underwriting fee plus the ACH program fee, so it is
-   * computed here rather than let the alias chain return the bare fee field.
+   * TOTAL FEES is the underwriting fee plus the $25 wire fee only when the deal's
+   * box is ticked — never the ACH program fee — so it is computed here rather
+   * than let the alias chain return the bare fee field.
    */
   if (isTotalFeesField(canon)) {
     const total = resolveForcedContractMoneyField('total_fees', map);

@@ -102,6 +102,17 @@ export function getSendGridMailFrom(): string {
     return `"${name}" <${address}>`;
 }
 
+/**
+ * Bounds on one SMTP conversation. Nodemailer's defaults (2 min to connect,
+ * 10 min of socket silence) let a stalled relay hold a contract send open far
+ * past any request timeout; these fail fast enough for a retry to matter.
+ */
+const SMTP_TIMEOUTS = {
+    connectionTimeout: 15_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 45_000,
+};
+
 function createSendGridTransporter() {
     const port = Number(process.env.SENDGRID_SMTP_PORT) || 587;
     return nodemailer.createTransport({
@@ -112,7 +123,84 @@ function createSendGridTransporter() {
             user: 'apikey',
             pass: sendgridApiKey,
         },
+        ...SMTP_TIMEOUTS,
     });
+}
+
+let cachedSendGridTransporter: ReturnType<typeof createSendGridTransporter> | null = null;
+
+/** One SendGrid SMTP transporter per process instead of one per message. */
+function getSendGridTransporter() {
+    if (!cachedSendGridTransporter) cachedSendGridTransporter = createSendGridTransporter();
+    return cachedSendGridTransporter;
+}
+
+/** SendGrid HTTP API: per-attempt timeout and bounded retries. */
+const SENDGRID_HTTP_TIMEOUT_MS = 20_000;
+const SENDGRID_HTTP_MAX_ATTEMPTS = 3;
+
+/**
+ * Only failures where SendGrid did not accept the message are retried: 429 and
+ * 5xx responses, and connection errors raised before any response arrived. A
+ * timeout is not retried — the request may have been accepted, and a retry
+ * would email the recipient twice.
+ */
+export function isRetryableSendGridFailure(input: {
+    status?: number;
+    error?: unknown;
+}): boolean {
+    if (typeof input.status === 'number') {
+        return input.status === 429 || input.status >= 500;
+    }
+    const err = input.error as { name?: string; code?: string; cause?: { code?: string } } | null;
+    if (!err) return false;
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') return false;
+    const code = String(err.code || err.cause?.code || '').toUpperCase();
+    return ['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT'].includes(
+        code,
+    );
+}
+
+function sendGridRetryDelayMs(attempt: number, retryAfterHeader?: string | null): number {
+    const retryAfter = Number(retryAfterHeader);
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+        return Math.min(10_000, retryAfter * 1000);
+    }
+    return 750 * 2 ** (attempt - 1);
+}
+
+const sleepMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function postToSendGridMailApi(body: string): Promise<Response> {
+    for (let attempt = 1; ; attempt += 1) {
+        let response: Response;
+        try {
+            response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${sendgridApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body,
+                signal: AbortSignal.timeout(SENDGRID_HTTP_TIMEOUT_MS),
+            });
+        } catch (error) {
+            if (attempt < SENDGRID_HTTP_MAX_ATTEMPTS && isRetryableSendGridFailure({ error })) {
+                await sleepMs(sendGridRetryDelayMs(attempt));
+                continue;
+            }
+            throw error;
+        }
+        if (
+            !response.ok &&
+            attempt < SENDGRID_HTTP_MAX_ATTEMPTS &&
+            isRetryableSendGridFailure({ status: response.status })
+        ) {
+            await sleepMs(sendGridRetryDelayMs(attempt, response.headers.get('retry-after')));
+            continue;
+        }
+        return response;
+    }
 }
 
 /**
@@ -139,6 +227,7 @@ function createTransporter() {
             user: process.env.SMTP_AUTH_USER,
             pass: process.env.SMTP_AUTH_PASS,
         },
+        ...SMTP_TIMEOUTS,
     });
 }
 
@@ -380,14 +469,7 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
 
     const recipients = normalizeRecipients(to).map((r) => r.email);
 
-    const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${sendgridApiKey}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-    });
+    const response = await postToSendGridMailApi(JSON.stringify(payload));
 
     if (!response.ok) {
         const errorBody = await response.text();
@@ -508,7 +590,7 @@ async function deliverSendGridMailOnce(options: SendMailOptions): Promise<SendMa
         });
     }
 
-    const transporter = createSendGridTransporter();
+    const transporter = getSendGridTransporter();
     const {
         to,
         subject,

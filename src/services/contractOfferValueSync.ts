@@ -257,6 +257,57 @@ export function readIncludeWireFeeFromOverrides(overrides: unknown): boolean {
   return resolveIncludeWireFee(raw);
 }
 
+/**
+ * Save the "$25 wire fee" choice a SignNow review was built with onto the contract.
+ *
+ * The checkbox is a live form value: the review request carries it, but nothing
+ * wrote it back, so Send / the portal publish — which bake the merchant's copy
+ * from the contract row — resolved it as "on" and printed TOTAL FEES $25 higher
+ * than the review the preparer had just approved. Recording it here makes every
+ * later step bake the same fees as the review, on every funder.
+ *
+ * A no-op when the value is absent or already stored; never throws.
+ */
+export async function persistIncludeWireFeePreference(
+  target: { contractId?: number | string | null; applicationId?: string | null },
+  value: unknown,
+): Promise<void> {
+  if (value === undefined || value === null || String(value).trim() === '') return;
+  const contractId = Number(target.contractId);
+  const appId = String(target.applicationId || '').trim();
+  const where =
+    Number.isFinite(contractId) && contractId > 0
+      ? { id: contractId }
+      : appId
+        ? { applicationId: appId }
+        : null;
+  if (!where) return;
+  const stored = resolveIncludeWireFee(value) ? 'true' : 'false';
+  try {
+    const contract = await prisma.contract.findUnique({
+      where: where as { id: number } | { applicationId: string },
+      select: { id: true, contractPrefillOverrides: true },
+    });
+    if (!contract) return;
+    const raw = contract.contractPrefillOverrides;
+    const overrides =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {};
+    if (String(overrides.includeWireFee ?? '').trim() === stored) return;
+    await prisma.contract.update({
+      where: { id: contract.id },
+      data: { contractPrefillOverrides: { ...overrides, includeWireFee: stored } },
+    });
+  } catch (err) {
+    console.warn('[contractOfferValueSync] could not save the wire fee preference', {
+      contractId: target.contractId ?? null,
+      applicationId: appId || null,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export type ContractOfferPrefillSource = {
   values: OfferDerivedContractValues | null;
   /** Whether the deal's $25 wire fee is switched on. */

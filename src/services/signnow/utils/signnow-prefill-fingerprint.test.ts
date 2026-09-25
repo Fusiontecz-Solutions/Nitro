@@ -1,6 +1,7 @@
 import {
   buildSignNowPrefillFingerprint,
   resolveSignNowPrefillReuse,
+  resolveSignNowPrewarmLink,
   SIGNNOW_PRISTINE_PREFILL_FINGERPRINT,
 } from './signnow-prefill-fingerprint';
 
@@ -113,5 +114,63 @@ describe('resolveSignNowPrefillReuse', () => {
         currentFingerprint: 'def',
       }).reuse,
     ).toBe(false);
+  });
+});
+
+describe('resolveSignNowPrewarmLink', () => {
+  const GROUP = 'group-1';
+  const REVIEWED = 'a'.repeat(64);
+
+  it('links when the application has no document yet', () => {
+    expect(
+      resolveSignNowPrewarmLink({ live: null, warmGroupId: GROUP, reviewFinished: false }),
+    ).toEqual({ link: true, reason: 'no_linked_document' });
+  });
+
+  it('re-links an open pristine draft', () => {
+    expect(
+      resolveSignNowPrewarmLink({
+        live: { envelopeId: GROUP, status: 'draft', prefillFingerprint: SIGNNOW_PRISTINE_PREFILL_FINGERPRINT },
+        warmGroupId: GROUP,
+        reviewFinished: false,
+      }).link,
+    ).toBe(true);
+  });
+
+  it('never downgrades a group Review already prefilled back to pristine', () => {
+    expect(
+      resolveSignNowPrewarmLink({
+        live: { envelopeId: GROUP, status: 'draft', prefillFingerprint: REVIEWED },
+        warmGroupId: GROUP,
+        reviewFinished: false,
+      }),
+    ).toEqual({ link: false, reason: 'already_prefilled_by_review' });
+  });
+
+  it('still parks a new warm group when the linked one was built from other values', () => {
+    expect(
+      resolveSignNowPrewarmLink({
+        live: { envelopeId: 'older-group', status: 'draft', prefillFingerprint: REVIEWED },
+        warmGroupId: GROUP,
+        reviewFinished: false,
+      }).link,
+    ).toBe(true);
+  });
+
+  it('does not touch a finished review or a document that left draft', () => {
+    expect(
+      resolveSignNowPrewarmLink({
+        live: { envelopeId: 'older-group', status: 'draft', prefillFingerprint: null },
+        warmGroupId: GROUP,
+        reviewFinished: true,
+      }).reason,
+    ).toBe('review_finished');
+    expect(
+      resolveSignNowPrewarmLink({
+        live: { envelopeId: GROUP, status: 'sent', prefillFingerprint: REVIEWED },
+        warmGroupId: GROUP,
+        reviewFinished: false,
+      }).reason,
+    ).toBe('not_open_draft');
   });
 });

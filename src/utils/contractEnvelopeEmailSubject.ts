@@ -90,10 +90,12 @@ export function extractContractEmailContextFromPrefill(
     return '';
   };
   return {
+    // `client_name` is Owner 1's personal name, not the business — reading it
+    // here titled packages after the signer ("… MARY IRVIN …"). With no business
+    // key in the payload the caller falls back to the CRM's business name.
     businessName:
       pick(
         'client_legal_name',
-        'client_name',
         'legal_name',
         'business_legal_name',
         'merchant_legal_name',

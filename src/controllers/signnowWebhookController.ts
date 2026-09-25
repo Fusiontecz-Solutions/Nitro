@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import { signNowService } from '../services/signnow/signnow.service';
+import { advancePortalSigningQueue } from '../services/signnow/signnow-portal-send.service';
 
 /**
  * SignNow delivers events as `{ meta: { event }, content: { … } }`. Which id
@@ -29,6 +31,36 @@ function collectCandidateIds(body: unknown): string[] {
     out.push(id);
   }
   return out;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+/**
+ * SignNow signs every callback with the subscription's `secret_key`:
+ * `X-SignNow-Signature` is base64(HMAC-SHA256(raw body)). Comparing that header
+ * to the secret itself rejected every signed callback. The plain secret is still
+ * accepted (in either header) for subscriptions registered as a custom header.
+ */
+export function isValidSignNowWebhookSignature(
+  secret: string,
+  rawBody: Buffer | string | undefined,
+  signatureHeader: string,
+  sharedSecretHeader: string,
+): boolean {
+  const key = String(secret || '').trim();
+  if (!key) return true;
+  const shared = String(sharedSecretHeader || '').trim();
+  if (shared && safeEqual(shared, key)) return true;
+  const signature = String(signatureHeader || '').trim();
+  if (!signature) return false;
+  if (safeEqual(signature, key)) return true;
+  if (rawBody === undefined) return false;
+  const digest = crypto.createHmac('sha256', key).update(rawBody).digest();
+  return safeEqual(signature, digest.toString('base64')) || safeEqual(signature, digest.toString('hex'));
 }
 
 export function signNowWebhookEventName(body: unknown): string {
@@ -71,15 +103,16 @@ export async function resolveSignNowEnvelopeId(
  */
 export async function handleSignNowWebhook(req: Request, res: Response): Promise<void> {
   const expectedSecret = String(process.env.SIGNNOW_WEBHOOK_SECRET || '').trim();
-  if (expectedSecret) {
-    const provided = String(
-      req.header('x-signnow-signature') || req.header('x-webhook-secret') || '',
-    ).trim();
-    if (provided !== expectedSecret) {
-      console.warn('[SignNow webhook] rejected: shared secret mismatch');
-      res.status(401).json({ success: false, message: 'Invalid webhook secret' });
-      return;
-    }
+  const signatureOk = isValidSignNowWebhookSignature(
+    expectedSecret,
+    (req as Request & { rawBody?: Buffer }).rawBody,
+    String(req.header('x-signnow-signature') || ''),
+    String(req.header('x-webhook-secret') || ''),
+  );
+  if (!signatureOk) {
+    console.warn('[SignNow webhook] rejected: signature mismatch');
+    res.status(401).json({ success: false, message: 'Invalid webhook signature' });
+    return;
   }
 
   const event = signNowWebhookEventName(req.body);
@@ -103,6 +136,13 @@ export async function handleSignNowWebhook(req: Request, res: Response): Promise
   }
 
   try {
+    // A signer who finished without the portal redirect (closed the tab, or
+    // signed from SignNow's own email) still releases the next signer.
+    try {
+      await advancePortalSigningQueue(resolved.envelopeId);
+    } catch (queueError) {
+      console.warn('[SignNow webhook] portal queue advance failed', queueError);
+    }
     const status = await signNowService.getGroupStatus(
       resolved.envelopeId,
       resolved.applicationId || undefined,

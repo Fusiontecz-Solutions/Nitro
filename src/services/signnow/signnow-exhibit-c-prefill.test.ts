@@ -185,6 +185,32 @@ describe('signNowDocumentPrefillValues', () => {
     expect(MERCHANT_VALUES.client_name).toBe('MARY IRVIN');
   });
 
+  it('keeps the business address when entity 1 carries the guarantor home address', () => {
+    const { values } = signNowDocumentPrefillValues(
+      {
+        ...MERCHANT_VALUES,
+        business_address: '218 LAUREL WOODS',
+        business_address_city: 'WARNER ROBINS',
+        business_address_state: 'GA',
+        business_address_zip: '31088',
+      },
+      [
+        {
+          accountHolderName: 'RE-NEW-IT RENOVATIONS LLC',
+          accountHolderAddress: '3273 COVE CREEK ROAD',
+          accountHolderCity: 'GWALIOR',
+          accountHolderState: 'NORTH CAROLINA',
+          accountHolderZip: '28785',
+        },
+      ],
+      'Exhibit C',
+      TABS,
+    );
+    expect(values.business_address).toBe('218 LAUREL WOODS');
+    expect(values.business_address_city).toBe('WARNER ROBINS');
+    expect(values.business_address_zip).toBe('31088');
+  });
+
   it('still isolates an Exhibit C copy that carries its own entity', () => {
     const { isolated, values } = signNowDocumentPrefillValues(
       MERCHANT_VALUES,

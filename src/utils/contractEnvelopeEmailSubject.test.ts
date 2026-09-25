@@ -45,6 +45,21 @@ describe('contract envelope email subject', () => {
     });
   });
 
+  it('never reads the owner name as the business name', () => {
+    expect(
+      extractContractEmailContextFromPrefill([
+        { id: 'client_name', value: 'MARY IRVIN' },
+        { id: 'approved_amount', value: '20000.00' },
+      ]).businessName,
+    ).toBeNull();
+    expect(
+      extractContractEmailContextFromPrefill([
+        { id: 'client_name', value: 'MARY IRVIN' },
+        { id: 'client_legal_name', value: 'RE-NEW-IT RENOVATIONS, LLC' },
+      ]).businessName,
+    ).toBe('RE-NEW-IT RENOVATIONS, LLC');
+  });
+
   it('adds a $ sign to a raw caller-supplied subject missing one', () => {
     expect(ensureSubjectAmountHasDollarSign('Nitro Advance Happy nails LLC 12000.00')).toBe(
       'Nitro Advance Happy nails LLC $12000.00',

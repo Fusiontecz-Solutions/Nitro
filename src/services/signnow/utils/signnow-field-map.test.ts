@@ -529,7 +529,11 @@ describe('signnow-field-map', () => {
       remittance: '1,499.00',
       ach_authorization_account_holder_name: 'RE-NEW-IT RENOVATIONS, LLC',
       ach_authorization_account_holder_dba: 'RE-NEW-IT',
-      ach_authorization_account_holder_address: '3273 COVE CREEK ROAD',
+      // "Account Holder Business Address" is the business's street, so Owner 1's
+      // home address beside it must never reach the page.
+      business_address: '3273 COVE CREEK ROAD',
+      business_address_contract: '9 OAK ST',
+      ach_authorization_account_holder_address: '9 OAK ST',
       ach_authorization_account_holder_bank_name: 'SBI MORGAN',
       ach_authorization_account_holder_bank_account_number: '123456789',
       ach_authorization_account_holder_bank_routing_number: '987654321',
@@ -613,7 +617,11 @@ describe('signnow-field-map', () => {
       client_name: 'MARY IRVIN',
       ach_authorization_account_holder_name: 'RE-NEW-IT RENOVATIONS, LLC',
       ach_authorization_account_holder_dba: 'RE-NEW-IT',
-      ach_authorization_account_holder_address: '3273 COVE CREEK ROAD',
+      // "Account Holder Business Address" is the business's street, so Owner 1's
+      // home address beside it must never reach the page.
+      business_address: '3273 COVE CREEK ROAD',
+      business_address_contract: '9 OAK ST',
+      ach_authorization_account_holder_address: '9 OAK ST',
       ach_authorization_account_holder_bank_name: 'SBI MORGAN',
       ach_authorization_account_holder_bank_account_number: '123456789',
       ach_authorization_account_holder_bank_routing_number: '987654321',
@@ -1913,7 +1921,7 @@ describe('a funder-named disclosure is never that funder\'s agreement', () => {
         business_address_contract_zip: '31201',
       };
 
-      it('composes the Exhibit C / Monthly Fee holder address from Owner 1 city keys', () => {
+      it('composes the Monthly Fee holder address from Owner 1 city keys', () => {
         const addendum = {
           ...ownerCityStateZip,
           ach_account_holder_address: '77 PINE RIDGE DR',
@@ -1922,8 +1930,82 @@ describe('a funder-named disclosure is never that funder\'s agreement', () => {
           ownerFull,
         );
         expect(
-          resolveSignNowPrefillValue('Text Field 3', addendum, { documentKind: 'exhibit_c' }),
+          resolveSignNowPrefillValue('Text Field 6', addendum, { documentKind: 'monthly_fee' }),
         ).toBe(ownerFull);
+      });
+
+      /**
+       * Exhibit C and the agreement's ACH page print "c. Account Holder Business
+       * Address:" — the business's physical address on every funder's copy, never
+       * the guarantor's home address that the holder keys carry.
+       */
+      describe('the Account Holder Business Address line', () => {
+        const exhibitC = { documentKind: 'exhibit_c' as const };
+        const withHolderOnOwner = {
+          ...prefill,
+          ach_authorization_account_holder_address: prefill.business_address_contract,
+          ach_account_holder_address: ownerFull,
+          ach_account_holder_address_p1: ownerFull,
+        };
+
+        it('prints the full business address on the named Exhibit C (Nitro, Tiberian)', () => {
+          expect(
+            resolveSignNowPrefillValue('ach_account_holder_address_p1', withHolderOnOwner, exhibitC),
+          ).toBe(businessFull);
+        });
+
+        it('prints the full business address on the numbered Exhibit C (Obsidian)', () => {
+          expect(resolveSignNowPrefillValue('Text Field 3', withHolderOnOwner, exhibitC)).toBe(
+            businessFull,
+          );
+        });
+
+        it('prints the full business address on the agreement ACH page', () => {
+          for (const documentKind of [
+            undefined,
+            'obsidian_agreement' as const,
+            'tiberian_agreement' as const,
+          ]) {
+            expect(
+              resolveSignNowPrefillValue('ach_account_holder_address_p19', withHolderOnOwner, {
+                documentKind,
+              }),
+            ).toBe(businessFull);
+          }
+        });
+
+        it('leaves the line blank rather than printing Owner 1 when no business address is on file', () => {
+          const ownerOnly = {
+            business_address_contract: prefill.business_address_contract,
+            business_address_contract_city: prefill.business_address_contract_city,
+            business_address_contract_state: prefill.business_address_contract_state,
+            business_address_contract_zip: prefill.business_address_contract_zip,
+            ach_authorization_account_holder_address: prefill.business_address_contract,
+          };
+          expect(resolveSignNowPrefillValue('Text Field 3', ownerOnly, exhibitC)).toBe('');
+          expect(resolveSignNowPrefillValue('ach_account_holder_address_p19', ownerOnly)).toBe('');
+        });
+
+        it('keeps the Monthly Fee holder block on Owner 1', () => {
+          expect(
+            resolveSignNowPrefillValue('ach_account_holder_address_p1', withHolderOnOwner, {
+              documentKind: 'monthly_fee',
+            }),
+          ).toBe(ownerFull);
+        });
+
+        it('keeps the Monthly Fee on Owner 1 when the shared widget carries the business', () => {
+          // Exhibit C / ACH Daily put the business under the same widget name.
+          const shared = {
+            ...withHolderOnOwner,
+            ach_account_holder_address_p1: businessFull,
+          };
+          expect(
+            resolveSignNowPrefillValue('ach_account_holder_address_p1', shared, {
+              documentKind: 'monthly_fee',
+            }),
+          ).toBe(ownerFull);
+        });
       });
 
       it('composes an ACH page whose street arrives under the widget name itself', () => {
@@ -1954,12 +2036,12 @@ describe('a funder-named disclosure is never that funder\'s agreement', () => {
           );
         });
 
-        it('falls through to Owner 1 on Exhibit C', () => {
+        it('prints the business address on Exhibit C, whose line is the business address', () => {
           expect(
             resolveSignNowPrefillValue('Text Field 3', mirrored, {
               documentKind: 'exhibit_c',
             }),
-          ).toBe(ownerFull);
+          ).toBe(businessFull);
         });
 
         it('never pairs the business street with Owner 1 city/state/zip', () => {

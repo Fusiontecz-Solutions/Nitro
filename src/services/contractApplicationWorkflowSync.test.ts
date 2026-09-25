@@ -4,10 +4,20 @@ import {
   APPLICATION_STATE_CONTRACT_SENT,
   APPLICATION_QUEUE_CONTRACT_SIGNED,
   APPLICATION_STATE_CONTRACT_SIGNED,
+  syncApplicationWorkflowFromContractEnvelopeStatus,
 } from './contractApplicationWorkflowSync';
+import {
+  emitContractSigningStatusRealtime,
+  notifyContractFullySigned,
+} from './contractSigningStatusEffects';
 
 jest.mock('./applicationActivityLogService', () => ({
   createApplicationActivityLog: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('./contractSigningStatusEffects', () => ({
+  emitContractSigningStatusRealtime: jest.fn().mockResolvedValue(undefined),
+  notifyContractFullySigned: jest.fn().mockResolvedValue(undefined),
 }));
 
 type Row = Record<string, any>;
@@ -156,5 +166,87 @@ describe('applyContractCompletedSyncToApplicationRecord', () => {
 
     expect(await applyContractCompletedSyncToApplicationRecord(client, record, 'test')).toBe(false);
     expect(state.application.currentQueue).toBe(APPLICATION_QUEUE_CONTRACT_SIGNED);
+  });
+});
+
+describe('realtime broadcast on Contract Signed', () => {
+  /**
+   * The mock client is not the shared `prisma`, so the module treats the write
+   * as transactional and holds the emit back for its post-commit delay. Skip
+   * the delay, then let the dynamic import inside the timer resolve.
+   */
+  const flushBroadcast = async () => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    (emitContractSigningStatusRealtime as jest.Mock).mockClear();
+    (notifyContractFullySigned as jest.Mock).mockClear();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('pushes contract:signing-status when a SignNow completion moves the deal to Contract Signed', async () => {
+    // The reported bug: SignNow marked the contract signed, the row updated,
+    // but open CRM tabs only showed Contract Signed after a manual refresh.
+    const { client, state } = makePrisma({
+      application: {
+        id: 'app-6',
+        applicationId: 'A-6',
+        currentQueue: APPLICATION_QUEUE_CONTRACT_SENT,
+        currentState: APPLICATION_STATE_CONTRACT_SENT,
+      },
+    });
+
+    const synced = await syncApplicationWorkflowFromContractEnvelopeStatus(
+      client,
+      'app-6',
+      'completed',
+      { source: 'signnow.syncContractSigningFromGroupStatus' },
+    );
+    await flushBroadcast();
+
+    expect(synced).toBe(true);
+    expect(state.application.currentQueue).toBe(APPLICATION_QUEUE_CONTRACT_SIGNED);
+    expect(emitContractSigningStatusRealtime).toHaveBeenCalledWith({
+      applicationId: 'app-6',
+      status: 'completed',
+      priorStatus: 'sent',
+      provider: 'signnow',
+    });
+    // Inbox + push notice that the contract is fully signed, sent exactly once.
+    expect(notifyContractFullySigned).toHaveBeenCalledTimes(1);
+    expect(notifyContractFullySigned).toHaveBeenCalledWith({
+      applicationId: 'app-6',
+      provider: 'signnow',
+    });
+  });
+
+  it('does not re-broadcast when the deal is already Contract Signed', async () => {
+    const { client } = makePrisma({
+      application: {
+        id: 'app-7',
+        applicationId: 'A-7',
+        currentQueue: APPLICATION_QUEUE_CONTRACT_SIGNED,
+        currentState: APPLICATION_STATE_CONTRACT_SIGNED,
+      },
+    });
+
+    const synced = await syncApplicationWorkflowFromContractEnvelopeStatus(
+      client,
+      'app-7',
+      'completed',
+      { source: 'signnow.syncContractSigningFromGroupStatus' },
+    );
+    await flushBroadcast();
+
+    expect(synced).toBe(false);
+    expect(emitContractSigningStatusRealtime).not.toHaveBeenCalled();
+    expect(notifyContractFullySigned).not.toHaveBeenCalled();
   });
 });

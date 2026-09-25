@@ -103,3 +103,51 @@ export function resolveSignNowPrefillReuse(input: {
   }
   return { reuse: true, reason: 'prefill_fingerprint_match' };
 }
+
+export type SignNowPrewarmLinkReason =
+  | 'no_linked_document'
+  | 'open_draft'
+  | 'not_open_draft'
+  | 'review_finished'
+  | 'already_prefilled_by_review';
+
+export type SignNowPrewarmLinkDecision = {
+  link: boolean;
+  reason: SignNowPrewarmLinkReason;
+};
+
+/**
+ * May the background pre-warm park its group against the application?
+ *
+ * The warm is fire-and-forget and takes as long as SignNow's group copy, so the
+ * Review click routinely lands while it is still in flight — and both requests
+ * then share that one copy. Review writes the real value fingerprint, the warm
+ * writes the pristine marker, and whichever write lands last wins. When the warm
+ * won, Send found the pristine marker on a package Review had fully prefilled
+ * and refused it on every funder. A group Review has already fingerprinted is
+ * never downgraded back to pristine.
+ */
+export function resolveSignNowPrewarmLink(input: {
+  live: {
+    envelopeId?: string | null;
+    status?: string | null;
+    prefillFingerprint?: string | null;
+  } | null;
+  warmGroupId: string;
+  reviewFinished: boolean;
+}): SignNowPrewarmLinkDecision {
+  const live = input.live;
+  if (!live) return { link: true, reason: 'no_linked_document' };
+  const status = String(live.status || '').trim().toLowerCase();
+  if (status && status !== 'draft') return { link: false, reason: 'not_open_draft' };
+  if (input.reviewFinished) return { link: false, reason: 'review_finished' };
+  const liveFingerprint = String(live.prefillFingerprint || '').trim();
+  if (
+    String(live.envelopeId || '').trim() === String(input.warmGroupId || '').trim() &&
+    liveFingerprint &&
+    liveFingerprint !== SIGNNOW_PRISTINE_PREFILL_FINGERPRINT
+  ) {
+    return { link: false, reason: 'already_prefilled_by_review' };
+  }
+  return { link: true, reason: 'open_draft' };
+}
