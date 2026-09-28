@@ -164,4 +164,35 @@ test("missing parts are skipped rather than printed as empty commas", () => {
     assert.equal(composeMerchantFullAddress("", "WARNER ROBINS", "GA", "31088"), "WARNER ROBINS, GA 31088");
 });
 
+test("Monthly Fee Print Name is the merchant, not the business", () => {
+    const monthly = rowsFor("monthly_fee", "Monthly Fee");
+    assert.equal(monthly.authorization_client_name_print_p1, "Monika Sarafyan");
+    // The Authorized Business Name line above keeps the business.
+    assert.equal(monthly.authorization_client_name_p1.toUpperCase(), "ERBAR CONSULTING INC");
+});
+
+test("Monthly Fee Print Name replaces a business name saved by an older build", () => {
+    const rows = getDocumentTemplatePrefillFieldRowsForEditor({
+        templateId: "monthly_fee",
+        templateLayoutKey: "monthly_fee",
+        templateName: "Monthly Fee",
+        documentType: "addendum",
+        contract: CONTRACT,
+        application: null,
+        agreementDate: "09/15/2026",
+        savedOverridesForMapping: { authorization_client_name_print_p1: "Erbar Consulting INC" },
+    });
+    const print = rows.find((row) => row.id === "authorization_client_name_print_p1");
+    assert.equal(print?.value, "Monika Sarafyan");
+});
+
+test("Monthly Fee Print Name never falls back to the business", () => {
+    const { clientName: _omit, ...noOwner } = CONTRACT;
+    const monthly = rowsFor("monthly_fee", "Monthly Fee", noOwner);
+    assert.notEqual(
+        monthly.authorization_client_name_print_p1.toUpperCase(),
+        "ERBAR CONSULTING INC",
+    );
+});
+
 console.log(`\n${passed} passed`);

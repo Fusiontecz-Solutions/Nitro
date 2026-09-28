@@ -12,6 +12,7 @@ import { toast } from "react-toastify";
 import NotificationsSync from "@/components/notifications/NotificationsSync";
 import RealtimeNotificationsListener from "@/components/notifications/RealtimeNotificationsListener";
 import PipelineCountsSync from "./PipelineCountsSync";
+import PortalSendResultListener from "./PortalSendResultListener";
 
 interface DecodedToken {
     role: string;
@@ -116,6 +117,7 @@ const RootLayout = () => {
                 <NotificationsSync />
                 <RealtimeNotificationsListener />
                 <PipelineCountsSync />
+                <PortalSendResultListener />
             </SidebarProvider>
         </div>
     );

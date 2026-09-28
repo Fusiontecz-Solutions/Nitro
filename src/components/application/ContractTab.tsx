@@ -406,6 +406,9 @@ interface ContractTabProps {
 /** CRM-only re-read of a SignNow contract awaiting signature (no SignNow calls). */
 const CONTRACT_STATUS_FALLBACK_POLL_MS = 5_000;
 
+/** Waits before re-trying a contract lookup that failed for a transient reason. */
+const CONTRACT_LOOKUP_RETRY_DELAYS_MS = [1_500, 4_000];
+
 export default function ContractTab({
     readOnly = false,
     active = true,
@@ -618,19 +621,51 @@ export default function ContractTab({
     // Load existing contract by application so "Contracts Generated" can show
     // persisted backend data even before creating/selecting a contract in this session.
     useEffect(() => {
+        // A response for the previous deal must never land on this one.
+        let cancelled = false;
         const fetchByApplication = async () => {
             if (!applicationUuid) {
                 setFetchedContract(null);
                 setSelectedContractId(null);
+                contractLookupDoneRef.current = true;
                 return;
             }
+            let res: unknown;
+            for (let attempt = 0; ; attempt += 1) {
+                try {
+                    res = await dispatch(
+                        getByApplicationIdContract({
+                            applicationId: String(applicationUuid),
+                            fresh: true,
+                        }),
+                    ).unwrap();
+                    break;
+                } catch (err) {
+                    if (cancelled) return;
+                    // 404 "Contract not found": this deal simply has no contract yet.
+                    if (/not found/i.test(String(err ?? ""))) {
+                        setFetchedContract(null);
+                        setSelectedContractId(null);
+                        contractLookupDoneRef.current = true;
+                        return;
+                    }
+                    // A transient failure (pool timeout, 5xx, network) used to read as
+                    // "no contract" until a manual refresh. Retry; if it still fails,
+                    // leave the lookup marked not-done so Generate re-checks for the
+                    // existing contract instead of creating a second one.
+                    if (attempt >= CONTRACT_LOOKUP_RETRY_DELAYS_MS.length) {
+                        setFetchedContract(null);
+                        setSelectedContractId(null);
+                        return;
+                    }
+                    await new Promise((resolve) =>
+                        setTimeout(resolve, CONTRACT_LOOKUP_RETRY_DELAYS_MS[attempt]),
+                    );
+                    if (cancelled) return;
+                }
+            }
+            if (cancelled) return;
             try {
-                const res = await dispatch(
-                    getByApplicationIdContract({
-                        applicationId: String(applicationUuid),
-                        fresh: true,
-                    }),
-                ).unwrap();
                 let contract = (res as any)?.data ?? res ?? null;
                 setFetchedContract(contract);
                 const contractId = Number((contract as any)?.id);
@@ -658,7 +693,7 @@ export default function ContractTab({
                             ?.document?.envelopeId ?? "",
                     ).trim();
                     if (!existingEnv) {
-                        void dispatch(getApplicationById(String(applicationUuid)));
+                        refreshApplicationDetailFromServer(dispatch, String(applicationUuid));
                     }
                 }
             } catch {
@@ -670,7 +705,10 @@ export default function ContractTab({
         };
 
         contractLookupDoneRef.current = false;
-        fetchByApplication();
+        void fetchByApplication();
+        return () => {
+            cancelled = true;
+        };
     }, [dispatch, applicationUuid]);
 
     // Fetch created contract details by id when available
@@ -1160,7 +1198,7 @@ export default function ContractTab({
             return;
         }
         signedWorkflowSyncedForAppRef.current = applicationUuid;
-        void dispatch(getApplicationById(String(applicationUuid)));
+        refreshApplicationDetailFromServer(dispatch, String(applicationUuid));
     }, [applicationUuid, applicationData, contractFullySigned, dispatch]);
 
     const contractRecordForActions =
@@ -3861,6 +3899,7 @@ export default function ContractTab({
                 console.warn("[ContractTab] contract persist after SignNow URL failed:", err);
             })
             .finally(() => {
+                if (payload.autoSend === true) refreshApplicationStage();
                 if (timingRequestId) {
                     logSignNowFeTiming(
                         timingRequestId,
@@ -5238,6 +5277,7 @@ export default function ContractTab({
                 onClose={() => {
                     setAchViewerOpen(false);
                     void refreshFetchedContract();
+                    refreshApplicationStage();
                 }}
                 contractId={selectedContractId}
                 applicationId={applicationUuid ? String(applicationUuid) : null}
@@ -5269,6 +5309,9 @@ export default function ContractTab({
                     setPdfViewerOpen(false);
                     setPdfViewerInitialRightPaneTab("template");
                     void refreshFetchedContract();
+                    // A send inside the viewer moves the deal to Contract Sent;
+                    // the progress bar reads the application, not the contract.
+                    refreshApplicationStage();
                 }}
                 onContractDocumentsChanged={() => void refreshFetchedContract()}
                 fileUrl={pdfUrl}

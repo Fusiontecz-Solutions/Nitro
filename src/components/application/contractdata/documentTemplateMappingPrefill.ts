@@ -880,6 +880,10 @@ function mergeFieldRows(
         if (isSendDayPrefillDateFieldId(def.id) && computedVal) {
             return { id: def.id, label: def.label, value: computedVal, group: def.group };
         }
+        // Older saves hold the business name here; SignNow prints the merchant.
+        if (def.id === MONTHLY_FEE_PRINT_NAME_FIELD_ID && computedVal) {
+            return { id: def.id, label: def.label, value: computedVal, group: def.group };
+        }
         // The live offer outranks an amount saved against a superseded one.
         if (isOfferDerivedPrefillFieldId(def.id) && computedVal) {
             return { id: def.id, label: def.label, value: computedVal, group: def.group };
@@ -1805,6 +1809,26 @@ function buildAddendumEpaComputed(
     });
 }
 
+/** Monthly Fee "Print Name" widget — the merchant's own name. */
+const MONTHLY_FEE_PRINT_NAME_FIELD_ID = "authorization_client_name_print_p1";
+
+function monthlyFeeMerchantPrintName(
+    c: Record<string, unknown>,
+    get: (...ids: string[]) => string,
+    sctx: StateDisclosureContext,
+    businessName?: string,
+): string {
+    const business = normalizeKey(businessName ?? "");
+    // Same order as the sibling addenda; `merchantName` falls back to the
+    // customer (business) name when no owner is on file, so that is skipped.
+    const candidates = [
+        str(sctx.merchantName),
+        str(c.clientName),
+        get("client_name", "owner1_guarantor_name", "merchant_contact_name"),
+    ];
+    return candidates.find((name) => name && normalizeKey(name) !== business) ?? "";
+}
+
 function buildAddendumMonthlyFeeComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
@@ -1901,7 +1925,9 @@ function buildAddendumMonthlyFeeComputed(
         paymentDate: startDate,
         firstPaymentDate: startDate,
         numberOfPayments: get("estimated_number_of_payments"),
-        printName: holderName || sctx.merchantName || str(c.clientName),
+        // "Print Name" is the merchant who signs (Owner 1), never the business:
+        // `holderName` falls back to the business legal name printed above.
+        printName: monthlyFeeMerchantPrintName(c, get, sctx, businessName),
     });
 }
 

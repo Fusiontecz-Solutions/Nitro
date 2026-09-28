@@ -164,6 +164,7 @@ import {
     reinitiateContract as reinitiateContractAction,
 } from "@/redux/actions/applicationActions";
 import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
+import { refreshApplicationDetailFromServer } from "@/lib/refreshApplicationDetail";
 import { resolveOfferDecisionFeesDisplayDollars } from "@/lib/offerDecisionFees";
 import {
     resolveApplicationUuidForUpdate,
@@ -320,6 +321,7 @@ import {
 } from "./contractdata/multiInstanceAddendum";
 
 const SIGNNOW_REVIEW_TOAST_ID = "signnow-review-hint";
+const SIGNNOW_REVIEW_COMPLETE_TOAST_ID = "signnow-review-complete";
 /** How often the locked screen re-reads the saved review state (CRM database only). */
 const SIGNNOW_REVIEW_POLL_MS = 4000;
 /** Named window for the Owner Review tab, so a reopen reuses the same tab. */
@@ -2072,7 +2074,7 @@ const PDFViewerModal = ({
      * tab instead of minting a second review window.
      */
     const signNowReviewTabRef = useRef<Window | null>(null);
-    const signNowCompleteToastShownRef = useRef(false);
+    const signNowCompleteToastShownRef = useRef<string | null>(null);
     /** Last minted review URL — reopen without calling SignNow prepare again. */
     const signNowCachedEmbedUrlRef = useRef<string | null>(null);
     /** Skip "send existing draft" so Review can remint after Owner finish. */
@@ -2091,6 +2093,8 @@ const PDFViewerModal = ({
      * a completed send, or a void.
      */
     const signNowReviewEnvelopeIdRef = useRef<string | null>(null);
+    /** Portal send accepted by the backend but still publishing/emailing there. */
+    const pendingPortalSendEnvelopeRef = useRef<string | null>(null);
     type ContractWizardStep = "documents" | "info" | "summary" | "sent";
     const [activeStep, setActiveStep] = useState<ContractWizardStep>("documents");
     const [sentAt, setSentAt] = useState<Date | null>(null);
@@ -2163,7 +2167,6 @@ const PDFViewerModal = ({
         setSignNowReviewVisible(false);
         setSignNowReviewComplete(false);
         closeSignNowReviewTab();
-        signNowCompleteToastShownRef.current = false;
         awaitingDocuSignSendRef.current = false;
         if (!options?.keepCachedEmbed) {
             signNowCachedEmbedUrlRef.current = null;
@@ -3852,7 +3855,7 @@ const PDFViewerModal = ({
             setSignNowReviewVisible(false);
             setSignNowReviewComplete(false);
             closeSignNowReviewTab();
-            signNowCompleteToastShownRef.current = false;
+            signNowCompleteToastShownRef.current = null;
             awaitingDocuSignSendRef.current = false;
             toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
             return;
@@ -5258,7 +5261,7 @@ const PDFViewerModal = ({
                     applicationIdForLookupRef.current ||
                     null;
                 if (appUuid && patch.funderName !== undefined) {
-                    void dispatch(getApplicationById(String(appUuid)));
+                    refreshApplicationDetailFromServer(dispatch, String(appUuid));
                 }
             } catch (err: unknown) {
                 const msg =
@@ -5852,10 +5855,13 @@ const PDFViewerModal = ({
                 // package once merchants are sent (never a signer).
                 ccEmails: ccForSend,
             }, {
-                // The backend waits for SignNow to finish committing the Owner
-                // review before publishing, which can outlast the default timeout.
-                timeout: 300_000,
+                // The backend only validates before answering; the SignNow publish
+                // and SendGrid emails finish in the background and report back
+                // over the socket (see PortalSendResultListener).
+                timeout: 30_000,
             });
+            pendingPortalSendEnvelopeRef.current = envelopeId;
+            toast.dismiss(SIGNNOW_REVIEW_COMPLETE_TOAST_ID);
             /**
              * The review is over: drop every trace of it, exactly as the SignNow
              * invite send does. Left in place, the embed URL / review-complete
@@ -5874,14 +5880,11 @@ const PDFViewerModal = ({
             prefilledPdfCachedForEnvelopeRef.current = null;
             invalidateDocuSignPdfCache();
             onContractDocumentsChanged?.();
-            // Load the sent row first so the preview targets the sent package,
-            // then fetch its PDF — the refresh itself skips the load because this
-            // session already counts as sent.
-            void refreshContractSigningStateRef
-                .current(true, { syncDocuSign: false, forceDocuSignSync: false })
-                .then(() => loadPrefilledPdfRef.current(undefined, { maxAttempts: 2 }));
+            // The sent package's PDF is loaded when the backend's "sent" push
+            // arrives (see the realtime handler) — fetching it now would show the
+            // copy from before the merchant publish finished.
             toast.success(
-                "Signing link emailed to the merchant. They can sign from that link — no SignNow account needed.",
+                "Contract is being sent — the merchant will get the signing link in a moment.",
             );
         } catch (error) {
             const message =
@@ -6574,15 +6577,25 @@ const PDFViewerModal = ({
         // this covers the manual "I've clicked Finish" and the status poll.
         closeSignNowReviewTab();
         toast.dismiss(SIGNNOW_REVIEW_TOAST_ID);
-        if (signNowCompleteToastShownRef.current) return;
-        signNowCompleteToastShownRef.current = true;
+        /**
+         * The Finish is reported by the review tab, the lock-screen poll and the
+         * focus re-check — often all three. Show the toast once per review
+         * (keyed by its package, which UI resets do not clear) and under one
+         * toast id, so the reports never stack two or three copies.
+         */
+        const reviewKey =
+            String(signNowReviewEnvelopeIdRef.current || "").trim() || "current";
+        if (signNowCompleteToastShownRef.current === reviewKey) return;
+        signNowCompleteToastShownRef.current = reviewKey;
         toast.success(
             "SignNow review finished. Click Send via SignNow to email the merchant.",
+            { toastId: SIGNNOW_REVIEW_COMPLETE_TOAST_ID },
         );
     }, [closeSignNowReviewTab]);
 
     useEffect(() => {
-        signNowCompleteToastShownRef.current = false;
+        // A newly minted review link is a new review: it may announce its Finish.
+        if (signNowEmbedUrl) signNowCompleteToastShownRef.current = null;
     }, [signNowEmbedUrl]);
 
     /** The package the open (or restored) review belongs to. */
@@ -6632,6 +6645,9 @@ const PDFViewerModal = ({
                 if (sendingLockRef.current || signNowReviewCompleteRef.current) return;
                 const envelopeId = String(state?.envelopeId || "").trim();
                 const phase = String(state?.phase || "");
+                // This package was just sent from here; its review is over even
+                // if the server has not marked it sent yet.
+                if (envelopeId && envelopeId === pendingPortalSendEnvelopeRef.current) return;
                 if (envelopeId && (phase === "in_review" || phase === "review_complete")) {
                     // The answer is for the package linked to this application;
                     // make it the one Send targets, as a review opened here would.
@@ -7417,7 +7433,9 @@ const PDFViewerModal = ({
                             }
                             c = (await fetchContractRow()) ?? c;
                             if (appId && isSignNowEnvelopeId(envelopeForSync)) {
-                                void dispatch(getApplicationById(String(appId)));
+                                refreshApplicationDetailFromServer(dispatch, String(appId), [
+                                    numericApplicationId,
+                                ]);
                             }
                             // Space fallback polls — don't call DocuSign every CRM tick once stale.
                             lastCrmStatusChangeAtRef.current = Date.now();
@@ -7675,8 +7693,22 @@ const PDFViewerModal = ({
     }, [isOpen, envelopeIdForSigningPoll, refreshContractSigningState, signingFinishedForPoll]);
 
     /** Instant UI when Connect webhook updates status (Socket.IO). */
-    useContractSigningStatusRealtime(applicationIdForLookup, () => {
+    useContractSigningStatusRealtime(applicationIdForLookup, (payload) => {
         lastCrmStatusChangeAtRef.current = Date.now();
+        const pendingEnvelopeId = pendingPortalSendEnvelopeRef.current;
+        if (
+            pendingEnvelopeId &&
+            String(payload?.status || "").toLowerCase() === "sent" &&
+            String(payload?.envelopeId || "").trim() === pendingEnvelopeId
+        ) {
+            // Background portal send finished: load the sent row, then its PDF.
+            pendingPortalSendEnvelopeRef.current = null;
+            invalidateDocuSignPdfCache();
+            void refreshContractSigningStateRef
+                .current(true, { syncDocuSign: false, forceDocuSignSync: false })
+                .then(() => loadPrefilledPdfRef.current(undefined, { maxAttempts: 2 }));
+            return;
+        }
         void refreshContractSigningStateRef.current(true, { syncDocuSign: false });
     });
 

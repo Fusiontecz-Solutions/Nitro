@@ -79,10 +79,15 @@ function blobLooksLikePdf(blob: Blob): boolean {
 
 const SIGNNOW_AGREEMENT_CACHE_TTL_MS = 30 * 60 * 1000;
 const cachedSignNowAgreementByKey = new Map<string, { blob: Blob; at: number }>();
-const inflightSignNowAgreementByKey = new Map<
-    string,
-    Promise<{ url: string; name: string } | null>
->();
+/**
+ * In-flight downloads share the PDF bytes, never an object URL: the Contract tab
+ * and the contract viewer both ask for the same agreement on open, and the viewer
+ * revokes its previous preview URL on the next load — which killed the tab's copy
+ * too when they shared one, leaving a dead `blob:` preview until a page refresh.
+ */
+const inflightSignNowAgreementByKey = new Map<string, Promise<Blob | null>>();
+/** One retry on a transient failure (network, timeout, 429, 5xx) before giving up. */
+const SIGNNOW_AGREEMENT_RETRY_DELAY_MS = 1500;
 let lastSignNowAgreementError = "";
 
 export function getLastSignNowAgreementError(): string {
@@ -120,6 +125,12 @@ async function readAxiosErrorMessage(error: unknown): Promise<string> {
     return String((error as { message?: unknown })?.message || "").trim();
 }
 
+function isTransientAgreementDownloadError(error: unknown): boolean {
+    const status = Number((error as { response?: { status?: unknown } })?.response?.status);
+    if (!Number.isFinite(status) || status === 0) return true; // network / timeout
+    return status === 408 || status === 429 || status >= 500;
+}
+
 function signNowAgreementPreviewFromBlob(
     blob: Blob,
     previewName?: string | null,
@@ -153,18 +164,36 @@ export async function fetchSignNowAgreementPdf(options?: {
     if (cached && now - cached.at < SIGNNOW_AGREEMENT_CACHE_TTL_MS) {
         return signNowAgreementPreviewFromBlob(cached.blob, previewName);
     }
+    const defaultName =
+        previewName ||
+        (funderProfileId ? `Agreement.pdf` : NITRO_ADVANCE_CONTRACT_PREVIEW_NAME);
     const inflight = inflightSignNowAgreementByKey.get(cacheKey);
-    if (inflight) return inflight;
+    if (inflight) {
+        const shared = await inflight;
+        return shared ? signNowAgreementPreviewFromBlob(shared, defaultName) : null;
+    }
 
-    const pending = (async () => {
+    const download = () =>
+        axiosGet("/docusign/template/signnow-contract/download", {
+            responseType: "blob",
+            params: {
+                ...(funderProfileId ? { funderProfileId } : {}),
+                ...(signnowTemplateId ? { signnowTemplateId } : {}),
+            },
+        });
+
+    const pending = (async (): Promise<Blob | null> => {
         try {
-            const response = await axiosGet("/docusign/template/signnow-contract/download", {
-                responseType: "blob",
-                params: {
-                    ...(funderProfileId ? { funderProfileId } : {}),
-                    ...(signnowTemplateId ? { signnowTemplateId } : {}),
-                },
-            });
+            let response: Awaited<ReturnType<typeof download>>;
+            try {
+                response = await download();
+            } catch (error) {
+                if (!isTransientAgreementDownloadError(error)) throw error;
+                await new Promise((resolve) =>
+                    setTimeout(resolve, SIGNNOW_AGREEMENT_RETRY_DELAY_MS),
+                );
+                response = await download();
+            }
             const blob =
                 response?.data instanceof Blob
                     ? response.data
@@ -178,13 +207,7 @@ export async function fetchSignNowAgreementPdf(options?: {
             lastSignNowAgreementError = "";
             const pdfBlob = new Blob([blob], { type: "application/pdf" });
             cachedSignNowAgreementByKey.set(cacheKey, { blob: pdfBlob, at: Date.now() });
-            return signNowAgreementPreviewFromBlob(
-                pdfBlob,
-                previewName ||
-                    (funderProfileId
-                        ? `Agreement.pdf`
-                        : NITRO_ADVANCE_CONTRACT_PREVIEW_NAME),
-            );
+            return pdfBlob;
         } catch (error) {
             lastSignNowAgreementError =
                 (await readAxiosErrorMessage(error)) ||
@@ -197,7 +220,8 @@ export async function fetchSignNowAgreementPdf(options?: {
     })();
 
     inflightSignNowAgreementByKey.set(cacheKey, pending);
-    return pending;
+    const pdfBlob = await pending;
+    return pdfBlob ? signNowAgreementPreviewFromBlob(pdfBlob, defaultName) : null;
 }
 
 export type MainContractTemplatePreview = {

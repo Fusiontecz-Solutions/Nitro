@@ -305,14 +305,23 @@ const ApplicationDetails = () => {
     });
 
     /**
-     * Safety net for a missed socket push while the deal waits on signatures:
+     * Safety net for a missed socket push while the contract is in flight:
      * re-read the detail from the CRM (database only — the backend status job
-     * is what asks SignNow) so the header moves to Contract Signed on its own.
+     * is what asks SignNow) so the header and progress bar move from Contract
+     * Pending → Contract Sent → Contract Signed on their own.
      */
-    const awaitingSignature =
+    const awaitingSignature = new Set([
+        "contract pending",
+        "contract generated",
+        "contracted",
+        "contract sent",
+        "contract out",
+        "contracts out",
+    ]).has(
         String((applicationData as any)?.currentQueue ?? "")
             .trim()
-            .toLowerCase() === "contract sent";
+            .toLowerCase(),
+    );
     const numericApplicationId = (applicationData as any)?.applicationId ?? null;
     useEffect(() => {
         if (!awaitingSignature) return;
@@ -323,6 +332,7 @@ const ApplicationDetails = () => {
             if (numericApplicationId != null) {
                 invalidateApplicationDetailCache(String(numericApplicationId));
             }
+            invalidateHttpGetCacheForResource("applications");
             refetchApplicationDetail();
         }, APPLICATION_STAGE_FALLBACK_POLL_MS);
         return () => window.clearInterval(timer);
