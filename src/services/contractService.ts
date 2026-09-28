@@ -526,7 +526,20 @@ function mapUploadedDocumentForResponse(row: Record<string, unknown>) {
 async function reconcileContractCcSignedNotice(
   document: Record<string, any>,
   applicationId?: string | null,
+  contractStatus?: unknown,
 ): Promise<void> {
+  /**
+   * The CC line only exists for a fully signed contract (the CRM's own
+   * `isContractFullySigned` rule). Resolving the funder CC costs several
+   * queries, and this runs on every Contract tab read and its 5s poll, so an
+   * unsigned contract skips it rather than loading the pool for nothing.
+   */
+  const cs = String(contractStatus ?? '').trim().toUpperCase();
+  const signed =
+    cs === 'COMPLETED' ||
+    cs === 'SIGNED' ||
+    String(document?.status || '').trim().toLowerCase() === 'completed';
+  if (!signed) return;
   // The signed notice goes to the selected funder's CC only, not every address
   // CC'd at send. Expose that list so the "Signed contract notification sent to
   // CC" line names the same people the notice is actually sent to.
@@ -2081,7 +2094,11 @@ class ContractService {
       },
     });
     if (row?.application?.document) {
-      await reconcileContractCcSignedNotice(row.application.document, row.application.id);
+      await reconcileContractCcSignedNotice(
+        row.application.document,
+        row.application.id,
+        row.status,
+      );
     }
     if (row?.application) {
       await applyContractCompletedSyncToApplicationRecord(

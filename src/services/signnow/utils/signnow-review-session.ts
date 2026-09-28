@@ -1,4 +1,5 @@
 import prisma from '../../../config/prismaClient';
+import { isPortalSendInFlight } from './signnow-portal-send-inflight';
 
 /**
  * Server-side record of the Owner review on a SignNow document group.
@@ -158,7 +159,12 @@ export async function readSignNowApplicationReviewState(
   });
   const envelopeId = String(document?.envelopeId || '').trim() || null;
   const session = envelopeId ? await readSignNowReviewSession(envelopeId) : null;
-  const phase = deriveSignNowReviewPhase(document, session);
+  // A background portal send has not marked the row sent yet, but the review
+  // is over — reporting it as finished put "Send via SignNow" back on screen.
+  const phase =
+    envelopeId && isPortalSendInFlight(envelopeId)
+      ? 'closed'
+      : deriveSignNowReviewPhase(document, session);
   const live = phase === 'in_review' || phase === 'review_complete';
   return {
     applicationId,

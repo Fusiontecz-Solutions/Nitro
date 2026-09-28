@@ -70,4 +70,74 @@ describe('Monthly Fee Authorized Holder Name', () => {
       'RE-NEW-IT RENOVATIONS, LLC',
     );
   });
+
+  it('prints Owner 1 on the numbered copy (Text Field 4) too', () => {
+    expect(
+      resolveSignNowPrefillValue('Text Field 4', PREFILL, { documentKind: 'monthly_fee' }),
+    ).toBe('MARY IRVIN');
+  });
+});
+
+/**
+ * The bottom "Print Name" line is the merchant who signs. The CRM's Monthly Fee
+ * tab saved the ACH holder name there, which falls back to the business, and
+ * that saved widget value used to win over every alias.
+ */
+describe('Monthly Fee Print Name (merchant name)', () => {
+  const SAVED_WITH_BUSINESS: Record<string, string> = {
+    ...PREFILL,
+    authorization_client_name_print_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+  };
+  const options = { documentKind: 'monthly_fee' } as const;
+
+  it('prints the merchant, not a saved business name', () => {
+    expect(
+      resolveSignNowPrefillValue('authorization_client_name_print_p1', SAVED_WITH_BUSINESS, options),
+    ).toBe('MARY IRVIN');
+  });
+
+  it('prints the merchant on the numbered copy (Text Field 14)', () => {
+    expect(resolveSignNowPrefillValue('Text Field 14', SAVED_WITH_BUSINESS, options)).toBe(
+      'MARY IRVIN',
+    );
+  });
+
+  it('prints the merchant on the same block at the end of the agreement', () => {
+    expect(
+      resolveSignNowPrefillValue('authorization_client_name_print_p1', SAVED_WITH_BUSINESS, {
+        documentKind: 'obsidian_agreement',
+      }),
+    ).toBe('MARY IRVIN');
+  });
+
+  it('keeps the business on the Authorized Business Name line', () => {
+    expect(
+      resolveSignNowPrefillValue('authorization_client_name_p1', SAVED_WITH_BUSINESS, options),
+    ).toBe('RE-NEW-IT RENOVATIONS, LLC');
+    expect(resolveSignNowPrefillValue('Text Field 1', SAVED_WITH_BUSINESS, options)).toBe(
+      'RE-NEW-IT RENOVATIONS, LLC',
+    );
+  });
+
+  it('falls back through Owner 1 keys and is blank rather than the business', () => {
+    const { client_name: _omitted, ...noClientName } = SAVED_WITH_BUSINESS;
+    expect(
+      resolveSignNowPrefillValue(
+        'authorization_client_name_print_p1',
+        { ...noClientName, owner1_guarantor_name: 'MARY IRVIN' },
+        options,
+      ),
+    ).toBe('MARY IRVIN');
+    expect(
+      resolveSignNowPrefillValue('authorization_client_name_print_p1', noClientName, options),
+    ).toBe('');
+  });
+
+  it('does not touch Exhibit C', () => {
+    expect(
+      resolveSignNowPrefillValue('authorization_client_name_print_p1', SAVED_WITH_BUSINESS, {
+        documentKind: 'exhibit_c',
+      }),
+    ).toBe('RE-NEW-IT RENOVATIONS, LLC');
+  });
 });

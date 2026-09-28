@@ -712,6 +712,36 @@ export function isMonthlyFeeAccountHolderNameField(
 }
 
 /**
+ * Monthly Fee's bottom "Print Name" line (`authorization_client_name_print_p1`,
+ * `Text Field 14` on the numbered copy) — the merchant who signs, i.e. Owner 1.
+ *
+ * The CRM's Monthly Fee tab filled it from the ACH holder name, which falls
+ * back to the business legal name, and that saved value outranked every alias
+ * because the resolver tries the widget's own name first. So the line printed
+ * the business name already shown on "Authorized Business Name" above it. It
+ * resolves from the same Owner 1 keys as the holder name, never a business key.
+ */
+export function isMonthlyFeePrintNameField(
+  fieldName: string,
+  options?: SignNowPrefillOptions,
+): boolean {
+  if (options?.documentKind === 'exhibit_c') return false;
+  const n = String(fieldName || '').trim().toLowerCase();
+  if (n === 'authorization_client_name_print_p1') return true;
+  return (
+    options?.documentKind === 'monthly_fee' &&
+    canonicalizeSignNowFieldName(n) === 'authorization_client_name_print'
+  );
+}
+
+/** Monthly Fee numbered slots whose crm id means Owner 1, not the business. */
+const MONTHLY_FEE_OWNER1_TEXT_FIELD_CRM_IDS = new Set([
+  'ach_account_holder_address',
+  'ach_account_holder_name',
+  'authorization_client_name_print',
+]);
+
+/**
  * The bank-authorization blocks print their holder address as
  * "c. Account Holder Business Address:" — Exhibit C on every funder (Nitro and
  * Tiberian's named `ach_account_holder_address_p1`, Obsidian's positional
@@ -881,6 +911,20 @@ export type SignNowPrefillOptions = {
    * `street, city, state zip` line instead of printing half an address.
    */
   documentFieldCanons?: ReadonlySet<string>;
+  /**
+   * An Exhibit C copy that carries its own entity (`Exhibit C (2)` for a second
+   * business). Its holder name and DBA lines print only what that entity
+   * holds: the generic chains end in `client_legal_name`, which is the deal's
+   * merchant, so a blank line on the extra copy used to show Exhibit C #1's
+   * business instead of staying blank as it is in the CRM.
+   */
+  exhibitCEntityOnly?: boolean;
+};
+
+/** Keys an entity-only Exhibit C copy may read its holder name / DBA from. */
+const EXHIBIT_C_ENTITY_OWN_KEYS: Record<string, readonly string[]> = {
+  ach_account_holder_name: ['ach_account_holder_name', 'ach_authorization_account_holder_name'],
+  ach_account_holder_dba: ['ach_account_holder_dba', 'ach_authorization_account_holder_dba'],
 };
 
 /** Canonical widget names of the fields a document carries, for `documentFieldCanons`. */
@@ -2392,6 +2436,16 @@ export function resolveSignNowPrefillValue(
 
   if (options?.documentKind === 'exhibit_c') {
     const slot = exhibitCTextFieldNumber(raw);
+    if (options.exhibitCEntityOnly) {
+      const ownKeys = EXHIBIT_C_ENTITY_OWN_KEYS[slot ? EXHIBIT_C_TEXT_FIELD_CRM_IDS[slot] : canon];
+      if (ownKeys) {
+        for (const key of ownKeys) {
+          const hit = mapGet(map, key);
+          if (hit) return formatSignNowPrefillValue(hit, fieldName);
+        }
+        return '';
+      }
+    }
     if (slot) {
       const crmId = EXHIBIT_C_TEXT_FIELD_CRM_IDS[slot];
       // Merchant-filled slot, or a number this layout does not use. Never fall
@@ -2409,12 +2463,13 @@ export function resolveSignNowPrefillValue(
       const crmId = MONTHLY_FEE_TEXT_FIELD_CRM_IDS[Number(numbered[1]) - 1];
       if (crmId === '') return '';
       if (crmId) {
-        // The holder address keeps its Monthly Fee meaning (Owner 1); resolved
-        // bare, the crm id would read as an Account Holder Business Address.
+        // The holder address, holder name and print name keep their Monthly Fee
+        // meaning (Owner 1); resolved bare, the address would read as an
+        // Account Holder Business Address and both names as the business.
         const fromMonthly = resolveSignNowPrefillValue(
           crmId,
           prefill,
-          crmId === 'ach_account_holder_address' ? options : undefined,
+          MONTHLY_FEE_OWNER1_TEXT_FIELD_CRM_IDS.has(crmId) ? options : undefined,
         );
         if (fromMonthly) return fromMonthly;
       }
@@ -2478,7 +2533,7 @@ export function resolveSignNowPrefillValue(
    * Monthly Fee Authorized Holder Name — Owner 1, never the business name
    * printed beside it (see `MONTHLY_FEE_HOLDER_NAME_CRM_IDS`).
    */
-  if (isMonthlyFeeAccountHolderNameField(raw, options)) {
+  if (isMonthlyFeeAccountHolderNameField(raw, options) || isMonthlyFeePrintNameField(raw, options)) {
     for (const crmId of MONTHLY_FEE_HOLDER_NAME_CRM_IDS) {
       const holder = mapGet(map, crmId);
       if (holder) return formatSignNowPrefillValue(holder, fieldName);

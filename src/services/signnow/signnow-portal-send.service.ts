@@ -9,6 +9,7 @@ import {
   verifySigningPortalToken,
 } from './utils/signnow-portal-token';
 import { buildSigningPortalEmailHtml } from './utils/signnow-portal-email';
+import { isPortalSendInFlight, trackPortalSend } from './utils/signnow-portal-send-inflight';
 
 /**
  * CRM signing portal Ã¢â‚¬â€ contracts emailed by SendGrid instead of by SignNow.
@@ -210,8 +211,11 @@ export async function mintPortalSigningLink(input: {
       {
         email: candidate,
         auth_method: 'none',
+        // SignNow caps an embedded link at 45 minutes and rejects a session
+        // that outlives it; the 7-day window is the portal token's, and every
+        // open within it remints this link.
         link_expiration: 45,
-        session_expiration: 60,
+        session_expiration: 45,
         ...(returnUrl
           ? {
               redirect_uri: returnUrl,
@@ -628,12 +632,7 @@ export async function syncPortalEnvelopeAfterSignerFinished(
   return { queue, status: null };
 }
 
-/**
- * Email each merchant a signing-portal link via SendGrid.
- * Marks the contract portal-sent so status sync does not read the preparer's
- * embedded invite as an unfinished owner review and revert it to draft.
- */
-export async function sendContractViaPortal(input: {
+export type PortalSendInput = {
   envelopeId: string;
   recipients: PortalRecipient[];
   contractLabel: string;
@@ -646,7 +645,22 @@ export async function sendContractViaPortal(input: {
   ccEmails?: string[];
   /** Live "$25 wire fee" checkbox from the contract modal. */
   includeWireFee?: unknown;
-}): Promise<PortalSendResult> {
+};
+
+type PreparedPortalSend = {
+  input: PortalSendInput;
+  envelopeId: string;
+  recipients: PortalRecipient[];
+  applicationId: string | null;
+  resent: boolean;
+};
+
+/**
+ * Everything that can reject a send without touching SignNow: config, recipients
+ * and the "was this package prefilled by Review" guard. Runs before the request
+ * is answered, so these errors still reach the user as an immediate toast.
+ */
+async function prepareContractPortalSend(input: PortalSendInput): Promise<PreparedPortalSend> {
   const envelopeId = String(input.envelopeId || '').trim();
   if (!envelopeId) throw new BadRequest('Missing contract id.');
   if (!isSendGridConfigured()) {
@@ -671,6 +685,23 @@ export async function sendContractViaPortal(input: {
   const resent = Boolean(existing?.portalSentAt || existing?.sentAt);
   // Same guard as the SignNow invite send: an unprefilled package goes out blank.
   if (!resent) assertPackageWasPrefilledByReview(existing?.prefillFingerprint);
+  return {
+    input,
+    envelopeId,
+    recipients,
+    applicationId: existing?.applicationId ? String(existing.applicationId) : null,
+    resent,
+  };
+}
+
+/**
+ * The slow half of a portal send: publish the CRM values onto the SignNow
+ * documents (many SignNow round trips), then email every merchant via SendGrid
+ * and mark the CRM sent.
+ */
+async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<PortalSendResult> {
+  const { input, envelopeId, recipients, resent } = prepared;
+  const existing = { applicationId: prepared.applicationId };
 
   // "{Selected funder} {Deal name} {$Amount}" Ã¢â‚¬â€ same subject format the SignNow
   // group-invite send uses, so a portal send for e.g. Obsidian reads
@@ -831,4 +862,66 @@ export async function sendContractViaPortal(input: {
     resent,
     ccPrefilledEmail,
   };
+}
+
+/**
+ * Email each merchant a signing-portal link via SendGrid, waiting for the whole
+ * send. Marks the contract portal-sent so status sync does not read the
+ * preparer's embedded invite as an unfinished owner review and revert it to draft.
+ */
+export async function sendContractViaPortal(input: PortalSendInput): Promise<PortalSendResult> {
+  return deliverContractPortalSend(await prepareContractPortalSend(input));
+}
+
+export type PortalSendAccepted = {
+  envelopeId: string;
+  recipientEmails: string[];
+  resent: boolean;
+  /** True when this click joined a send that was already running. */
+  alreadyInProgress: boolean;
+};
+
+/**
+ * Validate the send, then publish + email in the background.
+ *
+ * The SignNow field publish is a long chain of SignNow round trips (reading
+ * every document, clearing invites, a full-document PUT per document, then
+ * recreating the embedded invite) and took 1–2 minutes before the button
+ * returned. Nothing in it needs the user to wait: the CRM is marked sent when
+ * it finishes, and `onSettled` reports the outcome (realtime push).
+ */
+export async function startContractPortalSend(
+  input: PortalSendInput,
+  onSettled?: (
+    outcome: { ok: true; result: PortalSendResult } | { ok: false; error: unknown },
+    context: { envelopeId: string; applicationId: string | null },
+  ) => void | Promise<void>,
+): Promise<PortalSendAccepted> {
+  const prepared = await prepareContractPortalSend(input);
+  const { envelopeId } = prepared;
+  const accepted = {
+    envelopeId,
+    recipientEmails: prepared.recipients.map((r) => normalizeEmail(r.email)),
+    resent: prepared.resent,
+  };
+  // A second click while the first send is still running joins it.
+  if (isPortalSendInFlight(envelopeId)) {
+    return { ...accepted, alreadyInProgress: true };
+  }
+  const context = { envelopeId, applicationId: prepared.applicationId };
+  const work = deliverContractPortalSend(prepared);
+  trackPortalSend(envelopeId, work);
+  void work
+    .then(
+      (result) => onSettled?.({ ok: true, result }, context),
+      (error) => {
+        console.error('[SignNow] background portal send failed', {
+          envelopeId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return onSettled?.({ ok: false, error }, context);
+      },
+    )
+    .catch((err) => console.warn('[SignNow] portal send outcome report failed', err));
+  return { ...accepted, alreadyInProgress: false };
 }

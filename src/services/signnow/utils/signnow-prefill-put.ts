@@ -90,6 +90,65 @@ export function applySignNowFieldStyle(
   return target;
 }
 
+/** Face for the signer's signature and initials widgets, on every document. */
+export const SIGNATURE_FIELD_FONT = 'Times New Roman';
+export const SIGNATURE_FIELD_FONT_SIZE = 12;
+const SIGNATURE_FONT_TYPES = new Set(['signature', 'initials']);
+const SIGNATURE_FONT_KEYS = ['font', 'size', 'font_size'] as const;
+
+/**
+ * Box height that renders a signer's mark at a 12pt line. SignNow stores no
+ * font on signature / initials widgets (their JSON is only x, y, width, height,
+ * name, required, page_number, allowed_types) and scales the drawn or typed mark
+ * to fill the box, so the template's 40×41pt initials boxes printed initials
+ * roughly 30pt tall no matter what face was requested. The height is the size.
+ */
+export const SIGNATURE_FIELD_HEIGHT = 16;
+
+/**
+ * Signature / initials widgets: Times New Roman 12 face, and a box sized to a
+ * 12pt line. A taller box is shrunk around its own vertical centre, so the mark
+ * stays on the same printed line; a box already that small is left alone, which
+ * keeps repeated publishes from moving it.
+ */
+export function applySignNowSignatureFieldFont(
+  field: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!SIGNATURE_FONT_TYPES.has(String(field.type || '').toLowerCase())) return field;
+  field.font = SIGNATURE_FIELD_FONT;
+  field.size = SIGNATURE_FIELD_FONT_SIZE;
+  field.font_size = SIGNATURE_FIELD_FONT_SIZE;
+  const height = Number(field.height);
+  const y = Number(field.y);
+  if (Number.isFinite(height) && Number.isFinite(y) && height > SIGNATURE_FIELD_HEIGHT) {
+    field.y = Math.round(y + (height - SIGNATURE_FIELD_HEIGHT) / 2);
+    field.height = SIGNATURE_FIELD_HEIGHT;
+  }
+  return field;
+}
+
+/**
+ * The same fields without the signature face — the last-resort body if SignNow
+ * ever refuses a PUT because of it, so a send never fails over a font.
+ */
+export function withoutSignNowSignatureFieldFont(
+  fields: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return fields.map((field) => {
+    if (!SIGNATURE_FONT_TYPES.has(String(field.type || '').toLowerCase())) return field;
+    const next = { ...field };
+    for (const key of SIGNATURE_FONT_KEYS) delete next[key];
+    return next;
+  });
+}
+
+export function hasSignNowSignatureFieldFont(fields: Record<string, unknown>[]): boolean {
+  return fields.some(
+    (field) =>
+      SIGNATURE_FONT_TYPES.has(String(field.type || '').toLowerCase()) && field.font != null,
+  );
+}
+
 /** Keep the SignNow template face (do not force 10pt — that shrinks contract widgets). */
 export function copySignNowTemplateStyle(
   target: Record<string, unknown>,
@@ -149,41 +208,123 @@ export function sanitizeSignNowPutFields(
   });
 }
 
-/** Suffix a relabel adds; stripped first so a reused draft does not stack them. */
+/** Label suffix an earlier build added to Exhibit C copies; it showed as a placeholder. */
 const EXHIBIT_C_COPY_LABEL_SUFFIX = /\s*\(copy \d+\)\s*$/i;
+/** Widget-name suffix that keeps an Exhibit C copy's widgets apart in Review. */
+const EXHIBIT_C_COPY_NAME_SUFFIX = /__copy\d+$/i;
+
+/** The widget name without the Review-only copy suffix (`ach_bank_name_p1__copy2` → `ach_bank_name_p1`). */
+export function stripExhibitCCopyFieldName(name: unknown): string {
+  return String(name ?? '').replace(EXHIBIT_C_COPY_NAME_SUFFIX, '');
+}
 
 /**
- * Give every widget on an Exhibit C copy a label no other document carries.
+ * Give every widget on an Exhibit C copy a *name* no other document carries.
  *
- * SignNow links widgets that share a label inside one signer's session, and
- * every Exhibit C copy is made from the same template, so in the Owner review
- * `Exhibit C (2)` showed `Exhibit C`'s values over its own prefill. The merchant
- * send never showed it because the values are baked as page text there. Only
- * the label changes — the widget `name` is what the prefill resolves against.
+ * Every copy is made from one template, and SignNow links same-named widgets
+ * across the documents of a group in the Owner's review session, so
+ * `Exhibit C (2)` showed Exhibit C #1's values over its own prefill. A unique
+ * label did not break that link (and surfaced as the `ach_bank_portal_p1
+ * (copy 2)` placeholder); only the name does. The merchant send never showed
+ * it, because its values are baked as page text.
  *
- * `copyNumber` is 1-based (`Exhibit C (2)` → 2). Returns how many were relabelled.
+ * Everything else in the backend keeps working on the original names: the
+ * SignNow client strips the suffix from every document it reads
+ * (`normalizeExhibitCCopyFieldNames`), and the merchant publish writes the
+ * original names back. The label an earlier build appended is removed too.
+ *
+ * `copyNumber` is 1-based (`Exhibit C (2)` → 2). Returns how many were renamed.
  */
-export function labelExhibitCCopyFieldsForReview(
+export function nameExhibitCCopyFieldsForReview(
   fields: Record<string, unknown>[],
   copyNumber: number,
 ): number {
   if (!Number.isFinite(copyNumber) || copyNumber < 2) return 0;
-  let relabelled = 0;
+  let renamed = 0;
   for (const field of fields) {
     const type = String(field.type || 'text').toLowerCase();
     if (SIGN_TYPES.has(type)) continue;
-    const base = String(field.label || field.name || '')
-      .replace(EXHIBIT_C_COPY_LABEL_SUFFIX, '')
-      .trim();
+    const base = stripExhibitCCopyFieldName(field.name).trim();
     if (!base) continue;
-    const label = `${base} (copy ${copyNumber})`;
-    field.label = label;
-    if (field.json_attributes && typeof field.json_attributes === 'object') {
-      field.json_attributes = { ...(field.json_attributes as Record<string, unknown>), label };
-    }
-    relabelled += 1;
+    field.name = `${base}__copy${copyNumber}`;
+    clearExhibitCCopyLabel(field, base);
+    renamed += 1;
   }
-  return relabelled;
+  return renamed;
+}
+
+/**
+ * Remove the `(copy N)` labels an earlier build wrote onto Exhibit C copies —
+ * on every publish, so a merchant never sees `ach_bank_portal_p1 (copy 2)` as a
+ * placeholder in a box they have to fill. Returns how many were cleaned.
+ */
+export function clearExhibitCCopyLabels(fields: Record<string, unknown>[]): number {
+  let cleaned = 0;
+  for (const field of fields) {
+    const before = JSON.stringify([field.label, (field.json_attributes as any)?.label]);
+    clearExhibitCCopyLabel(field, stripExhibitCCopyFieldName(field.name).trim());
+    if (JSON.stringify([field.label, (field.json_attributes as any)?.label]) !== before) cleaned += 1;
+  }
+  return cleaned;
+}
+
+/** Drop the `(copy N)` label an earlier build wrote; a label that was just the name goes. */
+function clearExhibitCCopyLabel(field: Record<string, unknown>, baseName: string): void {
+  const strip = (target: Record<string, unknown>) => {
+    const label = String(target.label ?? '');
+    if (!EXHIBIT_C_COPY_LABEL_SUFFIX.test(label)) return;
+    const base = label.replace(EXHIBIT_C_COPY_LABEL_SUFFIX, '').trim();
+    if (!base || base === baseName) delete target.label;
+    else target.label = base;
+  };
+  strip(field);
+  if (field.json_attributes && typeof field.json_attributes === 'object') {
+    const attrs = { ...(field.json_attributes as Record<string, unknown>) };
+    strip(attrs);
+    field.json_attributes = attrs;
+  }
+}
+
+/**
+ * Strip the Review-only copy suffix from every widget of a SignNow document
+ * (or of each document in a group payload), in place. Applied to every read
+ * so name-based logic — prefill resolution, merchant-required widgets, review
+ * checks — never sees the suffix, and the merchant publish restores the names.
+ */
+export function normalizeExhibitCCopyFieldNames<T>(payload: T): T {
+  const visitDoc = (doc: any) => {
+    if (!doc || typeof doc !== 'object') return;
+    for (const key of ['fields', 'fillable_fields', 'texts', 'signatures', 'initials', 'checks']) {
+      const rows = doc[key];
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        for (const prop of ['name', 'field_name'] as const) {
+          if (typeof row[prop] === 'string' && EXHIBIT_C_COPY_NAME_SUFFIX.test(row[prop])) {
+            row[prop] = stripExhibitCCopyFieldName(row[prop]);
+          }
+        }
+        const attrs = row.json_attributes;
+        if (attrs && typeof attrs === 'object' && typeof attrs.name === 'string') {
+          attrs.name = stripExhibitCCopyFieldName(attrs.name);
+        } else if (typeof attrs === 'string' && /__copy\d+/i.test(attrs)) {
+          try {
+            const parsed = JSON.parse(attrs);
+            if (parsed && typeof parsed.name === 'string') {
+              parsed.name = stripExhibitCCopyFieldName(parsed.name);
+              row.json_attributes = JSON.stringify(parsed);
+            }
+          } catch {
+            /* leave an unparseable attribute blob as it is */
+          }
+        }
+      }
+    }
+  };
+  const data: any = payload;
+  visitDoc(data);
+  if (Array.isArray(data?.documents)) data.documents.forEach(visitDoc);
+  return payload;
 }
 
 export function signNowPrefillTextPayload(

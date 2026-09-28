@@ -6,6 +6,7 @@ import {
   getSignNowTiming,
   logSignNowTiming,
 } from './signnow-timing';
+import { normalizeExhibitCCopyFieldNames } from './signnow-prefill-put';
 
 /**
  * One Review or Send makes 20-60 calls to api.signnow.com. Node's global agent
@@ -195,6 +196,14 @@ export function sleepSignNow(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** A JSON GET of a document or document group (not a PDF download). */
+function isSignNowDocumentRead(config: { method?: string; url?: string } | undefined): boolean {
+  if (String(config?.method || 'get').toLowerCase() !== 'get') return false;
+  const url = String(config?.url || '');
+  if (/\/download\b/i.test(url)) return false;
+  return /\/(?:document|documents|documentgroup|document-groups)\/[^/?]+(?:[/?]|$)/i.test(url);
+}
+
 export async function createSignNowApiClient(): Promise<AxiosInstance> {
   const token = await getSignNowAccessToken();
   const client = axios.create({
@@ -216,6 +225,10 @@ export async function createSignNowApiClient(): Promise<AxiosInstance> {
   client.interceptors.response.use(
     async (res) => {
       const cfg = res.config as { headers?: Record<string, unknown>; __signNowRetried401?: boolean };
+      // Exhibit C copies carry Review-only widget names; callers only ever see the originals.
+      if (res.status < 400 && isSignNowDocumentRead(res.config)) {
+        normalizeExhibitCCopyFieldNames(res.data);
+      }
       if (res.status !== 401 || cfg.__signNowRetried401) return res;
       cfg.__signNowRetried401 = true;
       clearSignNowAccessTokenCache();

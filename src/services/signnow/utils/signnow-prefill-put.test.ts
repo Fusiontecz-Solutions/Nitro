@@ -1,11 +1,20 @@
 import {
   applyContractFillableFont,
   applySignNowFieldStyle,
+  applySignNowSignatureFieldFont,
+  hasSignNowSignatureFieldFont,
+  SIGNATURE_FIELD_FONT,
+  SIGNATURE_FIELD_FONT_SIZE,
+  SIGNATURE_FIELD_HEIGHT,
+  withoutSignNowSignatureFieldFont,
   copySignNowTemplateStyle,
   CONTRACT_FILLABLE_MIN_HEIGHT,
   FILLABLE_FONT_SIZE,
   canLockSignNowPrefill,
-  labelExhibitCCopyFieldsForReview,
+  clearExhibitCCopyLabels,
+  nameExhibitCCopyFieldsForReview,
+  normalizeExhibitCCopyFieldNames,
+  stripExhibitCCopyFieldName,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
@@ -854,39 +863,143 @@ describe('dropOverlappingDuplicateTexts', () => {
   });
 });
 
-describe('labelExhibitCCopyFieldsForReview', () => {
-  it('gives a copy unique labels without touching widget names or signatures', () => {
+describe('nameExhibitCCopyFieldsForReview', () => {
+  it('gives a copy unique widget names, leaving signatures and values alone', () => {
     const fields: Record<string, unknown>[] = [
-      { type: 'text', name: 'business_name', label: 'business_name', prefilled_text: 'Acme 2' },
+      { type: 'text', name: 'business_name', prefilled_text: 'Acme 2' },
       { type: 'text', name: 'Text Field 3' },
       { type: 'text', name: 'bank_name', json_attributes: { label: 'Bank' }, label: 'Bank' },
       { type: 'signature', name: 'merchant_signature', label: 'Sign' },
     ];
-    expect(labelExhibitCCopyFieldsForReview(fields, 2)).toBe(3);
+    expect(nameExhibitCCopyFieldsForReview(fields, 2)).toBe(3);
     expect(fields.map((f) => f.name)).toEqual([
-      'business_name',
-      'Text Field 3',
-      'bank_name',
+      'business_name__copy2',
+      'Text Field 3__copy2',
+      'bank_name__copy2',
       'merchant_signature',
     ]);
-    expect(fields[0].label).toBe('business_name (copy 2)');
-    expect(fields[1].label).toBe('Text Field 3 (copy 2)');
-    expect((fields[2].json_attributes as Record<string, unknown>).label).toBe('Bank (copy 2)');
-    expect(fields[3].label).toBe('Sign');
+    // Real labels are kept; nothing is appended that SignNow would show as a placeholder.
+    expect(fields[2].label).toBe('Bank');
+    expect(fields[0].label).toBeUndefined();
     expect(fields[0].prefilled_text).toBe('Acme 2');
   });
 
   it('does not stack suffixes on a reused draft', () => {
+    const fields: Record<string, unknown>[] = [{ type: 'text', name: 'dba__copy3' }];
+    nameExhibitCCopyFieldsForReview(fields, 3);
+    expect(fields[0].name).toBe('dba__copy3');
+  });
+
+  it('removes the (copy N) placeholder label an earlier build wrote', () => {
     const fields: Record<string, unknown>[] = [
-      { type: 'text', name: 'dba', label: 'dba (copy 3)' },
+      {
+        type: 'text',
+        name: 'ach_bank_portal_p1',
+        label: 'ach_bank_portal_p1 (copy 2)',
+        json_attributes: { label: 'ach_bank_portal_p1 (copy 2)' },
+      },
+      { type: 'text', name: 'bank', label: 'Bank (copy 2)' },
     ];
-    labelExhibitCCopyFieldsForReview(fields, 3);
-    expect(fields[0].label).toBe('dba (copy 3)');
+    expect(clearExhibitCCopyLabels(fields)).toBe(2);
+    expect(fields[0].label).toBeUndefined();
+    expect((fields[0].json_attributes as Record<string, unknown>).label).toBeUndefined();
+    expect(fields[1].label).toBe('Bank');
   });
 
   it('leaves the first Exhibit C alone', () => {
     const fields: Record<string, unknown>[] = [{ type: 'text', name: 'dba', label: 'dba' }];
-    expect(labelExhibitCCopyFieldsForReview(fields, 1)).toBe(0);
-    expect(fields[0].label).toBe('dba');
+    expect(nameExhibitCCopyFieldsForReview(fields, 1)).toBe(0);
+    expect(fields[0].name).toBe('dba');
+  });
+});
+
+describe('normalizeExhibitCCopyFieldNames', () => {
+  it('strips the copy suffix from every widget of a document read', () => {
+    const doc = {
+      fields: [
+        { type: 'text', name: 'ach_bank_name_p1__copy2', json_attributes: { name: 'ach_bank_name_p1__copy2' } },
+        { type: 'text', json_attributes: JSON.stringify({ name: 'ach_username_p1__copy3' }) },
+        { type: 'initials', name: 'initial_g1_p1' },
+      ],
+      texts: [{ field_name: 'ach_bank_account_p1__copy2', data: '1' }],
+    };
+    normalizeExhibitCCopyFieldNames(doc);
+    expect(doc.fields[0].name).toBe('ach_bank_name_p1');
+    expect((doc.fields[0].json_attributes as Record<string, unknown>).name).toBe('ach_bank_name_p1');
+    expect(JSON.parse(doc.fields[1].json_attributes as string).name).toBe('ach_username_p1');
+    expect(doc.fields[2].name).toBe('initial_g1_p1');
+    expect(doc.texts[0].field_name).toBe('ach_bank_account_p1');
+  });
+
+  it('handles group payloads and leaves ordinary names untouched', () => {
+    const group = { documents: [{ fields: [{ name: 'client_name__copy2' }, { name: 'copy_count' }] }] };
+    normalizeExhibitCCopyFieldNames(group);
+    expect(group.documents[0].fields.map((f) => f.name)).toEqual(['client_name', 'copy_count']);
+    expect(stripExhibitCCopyFieldName('Text Field 3__copy4')).toBe('Text Field 3');
+  });
+});
+
+describe('signature / initials face', () => {
+  it('sets Times New Roman 12 on signature and initials widgets only', () => {
+    const signature = applySignNowSignatureFieldFont({ type: 'signature', name: 'sig_1' });
+    const initials = applySignNowSignatureFieldFont({ type: 'initials', name: 'initial_g1_p1' });
+    const text = applySignNowSignatureFieldFont({ type: 'text', name: 'dba', size: 16 });
+    for (const field of [signature, initials]) {
+      expect(field.font).toBe(SIGNATURE_FIELD_FONT);
+      expect(field.size).toBe(12);
+      expect(field.font_size).toBe(12);
+    }
+    expect(SIGNATURE_FIELD_FONT).toBe('Times New Roman');
+    expect(SIGNATURE_FIELD_FONT_SIZE).toBe(12);
+    // Text widgets keep their own face.
+    expect(text.font).toBeUndefined();
+    expect(text.size).toBe(16);
+  });
+
+  it('sizes the box to a 12pt line, centred on the same line, and only once', () => {
+    // The template's initials box (Exhibit C initial_g1_p1): 40×41 at y=727.
+    const initials = applySignNowSignatureFieldFont({ type: 'initials', x: 394, y: 727, width: 40, height: 41 });
+    expect(initials.height).toBe(SIGNATURE_FIELD_HEIGHT);
+    expect(initials.y).toBe(Math.round(727 + (41 - SIGNATURE_FIELD_HEIGHT) / 2));
+    expect(initials.x).toBe(394);
+    expect(initials.width).toBe(40);
+    // Re-publishing the already-sized box does not move it again.
+    const again = applySignNowSignatureFieldFont({ ...initials });
+    expect(again.y).toBe(initials.y);
+    expect(again.height).toBe(SIGNATURE_FIELD_HEIGHT);
+    // Text widgets keep their geometry.
+    const text = applySignNowSignatureFieldFont({ type: 'text', y: 10, height: 41 });
+    expect(text.height).toBe(41);
+  });
+
+  it('keeps signature widgets untouched by the merchant bake', () => {
+    const sig = applySignNowSignatureFieldFont({
+      type: 'signature',
+      name: 'sig_1',
+      role: 'Recipient 1',
+      page_number: 0,
+      x: 1,
+      y: 1,
+      width: 120,
+      height: 20,
+    });
+    const { fields } = splitPrefillPutPayload([sig], true, { keepEmptyMerchantRequired: true });
+    expect(fields[0].font).toBe('Times New Roman');
+    expect(fields[0].size).toBe(12);
+  });
+
+  it('can strip the face for a fallback write without touching other fields', () => {
+    const fields = [
+      applySignNowSignatureFieldFont({ type: 'initials', name: 'i1' }),
+      { type: 'text', name: 'dba', font: 'Arial', size: 14 },
+    ];
+    expect(hasSignNowSignatureFieldFont(fields)).toBe(true);
+    const stripped = withoutSignNowSignatureFieldFont(fields);
+    expect(stripped[0].font).toBeUndefined();
+    expect(stripped[0].size).toBeUndefined();
+    expect(stripped[1]).toEqual({ type: 'text', name: 'dba', font: 'Arial', size: 14 });
+    expect(hasSignNowSignatureFieldFont(stripped)).toBe(false);
+    // The original is not mutated.
+    expect(fields[0].font).toBe('Times New Roman');
   });
 });

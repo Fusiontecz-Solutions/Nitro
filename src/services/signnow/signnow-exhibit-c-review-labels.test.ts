@@ -2,11 +2,12 @@
  * Owner review must show each Exhibit C copy its own values.
  *
  * Every copy is made from one template, so `Exhibit C (2)` carries the same
- * widget labels as `Exhibit C`, and SignNow links same-label widgets inside the
- * Owner's review session — the copy rendered the first Exhibit C's values over
- * its own prefill. Send never showed it, because it bakes values as page text.
- * Review now relabels a copy's widgets (names untouched) and writes them with
- * the field PUT it would otherwise skip.
+ * widget names as `Exhibit C`, and SignNow links same-named widgets across the
+ * group in the Owner's review session — the copy rendered the first Exhibit C's
+ * values over its own prefill. A unique label did not break the link (and
+ * showed as a `name (copy 2)` placeholder); a unique name does. Send never
+ * showed it, because it bakes values as page text, and it writes the original
+ * names back.
  *
  * Stubs mirror `signnow-stale-document-values.test.ts`.
  */
@@ -91,28 +92,28 @@ async function review(documentName: string) {
 }
 
 describe('Owner review of Exhibit C copies', () => {
-  it('relabels a copy so SignNow cannot link it to the first Exhibit C', async () => {
+  it('renames a copy so SignNow cannot link it to the first Exhibit C', async () => {
     const puts = await review('Exhibit C (2)');
     const fieldPut = fieldPuts(puts)[0];
     expect(fieldPut).toBeDefined();
     const byName = new Map<string, any>(
       fieldPut.body.fields.map((field: any) => [String(field.name), field]),
     );
-    expect(byName.get('business_name')?.label).toBe('business_name (copy 2)');
-    expect(byName.get('bank_name')?.label).toBe('bank_name (copy 2)');
-    // The copy's own values still ride on the unchanged widget names.
-    expect(byName.get('business_name')?.prefilled_text).toBe('SECOND ENTITY LLC');
+    expect(byName.has('business_name')).toBe(false);
+    expect(byName.get('business_name__copy2')?.prefilled_text).toBe('SECOND ENTITY LLC');
+    expect(byName.get('bank_name__copy2')?.prefilled_text).toBe('SECOND BANK');
+    // No `(copy 2)` label for SignNow to show as a placeholder.
+    expect(String(byName.get('bank_name__copy2')?.label || '')).not.toMatch(/\(copy \d+\)/);
     expect(byName.get('merchant_signature')).toBeDefined();
+    // prefill-texts would address the old names; the field PUT carries the values.
+    expect(puts.some((call) => /prefill-text/.test(call.path))).toBe(false);
   });
 
-  it('keeps the first Exhibit C on prefill-texts only', async () => {
-    const puts = await review('Exhibit C');
-    expect(puts.some((call) => /prefill-text/.test(call.path))).toBe(true);
-    expect(fieldPuts(puts)).toHaveLength(0);
-  });
-
-  it('does not relabel on the merchant send, which bakes page text', async () => {
+  it('removes a (copy 2) label an earlier build left on the copy', async () => {
     const remote = exhibitCDocument('doc-exhibit-c', 'Exhibit C (2)');
+    for (const field of remote.fields as any[]) {
+      if (field.type === 'text') field.label = `${field.name} (copy 2)`;
+    }
     const { client, puts } = makeClient(remote);
     await (signNowService as any).prefillDocument(client as any, remote.id, VALUES, {
       exposeToMerchant: true,
@@ -121,6 +122,28 @@ describe('Owner review of Exhibit C copies', () => {
     for (const call of fieldPuts(puts)) {
       for (const field of call.body.fields) {
         expect(String(field.label || '')).not.toMatch(/\(copy \d+\)/);
+      }
+    }
+  });
+
+  it('keeps the first Exhibit C on prefill-texts only', async () => {
+    const puts = await review('Exhibit C');
+    expect(puts.some((call) => /prefill-text/.test(call.path))).toBe(true);
+    expect(fieldPuts(puts)).toHaveLength(0);
+  });
+
+  it('keeps the original names on the merchant send, which bakes page text', async () => {
+    const remote = exhibitCDocument('doc-exhibit-c', 'Exhibit C (2)');
+    const { client, puts } = makeClient(remote);
+    await (signNowService as any).prefillDocument(client as any, remote.id, VALUES, {
+      exposeToMerchant: true,
+      remote,
+    });
+    expect(fieldPuts(puts).length).toBeGreaterThan(0);
+    for (const call of fieldPuts(puts)) {
+      for (const field of call.body.fields) {
+        expect(String(field.label || '')).not.toMatch(/\(copy \d+\)/);
+        expect(String(field.name || '')).not.toMatch(/__copy\d+$/);
       }
     }
   });

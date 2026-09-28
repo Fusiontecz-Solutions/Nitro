@@ -1,5 +1,6 @@
 import prisma from '../../../config/prismaClient';
 import { uploadPdfBufferToCloudinary } from './cloudinary-pdf-upload';
+import { fetchCloudinaryAssetBuffer } from '../../cloudinaryAssetDownload';
 import { slugifyFunderDocumentToken } from '../../../utils/funderContractLayout';
 import { resolveEnvelopeFunderAuthHints } from './envelope-funder-auth';
 import { findSignedPdfUrlInContractSendHistory, appendContractSendHistoryEntry } from './contract-send-history';
@@ -125,20 +126,54 @@ export async function getStoredSignedPdfUrl(envelopeId: string): Promise<string 
   return archive?.url || null;
 }
 
-/** Fetch a previously archived envelope PDF (Cloudinary / HTTPS). */
+/** A stored PDF that has not arrived by then is treated as missing, not awaited. */
+const STORED_PDF_FETCH_TIMEOUT_MS = 20_000;
+
+function withStoredPdfTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timed out after ${STORED_PDF_FETCH_TIMEOUT_MS}ms`)),
+      STORED_PDF_FETCH_TIMEOUT_MS,
+    );
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Fetch a previously archived PDF (Cloudinary / HTTPS) — signed envelopes and
+ * the SignNow template previews alike.
+ *
+ * Public delivery URLs on our Cloudinary account answer 401 (restricted media),
+ * so a plain GET never returned the stored copy and every caller fell back to
+ * downloading the PDF from SignNow again — the slow first open of the Contract
+ * tab after each restart. A 401/403 is retried as an authenticated download.
+ */
 export async function fetchStoredSignedPdfBuffer(url: string): Promise<Buffer | null> {
   const href = String(url || '').trim();
   if (!href.startsWith('http://') && !href.startsWith('https://')) return null;
   try {
-    const res = await fetch(href);
-    if (!res.ok) {
-      console.warn(
-        `[DocuSign] stored envelope PDF fetch failed (${res.status}) for ${href.slice(0, 120)}`,
-      );
-      return null;
+    const res = await withStoredPdfTimeout(fetch(href));
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length ? buf : null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    return buf.length ? buf : null;
+    if (res.status === 401 || res.status === 403) {
+      try {
+        const buf = await withStoredPdfTimeout(fetchCloudinaryAssetBuffer(href));
+        if (buf.length) return buf;
+      } catch (err) {
+        console.warn(
+          `[DocuSign] stored PDF authenticated download failed for ${href.slice(0, 120)}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return null;
+      }
+    }
+    console.warn(
+      `[DocuSign] stored envelope PDF fetch failed (${res.status}) for ${href.slice(0, 120)}`,
+    );
+    return null;
   } catch (err) {
     console.warn('[DocuSign] stored envelope PDF fetch error:', err);
     return null;

@@ -8,6 +8,7 @@ jest.mock('puppeteer', () => ({ __esModule: true, default: {} }));
 import {
   exhibitCDocumentPrefillValues,
   exhibitCEntityRowHasData,
+  resolveExhibitCEntities,
   signNowDocumentPrefillValues,
 } from './signnow.service';
 
@@ -220,5 +221,59 @@ describe('signNowDocumentPrefillValues', () => {
     );
     expect(isolated).toBe(true);
     expect(values.ach_bank_name).toBe('WELLS FARGO');
+  });
+});
+
+/**
+ * What the CRM saved for a copy must win over the list the browser posted: the
+ * posted list is built from the contract the screen loaded and can predate the
+ * copy's latest save, which sent `Exhibit C (2)` to Review with no entity.
+ */
+describe('resolveExhibitCEntities', () => {
+  const COPY_1 = { accountHolderName: 'RE-NEW-IT RENOVATIONS, LLC', bankName: 'Test Bank', bankAccount: '123456789' };
+  const COPY_2 = { accountHolderName: 'Test Usera', bankName: 'Test Usera', bankAccount: '123456788' };
+
+  it('prefers the saved entity over a stale posted one', () => {
+    const entities = resolveExhibitCEntities({
+      storedEntitiesRaw: JSON.stringify([COPY_1, COPY_2]),
+      payloadEntitiesRaw: JSON.stringify([COPY_1, {}]),
+    });
+    expect(entities[1].accountHolderName).toBe('Test Usera');
+    expect(entities[1].bankAccount).toBe('123456788');
+  });
+
+  it('uses the copy own saved tab when the stored list is missing', () => {
+    const entities = resolveExhibitCEntities({
+      mappingEntities: [COPY_1, COPY_2],
+      payloadEntitiesRaw: JSON.stringify([COPY_1]),
+    });
+    expect(entities).toHaveLength(2);
+    expect(entities[1].bankName).toBe('Test Usera');
+  });
+
+  it('still fills gaps from the posted list', () => {
+    const entities = resolveExhibitCEntities({
+      storedEntitiesRaw: JSON.stringify([{}, { bankName: 'Test Usera' }]),
+      payloadEntitiesRaw: JSON.stringify([COPY_1, { bankAccount: '123456788' }]),
+    });
+    expect(entities[0].bankName).toBe('Test Bank');
+    expect(entities[1].bankName).toBe('Test Usera');
+    expect(entities[1].bankAccount).toBe('123456788');
+  });
+
+  it('gives Exhibit C (2) its own values end to end', () => {
+    const entities = resolveExhibitCEntities({
+      storedEntitiesRaw: JSON.stringify([COPY_1, COPY_2]),
+      payloadEntitiesRaw: JSON.stringify([COPY_1, {}]),
+    });
+    const { values, isolated } = signNowDocumentPrefillValues(
+      { ...MERCHANT_VALUES, ach_account_holder_name_p1: 'MARY IRVIN', ach_bank_name_p1: 'Test Bank' },
+      entities,
+      'Exhibit C (2)',
+    );
+    expect(isolated).toBe(true);
+    expect(values.ach_account_holder_name_p1).toBe('Test Usera');
+    expect(values.ach_bank_name_p1).toBe('Test Usera');
+    expect(values.ach_bank_account).toBe('123456788');
   });
 });

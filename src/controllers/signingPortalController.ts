@@ -4,10 +4,15 @@ import {
   advancePortalSigningQueue,
   mintPortalSigningLink,
   resolvePortalRecipients,
-  sendContractViaPortal,
+  startContractPortalSend,
   syncPortalEnvelopeAfterSignerFinished,
   verifyPortalAccess,
 } from '../services/signnow/signnow-portal-send.service';
+import { emitToUser } from '../socket';
+import { emitContractSigningStatusRealtime } from '../services/contractSigningStatusEffects';
+
+/** Outcome of a background "Send via SignNow" portal send, pushed to the user who clicked. */
+const PORTAL_SEND_RESULT_SOCKET_EVENT = 'contract:portal-send-result';
 import { markSignNowEnvelopeActive } from '../cron-job/signNowContractStatusJob';
 import { signNowWebhooksVerified } from '../services/signnow/utils/signnow-webhook-mode';
 
@@ -52,7 +57,10 @@ class SigningPortalController {
           message: 'No merchant signer email to send to (the preparer is excluded).',
         });
       }
-      const result = await sendContractViaPortal({
+      const senderUserId = String((req as any).user?.id ?? '').trim();
+      // Answered as soon as the send is validated; the SignNow publish and the
+      // SendGrid emails finish in the background (they took 1–2 minutes inline).
+      const accepted = await startContractPortalSend({
         envelopeId: id,
         recipients,
         contractLabel: String(contractLabel ?? '').trim() || 'Your funding agreement',
@@ -67,8 +75,33 @@ class SigningPortalController {
           : undefined,
         // Live "$25 wire fee" checkbox; see `withRequestWireFeePreference`.
         includeWireFee,
+      }, async (outcome, context) => {
+        const payload = outcome.ok
+          ? {
+              envelopeId: context.envelopeId,
+              applicationId: context.applicationId,
+              ok: true,
+              recipientEmails: outcome.result.recipientEmails,
+            }
+          : {
+              envelopeId: context.envelopeId,
+              applicationId: context.applicationId,
+              ok: false,
+              message:
+                (outcome.error as Error)?.message || 'Could not email the signing link.',
+            };
+        if (senderUserId) emitToUser(senderUserId, PORTAL_SEND_RESULT_SOCKET_EVENT, payload);
+        // Every CRM user watching the deal refreshes to Contract Sent.
+        if (outcome.ok && context.applicationId) {
+          await emitContractSigningStatusRealtime({
+            applicationId: context.applicationId,
+            envelopeId: context.envelopeId,
+            status: 'sent',
+            provider: 'signnow',
+          });
+        }
       });
-      return res.json({ success: true, data: result });
+      return res.status(202).json({ success: true, data: { ...accepted, queued: true } });
     } catch (error: any) {
       return fail(res, error);
     }

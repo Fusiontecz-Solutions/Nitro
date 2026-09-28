@@ -106,15 +106,20 @@ import {
 } from './utils/signnow-field-map';
 import {
   applyContractFillableFont,
+  applySignNowSignatureFieldFont,
   collectCommittedSignNowTexts,
   copySignNowTemplateStyle,
   dropBakedTextsAlreadyStamped,
-  labelExhibitCCopyFieldsForReview,
+  hasSignNowSignatureFieldFont,
+  clearExhibitCCopyLabels,
+  nameExhibitCCopyFieldsForReview,
   mergeCommittedSignNowTexts,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
   splitPrefillPutPayload,
+  stripExhibitCCopyFieldName,
+  withoutSignNowSignatureFieldFont,
   type CommittedSignNowText,
 } from './utils/signnow-prefill-put';
 import {
@@ -531,26 +536,62 @@ function overlayExhibitCEntityOntoSignNowValues(
   return out;
 }
 
+/** Slot i = payload entity i, backfilled from Exhibit C mapping tab i. */
+function mergeExhibitCEntitySources(
+  payloadEntitiesRaw: unknown,
+  mappingEntities: readonly ExhibitCEntityPrefillRow[],
+): ExhibitCEntityPrefillRow[] {
+  const payloadEntities = parseExhibitCEntitiesForPrefill(payloadEntitiesRaw);
+  const maxSlots = Math.max(payloadEntities.length, mappingEntities.length);
+  const out: ExhibitCEntityPrefillRow[] = [];
+  for (let i = 0; i < maxSlots; i += 1) {
+    out[i] = mergeExhibitCEntityRows(payloadEntities[i], mappingEntities[i]);
+  }
+  return out;
+}
+
 /**
- * One entity row per Exhibit C copy, in send order, merged from the two places
- * the CRM keeps them: the `exhibitCEntities` prefill payload and the per-mapping
- * "Edit template mapping" tabs saved on the contract.
+ * One entity per Exhibit C copy, with what the CRM has *saved* first.
+ *
+ * Order per field: the contract's stored `exhibitCEntities`, then that copy's
+ * own saved mapping tab, then the list the browser posted. The posted list is
+ * built from whatever contract the screen loaded, so it can predate the copy's
+ * latest save — and it used to win, while a request without a contract id
+ * never read the saved copy at all. Either way `Exhibit C (2)` reached SignNow
+ * with no entity and was filled from the package values (Exhibit C #1's bank,
+ * the Monthly Fee holder), which is exactly what Review showed.
+ */
+export function resolveExhibitCEntities(args: {
+  storedEntitiesRaw?: unknown;
+  mappingEntities?: readonly ExhibitCEntityPrefillRow[];
+  payloadEntitiesRaw?: unknown;
+}): ExhibitCEntityPrefillRow[] {
+  const stored = mergeExhibitCEntitySources(args.storedEntitiesRaw, args.mappingEntities ?? []);
+  const payload = parseExhibitCEntitiesForPrefill(args.payloadEntitiesRaw);
+  const maxSlots = Math.max(stored.length, payload.length);
+  const out: ExhibitCEntityPrefillRow[] = [];
+  for (let i = 0; i < maxSlots; i += 1) {
+    out[i] = mergeExhibitCEntityRows(stored[i], payload[i]);
+  }
+  return out;
+}
+
+/** `contractPrefillOverrides.exhibitCEntities`, when the overrides are an object. */
+function storedExhibitCEntitiesRaw(overrides: unknown): unknown {
+  return overrides && typeof overrides === 'object' && !Array.isArray(overrides)
+    ? (overrides as Record<string, unknown>)[EXHIBIT_C_ENTITIES_PREFILL_KEY]
+    : undefined;
+}
+
+/**
+ * One entity row per Exhibit C copy, in send order, merged from the places the
+ * CRM keeps them (see `resolveExhibitCEntities` for the order).
  */
 function buildExhibitCEntitiesForPrefill(
   values: Record<string, string>,
   overrides: unknown,
   mappingRows: unknown,
 ): ExhibitCEntityPrefillRow[] {
-  let entitiesRaw: unknown = values[EXHIBIT_C_ENTITIES_PREFILL_KEY] || undefined;
-  if (
-    !entitiesRaw &&
-    overrides &&
-    typeof overrides === 'object' &&
-    !Array.isArray(overrides)
-  ) {
-    entitiesRaw = (overrides as Record<string, unknown>)[EXHIBIT_C_ENTITIES_PREFILL_KEY];
-  }
-  const payloadEntities = parseExhibitCEntitiesForPrefill(entitiesRaw);
   const blob = parseDocumentTemplatePrefillBlob(overrides);
   const mappingEntities = (Array.isArray(mappingRows) ? mappingRows : [])
     .filter((row: any) =>
@@ -560,12 +601,11 @@ function buildExhibitCEntitiesForPrefill(
       }),
     )
     .map((row: any) => entityFromExhibitCTabs(blob[String(row?.id || '')] ?? {}));
-  const maxSlots = Math.max(payloadEntities.length, mappingEntities.length);
-  const out: ExhibitCEntityPrefillRow[] = [];
-  for (let i = 0; i < maxSlots; i += 1) {
-    out[i] = mergeExhibitCEntityRows(payloadEntities[i], mappingEntities[i]);
-  }
-  return out;
+  return resolveExhibitCEntities({
+    storedEntitiesRaw: storedExhibitCEntitiesRaw(overrides),
+    mappingEntities,
+    payloadEntitiesRaw: values[EXHIBIT_C_ENTITIES_PREFILL_KEY],
+  });
 }
 
 /**
@@ -993,7 +1033,10 @@ function toSignNowPutField(
   };
   if (id) row.id = id;
   if (name) row.name = name;
-  if (!SIGN_FIELD_TYPES.has(type)) {
+  if (SIGN_FIELD_TYPES.has(type)) {
+    // Every field PUT (Review, merchant send, template restores) is built here.
+    applySignNowSignatureFieldFont(row);
+  } else {
     copySignNowTemplateStyle(row, { ...attrs, ...field });
     const value = String(
       field?.data || attrs.data || attrs.prefilled_text || field?.prefilled_text || '',
@@ -2400,20 +2443,37 @@ export class SignNowService {
     );
     // Started here, awaited after the group is ready: this CRM read needs
     // nothing from SignNow, so it should not sit behind the group copy.
+    //
+    // The CRM's background pre-warm posts no contract id and no prefill fields,
+    // so this read used to be skipped for it: the warm then had no Exhibit C
+    // entities and seeded `Exhibit C (2)` with the package values (the Monthly
+    // Fee holder, the first bank), which is what Review showed. Resolve the
+    // contract from the application instead, as the send path already does.
     const contractPrefillReadPromise =
-      Number.isFinite(contractIdNum) && contractIdNum > 0
+      (Number.isFinite(contractIdNum) && contractIdNum > 0) || appId
         ? measureSignNowStep(
             'contract-mapping-query',
-            { contractId: contractIdNum },
-            () => {
+            { contractId: contractIdNum || null, applicationId: appId || null },
+            async () => {
               countSignNowDb();
+              const contractId =
+                Number.isFinite(contractIdNum) && contractIdNum > 0
+                  ? contractIdNum
+                  : (
+                      await prisma.contract.findFirst({
+                        where: { applicationId: appId },
+                        orderBy: { updatedAt: 'desc' },
+                        select: { id: true },
+                      })
+                    )?.id;
+              if (!contractId) return [null, []] as const;
               return Promise.all([
                 prisma.contract.findUnique({
-                  where: { id: contractIdNum },
+                  where: { id: contractId },
                   select: { contractPrefillOverrides: true },
                 }),
                 (prisma as any).contractDocumentTemplateMapping.findMany({
-                  where: { contractId: contractIdNum },
+                  where: { contractId },
                   include: { template: true },
                   orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
                 }),
@@ -2442,23 +2502,13 @@ export class SignNowService {
     let documents = ensured.documents;
     const reusedExisting = ensured.reusedExisting;
 
-    let exhibitCEntitiesRaw: unknown =
-      values[EXHIBIT_C_ENTITIES_PREFILL_KEY] || undefined;
+    let storedExhibitCEntities: unknown;
     let exhibitCMappingEntities: ExhibitCEntityPrefillRow[] = [];
     let documentTabValues: SignNowDocumentTabValues[] = [];
     if (contractPrefillReadPromise) {
       const [contractRow, mappingRows] = await contractPrefillReadPromise;
       const overrides = contractRow?.contractPrefillOverrides;
-      if (
-        !exhibitCEntitiesRaw &&
-        overrides &&
-        typeof overrides === 'object' &&
-        !Array.isArray(overrides)
-      ) {
-        exhibitCEntitiesRaw = (overrides as Record<string, unknown>)[
-          EXHIBIT_C_ENTITIES_PREFILL_KEY
-        ];
-      }
+      storedExhibitCEntities = storedExhibitCEntitiesRaw(overrides);
       documentTabValues = buildSignNowDocumentTabValues(mappingRows, overrides);
       if (packageHasExhibitC) {
         const blob = parseDocumentTemplatePrefillBlob(overrides);
@@ -2474,6 +2524,11 @@ export class SignNowService {
         );
       }
     }
+    const exhibitCEntities = resolveExhibitCEntities({
+      storedEntitiesRaw: storedExhibitCEntities,
+      mappingEntities: exhibitCMappingEntities,
+      payloadEntitiesRaw: values[EXHIBIT_C_ENTITIES_PREFILL_KEY],
+    });
 
     if (!groupId || !documents.length) {
       throw new BadRequestException(
@@ -2616,6 +2671,7 @@ export class SignNowService {
              */
             values,
             documentTabValues,
+            exhibitCEntities,
           ),
         ));
       logSignNowTiming('structure-only-ready', 0, {
@@ -2686,8 +2742,7 @@ export class SignNowService {
             documents,
             values,
             signers,
-            exhibitCEntitiesRaw,
-            exhibitCMappingEntities,
+            exhibitCEntities,
             documentTabValues,
           ),
         ),
@@ -2724,8 +2779,7 @@ export class SignNowService {
               documents,
               values,
               signers,
-              exhibitCEntitiesRaw,
-              exhibitCMappingEntities,
+              exhibitCEntities,
               documentTabValues,
             ),
           ),
@@ -3157,6 +3211,12 @@ export class SignNowService {
       redirect: string;
       roles?: SignerRoleInput[];
       documents?: SignNowDocumentRef[];
+      /**
+       * Create the embedded invite but mint no link (returns ''). The portal
+       * send wants the invite only: a link minted here is never opened, and
+       * SignNow flags its signer "Invite Expired" once its 45 minutes pass.
+       */
+      inviteOnly?: boolean;
     },
   ): Promise<string> {
     let inviteRedirect = String(options.redirect || '').trim();
@@ -3640,6 +3700,7 @@ export class SignNowService {
             : 'Could not mint a SignNow review link. SignNow still reports a missing role on one of the attached documents.',
       );
     }
+    if (options.inviteOnly) return '';
 
     const preparer = resolvePreparerIdentity();
     const merchantEmails = new Set(
@@ -5098,20 +5159,12 @@ export class SignNowService {
     documents: SignNowDocumentRef[],
     values: Record<string, string>,
     signers: Array<{ name: string; email: string; roleName: string }>,
-    exhibitCEntitiesRaw?: unknown,
-    mappingEntities: ExhibitCEntityPrefillRow[] = [],
+    /** One per Exhibit C copy, from `resolveExhibitCEntities`. */
+    entities: ExhibitCEntityPrefillRow[] = [],
     documentTabValues: SignNowDocumentTabValues[] = [],
   ): Promise<{ applied: number; attempted: number; outcomes: ReviewPrefillOutcome[] }> {
     const keepParty2 = Boolean(distinctSecondMerchant(signers));
     const usable = documents.filter((doc) => String(doc.id || '').trim());
-    const payloadEntities = parseExhibitCEntitiesForPrefill(
-      exhibitCEntitiesRaw ?? values[EXHIBIT_C_ENTITIES_PREFILL_KEY],
-    );
-    const maxSlots = Math.max(payloadEntities.length, mappingEntities.length);
-    const entities: ExhibitCEntityPrefillRow[] = [];
-    for (let i = 0; i < maxSlots; i += 1) {
-      entities[i] = mergeExhibitCEntityRows(payloadEntities[i], mappingEntities[i]);
-    }
     const plans: ReviewPrefillPlan[] = usable.map((doc) => {
       const documentName = String(doc.document_name || doc.name || '').trim();
       const { values: docValues, isolated } = signNowDocumentPrefillValues(
@@ -5525,6 +5578,7 @@ export class SignNowService {
       remote: docRes.data,
       values: mergedValues,
       report,
+      clearUnresolvedValues: ignoreExisting,
     });
 
     console.info('[SignNow] prefill document', {
@@ -5566,10 +5620,20 @@ export class SignNowService {
           values?: Record<string, string>;
           /** Filled with the widget names this publish sent a value to. */
           report?: { written: string[] };
+          /**
+           * Blank a widget the CRM has no value for instead of keeping the text
+           * already on it. Set for an Exhibit C copy that carries its own entity:
+           * its widgets arrive holding whatever an earlier write left (the
+           * template copy, the warm, a previous Review), and on a copy that is
+           * Exhibit C #1's merchant and bank.
+           */
+          clearUnresolvedValues?: boolean;
         } = false,
   ): Promise<number> {
     const exposeToMerchant =
       typeof options === 'boolean' ? options : Boolean(options.exposeToMerchant);
+    const clearUnresolvedValues =
+      typeof options === 'boolean' ? false : Boolean(options.clearUnresolvedValues);
     const report = typeof options === 'boolean' ? undefined : options.report;
     const keepParty2 = typeof options === 'boolean' ? true : options.keepParty2 !== false;
     const values = typeof options === 'boolean' ? {} : options.values || {};
@@ -5606,12 +5670,17 @@ export class SignNowService {
     // The title already said Exhibit C even when the widget list did not, and the
     // options now always carry the document's widget canons — so the kind is
     // merged in rather than replacing the whole object.
-    const prefillOpts =
+    const kindOpts =
       basePrefillOpts?.documentKind || !exhibitCDoc
         ? basePrefillOpts
         : { ...(basePrefillOpts || {}), documentKind: 'exhibit_c' as const };
     const isExhibitC =
-      exhibitCDoc || prefillOpts?.documentKind === 'exhibit_c';
+      exhibitCDoc || kindOpts?.documentKind === 'exhibit_c';
+    // A copy with its own entity prints only that entity (see the option).
+    const prefillOpts =
+      isExhibitC && clearUnresolvedValues
+        ? { ...(kindOpts || {}), documentKind: 'exhibit_c' as const, exhibitCEntityOnly: true }
+        : kindOpts;
     sourceFields = fieldsOnExistingPages(sourceFields, pageCount);
     const signCount = sourceFields.filter((field) =>
       SIGN_FIELD_TYPES.has(String(field.type || '')),
@@ -5852,8 +5921,9 @@ export class SignNowService {
         applied += 1;
       } else if (
         !SIGN_FIELD_TYPES.has(type) &&
-        prefillOpts?.documentKind === 'monthly_fee' &&
-        isMonthlyFeeForcedBlankField(String(next.name || ''))
+        ((clearUnresolvedValues && !/^(checkbox|checkmark|radiobutton)$/.test(type)) ||
+          (prefillOpts?.documentKind === 'monthly_fee' &&
+            isMonthlyFeeForcedBlankField(String(next.name || ''))))
       ) {
         delete next.prefilled_text;
         delete next.data;
@@ -5918,18 +5988,21 @@ export class SignNowService {
     const putFields = fieldsOnExistingPages(sanitizeSignNowPutFields(fields), pageCount);
     /**
      * Owner review only: Exhibit C (2), (3)… are copies of one template, so their
-     * widgets share labels with the first Exhibit C, and SignNow's session shows
-     * the first copy's values on every copy. Unique labels break that link; the
-     * field PUT below is what writes them, so it must not be skipped.
+     * widgets share names with the first Exhibit C, and SignNow's session links
+     * same-named widgets across the group — every copy showed the first copy's
+     * values. Unique names break that link (see `nameExhibitCCopyFieldsForReview`);
+     * the field PUT below is what writes them, so it must not be skipped. The
+     * merchant publish reads the names back normalized and restores them.
      */
     const exhibitCCopyIndex = isExhibitC
       ? exhibitCInstanceIndexFromDocumentName(documentName)
       : null;
+    if (isExhibitC) clearExhibitCCopyLabels(putFields);
     const relabelledExhibitCCopy =
       !exposeToMerchant &&
       exhibitCCopyIndex != null &&
       exhibitCCopyIndex > 0 &&
-      labelExhibitCCopyFieldsForReview(putFields, exhibitCCopyIndex + 1) > 0;
+      nameExhibitCCopyFieldsForReview(putFields, exhibitCCopyIndex + 1) > 0;
     console.info('[SignNow] field roles before merchant publish', {
       documentId,
       roleCounts,
@@ -5946,7 +6019,9 @@ export class SignNowService {
     // Always write CRM values via prefill-texts first. One invalid field (e.g.
     // dashed phone on a Number validator) rejects the WHOLE batch — retry after
     // dropping the failing field so the rest of the agreement still fills.
-    let textPrefills = signNowPrefillTextPayload(putFields);
+    // A renamed Exhibit C copy skips it: prefill-texts addresses widgets by
+    // name, which the field PUT is about to change, and the PUT carries the values.
+    let textPrefills = relabelledExhibitCCopy ? [] : signNowPrefillTextPayload(putFields);
     let textsApplied = 0;
     if (textPrefills.length) {
       const paths = [
@@ -6192,6 +6267,11 @@ export class SignNowService {
     if (baked.texts.length) {
       pushPut(putFields, false);
     }
+    // Last resort: the same write without the signature/initials face.
+    const lastFields = bakeFilledText ? baked.fields : putFields;
+    if (hasSignNowSignatureFieldFont(lastFields)) {
+      pushPut(withoutSignNowSignatureFieldFont(lastFields), true);
+    }
     for (const attempt of attempts) {
       try {
         const putStarted = Date.now();
@@ -6208,7 +6288,7 @@ export class SignNowService {
           report?.written.push(
             ...(attempt.body.fields as Record<string, unknown>[])
               .filter((field) => String(field.prefilled_text || '').trim())
-              .map((field) => String(field.name || '')),
+              .map((field) => stripExhibitCCopyFieldName(field.name)),
           );
           console.info('[SignNow] wrote CRM prefill onto SignNow fields', {
             documentId,
@@ -7665,11 +7745,16 @@ export class SignNowService {
           signNowDocumentPageCount(doc.remote) || signNowDocumentPageCount(templateData),
         );
         if (!fields.length) continue;
-        const res = await client.put(
-          `/document/${doc.id}`,
-          { client_timestamp: Math.floor(Date.now() / 1000), fields },
-          { validateStatus: () => true, timeout: 90_000 },
-        );
+        const putFields = (body: Record<string, unknown>[]) =>
+          client.put(
+            `/document/${doc.id}`,
+            { client_timestamp: Math.floor(Date.now() / 1000), fields: body },
+            { validateStatus: () => true, timeout: 90_000 },
+          );
+        let res = await putFields(fields);
+        if (res.status >= 400 && hasSignNowSignatureFieldFont(fields)) {
+          res = await putFields(withoutSignNowSignatureFieldFont(fields));
+        }
         if (res.status >= 400) {
           console.warn('[SignNow] could not restore fields onto field-less document', {
             documentId: doc.id,
@@ -8830,7 +8915,8 @@ export class SignNowService {
       failed = await publishDocuments(retryDocs, true);
     }
     // Restore the embedded invites the unlock removed — `mintPortalSigningLink`
-    // refuses to mint a session for a group that has none.
+    // refuses to mint a session for a group that has none. No link is minted
+    // here: each signer gets a fresh one when they open their 7-day portal link.
     if (options?.roles?.length) {
       try {
         await this.mintGroupEmbeddedInviteLink(client, {
@@ -8839,6 +8925,7 @@ export class SignNowService {
           redirect: '',
           roles: options.roles,
           documents,
+          inviteOnly: true,
         });
       } catch (err) {
         console.error('[SignNow] could not recreate embedded invites after publish', {
@@ -8873,6 +8960,13 @@ export class SignNowService {
     values: Record<string, string> = {},
     /** Each document's own prefill tab, so a warmed addendum is not seeded thin. */
     documentTabValues: SignNowDocumentTabValues[] = [],
+    /**
+     * One entity per Exhibit C copy. Warming every copy from the package map
+     * seeded `Exhibit C (2)` with the first copy's merchant/bank text, and
+     * Review only replaces the widgets the copy's own record fills — so the
+     * rest kept showing Exhibit C #1's values.
+     */
+    exhibitCEntities: ExhibitCEntityPrefillRow[] = [],
   ): Promise<boolean> {
     const cached = applicationId ? draftGroupCache.get(applicationId) : undefined;
     if (
@@ -8890,9 +8984,9 @@ export class SignNowService {
         await Promise.all(
           usable.map(async (doc) => {
             const id = String(doc.id || '').trim();
-            const { values: docValues } = signNowDocumentPrefillValues(
+            const { values: docValues, isolated } = signNowDocumentPrefillValues(
               values,
-              [],
+              exhibitCEntities,
               String(doc.document_name || doc.name || '').trim(),
               documentTabValues,
             );
@@ -8901,6 +8995,7 @@ export class SignNowService {
                 exposeToMerchant: false,
                 keepParty2: true,
                 remote: doc.remote,
+                ignoreExistingFieldValues: isolated,
               });
             } catch (err) {
               console.warn(
