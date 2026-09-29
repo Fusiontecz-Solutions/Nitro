@@ -20,6 +20,7 @@ import {
 import {
   archiveSignedEnvelopePdf,
   fetchStoredSignedPdfBuffer,
+  clearUnfinishedSentArchive,
   getStoredEnvelopePdfArchive,
   isDocumentFullySignedStatus,
   isSignedPhaseArchiveUrl,
@@ -182,6 +183,11 @@ import {
   recordSignNowReviewCompleted,
   recordSignNowReviewStarted,
 } from './utils/signnow-review-session';
+import { isPortalSendInFlight } from './utils/signnow-portal-send-inflight';
+import {
+  claimSignNowGroupForReview,
+  isSignNowGroupClaimedByReview,
+} from './utils/signnow-review-group-claims';
 import {
   describeIncompleteReviewPrefill,
   incompleteReviewPrefillDocuments,
@@ -523,10 +529,15 @@ function overlayExhibitCEntityOntoSignNowValues(
     set(out, ['ach_security_q1', 'ach_security_q1_p1'], entity.securityQa1);
     set(out, ['ach_security_q2', 'ach_security_q2_p1'], entity.securityQa2);
   }
+  // A copy isolated for its own entity names that entity, never the deal's
+  // merchant — writing `merchantLegal` back here is what put the main
+  // application's legal name on every other entity's Exhibit C.
   set(
     out,
     ['client_legal_name', 'client_legal_name_p1', 'legal_name', 'business_legal_name'],
-    merchantLegal,
+    options?.isolateFromMainCrm
+      ? String(entity?.clientLegalName || entity?.accountHolderName || '').trim()
+      : merchantLegal,
   );
   const date =
     String(values.agreement_date || values.agreement_date_p1 || '').trim() ||
@@ -2501,6 +2512,9 @@ export class SignNowService {
     let groupId = ensured.groupId;
     let documents = ensured.documents;
     const reusedExisting = ensured.reusedExisting;
+    // Claimed before any other await, so a warm still on its way to the write
+    // lock for this group cannot seed it over this request's values.
+    if (!structureOnly) claimSignNowGroupForReview(groupId);
 
     let storedExhibitCEntities: unknown;
     let exhibitCMappingEntities: ExhibitCEntityPrefillRow[] = [];
@@ -2650,7 +2664,12 @@ export class SignNowService {
       const rolesReady =
         ensured.ownerRolesPrepared ||
         (await this.withSignNowGroupWriteLock(groupId, () =>
-          this.prepareOwnerReviewFieldRoles(
+          // Checked inside the lock: a Review that adopted this group meanwhile
+          // has written (or is queued to write) the live values, and seeding
+          // now would put back the contract row's wire fee over them.
+          isSignNowGroupClaimedByReview(groupId)
+            ? Promise.resolve(false)
+            : this.prepareOwnerReviewFieldRoles(
             client,
             documents,
             appId,
@@ -3832,8 +3851,18 @@ export class SignNowService {
     const docFullySigned = isDocumentFullySignedStatus(storedArchive?.status);
     const archiveIsSigned = isSignedPhaseArchiveUrl(storedUrl);
     const staleSentArchive = Boolean(storedUrl && docFullySigned && !archiveIsSigned);
+    /**
+     * The "sent" archive is a snapshot of whatever SignNow returned the first time
+     * anyone opened the package, and it is served on every later view. Taken from a
+     * draft, or while Send was still publishing the merchant's copy, it froze a
+     * half-written package: addendums blank mid-rebuild and the disclosure still on
+     * Review's amounts, shown in the CRM for the rest of the signing even though the
+     * merchant saw the finished documents. Only a package that has finished sending
+     * is snapshotted (or served from a snapshot).
+     */
+    const snapshotReady = docFullySigned || (await this.groupPdfSnapshotReady(id));
 
-    if (storedUrl && !staleSentArchive) {
+    if (storedUrl && !staleSentArchive && snapshotReady) {
       const fromCloud = await fetchStoredSignedPdfBuffer(storedUrl);
       if (fromCloud?.length) return fromCloud;
     }
@@ -3876,6 +3905,8 @@ export class SignNowService {
       }
     }
 
+    if (!snapshotReady) return buf;
+
     const phase: EnvelopePdfArchivePhase = docFullySigned || staleSentArchive ? 'completed' : 'sent';
     const archive = archiveSignedEnvelopePdf({
       envelopeId: id,
@@ -3898,6 +3929,26 @@ export class SignNowService {
     }
 
     return buf;
+  }
+
+  /**
+   * Whether the group's documents are final enough to archive as the "sent"
+   * package: marked sent, and no portal send still publishing them. Both send
+   * paths stamp `sentAt` only after the merchant's copy is baked. A group with
+   * no Document row is an earlier send moved into the send history.
+   */
+  private async groupPdfSnapshotReady(groupId: string): Promise<boolean> {
+    if (isPortalSendInFlight(groupId)) return false;
+    try {
+      const row = await prisma.document.findUnique({
+        where: { envelopeId: groupId },
+        select: { sentAt: true, portalSentAt: true },
+      });
+      if (!row) return true;
+      return Boolean(row.sentAt || row.portalSentAt);
+    } catch {
+      return false;
+    }
   }
 
   /** Persist the CC list onto the envelope row so completion can reuse it. Best-effort. */
@@ -7105,6 +7156,7 @@ export class SignNowService {
       where: { envelopeId: groupId },
       data: { status: 'sent', sentAt: new Date() } as any,
     });
+    await clearUnfinishedSentArchive(groupId);
     await this.syncContractSigningFromGroupStatus(groupId, 'sent', appId);
   }
 

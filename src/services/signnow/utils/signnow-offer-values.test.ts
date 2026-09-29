@@ -318,6 +318,22 @@ describe('alignDisclosureWireFeeWithTotalFees', () => {
     expect(out.disclosure_page3_subtotal_p3).toBe('10,000.00');
   });
 
+  it('corrects an addendum tab that saved the contract net under the stale toggle', () => {
+    const out = alignDisclosureWireFeeWithTotalFees({
+      purchase_price: '20,000.00',
+      total_fees: '2,000.00',
+      net_to_merchant: '18,000.00',
+      net_to_merchant_p1: '17,975.00',
+      total_fees_p1: '2,025.00',
+      amountFinanced: '17,975.00',
+    });
+    expect(out.net_to_merchant_p1).toBe('18,000.00');
+    expect(out.total_fees_p1).toBe('2,000.00');
+    expect(out.amountFinanced).toBe('18,000.00');
+    expect(out.net_to_merchant).toBe('18,000.00');
+    expect(out.total_fees).toBe('2,000.00');
+  });
+
   it('detects the stale toggle from the net line alone when no fee line is posted', () => {
     const out = alignDisclosureWireFeeWithTotalFees({
       purchase_price: '10,000.00',

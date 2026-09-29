@@ -36,7 +36,7 @@ describe('Exhibit A seller table', () => {
 
   it('fills row 1 from the merchant on the deal', () => {
     expect(resolveSignNowPrefillValue('exhibit_a_value_1_p1', SINGLE_SELLER)).toBe(
-      'Re-New-It Renovations, LLC',
+      'RE-NEW-IT RENOVATIONS, LLC',
     );
     expect(resolveSignNowPrefillValue('addendum_ein_1_p1', SINGLE_SELLER)).toBe('88-4004575');
     expect(resolveSignNowPrefillValue('addendum_type_of_entity_1_p1', SINGLE_SELLER)).toBe('LLC');
@@ -64,7 +64,7 @@ describe('Exhibit A seller table', () => {
       exhibit_a_value_2: 'Irvin Holdings LLC',
       addendum_type_of_entity_2: 'LLC',
     };
-    expect(resolveSignNowPrefillValue('exhibit_a_value_2_p1', values)).toBe('Irvin Holdings LLC');
+    expect(resolveSignNowPrefillValue('exhibit_a_value_2_p1', values)).toBe('IRVIN HOLDINGS LLC');
     expect(resolveSignNowPrefillValue('addendum_type_of_entity_2_p1', values)).toBe('LLC');
     expect(resolveSignNowPrefillValue('addendum_ein_2_p1', values)).toBe('');
 

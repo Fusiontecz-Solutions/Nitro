@@ -107,12 +107,16 @@ const ALIASES: Record<string, string[]> = {
     'client_name',
     'client_legal_name',
   ],
+  /**
+   * Only a real DBA fills the "Account Holder DBA" line. The chain used to end
+   * in `client_legal_name`, so a deal with no DBA printed the business name on
+   * the agreement's page-20 ACH block (`ach_account_holder_dba_p19`) too.
+   */
   ach_account_holder_dba: [
     'ach_authorization_account_holder_dba',
     'doing_business_as',
     'dba',
     'security_doing_business_as',
-    'client_legal_name',
   ],
   /**
    * The ACH account holder address is Owner 1's address, not the business
@@ -926,6 +930,15 @@ const EXHIBIT_C_ENTITY_OWN_KEYS: Record<string, readonly string[]> = {
   ach_account_holder_name: ['ach_account_holder_name', 'ach_authorization_account_holder_name'],
   ach_account_holder_dba: ['ach_account_holder_dba', 'ach_authorization_account_holder_dba'],
 };
+
+/** Keys the main Exhibit C may read its DBA line from — never the legal name. */
+const EXHIBIT_C_DBA_KEYS: readonly string[] = [
+  'ach_account_holder_dba',
+  'ach_authorization_account_holder_dba',
+  'doing_business_as',
+  'dba',
+  'security_doing_business_as',
+];
 
 /** Canonical widget names of the fields a document carries, for `documentFieldCanons`. */
 export function signNowDocumentFieldCanons(fieldNames?: string[]): Set<string> | undefined {
@@ -2436,6 +2449,19 @@ export function resolveSignNowPrefillValue(
 
   if (options?.documentKind === 'exhibit_c') {
     const slot = exhibitCTextFieldNumber(raw);
+    // The generic DBA chain ends in `client_legal_name`, so a blank DBA printed
+    // the business name on the "Account Holder DBA" line. Exhibit C reads only
+    // real DBA values and leaves the line blank otherwise, as it is in the CRM.
+    if ((slot ? EXHIBIT_C_TEXT_FIELD_CRM_IDS[slot] : canon) === 'ach_account_holder_dba') {
+      const dbaKeys = options.exhibitCEntityOnly
+        ? EXHIBIT_C_ENTITY_OWN_KEYS.ach_account_holder_dba
+        : EXHIBIT_C_DBA_KEYS;
+      for (const key of dbaKeys) {
+        const hit = mapGet(map, key);
+        if (hit) return options.exhibitCEntityOnly ? formatSignNowPrefillValue(hit, fieldName) : hit;
+      }
+      return '';
+    }
     if (options.exhibitCEntityOnly) {
       const ownKeys = EXHIBIT_C_ENTITY_OWN_KEYS[slot ? EXHIBIT_C_TEXT_FIELD_CRM_IDS[slot] : canon];
       if (ownKeys) {
@@ -3071,6 +3097,30 @@ export function formatSignNowPrefillValue(
   ) {
     return v.replace(/^\$+\s*/g, '').trim();
   }
-  return v;
+  return keepsCrmCase(name, widget) ? v : v.toUpperCase();
+}
+
+/**
+ * CRM text prints in CAPITAL LETTERS on every SignNow document, except where
+ * case carries meaning: logins and security answers, e-mail / web addresses,
+ * and choice widgets whose value must match one of the template's options.
+ */
+const CASE_SENSITIVE_PREFILL_FIELD_RE =
+  /e_?mail|password|passwd|user_?name|security_(?:q|question|answer)|portal|website|web_site|(?:^|_)url(?:_|$)/i;
+
+const CHOICE_WIDGET_TYPES = new Set([
+  'checkbox',
+  'checkmark',
+  'radiobutton',
+  'radio',
+  'dropdown',
+  'enumeration',
+  'list',
+]);
+
+function keepsCrmCase(fieldName: string, widget?: SigningWidgetInfo): boolean {
+  if (CASE_SENSITIVE_PREFILL_FIELD_RE.test(fieldName)) return true;
+  const type = String(widget?.type || '').trim().toLowerCase();
+  return CHOICE_WIDGET_TYPES.has(type);
 }
 

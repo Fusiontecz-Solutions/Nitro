@@ -10,6 +10,7 @@ import {
 } from './utils/signnow-portal-token';
 import { buildSigningPortalEmailHtml } from './utils/signnow-portal-email';
 import { isPortalSendInFlight, trackPortalSend } from './utils/signnow-portal-send-inflight';
+import { clearUnfinishedSentArchive } from '../docusign/utils/archive-signed-envelope-pdf';
 
 /**
  * CRM signing portal Ã¢â‚¬â€ contracts emailed by SendGrid instead of by SignNow.
@@ -824,6 +825,9 @@ async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<
     where: { envelopeId },
     data: { status: 'sent', sentAt, portalSentAt: sentAt },
   });
+  // A view opened while the fields were still publishing snapshotted a
+  // half-written package; the next view archives what the merchant received.
+  await clearUnfinishedSentArchive(envelopeId);
 
   /**
    * A portal send is a real send, so Contract and Application must move to

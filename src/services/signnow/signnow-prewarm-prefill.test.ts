@@ -91,8 +91,8 @@ describe('the structure-only pre-warm seeds the documents with the deal', () => 
   it('writes the CRM values onto the warmed document', async () => {
     const written = await warm(CRM_VALUES);
     expect(written.client_name).toBe('MARY IRVIN');
-    expect(written.client_legal_name).toBe('Re-New-It Renovations, LLC');
-    expect(written.business_address).toBe('3273 Cove Creek Road');
+    expect(written.client_legal_name).toBe('RE-NEW-IT RENOVATIONS, LLC');
+    expect(written.business_address).toBe('3273 COVE CREEK ROAD');
     expect(written.remittance).toBe('2,248.50');
   });
 

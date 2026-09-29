@@ -109,7 +109,7 @@ describe('the state disclosure fills from the offer alone', () => {
     expect(out['Text Field 6']).toBe('72,500.00'); // total amount to be paid
     expect(out['Text Field 7']).toBe('24,166.60'); // estimated monthly cost
     expect(out['Text Field 8']).toBe('1,208.33'); // estimated payment
-    expect(out.disclouser_pg2_frequency).toBe('Daily');
+    expect(out.disclouser_pg2_frequency).toBe('DAILY');
     // Page 2.
     expect(out.payement_exceeded_percent_p2_s1).toBe('21.65');
     expect(out.estimated_term_p2).toBe('60');
@@ -267,7 +267,7 @@ describe('the state disclosure fills from the offer alone', () => {
     const out = filled('Disclosure - Nitro Advance', values);
     expect(out.estimated_term_p2).toBe('70'); // calendar days, not 10
     expect(out['Text Field 7']).toBe('29,000.00'); // payment x 4 weeks
-    expect(out.disclouser_pg2_frequency).toBe('Weekly');
+    expect(out.disclouser_pg2_frequency).toBe('WEEKLY');
   });
 
   it('publishes nothing when the deal has no live offer', () => {

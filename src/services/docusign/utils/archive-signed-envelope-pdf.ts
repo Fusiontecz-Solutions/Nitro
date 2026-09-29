@@ -120,6 +120,33 @@ export async function getStoredEnvelopePdfArchive(
   };
 }
 
+/**
+ * Drop a "sent" snapshot taken before the package finished sending, so the next
+ * view archives the documents the merchant actually received. A signed archive
+ * is final and is kept. Best-effort; never throws.
+ */
+export async function clearUnfinishedSentArchive(envelopeId: string): Promise<void> {
+  const eid = String(envelopeId || '').trim();
+  if (!eid) return;
+  try {
+    const row = await prisma.document.findFirst({
+      where: { envelopeId: eid },
+      select: { signedPdfUrl: true },
+    });
+    const url = String(row?.signedPdfUrl || '').trim();
+    if (!url || isSignedPhaseArchiveUrl(url)) return;
+    await prisma.document.updateMany({
+      where: { envelopeId: eid, signedPdfUrl: url },
+      data: { signedPdfUrl: null, signedPdfPublicId: null },
+    });
+  } catch (err) {
+    console.warn(
+      `[DocuSign] could not clear the pre-send PDF snapshot for ${eid}:`,
+      (err as { message?: string })?.message || err,
+    );
+  }
+}
+
 /** Stored Cloudinary URL for sent or completed envelope package (same Document column). */
 export async function getStoredSignedPdfUrl(envelopeId: string): Promise<string | null> {
   const archive = await getStoredEnvelopePdfArchive(envelopeId);

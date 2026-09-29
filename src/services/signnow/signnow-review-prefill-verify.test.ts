@@ -145,7 +145,7 @@ describe('Review in SignNow waits until the documents read back prefilled', () =
 
     expect(result).toEqual({ rounds: 2, repaired: 1 });
     expect(signNow.value('client_name')).toBe('MARY IRVIN');
-    expect(signNow.value('business_address')).toBe('3273 Cove Creek Road');
+    expect(signNow.value('business_address')).toBe('3273 COVE CREEK ROAD');
     expect(signNow.value('remittance')).toBe('2,248.50');
   });
 
@@ -156,7 +156,7 @@ describe('Review in SignNow waits until the documents read back prefilled', () =
     ]);
 
     expect(result).toEqual({ rounds: 1, repaired: 0 });
-    expect(signNow.value('business_address')).toBe('3273 Cove Creek Road');
+    expect(signNow.value('business_address')).toBe('3273 COVE CREEK ROAD');
   });
 
   it('refuses to open Review when the values never land', async () => {

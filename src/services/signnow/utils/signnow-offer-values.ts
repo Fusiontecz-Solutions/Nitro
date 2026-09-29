@@ -153,6 +153,9 @@ const DISCLOSURE_FEE_KEYS = new Set([
   'deducted_at_disbursement',
   'fees_deducted',
   'disclosure_origination_fee',
+  // The contract's own fee ids, when an addendum's saved tab carries them.
+  'total_fees',
+  'appendix_underwriting_fees',
 ]);
 
 /**
@@ -169,6 +172,18 @@ const DISCLOSURE_NET_KEYS = new Set([
   'total_amount_fund_disbursed',
   'disbursement_amount',
   'text field 2',
+  /**
+   * The same net under the contract's own id and the disclosure calculator's
+   * other aliases. An addendum's saved tab (the PayOff Addendum's
+   * `net_to_merchant_p1`) printed 17,975.00 beside a contract NET AMOUNT of
+   * 18,000.00 because only the disclosure's own names were re-aligned.
+   */
+  'net_to_merchant',
+  'netfundprovided',
+  'amountfinanced',
+  'total_amount_of_fund_provided',
+  'total_amount_business_fund',
+  'total_amount_sales_based_financing',
 ]);
 
 function canonicalDisclosureKey(key: string): string {

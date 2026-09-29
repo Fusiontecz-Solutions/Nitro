@@ -79,6 +79,31 @@ describe('signnow-field-map', () => {
     expect(formatSignNowPrefillValue('149.90 Daily', 'remittance')).toBe('149.90');
   });
 
+  it('prints CRM text in capital letters', () => {
+    const textWidget = { type: 'text', validatorId: '' };
+    expect(formatSignNowPrefillValue('john smith', 'client_name', textWidget)).toBe('JOHN SMITH');
+    expect(formatSignNowPrefillValue('abc trading llc', 'client_legal_name_p1')).toBe(
+      'ABC TRADING LLC',
+    );
+    expect(formatSignNowPrefillValue('new york', 'business_address_city')).toBe('NEW YORK');
+    expect(formatSignNowPrefillValue('Merchant B', 'ach_account_holder_dba_p1__copy2')).toBe(
+      'MERCHANT B',
+    );
+  });
+
+  it('keeps case where it carries meaning', () => {
+    expect(formatSignNowPrefillValue('Pa$sWord1', 'ach_password_p1')).toBe('Pa$sWord1');
+    expect(formatSignNowPrefillValue('jSmith', 'ach_username_p1')).toBe('jSmith');
+    expect(formatSignNowPrefillValue('john@Acme.com', 'merchant_email')).toBe('john@Acme.com');
+    expect(
+      formatSignNowPrefillValue('https://Bank.com/Login', 'ach_authorization_bank_portal_website'),
+    ).toBe('https://Bank.com/Login');
+    expect(formatSignNowPrefillValue('Pet / Rex', 'ach_security_q1_p1')).toBe('Pet / Rex');
+    // Choice widgets must match one of the template's own options exactly.
+    expect(formatSignNowPrefillValue('Yes', 'some_choice', { type: 'dropdown' })).toBe('Yes');
+    expect(formatSignNowPrefillValue('on', 'some_box', { type: 'checkbox' })).toBe('on');
+  });
+
   it('strips page suffixes from SignNow unique names', () => {
     expect(canonicalizeSignNowFieldName('guaranty_guarantor1_ss_p12')).toBe(
       'guaranty_guarantor1_ss',
@@ -493,7 +518,7 @@ describe('signnow-field-map', () => {
     ).toBe('1,499.00');
   });
 
-  it('fills the account-holder line with the signer and the DBA line with the business', () => {
+  it('fills the account-holder line with the signer and leaves the DBA line blank without a DBA', () => {
     const prefill = {
       client_name: 'MARY IRVIN',
       client_legal_name: 'RE-NEW-IT RENOVATIONS, LLC',
@@ -501,9 +526,10 @@ describe('signnow-field-map', () => {
     expect(resolveSignNowPrefillValue('ach_account_holder_name_p19', prefill)).toBe(
       'MARY IRVIN',
     );
-    expect(resolveSignNowPrefillValue('ach_account_holder_dba_p19', prefill)).toBe(
-      'RE-NEW-IT RENOVATIONS, LLC',
-    );
+    expect(resolveSignNowPrefillValue('ach_account_holder_dba_p19', prefill)).toBe('');
+    expect(
+      resolveSignNowPrefillValue('ach_account_holder_dba_p19', { ...prefill, doing_business_as: 'Renew DBA' }),
+    ).toBe('Renew DBA');
   });
 
   /**
@@ -736,16 +762,16 @@ describe('signnow-field-map', () => {
         doing_business_as_p1: 'RE-NEW-IT',
         exhibit_a_value_1_p1: 'RE-NEW-IT RENOVATIONS, LLC',
         addendum_ein_1_p1: '12-3456789',
-        addendum_type_of_entity_1_p1: 'Limited Liability Company',
+        addendum_type_of_entity_1_p1: 'LIMITED LIABILITY COMPANY',
         exhibit_a_value_2_p1: 'RE-NEW-IT HOLDINGS LLC',
         addendum_ein_2_p1: '98-7654321',
-        addendum_type_of_entity_2_p1: 'Limited Liability Company',
+        addendum_type_of_entity_2_p1: 'LIMITED LIABILITY COMPANY',
         exhibit_a_value_3_p1: 'COVE CREEK SUPPLY CO',
         addendum_ein_3_p1: '55-5555555',
-        addendum_type_of_entity_3_p1: 'Corporation',
+        addendum_type_of_entity_3_p1: 'CORPORATION',
         exhibit_owner_name_p1: 'MARY IRVIN',
         guaranty_ss_p1: '123456789',
-        owner_print_title_p1: 'Managing Member',
+        owner_print_title_p1: 'MANAGING MEMBER',
       });
       // Same template, two funders: the Nitro / Obsidian copy must not drift.
       expect(filledFor('Exhibit A - Nitro Advance')).toEqual(tiberian);
@@ -2241,5 +2267,18 @@ describe('the bank block reaches every addendum', () => {
     const opts = { documentKind: 'exhibit_c' as const };
     expect(resolveSignNowPrefillValue('ach_bank_name_p1', {}, opts)).toBe('');
     expect(resolveSignNowPrefillValue('ach_bank_account_p1', {}, opts)).toBe('');
+  });
+
+  it('leaves the Exhibit C Account Holder DBA blank instead of printing the business name', () => {
+    const opts = { documentKind: 'exhibit_c' as const };
+    const prefill = {
+      client_legal_name: 'Re-New-It Renovations, LLC',
+      ach_account_holder_name_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+    };
+    expect(resolveSignNowPrefillValue('ach_account_holder_dba_p1', prefill, opts)).toBe('');
+    expect(resolveSignNowPrefillValue('Text Field 2', prefill, opts)).toBe('');
+    expect(
+      resolveSignNowPrefillValue('ach_account_holder_dba_p1', { ...prefill, doing_business_as: 'Renew DBA' }, opts),
+    ).toBe('Renew DBA');
   });
 });

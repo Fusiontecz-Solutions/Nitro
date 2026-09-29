@@ -104,6 +104,26 @@ describe('exhibitCDocumentPrefillValues', () => {
     expect(values.ach_account_holder_dba).toBe('');
     expect(values.ach_account_holder_address).toBe('');
   });
+
+  it('names the copy own entity as merchant, never the deal merchant', () => {
+    const { values } = exhibitCDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [{}, OTHER_ENTITY],
+      'EXHIBIT C OBSIDIAN CAPITAL GROUP (2)',
+    );
+    expect(values.client_legal_name).toBe('IRVIN HOLDINGS LLC');
+    expect(values.client_legal_name_p1).toBe('IRVIN HOLDINGS LLC');
+    expect(MERCHANT_VALUES.client_legal_name).toBe('RE-NEW-IT RENOVATIONS LLC');
+  });
+
+  it('keeps the deal merchant on the first copy', () => {
+    const { values } = exhibitCDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [OTHER_ENTITY],
+      'EXHIBIT C OBSIDIAN CAPITAL GROUP',
+    );
+    expect(values.client_legal_name).toBe('RE-NEW-IT RENOVATIONS LLC');
+  });
 });
 
 /**
