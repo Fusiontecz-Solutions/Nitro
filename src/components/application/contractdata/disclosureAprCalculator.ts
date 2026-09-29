@@ -560,6 +560,12 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     bankAnalyses?: unknown;
     disbursementDate?: string;
     firstPaymentDate?: string;
+    /**
+     * The live "$25 wire fee" box. `contract` is often a snapshot that predates the
+     * saved box, and resolving from it alone seeded the calculator with the fee on,
+     * so the disclosure saved TOTAL FEES + $25 beside a contract that had none.
+     */
+    includeWireFee?: unknown;
 }): DisclosureCalculatorInputs {
     const contract = args.contract ?? {};
     const offer =
@@ -714,8 +720,9 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
 
     const overrides =
         (contract.contractPrefillOverrides as Record<string, unknown> | null) ?? {};
+    const liveWireFee = String(args.includeWireFee ?? "").trim();
     const includeWireFee = resolveIncludeWireFee(
-        overrides.includeWireFee ?? args.contract?.includeWireFee,
+        liveWireFee || (overrides.includeWireFee ?? args.contract?.includeWireFee),
     );
     const paymentAmount =
         parseMoney(offer?.paymentAmount ?? offer?.repayPerPeriod ?? offer?.daysWeeks) ||

@@ -7,7 +7,11 @@
  * that separation in both directions.
  */
 import assert from "node:assert/strict";
-import { getDocumentTemplatePrefillFieldRowsForEditor } from "./documentTemplateMappingPrefill";
+import {
+    getDocumentTemplatePrefillFieldRowsForEditor,
+    omitMappingBlobIds,
+    resolveSharedDbaValue,
+} from "./documentTemplateMappingPrefill";
 import {
     applySharedBankDetailsToMappingBlob,
     type SharedBankDetails,
@@ -137,6 +141,83 @@ test("saving one document does not overwrite another document's bank account", (
     // The empty document still auto-fills from the deal bank.
     assert.equal(next["mapping-ach-daily"].ach_bank_account_p1, "725307998");
     assert.equal(next["mapping-ach-daily"].ach_bank_name_p1, "CHASE");
+});
+
+/** Exhibit C (2) for a second entity, next to the deal's own Exhibit C. */
+const MULTI_ENTITY_CONTRACT: Record<string, unknown> = {
+    ...CONTRACT,
+    contractPrefillOverrides: {
+        exhibitCEntities: JSON.stringify([
+            {},
+            {
+                clientLegalName: "ENTITY B LLC",
+                accountHolderName: "ENTITY B LLC",
+                accountHolderDba: "ENTITY B DBA",
+                bankName: "WELLS FARGO",
+                bankAccount: "2222222222",
+                bankRouting: "121000248",
+            },
+        ]),
+    },
+};
+
+function exhibitCCopyRows(
+    contract: Record<string, unknown>,
+    index: number,
+): Record<string, string> {
+    const rows = getDocumentTemplatePrefillFieldRowsForEditor({
+        templateId: "exhibit_c",
+        templateLayoutKey: "exhibit_c",
+        templateName: "Exhibit C",
+        documentType: "addendum",
+        contract,
+        application: null,
+        agreementDate: "09/28/2026",
+        exhibitCEntityIndex: index,
+    });
+    const out: Record<string, string> = {};
+    for (const row of rows) out[row.id] = String(row.value ?? "");
+    return out;
+}
+
+test("an Exhibit C copy names its own entity, not the application merchant", () => {
+    const copy = exhibitCCopyRows(MULTI_ENTITY_CONTRACT, 1);
+    assert.equal(copy.client_legal_name_p1, "ENTITY B LLC");
+    assert.equal(copy.ach_account_holder_dba_p1, "ENTITY B DBA");
+    assert.equal(copy.ach_bank_account_p1, "2222222222");
+    // The original Exhibit C still carries the deal's merchant and bank.
+    const original = exhibitCCopyRows(MULTI_ENTITY_CONTRACT, 0);
+    assert.equal(original.client_legal_name_p1.toUpperCase(), "ERBAR CONSULTING INC");
+    assert.equal(original.ach_bank_account_p1, "725307998");
+});
+
+test("a new Exhibit C copy starts empty instead of copying the application", () => {
+    const copy = exhibitCCopyRows(MULTI_ENTITY_CONTRACT, 2);
+    assert.equal(copy.client_legal_name_p1 ?? "", "");
+    assert.equal(copy.ach_account_holder_dba_p1 ?? "", "");
+    assert.equal(copy.ach_bank_account_p1 ?? "", "");
+});
+
+test("a copy's DBA and bank are never the application's shared values", () => {
+    const blob: Record<string, Record<string, string>> = {
+        "mapping-exhibit-c-2": {
+            ach_account_holder_dba_p1: "ENTITY B DBA",
+            ach_bank_account_p1: "2222222222",
+        },
+        "mapping-flex": { installment_day_1_p1: "10/01/2026" },
+    };
+    const withoutCopies = omitMappingBlobIds(blob, ["mapping-exhibit-c-2"]);
+    assert.equal(
+        resolveSharedDbaValue({ mainPrefill: {}, contract: {}, mappingBlobs: withoutCopies }),
+        "",
+    );
+    const next = applySharedBankDetailsToMappingBlob(withoutCopies, {
+        bankName: "CHASE",
+        routingNumber: "322271627",
+        accountNumber: "725307998",
+    });
+    assert.equal(next["mapping-exhibit-c-2"], undefined);
+    assert.equal(blob["mapping-exhibit-c-2"].ach_bank_account_p1, "2222222222");
 });
 
 console.log(`\n${passed} tests passed`);

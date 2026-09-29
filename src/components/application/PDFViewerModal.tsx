@@ -2812,8 +2812,21 @@ const PDFViewerModal = ({
                 contract: resolvedContract,
                 offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
                 bankAnalyses: disclosureCalcBankAnalyses,
+                // The saved box as this modal last loaded or saved it; `resolvedContract`
+                // alone can predate it. Empty falls back to the contract row.
+                includeWireFee: contractPrefillLoaded
+                    ? contractPrefillFromDb?.includeWireFee
+                    : undefined,
             }),
-        [selectedState, applicationData, resolvedContract, offerDecisionData, disclosureCalcBankAnalyses],
+        [
+            selectedState,
+            applicationData,
+            resolvedContract,
+            offerDecisionData,
+            disclosureCalcBankAnalyses,
+            contractPrefillLoaded,
+            contractPrefillFromDb,
+        ],
     );
 
     const disclosureCalcBankMonthlyRevenues = useMemo(
@@ -3314,6 +3327,23 @@ const PDFViewerModal = ({
         addendumPickerOptions,
         selectedFunderAddendumOptions,
     ]);
+
+    /** Mapping ids of Exhibit C (2)/(3)/… — each belongs to its own entity. */
+    const exhibitCCopyMappingIds = useMemo(
+        () =>
+            orderedLinkedAddendumMappings
+                .filter((candidate) =>
+                    isExhibitCFamilyAddendumRef(
+                        getAddendumDropdownRef(candidate?.template) ||
+                            candidate?.template?.layoutKey,
+                        candidate?.template?.name,
+                    ),
+                )
+                .slice(1)
+                .map((candidate) => String(candidate?.id ?? "").trim())
+                .filter(Boolean),
+        [orderedLinkedAddendumMappings],
+    );
 
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
@@ -6327,10 +6357,11 @@ const PDFViewerModal = ({
                         // Not a document field, so it cannot ride along in prefillFields.
                         // Without it the send path re-resolves the wire fee from the
                         // contract row and re-adds $25 after the box was unchecked.
-                        includeWireFee: mergeContractPrefillOverrideLayers(
-                            contractPrefillOverrides,
-                            contractPrefillLoaded ? contractPrefillFromDb : null,
-                        ).includeWireFee,
+                        // Read from the ref, like `prefillFields` above and like Send:
+                        // this closure was captured at click time, before the awaited
+                        // CRM loads, so its copy of the box could still say "on" and
+                        // Review printed the disclosure $25 below what Send delivered.
+                        includeWireFee: includeWireFeeForSendRef.current,
                         autoSend: false,
                         ...(signNowTimingRequestId
                             ? { timingRequestId: signNowTimingRequestId }
@@ -15045,6 +15076,7 @@ const PDFViewerModal = ({
                 documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
                 mainPrefillOverrides={mainPrefillOverridesForTemplateDialog}
                 exhibitCEntityIndex={templateMappingPrefillExhibitCIndex}
+                exhibitCCopyMappingIds={exhibitCCopyMappingIds}
                 onSaved={(saved) => {
                     const full = saved?.contractPrefillOverrides;
                     if (full != null) {

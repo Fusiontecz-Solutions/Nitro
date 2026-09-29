@@ -16,6 +16,7 @@ import {
     updateContract,
 } from "@/redux/actions/contractActions";
 import { toast } from "react-toastify";
+import { axiosGet } from "@/redux/axios";
 import type {
     BuildContractPrefillFieldsArgs,
     ContractPrefillContractRecords,
@@ -29,6 +30,8 @@ import {
     resolveAchSavedMappingOverrides,
 } from "./achFormEditConfig";
 import { upsertApplicationBankDetailFromPrefill } from "./contractPrefillSourceSync";
+import { FlexAddendumInstallmentGrid } from "./FlexAddendumInstallmentGrid";
+import { splitFlexInstallmentRows } from "./flexAddendumInstallmentRows";
 import {
     applySharedBankDetailsToMappingBlob,
     applySharedBankDetailsToTabValues,
@@ -48,6 +51,7 @@ import {
     applySharedDbaToMappingBlob,
     extractOnlineBankingFromTabValues,
     getDocumentTemplatePrefillFieldRowsForEditor,
+    omitMappingBlobIds,
     resolveSharedDbaValue,
     usesCoordinateLayoutTemplate,
 } from "./documentTemplateMappingPrefill";
@@ -58,7 +62,11 @@ import {
     serializeExhibitCEntities,
     upsertExhibitCEntityAtIndex,
 } from "./exhibitCEntityPrefill";
-import { isAchDailyAddendumRef, isMultiInstanceAddendumRef } from "./multiInstanceAddendum";
+import {
+    isAchDailyAddendumRef,
+    isExhibitCFamilyAddendumRef,
+    isMultiInstanceAddendumRef,
+} from "./multiInstanceAddendum";
 
 export type TemplateMappingPrefillEditRow = {
     id: string;
@@ -99,6 +107,12 @@ type TemplateMappingPrefillEditDialogProps = {
      */
     exhibitCEntityIndex?: number;
     /**
+     * Mapping ids of the extra Exhibit C copies (every Exhibit C after the first).
+     * Each belongs to its own entity: never a source of the shared DBA / bank,
+     * and never overwritten by them when another document is saved.
+     */
+    exhibitCCopyMappingIds?: readonly string[];
+    /**
      * Optional title suffix (e.g. selected funder name for ACH).
      * When set, replaces the template name in the dialog title.
      */
@@ -134,6 +148,38 @@ function groupPrefillEditorRows(rows: ContractPrefillField[]): PrefillEditorGrou
     return groups;
 }
 
+/**
+ * Exhibit C (2)/(3)/… mapping ids for a contract, for callers that do not hold
+ * the addendum mapping rows (e.g. the ACH form viewer). Empty on failure.
+ */
+async function fetchExhibitCCopyMappingIds(contractId: number): Promise<string[]> {
+    try {
+        const res = await axiosGet(`/contract/${contractId}/document-template-mappings`);
+        const rows = (res?.data?.data ?? []) as Array<{
+            id?: unknown;
+            order?: unknown;
+            template?: {
+                name?: string | null;
+                layoutKey?: string | null;
+                templateId?: string | null;
+            } | null;
+        }>;
+        return rows
+            .filter((r) =>
+                isExhibitCFamilyAddendumRef(
+                    r.template?.layoutKey || r.template?.templateId || "",
+                    r.template?.name,
+                ),
+            )
+            .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))
+            .slice(1)
+            .map((r) => String(r.id ?? "").trim())
+            .filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
 export function TemplateMappingPrefillEditDialog({
     open,
     onOpenChange,
@@ -147,6 +193,7 @@ export function TemplateMappingPrefillEditDialog({
     documentTemplatePrefillByMappingId,
     mainPrefillOverrides,
     exhibitCEntityIndex = 0,
+    exhibitCCopyMappingIds,
     titleSuffix = null,
     onSaved,
 }: TemplateMappingPrefillEditDialogProps) {
@@ -201,7 +248,10 @@ export function TemplateMappingPrefillEditDialog({
             contractRecords,
             agreementDate,
             mainPrefillOverrides: mainPrefillOverrides ?? undefined,
-            siblingPrefillByMappingId: documentTemplatePrefillByMappingId,
+            siblingPrefillByMappingId: omitMappingBlobIds(
+                documentTemplatePrefillByMappingId,
+                exhibitCCopyMappingIds,
+            ),
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
             ach: (contractRecords?.ach as Record<string, unknown> | null) ?? null,
@@ -217,6 +267,7 @@ export function TemplateMappingPrefillEditDialog({
         agreementDate,
         mainPrefillOverrides,
         exhibitCEntityIndex,
+        exhibitCCopyMappingIds,
     ]);
 
     const groupedEditorRows = useMemo(() => groupPrefillEditorRows(editorRows), [editorRows]);
@@ -239,7 +290,10 @@ export function TemplateMappingPrefillEditDialog({
         const sharedDba = resolveSharedDbaValue({
             mainPrefill: mainPrefillOverrides ?? null,
             contract: resolvedContract,
-            mappingBlobs: documentTemplatePrefillByMappingId,
+            mappingBlobs: omitMappingBlobIds(
+                documentTemplatePrefillByMappingId,
+                exhibitCCopyMappingIds,
+            ),
         });
         setFieldValues(
             applySharedDbaToFieldValues(fromRows, sharedDba, {
@@ -363,15 +417,26 @@ export function TemplateMappingPrefillEditDialog({
                 nextBlob[row.id] = tabValues;
             }
 
+            const copyIds =
+                exhibitCCopyMappingIds ?? (await fetchExhibitCCopyMappingIds(cid));
             const sharedDba = resolveSharedDbaValue({
                 mainPrefill: { ...(mainPrefillOverrides ?? {}), ...tabValues },
                 contract: resolvedContract,
-                mappingBlobs: {
-                    ...existingBlob,
-                    ...documentTemplatePrefillByMappingId,
-                    [row.id]: tabValues,
-                },
+                mappingBlobs: omitMappingBlobIds(
+                    {
+                        ...existingBlob,
+                        ...documentTemplatePrefillByMappingId,
+                        [row.id]: tabValues,
+                    },
+                    copyIds,
+                ),
             });
+            // Extra Exhibit C copies keep their own entity's DBA / bank untouched.
+            const isolatedCopyRows = Object.fromEntries(
+                copyIds
+                    .filter((id) => id !== row.id && nextBlob[id])
+                    .map((id) => [id, nextBlob[id]] as const),
+            );
             if (sharedDba) {
                 nextBlob = applySharedDbaToMappingBlob(nextBlob, sharedDba);
                 nextBlob[row.id] = applySharedDbaToFieldValues(tabValues, sharedDba);
@@ -379,6 +444,7 @@ export function TemplateMappingPrefillEditDialog({
             if (hasSharedBankDetails(sharedBank)) {
                 nextBlob = applySharedBankDetailsToMappingBlob(nextBlob, sharedBank);
             }
+            nextBlob = { ...nextBlob, ...isolatedCopyRows };
 
             const achCamel = coordinateLayout ? achTabValuesToCamelPartial(tabValues) : null;
             const bankCamel = hasSharedBankDetails(sharedBank)
@@ -529,6 +595,7 @@ export function TemplateMappingPrefillEditDialog({
         onOpenChange,
         isolateExhibitCInstance,
         exhibitCEntityIndex,
+        exhibitCCopyMappingIds,
     ]);
 
     const overrideTitle = String(titleSuffix ?? "").trim();
@@ -594,28 +661,54 @@ export function TemplateMappingPrefillEditDialog({
                                                 {group.label}
                                             </p>
                                         ) : null}
-                                        <div className="grid gap-3 sm:grid-cols-2">
-                                            {group.rows.map((r) => (
-                                                <div key={r.id} className="space-y-1.5">
-                                                    <Label
-                                                        htmlFor={`tmpl-field-${r.id}`}
-                                                        className="text-xs font-medium"
-                                                    >
-                                                        {r.label}
-                                                    </Label>
-                                                    <Input
-                                                        id={`tmpl-field-${r.id}`}
-                                                        value={fieldValues[r.id] ?? ""}
-                                                        onChange={(e) => {
-                                                            const next = e.target.value;
-                                                            setFieldValues((prev) =>
-                                                                syncSiblingBankFields(prev, r.id, next),
-                                                            );
-                                                        }}
-                                                    />
-                                                </div>
-                                            ))}
-                                        </div>
+                                        {(() => {
+                                            const { installmentRows, otherRows } =
+                                                splitFlexInstallmentRows(group.rows);
+                                            return (
+                                                <>
+                                                    {installmentRows.length > 0 ? (
+                                                        <FlexAddendumInstallmentGrid
+                                                            rows={installmentRows}
+                                                            values={fieldValues}
+                                                            idPrefix="tmpl-field-"
+                                                            onChange={(id, next) =>
+                                                                setFieldValues((prev) =>
+                                                                    syncSiblingBankFields(prev, id, next),
+                                                                )
+                                                            }
+                                                        />
+                                                    ) : null}
+                                                    {otherRows.length > 0 ? (
+                                                        <div className="grid gap-3 sm:grid-cols-2">
+                                                            {otherRows.map((r) => (
+                                                                <div key={r.id} className="space-y-1.5">
+                                                                    <Label
+                                                                        htmlFor={`tmpl-field-${r.id}`}
+                                                                        className="text-xs font-medium"
+                                                                    >
+                                                                        {r.label}
+                                                                    </Label>
+                                                                    <Input
+                                                                        id={`tmpl-field-${r.id}`}
+                                                                        value={fieldValues[r.id] ?? ""}
+                                                                        onChange={(e) => {
+                                                                            const next = e.target.value;
+                                                                            setFieldValues((prev) =>
+                                                                                syncSiblingBankFields(
+                                                                                    prev,
+                                                                                    r.id,
+                                                                                    next,
+                                                                                ),
+                                                                            );
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    ) : null}
+                                                </>
+                                            );
+                                        })()}
                                     </div>
                                 ))}
                             </div>

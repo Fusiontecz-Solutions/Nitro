@@ -548,6 +548,23 @@ export function applySharedDbaToFieldValues(
     return next;
 }
 
+/**
+ * Mapping blobs minus the given ids. Extra Exhibit C copies belong to their own
+ * entity, so their DBA / bank must never be read as (or overwritten by) the
+ * deal-wide shared value.
+ */
+export function omitMappingBlobIds(
+    blob: Record<string, Record<string, string>> | null | undefined,
+    ids: Iterable<string> | null | undefined,
+): Record<string, Record<string, string>> {
+    const skip = new Set(Array.from(ids ?? [], (id) => String(id)));
+    const out: Record<string, Record<string, string>> = {};
+    for (const [mapId, row] of Object.entries(blob ?? {})) {
+        if (!skip.has(mapId)) out[mapId] = row;
+    }
+    return out;
+}
+
 export function applySharedDbaToMappingBlob(
     blob: Record<string, Record<string, string>>,
     dba: string,
@@ -1555,8 +1572,9 @@ function buildAddendumExhibitCComputed(
     if (entityIndex > 0) {
         const entity = exhibitEntities[entityIndex] ?? null;
         return buildExhibitCContractPrefillFields({
-            agreementDate: todayUsDate(),
-            clientLegalName: dealLegalName,
+            agreementDate: str(entity?.agreementDate) || todayUsDate(),
+            // This copy's own entity — never the main application's merchant.
+            clientLegalName: str(entity?.clientLegalName),
             clientName: str(entity?.clientName),
             accountHolderName: str(entity?.accountHolderName),
             accountHolderDba: str(entity?.accountHolderDba),

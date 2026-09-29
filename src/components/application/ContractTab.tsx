@@ -3571,10 +3571,15 @@ export default function ContractTab({
                  * server otherwise resolves it from the contract row, which still says
                  * "on" until the prefill editor has been saved. Sending it keeps TOTAL
                  * FEES and NET AMOUNT on every document in step with the box.
+                 *
+                 * The fallback is the row re-read above, as for the money re-sync:
+                 * `contractRecordForActions` is this render's snapshot and can predate
+                 * an unchecked box saved in the modal, and the server saves this value
+                 * back onto the contract, so a stale "on" here also outlived Review.
                  */
                 includeWireFee: resolveIncludeWireFeePreference(
                     sendPayload.includeWireFee,
-                    contractRecordForActions,
+                    (latestContract as Record<string, unknown> | null | undefined) ?? null,
                 )
                     ? "true"
                     : "false",

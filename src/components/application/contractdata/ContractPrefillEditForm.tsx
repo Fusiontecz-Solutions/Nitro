@@ -75,6 +75,7 @@ import {
     applySharedDbaToMappingBlob,
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasStateDisclosurePrefillFieldMap,
+    omitMappingBlobIds,
     resolveSharedDbaValue,
     LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
     LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID,
@@ -114,6 +115,8 @@ import {
     serializeExhibitCEntities,
     type ExhibitCEntityPrefill,
 } from "./exhibitCEntityPrefill";
+import { FlexAddendumInstallmentGrid } from "./FlexAddendumInstallmentGrid";
+import { splitFlexInstallmentRows } from "./flexAddendumInstallmentRows";
 import { isMultiInstanceAddendumRef } from "./multiInstanceAddendum";
 import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
 import { formatSSN, getSSNDigits } from "@/utils/formatSSN";
@@ -1989,12 +1992,16 @@ export function ContractPrefillEditForm({
             application: applicationData as Record<string, unknown> | null,
             agreementDate: agreementDateForDefaults,
             mainPrefillOverrides: strippedMainPrefillOverrides ?? undefined,
-            siblingPrefillByMappingId: documentTemplatePrefillByMappingId,
+            siblingPrefillByMappingId: omitMappingBlobIds(
+                documentTemplatePrefillByMappingId,
+                exhibitCLinkedMappings.slice(1).map((m) => String(m?.id ?? "")),
+            ),
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
         });
     }, [
         linkedAddendumMapping,
+        exhibitCLinkedMappings,
         documentTemplatePrefillByMappingId,
         resolvedContract,
         contractRecords?.contract,
@@ -2316,9 +2323,13 @@ export function ContractPrefillEditForm({
         clearParty2PrefillPartial(merged as Record<string, unknown>, ownerCount);
         /** Undo stale overrides that mirrored business address onto contact / owner tabs. */
         merged = applySeparatedAddressPrefillFields(merged, applicationData);
+        // Exhibit C (2)/(3)/… belong to other entities — never seed the application.
         overlayAddendumBlobOntoMainPrefill(
             merged as Record<string, unknown>,
-            documentTemplatePrefillByMappingId,
+            omitMappingBlobIds(
+                documentTemplatePrefillByMappingId,
+                exhibitCLinkedMappings.slice(1).map((m) => String(m?.id ?? "")),
+            ),
         );
         /** Re-assert live deal business name after addendum overlay (never keep OCR legal name). */
         merged = applyAuthorizationBusinessNamePrefillFields(merged, applicationData);
@@ -2364,6 +2375,7 @@ export function ContractPrefillEditForm({
         resolvedOwnerRows,
         liveContractSignerOverrides,
         documentTemplatePrefillByMappingId,
+        exhibitCLinkedMappings,
     ]);
 
     const resetAddendumFromSources = useCallback(
@@ -2907,10 +2919,14 @@ export function ContractPrefillEditForm({
                     ...entityTabs,
                 };
             }
+            // Exhibit C (2)/(3)/… carry another entity's DBA — never the application's.
             const sharedDba = resolveSharedDbaValue({
                 mainPrefill: aliased,
                 contract: resolvedContract,
-                mappingBlobs: nextBlob,
+                mappingBlobs: omitMappingBlobIds(
+                    nextBlob,
+                    exhibitCLinkedMappings.slice(1).map((m) => String(m?.id ?? "")),
+                ),
             });
             if (sharedDba) {
                 const withDba = applySharedDbaToMappingBlob(nextBlob, sharedDba);
@@ -3441,54 +3457,83 @@ export function ContractPrefillEditForm({
                                     ) : null}
                                 </div>
                                 {isLinkedAddendumSection ? (
-                                    <div className="grid gap-4 sm:grid-cols-2">
-                                        {visibleAddendumEditorRows.length === 0 ? (
-                                            <p className="text-sm text-slate-600 dark:text-slate-400">
-                                                Merchant, EIN, DBA, and bank fields for this addendum are
-                                                filled from the sections above. Edit them there instead of
-                                                re-entering them here.
-                                            </p>
-                                        ) : (
-                                        visibleAddendumEditorRows.map((row) => (
-                                            <div key={row.id} className="space-y-1.5">
-                                                <Label htmlFor={`addendum-prefill-${row.id}`} className="text-xs font-medium">
-                                                    {row.label}
-                                                </Label>
-                                                <Input
-                                                    id={`addendum-prefill-${row.id}`}
-                                                    value={addendumFieldValues[row.id] ?? ""}
-                                                    onChange={(e) => {
-                                                        const nextValue = e.target.value;
-                                                        setAddendumFieldValues((prev) => ({
-                                                            ...prev,
-                                                            [row.id]: nextValue,
-                                                        }));
-                                                        const mainUpdates = mainUpdatesFromLinkedDocField(
-                                                            String(row.id),
-                                                            nextValue,
-                                                        );
-                                                        if (Object.keys(mainUpdates).length === 0) return;
-                                                        setValues((prev) => {
-                                                            const next = { ...prev, ...mainUpdates };
-                                                            for (const [k, val] of Object.entries(mainUpdates)) {
-                                                                const mirrors = PREFILL_REALTIME_MIRROR_BY_KEY.get(
-                                                                    k as ContractPrefillFormFieldKey,
-                                                                );
-                                                                if (!mirrors) continue;
-                                                                for (const mk of mirrors) {
-                                                                    next[mk] = val;
-                                                                }
-                                                            }
-                                                            return next;
-                                                        });
-                                                    }}
-                                                    disabled={readOnly}
-                                                    className="h-9 text-sm"
-                                                />
+                                    (() => {
+                                        const handleAddendumFieldChange = (
+                                            rowId: string,
+                                            nextValue: string,
+                                        ) => {
+                                            setAddendumFieldValues((prev) => ({
+                                                ...prev,
+                                                [rowId]: nextValue,
+                                            }));
+                                            const mainUpdates = mainUpdatesFromLinkedDocField(rowId, nextValue);
+                                            if (Object.keys(mainUpdates).length === 0) return;
+                                            setValues((prev) => {
+                                                const next = { ...prev, ...mainUpdates };
+                                                for (const [k, val] of Object.entries(mainUpdates)) {
+                                                    const mirrors = PREFILL_REALTIME_MIRROR_BY_KEY.get(
+                                                        k as ContractPrefillFormFieldKey,
+                                                    );
+                                                    if (!mirrors) continue;
+                                                    for (const mk of mirrors) {
+                                                        next[mk] = val;
+                                                    }
+                                                }
+                                                return next;
+                                            });
+                                        };
+                                        if (visibleAddendumEditorRows.length === 0) {
+                                            return (
+                                                <p className="text-sm text-slate-600 dark:text-slate-400">
+                                                    Merchant, EIN, DBA, and bank fields for this addendum are
+                                                    filled from the sections above. Edit them there instead of
+                                                    re-entering them here.
+                                                </p>
+                                            );
+                                        }
+                                        const { installmentRows, otherRows } =
+                                            splitFlexInstallmentRows(visibleAddendumEditorRows);
+                                        return (
+                                            <div className="space-y-5">
+                                                {installmentRows.length > 0 ? (
+                                                    <FlexAddendumInstallmentGrid
+                                                        rows={installmentRows}
+                                                        values={addendumFieldValues}
+                                                        idPrefix="addendum-prefill-"
+                                                        onChange={handleAddendumFieldChange}
+                                                        disabled={readOnly}
+                                                        inputClassName="h-9 text-sm"
+                                                    />
+                                                ) : null}
+                                                {otherRows.length > 0 ? (
+                                                    <div className="grid gap-4 sm:grid-cols-2">
+                                                        {otherRows.map((row) => (
+                                                            <div key={row.id} className="space-y-1.5">
+                                                                <Label
+                                                                    htmlFor={`addendum-prefill-${row.id}`}
+                                                                    className="text-xs font-medium"
+                                                                >
+                                                                    {row.label}
+                                                                </Label>
+                                                                <Input
+                                                                    id={`addendum-prefill-${row.id}`}
+                                                                    value={addendumFieldValues[row.id] ?? ""}
+                                                                    onChange={(e) =>
+                                                                        handleAddendumFieldChange(
+                                                                            String(row.id),
+                                                                            e.target.value,
+                                                                        )
+                                                                    }
+                                                                    disabled={readOnly}
+                                                                    className="h-9 text-sm"
+                                                                />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : null}
                                             </div>
-                                        ))
-                                        )}
-                                    </div>
+                                        );
+                                    })()
                                 ) : isLinkedDisclosureSection ? (
                                     <div className="space-y-4">
                                         {!linkedDisclosureHasFieldMap ? (
