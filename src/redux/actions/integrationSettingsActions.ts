@@ -33,6 +33,12 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   if (payload.contactEmail != null) formData.append("contactEmail", payload.contactEmail);
   if (payload.contactPhone != null) formData.append("contactPhone", payload.contactPhone);
   if (payload.defaultCcEmail != null) formData.append("defaultCcEmail", payload.defaultCcEmail);
+  if (payload.sendgridFromEmail != null) {
+    formData.append("sendgridFromEmail", payload.sendgridFromEmail);
+  }
+  if (payload.sendgridFromName != null) {
+    formData.append("sendgridFromName", payload.sendgridFromName);
+  }
   if (payload.addressLine1 != null) formData.append("addressLine1", payload.addressLine1);
   if (payload.addressCity != null) formData.append("addressCity", payload.addressCity);
   if (payload.addressState != null) formData.append("addressState", payload.addressState);

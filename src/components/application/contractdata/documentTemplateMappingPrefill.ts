@@ -77,7 +77,10 @@ import {
 } from "./EXHIBIT_A";
 import {
     buildFlexAddendumContractPrefillFields,
+    buildTiberianFlexAddendumContractPrefillFields,
+    TIBERIAN_FLEX_INSTALLMENT_ROWS,
     type FlexAddendumContractPrefillFields,
+    type TiberianFlexAddendumContractPrefillFields,
 } from "./FLEX_ADDENDUM";
 import {
     buildPayoffAddendumContractPrefillFields,
@@ -107,12 +110,14 @@ import {
     SIGNNOW_PAYOFF_ADDENDUM_LAYOUT_KEY,
     SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID,
     SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID,
+    SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID,
     SIGNNOW_EPA_LAYOUT_KEY,
     SIGNNOW_EPA_TEMPLATE_ID,
     SIGNNOW_MONTHLY_FEE_LAYOUT_KEY,
     SIGNNOW_MONTHLY_FEE_TEMPLATE_ID,
     isSignNowAddendumLayoutKey,
     isSignNowDisclosureLayoutKey,
+    isTiberianFlexAddendumRef,
     isTiberianPayoffAddendumRef,
 } from "./signnowAddendumTemplates";
 import { isSignNowContractUiEnabled } from "./contractTemplatePreview";
@@ -1738,6 +1743,65 @@ function buildAddendumFlexComputed(
     });
 }
 
+/** Tiberian's Flex copy: same data as `buildAddendumFlexComputed`, its own widget names. */
+function buildAddendumFlexTiberianComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+    application: Record<string, unknown> | null,
+): ContractPrefillField[] {
+    const c = contract ?? {};
+    const fromApp = buildContractPrefillFieldsFromApplication(application, {
+        agreementDate: sctx.signatureDate || todayUsDate(),
+        contractRecords: { contract: c },
+    });
+    const get = (...ids: string[]) => {
+        const fromFields = fieldValueById(fromApp, ...ids);
+        if (fromFields) return fromFields;
+        for (const id of ids) {
+            const v = str(c[id]);
+            if (v) return v;
+        }
+        return "";
+    };
+    const paymentDates: string[] = [];
+    const netFundsProvided: string[] = [];
+    const paymentAmounts: string[] = [];
+    const receivablesPurchased: string[] = [];
+    for (let i = 1; i <= TIBERIAN_FLEX_INSTALLMENT_ROWS; i += 1) {
+        paymentDates.push(get(`payment_date_${i}`, `installment_day_${i}`, `installment_day_${i}_p1`));
+        // Widget names are swapped against the printed headers (see
+        // `buildTiberianFlexAddendumContractPrefillFields`).
+        paymentAmounts.push(
+            get(`net_funds_provided_${i}`, `daily_payment_${i}`, `daily_payment_${i}_p1`),
+        );
+        netFundsProvided.push(get(`payment_amount_${i}`));
+        receivablesPurchased.push(
+            get(
+                `receivables_purchased_${i}`,
+                `receivable_purchase_${i}`,
+                `receivable_purchase_${i}_p1`,
+            ),
+        );
+    }
+    return buildTiberianFlexAddendumContractPrefillFields({
+        paymentDates,
+        netFundsProvided,
+        paymentAmounts,
+        receivablesPurchased,
+        owner1Name:
+            sctx.merchantName ||
+            get("owner1_guarantor_name", "client_name", "merchant_contact_name") ||
+            str(c.clientName),
+        owner1Ssn: get("guaranty_ss", "guaranty_owner1_ss", "guaranty_guarantor1_ss"),
+        owner2Name: get(
+            "owner2_guarantor_name",
+            "guaranty_owner2_name",
+            "guaranty_guarantor2_name",
+        ),
+        owner2Ssn: get("guaranty_owner2_ss", "guaranty_guarantor2_ss"),
+    });
+}
+
 function payoffAddendumValues(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
@@ -2143,6 +2207,20 @@ function dotFlexAddendum(): FlexAddendumContractPrefillFields {
     };
 }
 
+function dotTiberianFlexAddendum(): TiberianFlexAddendumContractPrefillFields {
+    const rows = () => Array.from({ length: TIBERIAN_FLEX_INSTALLMENT_ROWS }, () => DUMMY);
+    return {
+        paymentDates: rows(),
+        netFundsProvided: rows(),
+        paymentAmounts: rows(),
+        receivablesPurchased: rows(),
+        owner1Name: DUMMY,
+        owner1Ssn: DUMMY,
+        owner2Name: DUMMY,
+        owner2Ssn: DUMMY,
+    };
+}
+
 function dotPayoffAddendum(): PayoffAddendumContractPrefillFields {
     return {
         addendumDated: DUMMY,
@@ -2370,6 +2448,8 @@ function resolveAddendumKind(
     if (
         key === SIGNNOW_FLEX_ADDENDUM_LAYOUT_KEY ||
         tid === SIGNNOW_FLEX_ADDENDUM_TEMPLATE_ID ||
+        tid === SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID ||
+        key === SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID ||
         (normName.includes("flex") && normName.includes("addendum"))
     ) {
         return "flex_addendum";
@@ -2537,7 +2617,9 @@ function addendumAllDefs(
         case "exhibit_a":
             return buildExhibitAContractPrefillFields(dotExhibitA());
         case "flex_addendum":
-            return buildFlexAddendumContractPrefillFields(dotFlexAddendum());
+            return variant === "tiberian"
+                ? buildTiberianFlexAddendumContractPrefillFields(dotTiberianFlexAddendum())
+                : buildFlexAddendumContractPrefillFields(dotFlexAddendum());
         case "payoff_addendum":
             return variant === "tiberian"
                 ? buildTiberianPayoffAddendumContractPrefillFields(dotTiberianPayoffAddendum())
@@ -2596,7 +2678,9 @@ function addendumComputed(
         case "exhibit_a":
             return buildAddendumExhibitAComputed(contract, sctx, application, contractRecords);
         case "flex_addendum":
-            return buildAddendumFlexComputed(contract, sctx, application);
+            return variant === "tiberian"
+                ? buildAddendumFlexTiberianComputed(contract, sctx, application)
+                : buildAddendumFlexComputed(contract, sctx, application);
         case "payoff_addendum":
             return variant === "tiberian"
                 ? buildAddendumPayoffTiberianComputed(contract, sctx)
@@ -2834,15 +2918,15 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     // fields on Exhibit C, ACH Daily, Flex, etc.
     if (docType === "addendum" || addendum) {
         if (!addendum) return [];
-        // Tiberian Funding ships its own PayOff Addendum copy whose widget
-        // inventory differs from the Nitro / Obsidian one; pick the copy this
-        // mapping actually points at so values land on widgets that exist.
-        const variant: AddendumVariant = isTiberianPayoffAddendumRef(
-            templateId,
-            options.templateLayoutKey,
-        )
-            ? "tiberian"
-            : "default";
+        // Tiberian Funding ships its own PayOff Addendum and Flex Addendum
+        // copies whose widget inventories differ from the Nitro / Obsidian
+        // ones; pick the copy this mapping actually points at so values land on
+        // widgets that exist.
+        const variant: AddendumVariant =
+            isTiberianPayoffAddendumRef(templateId, options.templateLayoutKey) ||
+            isTiberianFlexAddendumRef(templateId, options.templateLayoutKey)
+                ? "tiberian"
+                : "default";
         const all = addendumAllDefs(addendum, variant);
         const exhibitIndex = options.exhibitCEntityIndex ?? 0;
         const computed = addendumComputed(

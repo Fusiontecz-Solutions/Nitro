@@ -22,6 +22,11 @@ const approvalSchema = yup.object({
     advanceAmount: yup.number().required("Purchase Amount is required").min(0, "Must be at least 0"),
     term: yup.number().required("Term is required").min(1, "Must be at least 1"),
     upsell: yup.number().required("Upsell is required").min(0, "Must be at least 0"),
+    factorRate: yup
+        .number()
+        .required("Factor rate is required")
+        .min(1, "Must be at least 1")
+        .max(10, "Must be at most 10"),
     originationFeePercent: yup
         .number()
         .required("Origination fee % is required")
@@ -33,6 +38,8 @@ interface ApprovalFormData {
     advanceAmount: number;
     term: number;
     upsell: number;
+    /** Editable buy/factor rate used for payback + sell calculations. */
+    factorRate: number;
     /** Percent of purchase amount; default 10%. */
     originationFeePercent: number;
 }
@@ -433,6 +440,12 @@ const Approval = ({
         toValidNumber(resolvedOfferDecision?.fees) ??
         toValidNumber(latestTermsOffer?.commissionPercent) ??
         12;
+    const resolvedFactorRate =
+        toValidNumber(resolvedOfferDecision?.factorRate) ??
+        toValidNumber(resolvedOfferDecision?.buyRate) ??
+        toValidNumber(latestTermsOffer?.factorRate) ??
+        toValidNumber(latestTermsOffer?.buyRate) ??
+        1.499;
     const {
         control,
         formState: { errors },
@@ -443,6 +456,7 @@ const Approval = ({
             advanceAmount: resolvedOfferAmount,
             term: resolvedTerm,
             upsell: resolvedUpsell,
+            factorRate: resolvedFactorRate,
             originationFeePercent: 10,
         },
     });
@@ -453,24 +467,31 @@ const Approval = ({
             advanceAmount: resolvedOfferAmount,
             term: resolvedTerm,
             upsell: resolvedUpsell,
+            factorRate: resolvedFactorRate,
             originationFeePercent: 10,
         });
-    }, [resolvedOfferDecision?._id, latestTermsOffer?._id, resolvedOfferAmount, resolvedTerm, resolvedUpsell, reset]);
+    }, [
+        resolvedOfferDecision?._id,
+        latestTermsOffer?._id,
+        resolvedOfferAmount,
+        resolvedTerm,
+        resolvedUpsell,
+        resolvedFactorRate,
+        reset,
+    ]);
 
     const advanceAmount = useWatch({ control, name: "advanceAmount", defaultValue: resolvedOfferAmount });
     const term = useWatch({ control, name: "term", defaultValue: resolvedTerm });
     const upsell = useWatch({ control, name: "upsell", defaultValue: resolvedUpsell });
     const originationFeePercent = useWatch({ control, name: "originationFeePercent", defaultValue: 10 });
-    const buyRateNum =
-        toValidNumber(resolvedOfferDecision?.buyRate) ??
-        toValidNumber(resolvedOfferDecision?.factorRate) ??
-        toValidNumber(latestTermsOffer?.buyRate) ??
-        toValidNumber(latestTermsOffer?.factorRate) ??
-        1.499;
+    const factorRate = useWatch({ control, name: "factorRate", defaultValue: resolvedFactorRate });
+    // Public/ISO calculator: Factor / Buy Rate is editable; payback/sell follow the changed value.
+    const buyRateNum = Math.max(1, toValidNumber(factorRate) ?? resolvedFactorRate);
     const calculatorPurchaseAmount = Math.max(0, toValidNumber(advanceAmount) ?? 0);
     const calculatorTerm = Math.max(1, toValidNumber(term) ?? 1);
     const calculatorUpsell = Math.max(0, toValidNumber(upsell) ?? 0);
-    const calculatorPaybackAmount = calculatorPurchaseAmount * buyRateNum;
+    const effectiveSellRate = buyRateNum + (buyRateNum * calculatorUpsell) / 100;
+    const calculatorPaybackAmount = calculatorPurchaseAmount * effectiveSellRate;
     const calculatorPaymentAmount = calculatorPaybackAmount / calculatorTerm;
     const centerGaugePeriodicPayment = formatCurrency(calculatorPaymentAmount);
 
@@ -495,10 +516,9 @@ const Approval = ({
             businessName: businessName || "—",
             // Loan Amount column should show persisted Offer first (DB by application id)
             loanAmount: formatCurrency(dbOfferNum ?? termsApprovedAmountNum ?? formAdvanceNum ?? applicationLoanAmountNum),
-            // Factor Rate is fixed per OfferDecisionToggle logic
-            factorRate: "1.499",
-            // Tenure should reflect the active term value
-            tenure: `${resolvedOfferDecision?.term ?? term}`,
+            factorRate: buyRateNum.toFixed(3),
+            // Tenure follows calculator term when ISO edits public approval
+            tenure: `${term ?? resolvedOfferDecision?.term}`,
             // Keep frequency in sync with offer logic (Daily default)
             frequency,
         };
@@ -615,7 +635,33 @@ const Approval = ({
                             </div>
                             <div>
                                 <p className="text-xs font-medium opacity-80 mb-1">Factor Rate</p>
-                                <p className="text-sm font-semibold">{applicantSummary.factorRate}</p>
+                                {calculatorEditable ? (
+                                    <Controller
+                                        name="factorRate"
+                                        control={control}
+                                        render={({ field }) => (
+                                            <Input
+                                                type="number"
+                                                min={1}
+                                                max={10}
+                                                step={0.001}
+                                                value={field.value}
+                                                onChange={(e) => {
+                                                    const n = Number(e.target.value);
+                                                    field.onChange(
+                                                        Number.isFinite(n) ? Math.min(10, Math.max(1, n)) : resolvedFactorRate,
+                                                    );
+                                                }}
+                                                className="h-8 w-24 bg-white/90 text-foreground text-sm font-semibold tabular-nums border-white/40"
+                                            />
+                                        )}
+                                    />
+                                ) : (
+                                    <p className="text-sm font-semibold">{applicantSummary.factorRate}</p>
+                                )}
+                                {errors.factorRate && (
+                                    <p className="text-xs text-red-200 mt-1">{errors.factorRate.message}</p>
+                                )}
                             </div>
                             <div>
                                 <p className="text-xs font-medium opacity-80 mb-1">Terms</p>
@@ -819,7 +865,7 @@ const Approval = ({
                                             { label: "Purchase Amount", value: formatCurrency(advance), highlight: true },
                                             { label: "Payback Amount", value: payback },
                                             { label: paymentLabel, value: periodicPayment },
-                                            { label: "Buy Rate", value: buyRate },
+                                            { label: "Buy Rate", value: buyRate, isBuyRate: true },
                                             { label: "Upsell", value: upsellVal, isUpsell: true },
                                             { label: "Sell Rate", value: sellRate },
                                             { label: "Origination Fee", value: originationSummary, isOrigination: true },
@@ -872,6 +918,54 @@ const Approval = ({
                                                         {errors.originationFeePercent && (
                                                             <p className="pb-1 pl-[55%] text-right text-xs text-red-500">
                                                                 {errors.originationFeePercent.message}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                );
+                                            }
+
+                                            if ("isBuyRate" in item && item.isBuyRate) {
+                                                return (
+                                                    <div key={index} className="w-full">
+                                                        <div className="flex w-full items-center gap-2 py-2">
+                                                            <div className="flex w-[55%] min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[var(--brand-accent)]">
+                                                                    {item.label}
+                                                                </span>
+                                                                {calculatorEditable ? (
+                                                                    <div className="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-input bg-background px-2 shadow-sm">
+                                                                        <Controller
+                                                                            name="factorRate"
+                                                                            control={control}
+                                                                            render={({ field }) => (
+                                                                                <Input
+                                                                                    type="number"
+                                                                                    min={1}
+                                                                                    max={10}
+                                                                                    step={0.001}
+                                                                                    value={field.value}
+                                                                                    onChange={(e) => {
+                                                                                        const n = Number(e.target.value);
+                                                                                        field.onChange(
+                                                                                            Number.isFinite(n)
+                                                                                                ? Math.min(10, Math.max(1, n))
+                                                                                                : resolvedFactorRate,
+                                                                                        );
+                                                                                    }}
+                                                                                    className="h-7 w-16 min-w-[4rem] border-0 bg-transparent p-0 pr-1 text-right text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                                                                                />
+                                                                            )}
+                                                                        />
+                                                                    </div>
+                                                                ) : null}
+                                                            </div>
+                                                            <span className="w-[45%] shrink-0 text-right text-sm font-semibold tabular-nums text-foreground">
+                                                                {item.value}
+                                                            </span>
+                                                        </div>
+                                                        {errors.factorRate && (
+                                                            <p className="pb-1 pl-[55%] text-right text-xs text-red-500">
+                                                                {errors.factorRate.message}
                                                             </p>
                                                         )}
                                                     </div>

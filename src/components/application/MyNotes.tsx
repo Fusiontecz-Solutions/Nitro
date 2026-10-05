@@ -12,6 +12,7 @@ import { createNote, getNotes, deleteNote } from "@/redux/actions/noteActions";
 import { resetCreateNote, resetDeleteNote } from "@/redux/slices/noteSlice";
 import type { Note } from "@/types/noteTypes";
 import type { user } from "@/redux/slices/authSlice";
+import { isAdditionalInfoNoteContent } from "@/components/scrubbing/lib/additionalInfo";
 
 interface MyNotesProps {
     applicationId?: string;
@@ -116,7 +117,10 @@ const MyNotes = ({
     }, [deleteSuccess, deleteError, dispatch, applicationId]);
 
     // Use external notes if provided, otherwise use Redux data
-    const notes = externalNotes || notesData || [];
+    // Additional Info (Scrubbing tab) is stored as a special note — never list it as a note.
+    const notes = (externalNotes || notesData || []).filter(
+        (note) => !isAdditionalInfoNoteContent(note?.content),
+    );
 
     const handlePostComment = () => {
         if (!newNote.trim()) {

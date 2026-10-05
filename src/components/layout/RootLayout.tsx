@@ -5,6 +5,7 @@ import { jwtDecode } from "jwt-decode";
 import RootLayoutWrapper from "./RootLayoutWrapper";
 import { useEffect, useMemo } from "react";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
+import { isAppAllowedRole, isPathAllowedForRole } from "@/lib/roleAccess";
 import { useSelector } from "react-redux";
 import type { RootState } from "@/redux/store";
 import { axiosGet } from "@/redux/axios";
@@ -54,12 +55,17 @@ const RootLayout = () => {
                 return;
             }
             const tokenRole = normalizeRoleKey(decoded?.role ?? "");
-            if (tokenRole && tokenRole !== "SUPER_ADMIN") {
+            if (tokenRole && !isAppAllowedRole(tokenRole)) {
                 localStorage.removeItem("token");
                 localStorage.removeItem("user");
                 localStorage.removeItem("role");
-                toast.error("Only Super Admin can access this application.");
+                toast.error("Your role does not have access to this application.");
                 navigate("/login", { replace: true });
+                return;
+            }
+            // Workflow roles (Agent / Underwriter) only reach their own pages.
+            if (tokenRole && !isPathAllowedForRole(tokenRole, location.pathname)) {
+                navigate("/", { replace: true });
             }
         } catch {
             loginWithReturn();
@@ -70,14 +76,35 @@ const RootLayout = () => {
     useEffect(() => {
         if (isPublicRoute) return;
         if (!data?.user) return;
-        if (normalizedRole && normalizedRole !== "SUPER_ADMIN") {
+        if (normalizedRole && !isAppAllowedRole(normalizedRole)) {
             localStorage.removeItem("token");
             localStorage.removeItem("user");
             localStorage.removeItem("role");
-            toast.error("Only Super Admin can access this application.");
+            toast.error("Your role does not have access to this application.");
             navigate("/login", { replace: true });
         }
     }, [data?.user, normalizedRole, isPublicRoute, navigate]);
+
+    // Gmail OAuth return (`?gmail=connected|error`) — surface the result once, then clean the URL.
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const gmailResult = params.get("gmail");
+        if (!gmailResult) return;
+        if (gmailResult === "connected") {
+            toast.success("Gmail connected. ISO approval emails will be sent from your mailbox.");
+        } else {
+            const reason = params.get("reason") || "unknown_error";
+            const hint =
+                reason === "no_refresh_token"
+                    ? "Google did not return offline access. Remove the app from your Google account permissions and connect again."
+                    : `Gmail connection failed (${reason}).`;
+            toast.error(hint);
+        }
+        params.delete("gmail");
+        params.delete("reason");
+        const qs = params.toString();
+        navigate(`${location.pathname}${qs ? `?${qs}` : ""}`, { replace: true });
+    }, [location.search, location.pathname, navigate]);
 
     // DocuSign OAuth callback (required for contract / ACH envelopes)
     useEffect(() => {

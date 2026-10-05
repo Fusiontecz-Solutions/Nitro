@@ -189,6 +189,14 @@ export default function FundersSettings() {
                 />
                 <DetailRow label="Default CC" value={row.defaultCcEmail?.trim() || "—"} />
                 <DetailRow
+                  label="SendGrid From"
+                  value={
+                    row.sendgridFromEmail?.trim()
+                      ? `${row.sendgridFromName?.trim() || "(no name)"} <${row.sendgridFromEmail.trim()}>`
+                      : "Server default"
+                  }
+                />
+                <DetailRow
                   label="Letter company"
                   value={row.letterCompanyName?.trim() || "—"}
                 />

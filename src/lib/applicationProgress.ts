@@ -1,9 +1,10 @@
 /**
  * Canonical application lifecycle used by the application-detail progress bar.
  *
- * Contract-workflow stages only. We resolve the furthest-reached stage from any of
- * `currentQueue`, `currentState`, or `status`, so the bar reflects real progress
- * even when one field lags behind another.
+ * Agent → Underwriter → Agent Review → ISO → contract lifecycle. For the Agent / Underwriter
+ * workflow queues the queue is authoritative (a deal returned to underwriting moves back);
+ * otherwise we take the furthest stage implied by `currentQueue`, `currentState` or
+ * `status`, so the bar reflects real progress even when one field lags behind another.
  *
  * Declined / rejected / cancelled deals are surfaced as a terminal negative
  * state rather than a position on the happy path.
@@ -11,7 +12,9 @@
 
 export type ApplicationProgressStageKey =
   | "APPLICATION_ADDED"
-  | "CREATE_OFFER"
+  | "UNDERWRITING"
+  | "AGENT_REVIEW"
+  | "SENT_TO_ISO"
   | "CONTRACT_GENERATED"
   | "CONTRACT_SENT"
   | "CONTRACT_SIGNED";
@@ -31,9 +34,19 @@ export const APPLICATION_PROGRESS_STAGES: ApplicationProgressStage[] = [
     description: "Application has been created",
   },
   {
-    key: "CREATE_OFFER",
-    label: "Create Offer",
-    description: "Create and save the terms offer",
+    key: "UNDERWRITING",
+    label: "Underwriting",
+    description: "Underwriter scrubs the deal and creates the offer",
+  },
+  {
+    key: "AGENT_REVIEW",
+    label: "Agent Review",
+    description: "Agent reviews the underwritten offer",
+  },
+  {
+    key: "SENT_TO_ISO",
+    label: "Sent to ISO",
+    description: "Approval request emailed to the ISO",
   },
   {
     key: "CONTRACT_GENERATED",
@@ -91,19 +104,27 @@ const TOKEN_TO_INDEX: Record<string, number> = {
   submitted: STAGE_INDEX_BY_KEY.APPLICATION_ADDED,
   applicationadded: STAGE_INDEX_BY_KEY.APPLICATION_ADDED,
 
-  // Create offer (scrubbing / underwriting / approval all sit here)
-  review: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  scrubbing: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  underwriting: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  inprogress: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  underwriter: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  finalreview: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  approved: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  underwriterapproved: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  approvedbyuw: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  approvalsent: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  isoapproved: STAGE_INDEX_BY_KEY.CREATE_OFFER,
-  approvedbyiso: STAGE_INDEX_BY_KEY.CREATE_OFFER,
+  // Underwriting (scrubbing / underwriting / offer creation)
+  review: STAGE_INDEX_BY_KEY.UNDERWRITING,
+  scrubbing: STAGE_INDEX_BY_KEY.UNDERWRITING,
+  underwriting: STAGE_INDEX_BY_KEY.UNDERWRITING,
+  inprogress: STAGE_INDEX_BY_KEY.UNDERWRITING,
+  underwriter: STAGE_INDEX_BY_KEY.UNDERWRITING,
+  finalreview: STAGE_INDEX_BY_KEY.UNDERWRITING,
+  approved: STAGE_INDEX_BY_KEY.UNDERWRITING,
+  underwriterapproved: STAGE_INDEX_BY_KEY.UNDERWRITING,
+
+  // Agent review (underwriting handed back to the Agent)
+  agentreview: STAGE_INDEX_BY_KEY.AGENT_REVIEW,
+  agentapproval: STAGE_INDEX_BY_KEY.AGENT_REVIEW,
+  approvedbyuw: STAGE_INDEX_BY_KEY.AGENT_REVIEW,
+
+  // ISO approval requested
+  approvalsent: STAGE_INDEX_BY_KEY.SENT_TO_ISO,
+
+  // ISO approved → Contract Pending
+  isoapproved: STAGE_INDEX_BY_KEY.CONTRACT_GENERATED,
+  approvedbyiso: STAGE_INDEX_BY_KEY.CONTRACT_GENERATED,
 
   // Contract generated
   contracted: STAGE_INDEX_BY_KEY.CONTRACT_GENERATED,
@@ -161,6 +182,16 @@ interface ResolveProgressInput {
   finalApprovalSource?: string | null;
 }
 
+/** Agent / Underwriter workflow queues: when the deal sits in one, that queue decides the stage. */
+const AUTHORITATIVE_QUEUE_TOKENS = new Set([
+  "agent",
+  "new",
+  "underwriter",
+  "agentreview",
+  "agentapproval",
+  "approvalsent",
+]);
+
 function indexForToken(token: string): number | null {
   if (token in TOKEN_TO_INDEX) return TOKEN_TO_INDEX[token];
   return null;
@@ -185,10 +216,17 @@ export function resolveApplicationProgress(
   const isNegative = Boolean(negativeToken);
 
   let currentIndex = 0;
-  for (const token of tokens) {
-    const idx = indexForToken(token);
-    if (idx != null && idx > currentIndex) {
-      currentIndex = idx;
+  const queueToken = tokens[0];
+  const queueIndex = AUTHORITATIVE_QUEUE_TOKENS.has(queueToken) ? indexForToken(queueToken) : null;
+  if (queueIndex != null) {
+    // e.g. returned to underwriting: `underwriterAction` still says "Approved By UW".
+    currentIndex = queueIndex;
+  } else {
+    for (const token of tokens) {
+      const idx = indexForToken(token);
+      if (idx != null && idx > currentIndex) {
+        currentIndex = idx;
+      }
     }
   }
 

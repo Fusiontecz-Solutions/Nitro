@@ -99,15 +99,11 @@ import {
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
 import { getOperationsPipelineStageTabId } from "@/constants/operationsPipelineTabs";
-import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
+import { getApplicationQueueBadgeClass as getSharedApplicationQueueBadgeClass } from "@/lib/applicationQueueBadge";
 import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
 import {
   canViewApplicationApprovedAmount,
 } from "@/lib/applicationClaimLabel";
-import {
-  CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
-  isContractSignedQueueBadgeLabel,
-} from "@/lib/contractSignedQueueBadge";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
 import { resolveApplicationRequestAmount } from "@/lib/applicationLoanAmount";
 import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
@@ -444,42 +440,10 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
     return getApplicationSummaryStatusLabel(application);
   }, []);
 
-  const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
-    const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
-    if (contractWorkflowClass) return contractWorkflowClass;
-    if (isContractSignedQueueBadgeLabel(queueLabel)) {
-      return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
-    }
-    const n = queueLabel.toLowerCase();
-    if (n === "final scrubbing-approved") {
-      return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
-    }
-    if (n === "funded" || n === "disbursement") {
-      return "bg-green-100 text-green-700";
-    }
-    if (n === "approved" || n === "contracted") {
-      return "bg-blue-100 text-blue-700";
-    }
-    if (n === "declined") {
-      return "bg-red-100 text-red-700";
-    }
-    if (
-      n === "underwriting" ||
-      n === "scrubbing" ||
-      n === "underwriter" ||
-      n === "review" ||
-      n === "final review" ||
-      n === "final scrubbing" ||
-      n === "final" ||
-      n === "funding call"
-    ) {
-      return "bg-sky-100 text-sky-800";
-    }
-    if (n === "-") {
-      return "bg-muted/50 text-foreground";
-    }
-    return "bg-yellow-100 text-yellow-700";
-  }, []);
+  const getApplicationQueueBadgeClass = useCallback(
+    (queueLabel: string) => getSharedApplicationQueueBadgeClass(queueLabel),
+    [],
+  );
 
   const handleNavigateToApplication = useCallback(
     (app: Application, options?: { tab?: string }) => {

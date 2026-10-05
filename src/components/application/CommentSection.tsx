@@ -20,6 +20,7 @@ import { toast } from "react-toastify";
 import { useTheme } from "@/context/ThemeContext";
 import { formatDate as formatDateUtil } from "@/lib/utils";
 import { Avatar, AvatarFallback } from "../ui/avatar";
+import { useSocket } from "@/context/SocketContext";
 // Yup validation schema
 const commentSchema = yup.object({
     comment: yup.string().required("Comment is required").min(1, "Comment must not be empty"),
@@ -68,12 +69,33 @@ const CommentSection = ({
     const applicationId = applicationIdProp || applicationData?._id;
     const dispatch = useDispatch<AppDispatch>();
 
-    // Logged-in user (Redux + localStorage fallback)
+    const { socket } = useSocket();
+
+    // Logged-in user (Redux + localStorage fallback).
+    // Public portal must use the approval-session user from localStorage only —
+    // never the CRM Redux session, or staff see "You (SUPER ADMIN)" on the public URL.
     const { data: loginData } = useSelector((state: RootState) => state.login);
     const [loggedInUser, setLoggedInUser] = useState<user | null>(null);
 
 
     useEffect(() => {
+        if (publicMode) {
+            const stored = localStorage.getItem("user");
+            if (stored) {
+                try {
+                    const parsed = JSON.parse(stored) as user;
+                    if (parsed?._id) {
+                        setLoggedInUser(parsed);
+                        return;
+                    }
+                } catch {
+                    // ignore
+                }
+            }
+            setLoggedInUser(null);
+            return;
+        }
+
         const user = loginData?.user;
         if (user && typeof user === "object" && user._id) {
             setLoggedInUser(user as user);
@@ -88,7 +110,7 @@ const CommentSection = ({
                 // ignore
             }
         }
-    }, [loginData]);
+    }, [loginData, publicMode]);
 
     // console.log("loggedInUser", loggedInUser);
 
@@ -152,6 +174,19 @@ const CommentSection = ({
         if (commentsLoadedFor === String(applicationId)) return;
         dispatch(getCommentsByApplication({ applicationId }));
     }, [dispatch, applicationId, commentsLoadedFor]);
+
+    // Live-refresh when ISO/external portal comments are created for this deal.
+    useEffect(() => {
+        if (!socket || !applicationId || publicMode) return;
+        const onCommentNew = (payload: { applicationId?: string }) => {
+            if (String(payload?.applicationId || "") !== String(applicationId)) return;
+            dispatch(getCommentsByApplication({ applicationId }));
+        };
+        socket.on("comment:new", onCommentNew);
+        return () => {
+            socket.off("comment:new", onCommentNew);
+        };
+    }, [socket, applicationId, publicMode, dispatch]);
 
     // Fetch document requests when applicationId changes
     useEffect(() => {
@@ -475,20 +510,27 @@ const CommentSection = ({
             (comment.type === "External Comment" && (userInfo.roleLabel || "").toLowerCase() === "iso");
         const createdById =
             typeof comment.createdBy === "string" ? comment.createdBy : comment.createdBy?._id;
-        const isOwnComment = !!loggedInUser && createdById === loggedInUser._id;
+        // Portal ISO sessions are mapped to a CRM user (the referring agent) —
+        // never treat that as "You" in the CRM comments UI.
+        const isOwnComment =
+            !!loggedInUser &&
+            createdById === loggedInUser._id &&
+            !(isIsoComment && !publicMode);
 
         const replyMeta = parseReplyContent(comment.content);
         const replyBody = replyMeta?.bodyText ?? comment.content;
         const quoteText = replyMeta?.quoteText ?? "";
 
-        const displayName =
-            isIsoExternalComment
-                ? "ISO"
-                : isOwnComment
-                    ? "You"
-                    : userInfo.name;
-        const roleLabelForDisplay =
-            isIsoExternalComment ? "" : userInfo.roleLabel;
+        // ISO comments: always label as ISO — never the mapped CRM user's name.
+        // Public pages: hide internal CRM roles like SUPER ADMIN.
+        const displayName = isIsoExternalComment
+            ? publicMode && isOwnComment
+                ? "You"
+                : "ISO"
+            : isOwnComment
+              ? "You"
+              : userInfo.name;
+        const roleLabelForDisplay = isIsoExternalComment || publicMode ? "" : userInfo.roleLabel;
 
         const isRoot = depth === 0;
         const avatarClass = isRoot ? "h-8 w-8 mb-2" : "h-7 w-7 mt-1 mb-2";

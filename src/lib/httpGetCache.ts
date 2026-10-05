@@ -154,6 +154,20 @@ export function invalidateHttpGetCacheByUrl(url: string): void {
     related.add("clients");
     related.add("applications");
   }
+  /**
+   * Every contract read (`get_contract_by_application`, `get_contract_by_id`,
+   * `:id/document-template-mappings`) shares the `/contract/` prefix, but a save
+   * goes to `contract/update_contract/:id`, whose family names none of them. So
+   * for 90s after an Info Required / addendum save, the refresh that runs when
+   * the user comes back from the SignNow tab, and the Review rebuild, read the
+   * contract as it was BEFORE the save — and the next save wrote that stale
+   * per-addendum blob back over the real one. SignNow sends (`docusign/…`)
+   * write the contract row server-side too (send package, wire-fee choice,
+   * history), so they clear it as well.
+   */
+  if (/^(contract|docusign)\//.test(path)) {
+    related.add(":/contract/");
+  }
   for (const key of [...memory.keys()]) {
     if ([...related].some((part) => key.includes(part))) {
       memory.delete(key);

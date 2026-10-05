@@ -14,6 +14,12 @@ import { Separator } from '@/components/ui/separator';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import FundersSettings from '@/pages/settings/FundersSettings';
+import TeamManagement from '@/pages/settings/TeamManagement';
+import IsoManagement from '@/pages/settings/IsoManagement';
+import RolePermissions from '@/pages/settings/RolePermissions';
+import GmailConnectionCard from '@/components/workflow/GmailConnectionCard';
+import { resolveEffectiveRole } from '@/lib/sessionRole';
+import { settingsTabsForRole } from '@/lib/roleAccess';
 
 interface FormValues {
   firstName: string;
@@ -29,12 +35,19 @@ const schema = yup.object().shape({
   phone: yup.string().trim().optional(),
 });
 
-const SETTINGS_TABS = ['profile', 'funders'] as const;
-type SettingsTab = (typeof SETTINGS_TABS)[number];
+const SETTINGS_TAB_LABELS: Record<string, string> = {
+  profile: 'Profile',
+  email: 'Email',
+  team: 'Team',
+  isos: 'ISOs',
+  roles: 'Roles & Permissions',
+  funders: 'Funders',
+};
 
-function normalizeSettingsTab(value: string | null): SettingsTab {
+/** Tabs are role-scoped (Agent / Underwriter: profile + email; Super Admin: everything). */
+function normalizeSettingsTab(value: string | null, allowed: string[]): string {
   const tab = (value || 'profile').toLowerCase();
-  return SETTINGS_TABS.includes(tab as SettingsTab) ? (tab as SettingsTab) : 'profile';
+  return allowed.includes(tab) ? tab : 'profile';
 }
 
 export default function UserSetting() {
@@ -42,11 +55,12 @@ export default function UserSetting() {
   const [searchParams, setSearchParams] = useSearchParams();
   const loginData = useSelector((state: RootState) => state.login?.data);
   const isFieldsDisabled = true;
-  const activeTab = normalizeSettingsTab(searchParams.get('tab'));
+  const allowedTabs = useMemo(() => settingsTabsForRole(resolveEffectiveRole(loginData?.user)), [loginData?.user]);
+  const activeTab = normalizeSettingsTab(searchParams.get('tab'), allowedTabs);
 
   const handleTabChange = useCallback(
     (next: string) => {
-      const tab = normalizeSettingsTab(next);
+      const tab = normalizeSettingsTab(next, allowedTabs);
       const nextParams = new URLSearchParams(searchParams);
       if (tab === 'profile') {
         nextParams.delete('tab');
@@ -55,7 +69,7 @@ export default function UserSetting() {
       }
       setSearchParams(nextParams, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [searchParams, setSearchParams, allowedTabs],
   );
 
   const user: UserType | undefined = useMemo(() => {
@@ -136,16 +150,21 @@ export default function UserSetting() {
           <div>
             <h1 className="text-3xl font-semibold tracking-tight text-foreground">Settings</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Manage your profile information and configure funders for contracts.
+              {allowedTabs.includes("team")
+                ? "Manage your profile, team members, ISOs, roles and funders for contracts."
+                : "Manage your profile and connect the email used for ISO approval requests."}
             </p>
           </div>
 
           <Separator />
 
           <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full gap-6">
-            <TabsList>
-              <TabsTrigger value="profile">Profile</TabsTrigger>
-              <TabsTrigger value="funders">Funders</TabsTrigger>
+            <TabsList className="flex-wrap h-auto">
+              {allowedTabs.map((tab) => (
+                <TabsTrigger key={tab} value={tab}>
+                  {SETTINGS_TAB_LABELS[tab] ?? tab}
+                </TabsTrigger>
+              ))}
             </TabsList>
 
             <TabsContent value="profile" className="mt-0">
@@ -217,9 +236,33 @@ export default function UserSetting() {
               </div>
             </TabsContent>
 
-            <TabsContent value="funders" className="mt-0">
-              <FundersSettings />
+            <TabsContent value="email" className="mt-0">
+              <GmailConnectionCard />
             </TabsContent>
+
+            {allowedTabs.includes("team") ? (
+              <TabsContent value="team" className="mt-0">
+                <TeamManagement />
+              </TabsContent>
+            ) : null}
+
+            {allowedTabs.includes("isos") ? (
+              <TabsContent value="isos" className="mt-0">
+                <IsoManagement />
+              </TabsContent>
+            ) : null}
+
+            {allowedTabs.includes("roles") ? (
+              <TabsContent value="roles" className="mt-0">
+                <RolePermissions />
+              </TabsContent>
+            ) : null}
+
+            {allowedTabs.includes("funders") ? (
+              <TabsContent value="funders" className="mt-0">
+                <FundersSettings />
+              </TabsContent>
+            ) : null}
           </Tabs>
         </div>
       </div>

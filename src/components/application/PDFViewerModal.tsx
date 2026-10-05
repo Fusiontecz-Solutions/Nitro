@@ -2631,6 +2631,18 @@ const PDFViewerModal = ({
     const [documentTemplatePrefillByMappingId, setDocumentTemplatePrefillByMappingId] = useState<
         Record<string, Record<string, string>>
     >({});
+    /**
+     * Stable across renders: the Info Required form re-seeds its Exhibit C
+     * entities whenever this prop changes identity, so an inline object literal
+     * threw away every unsaved entity edit on each re-render — including the one
+     * the focus refresh triggers when the user comes back from the SignNow tab.
+     */
+    const contractPrefillEditFormAdditionalJson = useMemo(
+        () => ({
+            [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
+        }),
+        [documentTemplatePrefillByMappingId],
+    );
     const [templateMappingPrefillEditRow, setTemplateMappingPrefillEditRow] =
         useState<ContractDocumentTemplateMappingRow | null>(null);
     const [templateMappingPrefillExhibitCIndex, setTemplateMappingPrefillExhibitCIndex] =
@@ -3332,17 +3344,25 @@ const PDFViewerModal = ({
     const exhibitCCopyMappingIds = useMemo(
         () =>
             orderedLinkedAddendumMappings
-                .filter((candidate) =>
-                    isExhibitCFamilyAddendumRef(
-                        getAddendumDropdownRef(candidate?.template) ||
+                .filter((candidate) => {
+                    // Funder-aware, like the send-order labels: a funder's Exhibit C
+                    // stored as a bare SignNow id is only recognisable via its match.
+                    const match = matchFunderSignNowAddendumOption(
+                        candidate?.template,
+                        selectedFunderAddendumOptions,
+                    );
+                    return isExhibitCFamilyAddendumRef(
+                        match?.knownLayoutKey ||
+                            match?.templateId ||
+                            getAddendumDropdownRef(candidate?.template) ||
                             candidate?.template?.layoutKey,
-                        candidate?.template?.name,
-                    ),
-                )
+                        match?.name || candidate?.template?.name,
+                    );
+                })
                 .slice(1)
                 .map((candidate) => String(candidate?.id ?? "").trim())
                 .filter(Boolean),
-        [orderedLinkedAddendumMappings],
+        [orderedLinkedAddendumMappings, selectedFunderAddendumOptions],
     );
 
     const addendumDocs = uploadedDocs.filter((file: any) => {
@@ -7302,7 +7322,12 @@ const PDFViewerModal = ({
             const fetchContractRow = async (): Promise<Record<string, unknown> | null> => {
                 let contract: unknown;
                 if (appId) {
-                    const res = await dispatch(getByApplicationIdContract(appId)).unwrap();
+                    // `fresh`: this runs when the user comes back from the SignNow tab and
+                    // replaces the per-addendum prefill state wholesale, so it must see the
+                    // saved row — a cached pre-save copy is what emptied the addendums.
+                    const res = await dispatch(
+                        getByApplicationIdContract({ applicationId: appId, fresh: true }),
+                    ).unwrap();
                     contract = (res as { data?: unknown })?.data ?? res;
                 } else if (Number.isFinite(propId) && propId > 0) {
                     const res = await dispatch(getByIdContract(propId)).unwrap();
@@ -12337,26 +12362,16 @@ const PDFViewerModal = ({
                                                                                         0,
                                                                                     );
                                                                                 } else {
-                                                                                    const exhibitCIndexAmongOrdered =
-                                                                                        orderedLinkedAddendumMappings
-                                                                                            .slice(0, index + 1)
-                                                                                            .filter((candidate) =>
-                                                                                                isExhibitCFamilyAddendumRef(
-                                                                                                    getAddendumDropdownRef(
-                                                                                                        candidate?.template,
-                                                                                                    ) ||
-                                                                                                        candidate
-                                                                                                            ?.template
-                                                                                                            ?.layoutKey,
-                                                                                                    candidate?.template
-                                                                                                        ?.name,
-                                                                                                ),
-                                                                                            ).length;
+                                                                                    // Same funder-aware position the row label
+                                                                                    // shows. Recounting without the funder match
+                                                                                    // missed funder Exhibit C templates stored
+                                                                                    // as a bare SignNow id (Obsidian), so every
+                                                                                    // copy edited entity slot 0 — Exhibit C and
+                                                                                    // Exhibit C (2) ended up with one set of values.
                                                                                     setTemplateMappingPrefillExhibitCIndex(
                                                                                         Math.max(
                                                                                             0,
-                                                                                            exhibitCIndexAmongOrdered -
-                                                                                                1,
+                                                                                            exhibitCFamilyIndex - 1,
                                                                                         ),
                                                                                     );
                                                                                 }
@@ -15052,9 +15067,7 @@ const PDFViewerModal = ({
                 agreementDatePlaceholder={formatDate(new Date())}
                 offerDecision={(offerDecisionData as Record<string, unknown> | null) ?? null}
                 readOnly={!canEditContractPrefill}
-                additionalContractPrefillJson={{
-                    [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
-                }}
+                additionalContractPrefillJson={contractPrefillEditFormAdditionalJson}
                 liveContractSignerOverrides={contractSignerOverrides}
                 bankAnalyses={disclosureCalcBankAnalyses}
             />

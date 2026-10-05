@@ -37,6 +37,10 @@ export type FunderProfile = {
   contactEmail?: string | null;
   contactPhone?: string | null;
   defaultCcEmail?: string | null;
+  /** Verified SendGrid sender for this funder; empty = server SENDGRID_FROM_EMAIL. */
+  sendgridFromEmail?: string | null;
+  /** Display name of that SendGrid sender identity (e.g. "Tiberian Funding"). */
+  sendgridFromName?: string | null;
   addressLine1?: string | null;
   addressCity?: string | null;
   addressState?: string | null;
@@ -97,6 +101,8 @@ export type FunderProfileInput = {
   contactEmail?: string;
   contactPhone?: string;
   defaultCcEmail?: string;
+  sendgridFromEmail?: string;
+  sendgridFromName?: string;
   addressLine1?: string;
   addressCity?: string;
   addressState?: string;

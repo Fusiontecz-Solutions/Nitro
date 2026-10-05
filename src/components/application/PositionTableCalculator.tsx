@@ -1472,10 +1472,12 @@ export default function PositionTableCalculator({
     } catch (error: any) {
       console.error("Save position error:", error);
       const message =
+        (typeof error === "string" ? error : undefined) ||
         error?.response?.data?.message ||
         error?.message ||
         "Failed to save position. Please try again.";
-      toast.error(message);
+      // Fixed id so repeated autosave failures update one toast instead of stacking.
+      toast.error(message, { toastId: "position-save-error" });
       return "error";
     } finally {
       setIsSavingRowIndex(null);

@@ -57,6 +57,17 @@ export const notesSlice = createSlice({
             .addCase(getNotes.rejected, (state, action) => {
                 state.loading = false;
                 state.error = action.payload as string;
+            })
+            // Keep the list in sync without a refetch: MyNotes relies on this after posting.
+            .addCase(createNote.fulfilled, (state, action) => {
+                const created = (action.payload?.data ?? action.payload) as Note | undefined;
+                if (!created || typeof created !== 'object' || !created._id) return;
+                if (state.data.some((n) => n._id === created._id)) return;
+                state.data = [created, ...state.data];
+            })
+            .addCase(deleteNote.fulfilled, (state, action) => {
+                const deletedId = (action.payload as { deletedId?: string })?.deletedId;
+                if (deletedId) state.data = state.data.filter((n) => n._id !== deletedId);
             });
     },
 });

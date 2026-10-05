@@ -22,6 +22,7 @@ import { toast } from 'react-toastify';
 import LoginImg from "../../assets/imageLogin.webp"
 import { resolveAppLogoSrc } from '@/constants/appLogo';
 import { normalizeRoleKey } from '@/lib/sessionRole';
+import { isAppAllowedRole, isPathAllowedForRole } from '@/lib/roleAccess';
 import { useTheme } from '@/context/ThemeContext';
 
 export default function LoginPage() {
@@ -44,8 +45,8 @@ export default function LoginPage() {
       const result = await dispatch(login({ email, password, rememberMe })).unwrap();
       if (result.success) {
         const roleKey = normalizeRoleKey(result.user.role ?? '');
-        if (roleKey !== 'SUPER_ADMIN') {
-          toast.error('Only Super Admin can access this application.');
+        if (!isAppAllowedRole(roleKey)) {
+          toast.error('Your role does not have access to this application.');
           return;
         }
 
@@ -55,7 +56,7 @@ export default function LoginPage() {
         toast.success(result?.message);
 
         const afterLogin = safeAppReturnPath(searchParams.get('returnUrl'));
-        if (afterLogin) {
+        if (afterLogin && isPathAllowedForRole(roleKey, afterLogin.split('?')[0])) {
           navigate(afterLogin, { replace: true });
         } else {
           navigate('/', { replace: true });

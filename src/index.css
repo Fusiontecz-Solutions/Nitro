@@ -563,3 +563,17 @@ body {
   font-size: 12px;
   color: #6b7280;
 }
+
+/* Scrubbing tab (Offer, Leverage, Credits Trend, Bank Analysis, Positions, Additional Info,
+   Notes): the ported components use very small fixed sizes — bump each step ~2px. */
+.scrubbing-workspace .text-\[10px\] { font-size: 12px; }
+.scrubbing-workspace .text-\[11px\] { font-size: 13px; }
+.scrubbing-workspace .text-\[12px\] { font-size: 14px; }
+.scrubbing-workspace .text-xs { font-size: 0.875rem; line-height: 1.25rem; }
+.scrubbing-workspace .text-\[13px\] { font-size: 15px; }
+.scrubbing-workspace .text-sm { font-size: 0.9375rem; line-height: 1.4rem; }
+.scrubbing-workspace .text-\[14px\] { font-size: 16px; }
+.scrubbing-workspace .text-\[15px\] { font-size: 16px; }
+.scrubbing-workspace input,
+.scrubbing-workspace select,
+.scrubbing-workspace textarea { font-size: 0.875rem; }

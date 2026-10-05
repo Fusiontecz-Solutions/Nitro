@@ -2772,8 +2772,13 @@ export default function ContractTab({
              * source of truth for contract generation, so it pays the one request.
              */
             try {
+                // `fresh`: an Info Required / addendum save made moments ago must be
+                // what Review builds from, not the cached pre-save row.
                 const refreshed = await dispatch(
-                    getByApplicationIdContract(String(applicationUuid)),
+                    getByApplicationIdContract({
+                        applicationId: String(applicationUuid),
+                        fresh: true,
+                    }),
                 ).unwrap();
                 const c = (refreshed as any)?.data ?? refreshed;
                 if (c) {
@@ -2801,7 +2806,10 @@ export default function ContractTab({
                 await persistFunder;
                 try {
                     const refreshedAfterMeta = await dispatch(
-                        getByApplicationIdContract(String(applicationUuid)),
+                        getByApplicationIdContract({
+                            applicationId: String(applicationUuid),
+                            fresh: true,
+                        }),
                     ).unwrap();
                     const refreshedContract =
                         (refreshedAfterMeta as { data?: unknown })?.data ?? refreshedAfterMeta;

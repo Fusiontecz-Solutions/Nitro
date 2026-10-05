@@ -25,7 +25,6 @@ import {
     renderApplicationRejectionEmailHtml,
 } from "@/pages/templates";
 import { formatDeclineReasonsForEmail } from "@/pages/templates/applicationRejectionEmailShared";
-import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 
 interface RejectApplicationModalProps {
     open: boolean;
@@ -62,13 +61,6 @@ const REJECTION_REASON_OPTIONS = [
     "Behind scam company",
 ] as const;
 
-/** Scrubber (SCRUBBING role) — limited decline reasons only. */
-const SCRUBBER_REJECTION_REASON_OPTIONS = [
-    "Low revenue",
-    "NSF Days",
-    "1st position",
-] as const;
-
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const RejectApplicationModal = ({
@@ -84,16 +76,8 @@ const RejectApplicationModal = ({
 
     const { data: applicationData } = useSelector((state: RootState) => state.applicationDetail);
     const { loading: rejectLoading } = useSelector((state: RootState) => state.rejectApplication);
-    const loginUserRole = useSelector(
-        (state: RootState) => state.login.data?.user?.role,
-    );
-    const viewerRoleKey = normalizeRoleKey(
-        resolveEffectiveRole({ role: loginUserRole }),
-    );
-    const isScrubberRole = viewerRoleKey === "SCRUBBING";
-    const rejectionReasonOptions = isScrubberRole
-        ? SCRUBBER_REJECTION_REASON_OPTIONS
-        : REJECTION_REASON_OPTIONS;
+    // Agents, Underwriters and Super Admin all decline with the same full reason list.
+    const rejectionReasonOptions = REJECTION_REASON_OPTIONS;
     const isSubmitting = onConfirm
         ? Boolean(confirmLoading)
         : rejectLoading || Boolean(confirmLoading);

@@ -28,6 +28,15 @@ export const SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID =
  */
 export const SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID =
     "1a242e0fb07c41d08fd0f3d25662d61a86642a36";
+/**
+ * Tiberian Funding's own copy of the Flex Addendum (document group "FLEX
+ * TIBERIAN FUNDING", document ebff2427d00e46fc8b3cac79be9689dd0bf59fc6). Its
+ * installment table has an extra "Net Funds Provided" column and 24 rows, and
+ * every widget is named differently from the Nitro copy, so it gets its own
+ * field map (see `buildTiberianFlexAddendumContractPrefillFields`).
+ */
+export const SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID =
+    "18be4342d4514c3b96b0d9f4852f0af1790fd04d";
 export const SIGNNOW_EPA_LAYOUT_KEY = "epa";
 export const SIGNNOW_EPA_TEMPLATE_ID =
     "084719dbcd1142c4b5ce8bcde5e253193fc47a4b";
@@ -98,6 +107,7 @@ export function isSignNowAddendumLayoutKey(value: unknown): boolean {
     if (key === SIGNNOW_FLEX_ADDENDUM_TEMPLATE_ID) return true;
     if (key === SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID) return true;
     if (key === SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID) return true;
+    if (key === SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID) return true;
     if (key === SIGNNOW_EPA_TEMPLATE_ID) return true;
     if (key === SIGNNOW_MONTHLY_FEE_TEMPLATE_ID) return true;
     // Settings → Funders may store a raw SignNow template id as the option key.
@@ -139,5 +149,18 @@ export function isTiberianPayoffAddendumRef(
                 .trim()
                 .toLowerCase()
                 .replace(/^bs:/i, "") === SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID,
+    );
+}
+
+/** True for Tiberian Funding's Flex Addendum copy (its own SignNow template id). */
+export function isTiberianFlexAddendumRef(
+    ...refs: ReadonlyArray<string | null | undefined>
+): boolean {
+    return refs.some(
+        (ref) =>
+            String(ref ?? "")
+                .trim()
+                .toLowerCase()
+                .replace(/^bs:/i, "") === SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID,
     );
 }

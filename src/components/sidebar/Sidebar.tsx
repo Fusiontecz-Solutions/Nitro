@@ -8,6 +8,16 @@ import Dashboard from "@mui/icons-material/Dashboard";
 import Settings from "@mui/icons-material/Settings";
 import Notifications from "@mui/icons-material/Notifications";
 import MailOutline from "@mui/icons-material/MailOutline";
+import FactCheck from "@mui/icons-material/FactCheck";
+import ManageAccounts from "@mui/icons-material/ManageAccounts";
+import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
+import Inbox from "@mui/icons-material/Inbox";
+import AssignmentInd from "@mui/icons-material/AssignmentInd";
+import Replay from "@mui/icons-material/Replay";
+import { resolveEffectiveRole } from "@/lib/sessionRole";
+import { isAgentRole, isUnderwriterRole, isWorkflowRole } from "@/lib/roleAccess";
+import { useQuery } from "@tanstack/react-query";
+import { fetchWorkflowSummary, type WorkflowScope } from "@/lib/workflowApi";
 import {
   Sidebar as UISidebar,
   SidebarHeader,
@@ -141,9 +151,77 @@ const sidebarSections: SidebarNavSection[] = [
         url: "/user-setting",
         icon: Settings,
       },
+      { label: "Team & Roles", url: "/user-setting?tab=team", icon: ManageAccounts },
     ],
   },
 ];
+
+const workflowSettingsSection: SidebarNavSection = {
+  title: "SETTINGS",
+  items: [
+    { label: "Settings", url: "/user-setting", icon: Settings },
+    { label: "Email", url: "/user-setting?tab=email", icon: MailOutline },
+  ],
+};
+
+const agentSections: SidebarNavSection[] = [
+  {
+    title: "MAIN",
+    items: [
+      { label: "Dashboard", url: "/", icon: Dashboard },
+      { label: "Notifications", url: "/notifications", icon: Notifications },
+      { label: "New Application", url: "/create-applications", icon: AddCircleOutline },
+    ],
+  },
+  {
+    title: "MY APPLICATIONS",
+    items: [
+      { label: "All Applications", url: "/pipeline?bucket=all", icon: InsertDriveFileIcon },
+      { label: "Awaiting My Approval", url: "/pipeline?bucket=awaiting_my_approval", icon: FactCheck },
+      { label: "Sent to ISO", url: "/pipeline?bucket=sent_to_iso", icon: MailOutline },
+      { label: "Contract Pending", url: "/pipeline?bucket=contract_pending", icon: Article },
+    ],
+  },
+  workflowSettingsSection,
+];
+
+const underwriterSections: SidebarNavSection[] = [
+  {
+    title: "MAIN",
+    items: [
+      { label: "Dashboard", url: "/", icon: Dashboard },
+      { label: "Notifications", url: "/notifications", icon: Notifications },
+    ],
+  },
+  {
+    title: "UNDERWRITING",
+    items: [
+      { label: "Incoming", url: "/pipeline?bucket=incoming", icon: Inbox },
+      { label: "My Claimed", url: "/pipeline?bucket=my_claimed", icon: AssignmentInd },
+      { label: "Needs Re-Review", url: "/pipeline?bucket=needs_re_review", icon: Replay },
+      { label: "Sent to Agent", url: "/pipeline?bucket=sent_to_agent", icon: FactCheck },
+      { label: "Completed", url: "/pipeline?bucket=completed", icon: Article },
+    ],
+  },
+  workflowSettingsSection,
+];
+
+function sectionsForRole(role: string): SidebarNavSection[] {
+  if (isAgentRole(role)) return agentSections;
+  if (isUnderwriterRole(role)) return underwriterSections;
+  return sidebarSections;
+}
+
+/** `/pipeline?bucket=` and `?scope=` links: active only for the matching query value. */
+function isPipelineHrefActive(pathname: string, searchParams: URLSearchParams, href: string): boolean {
+  const target = parseNavHref(href);
+  if (pathname !== "/pipeline") return false;
+  for (const key of ["bucket", "scope"]) {
+    const wanted = target.searchParams.get(key);
+    if (wanted && (searchParams.get(key) || (key === "scope" ? "agent" : "")) !== wanted) return false;
+  }
+  return true;
+}
 
 function buildChildHref(child: SidebarNavChildItem): string {
   if (child.url) return child.url;
@@ -234,7 +312,18 @@ function isNavItemActive(
   }
 
   if (item.url === "/user-setting") {
-    return pathname === "/user-setting" || pathname.startsWith("/user-setting/");
+    return (
+      (pathname === "/user-setting" || pathname.startsWith("/user-setting/")) &&
+      !["email", "team"].includes((searchParams.get("tab") || "").toLowerCase())
+    );
+  }
+
+  if (item.url.startsWith("/pipeline")) {
+    return isPipelineHrefActive(pathname, searchParams, item.url);
+  }
+
+  if (item.url === "/create-applications") {
+    return pathname === "/create-applications" || pathname.startsWith("/create-applications/");
   }
 
   const childItems = item.children ?? [];
@@ -301,10 +390,35 @@ const Sidebar = () => {
     [notifications],
   );
 
+  const sessionRole = resolveEffectiveRole(undefined);
+  const workflowViewer = isWorkflowRole(sessionRole);
+  const navSections = useMemo(() => sectionsForRole(sessionRole), [sessionRole]);
+
+  // Agent / Underwriter queue badges (same query + cache key as the dashboard, all-time range).
+  const workflowScope: WorkflowScope = isUnderwriterRole(sessionRole) ? "underwriter" : "agent";
+  const workflowSummary = useQuery({
+    queryKey: ["workflow-summary", workflowScope, "", ""],
+    queryFn: () => fetchWorkflowSummary(workflowScope, { startDate: "", endDate: "" }),
+    enabled: workflowViewer,
+    staleTime: 15_000,
+    // Socket / focus refreshes come from PipelineCountsSync; this is the fallback poll.
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
+  const workflowBucketCount = (url: string): number | null => {
+    if (!workflowViewer || !workflowSummary.data || !url.startsWith("/pipeline?")) return null;
+    const bucket = new URLSearchParams(url.split("?")[1]).get("bucket");
+    if (!bucket) return null;
+    const n = workflowSummary.data.counts?.[bucket];
+    return typeof n === "number" ? n : null;
+  };
+
   useEffect(() => {
+    // Contract pipeline counts are a Super Admin concern — Agents / Underwriters use workflow counts.
+    if (workflowViewer) return;
     if (lastSummaryFetchedAt && Date.now() - lastSummaryFetchedAt < 60_000) return;
     void dispatch(fetchOperationsDashboardSummary());
-  }, [dispatch, lastSummaryFetchedAt]);
+  }, [dispatch, lastSummaryFetchedAt, workflowViewer]);
 
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -370,7 +484,7 @@ const Sidebar = () => {
         </SidebarHeader>
         <SidebarContent className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto px-2 pb-2 pt-0 group-data-[collapsible=icon]:overflow-auto group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-0">
           <div className="w-full space-y-5 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:w-auto">
-            {sidebarSections.map((section, sectionIndex) => (
+            {navSections.map((section, sectionIndex) => (
               <div
                 key={`${section.title || "section"}-${sectionIndex}`}
                 className="w-full"
@@ -399,7 +513,7 @@ const Sidebar = () => {
                           operationsCaseStageCounts,
                           rejectedApplicationCount,
                         )
-                      : null;
+                      : workflowBucketCount(item.url);
                     const showPipelineCount =
                       !hasChildren && pipelineCount != null;
 

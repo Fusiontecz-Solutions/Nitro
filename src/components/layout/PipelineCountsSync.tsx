@@ -5,6 +5,7 @@ import { useSocket } from "@/context/SocketContext";
 import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashboardActions";
 import { invalidateDashboardData } from "@/lib/invalidateDashboardData";
 import { invalidateApplicationsListCache } from "@/lib/applicationsListCache";
+import { appQueryClient } from "@/lib/queryClient";
 import { CONTRACT_SIGNING_STATUS_SOCKET_EVENT } from "@/hooks/useContractSigningStatusRealtime";
 
 /** Safety-net poll while the tab is visible, in case a socket push is missed. */
@@ -42,7 +43,11 @@ const PipelineCountsSync = () => {
                 // A stage move changes which queue a deal is listed under, so the
                 // cached list pages are wrong too, not just the totals.
                 invalidateApplicationsListCache();
+                void appQueryClient.invalidateQueries({ queryKey: ["workflow-queue"] });
             }
+            // Agent / Underwriter sidebar badges + workflow dashboard (e.g. ISO approval
+            // moving a deal from Sent to ISO → Contract Pending).
+            void appQueryClient.invalidateQueries({ queryKey: ["workflow-summary"] });
             void dispatch(fetchOperationsDashboardSummary());
             invalidateDashboardData(dispatch);
         },

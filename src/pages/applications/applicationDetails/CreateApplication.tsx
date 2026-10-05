@@ -66,7 +66,13 @@ import {
 } from '@/components/application/RefinanceDealSelectModal'
 import { cn, formatNumberUS, formatNumberUSForInput, parseNumberUS } from '@/lib/utils'
 import { UsCurrencyInput } from '@/components/ui/us-currency-input'
-import { resolveSessionUser } from '@/lib/sessionRole'
+import { resolveEffectiveRole, resolveSessionUser } from '@/lib/sessionRole'
+import { isAgentRole, isWorkflowRole, WORKFLOW_QUEUE_PATH } from '@/lib/roleAccess'
+import ApplicationWorkflowFields from '@/components/workflow/ApplicationWorkflowFields'
+import {
+    EMPTY_WORKFLOW_FIELDS,
+    type ApplicationWorkflowFieldValues,
+} from '@/lib/applicationWorkflowFields'
 
 // Types
 interface UploadedFile {
@@ -234,6 +240,15 @@ const CreateApplication = () => {
         useState<ClientDealForRefinance | null>(null)
     const [clientDeals, setClientDeals] = useState<ClientDealForRefinance[]>([])
     const [clientDealsLoading, setClientDealsLoading] = useState(false)
+    /** ISO link, notes and extra new-client details (Agent intake). */
+    const [workflowFields, setWorkflowFields] =
+        useState<ApplicationWorkflowFieldValues>(EMPTY_WORKFLOW_FIELDS)
+    /** Agent: which footer button submitted the form. */
+    const submitModeRef = useRef<'submit' | 'draft'>('submit')
+    const sessionRoleKey = resolveEffectiveRole(undefined)
+    const isAgentUser = isAgentRole(sessionRoleKey)
+    /** Where "back" / "done" go: workflow roles use their queue, Super Admin the Applications list. */
+    const listPath = isWorkflowRole(sessionRoleKey) ? WORKFLOW_QUEUE_PATH : '/applications'
     // Determine if we're in edit mode
     const isEditMode = !!applicationId
 
@@ -344,13 +359,16 @@ const CreateApplication = () => {
         setSelectedRefinanceDeal(null)
     }, [watchedClient])
 
-    // Fetch clients only when the dropdown is needed (existing client / refinance).
-    const [clientsRequested, setClientsRequested] = useState(false)
+    // Load clients up front whenever the dropdown is on screen (existing client / refinance / edit).
+    // Fetching on open disabled the Select mid-open, so it collapsed to an empty popover.
+    const clientsFetchedRef = useRef(false)
     useEffect(() => {
-        if (isEditMode || isRefinanceType || (!isCreatingNewClient && clientsRequested)) {
+        if (clientsFetchedRef.current) return
+        if (isEditMode || isRefinanceType || !isCreatingNewClient) {
+            clientsFetchedRef.current = true
             dispatch(getClients({ limit: 100, lite: 1 }))
         }
-    }, [dispatch, isEditMode, isRefinanceType, isCreatingNewClient, clientsRequested])
+    }, [dispatch, isEditMode, isRefinanceType, isCreatingNewClient])
 
     // Fetch application data when in edit mode
     useEffect(() => {
@@ -406,6 +424,11 @@ const CreateApplication = () => {
         }
 
         reset(formData)
+        setWorkflowFields({
+            ...EMPTY_WORKFLOW_FIELDS,
+            isoId: String((applicationData as { isoId?: string | null }).isoId ?? (applicationData.iso as any)?._id ?? (applicationData.iso as any)?.id ?? ''),
+            note: String(applicationData.note ?? ''),
+        })
         setIsFormReset(true) // Prevent multiple resets
     }, [applicationData, isEditMode, clientOptions, isFormReset, reset])
 
@@ -421,7 +444,7 @@ const CreateApplication = () => {
         if (createSuccess) {
             toast.success('Application created successfully!')
             dispatch(resetCreateApplication())
-            navigate('/applications', {
+            navigate(listPath, {
                 state: { refreshApplicationsList: true },
             })
         }
@@ -436,7 +459,7 @@ const CreateApplication = () => {
         if (updateSuccess) {
             toast.success('Application updated successfully!')
             dispatch(resetUpdateApplication())
-            navigate('/applications', {
+            navigate(listPath, {
                 state: { refreshApplicationsList: true },
             })
         }
@@ -528,7 +551,7 @@ const CreateApplication = () => {
                           : 'Client created successfully and application generated.'
                 toast.success(message)
 
-                navigate('/applications', {
+                navigate(listPath, {
                     state: { refreshApplicationsList: true },
                 })
             } catch (error) {
@@ -646,6 +669,12 @@ const CreateApplication = () => {
             return
         }
 
+        const saveAsDraft = isAgentUser && submitModeRef.current === 'draft'
+        if (isAgentUser && !isEditMode && !saveAsDraft && !workflowFields.isoId) {
+            toast.error('Select the ISO for this application before submitting it to underwriting.')
+            return
+        }
+
         const clientId = String(data.client ?? '').trim()
         if (createNewClient) {
             const businessName = String(data.newBusinessName ?? '').trim()
@@ -669,8 +698,25 @@ const CreateApplication = () => {
                       newOwnerLastName: String(data.newOwnerLastName ?? '').trim(),
                       newEin: String(data.newEin ?? '').trim(),
                       newBusinessPhone: String(data.newBusinessPhone ?? '').trim(),
+                      newBusinessEmail: workflowFields.newBusinessEmail.trim(),
+                      newOwnerEmail: workflowFields.newOwnerEmail.trim(),
+                      newOwnerPhone: workflowFields.newOwnerPhone.trim(),
+                      newBusinessAddress1: workflowFields.newBusinessAddress1.trim(),
+                      newBusinessCity: workflowFields.newBusinessCity.trim(),
+                      newBusinessState: workflowFields.newBusinessState.trim(),
+                      newBusinessZipCode: workflowFields.newBusinessZipCode.trim(),
+                      newBusinessMonthlyRevenue: (() => {
+                          const n = parseNumberUS(workflowFields.newBusinessMonthlyRevenue)
+                          return Number.isNaN(n) ? '' : String(n)
+                      })(),
                   }
                 : { client: clientId }),
+            // ISO link + notes (Agent intake; Super Admin may also set them on create).
+            ...(workflowFields.isoId && (isAgentUser || !isEditMode) ? { isoId: workflowFields.isoId } : {}),
+            ...((isAgentUser || !isEditMode) && workflowFields.note.trim()
+                ? { note: workflowFields.note.trim() }
+                : {}),
+            ...(isAgentUser && !isEditMode ? { saveAsDraft } : {}),
             loanAmount: (() => {
                 if (!data.loanAmount || !String(data.loanAmount).trim()) return null
                 const n = parseNumberUS(data.loanAmount)
@@ -721,6 +767,10 @@ const CreateApplication = () => {
         }
     }, [clients])
 
+    // Hooks must run before any early return (edit mode flips isPageLoading between renders).
+    const { resolvedTheme } = useTheme()
+    const isDark = resolvedTheme === 'dark'
+
     // Show loading state while fetching application data in edit mode
     if (isPageLoading) {
         return (
@@ -732,9 +782,6 @@ const CreateApplication = () => {
             </div>
         )
     }
-
-    const { resolvedTheme } = useTheme()
-    const isDark = resolvedTheme === 'dark'
 
     /** Section headers: fixed height, full-bleed bar, bottom rule — reads like aligned tab strips */
     const sectionHeaderBarClass = cn(
@@ -768,7 +815,7 @@ const CreateApplication = () => {
                         }`}>
                         <CardContent className="flex items-center gap-3 px-0">
                             <Button
-                                onClick={() => navigate('/applications')}
+                                onClick={() => navigate(listPath)}
                                 variant="ghost"
                                 className="h-10 gap-2 px-0 py-0 bg-card text-muted-foreground hover:bg-accent cursor-pointer"
                             >
@@ -780,7 +827,8 @@ const CreateApplication = () => {
                         </CardContent>
                     </Card>
 
-                    {!isEditMode ? (
+                    {/* PDF auto-create bypasses the Agent → Underwriter intake, so it is Super Admin only. */}
+                    {!isEditMode && !isWorkflowRole(sessionRoleKey) ? (
                         <AutoCreateFromPdfPanel
                             isDark={isDark}
                             loading={isAutoCreatingClient}
@@ -874,8 +922,6 @@ const CreateApplication = () => {
                                                                 setValue('client', '', { shouldValidate: true })
                                                                 setSelectedRefinanceDeal(null)
                                                                 setRefinanceDealModalOpen(false)
-                                                            } else {
-                                                                setClientsRequested(true)
                                                             }
                                                         }}
                                                     />
@@ -1047,9 +1093,6 @@ const CreateApplication = () => {
                                             render={({ field }) => (
                                                 <Select
                                                     value={field.value}
-                                                    onOpenChange={(open: boolean) => {
-                                                        if (open) setClientsRequested(true)
-                                                    }}
                                                     onValueChange={(value: string) => {
                                                         field.onChange(value)
                                                         setSelectedRefinanceDeal(null)
@@ -1058,17 +1101,22 @@ const CreateApplication = () => {
                                                             setRefinanceDealModalOpen(true)
                                                         }
                                                     }}
-                                                    disabled={clientsLoading}
                                                 >
                                                     <SelectTrigger className={`${fieldInputClass} w-full`}>
                                                         <SelectValue placeholder={clientsLoading ? "Loading clients..." : "Select Client"} />
                                                     </SelectTrigger>
                                                     <SelectContent>
-                                                        {clientOptions.map((option) => (
-                                                            <SelectItem key={option.value} value={option.value}>
-                                                                {option.label}
-                                                            </SelectItem>
-                                                        ))}
+                                                        {clientOptions.length === 0 ? (
+                                                            <div className="px-3 py-2 text-sm text-muted-foreground">
+                                                                {clientsLoading ? 'Loading clients...' : 'No clients found.'}
+                                                            </div>
+                                                        ) : (
+                                                            clientOptions.map((option) => (
+                                                                <SelectItem key={option.value} value={option.value}>
+                                                                    {option.label}
+                                                                </SelectItem>
+                                                            ))
+                                                        )}
                                                     </SelectContent>
                                                 </Select>
                                             )}
@@ -1105,6 +1153,15 @@ const CreateApplication = () => {
                                     </div>
                                 </div>
                                 )}
+
+                                <ApplicationWorkflowFields
+                                    value={workflowFields}
+                                    onChange={setWorkflowFields}
+                                    showNewClientFields={isCreatingNewClient}
+                                    isoRequired={isAgentUser}
+                                    labelClass={fieldLabelClass}
+                                    inputClass={fieldInputClass}
+                                />
 
                                 {isRefinanceType && (
                                     <div className={`mx-6 rounded-xl border px-4 py-4 ${
@@ -1366,21 +1423,44 @@ const CreateApplication = () => {
                                 type="button"
                                 variant="outline"
                                 className="px-4 py-2 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent cursor-pointer shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
-                                onClick={() => navigate('/applications')}
+                                onClick={() => navigate(listPath)}
                                 disabled={isLoading}
                             >
                                 Cancel
                             </Button>
+                            {isAgentUser && !isEditMode ? (
+                                <Button
+                                    type="submit"
+                                    variant="outline"
+                                    className="px-4 py-2 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent cursor-pointer hover:bg-transparent hover:text-[var(--brand)]/90"
+                                    disabled={isLoading || !isValid || (isRefinanceType && !selectedRefinanceDeal)}
+                                    onClick={() => {
+                                        submitModeRef.current = 'draft'
+                                    }}
+                                >
+                                    Save as draft
+                                </Button>
+                            ) : null}
                             <Button
                                 type="submit"
                                 className="px-4 shadow-[0px_0px_0px_1px_var(--brand)] py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
                                 loading={isLoading}
                                 disabled={
                                     !isValid ||
-                                    (isRefinanceType && !selectedRefinanceDeal)
+                                    (isRefinanceType && !selectedRefinanceDeal) ||
+                                    (isAgentUser && !isEditMode && !workflowFields.isoId)
                                 }
+                                onClick={() => {
+                                    submitModeRef.current = 'submit'
+                                }}
                             >
-                                {isEditMode ? 'Update' : isCreatingNewClient ? 'Create client + application' : 'Submit'}
+                                {isEditMode
+                                    ? 'Update'
+                                    : isAgentUser
+                                      ? 'Submit to underwriting'
+                                      : isCreatingNewClient
+                                        ? 'Create client + application'
+                                        : 'Submit'}
                             </Button>
                         </div>
                     </form>

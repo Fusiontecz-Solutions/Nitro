@@ -3,7 +3,8 @@ import { Label } from "@/components/ui/label";
 import type { ContractPrefillField } from "./Contract";
 import {
     FLEX_INSTALLMENT_COLUMNS,
-    FLEX_INSTALLMENT_FIELD_RE,
+    matchFlexInstallmentFieldId,
+    TIBERIAN_FLEX_INSTALLMENT_COLUMNS,
 } from "./flexAddendumInstallmentRows";
 
 type FlexAddendumInstallmentGridProps = {
@@ -18,8 +19,9 @@ type FlexAddendumInstallmentGridProps = {
 
 /**
  * Flex Addendum prefill: Installment Date | Repayment Amount | Receivable Purchased
- * in three equal columns, one installment per row. Layout only — field ids and
- * values are the same ones the flat grid used.
+ * in three equal columns, one installment per row (Tiberian's copy adds a fourth,
+ * Net Funds Provided). Layout only — field ids and values are the same ones the
+ * flat grid used.
  */
 export function FlexAddendumInstallmentGrid({
     rows,
@@ -30,20 +32,26 @@ export function FlexAddendumInstallmentGrid({
     inputClassName,
 }: FlexAddendumInstallmentGridProps) {
     const byInstallment = new Map<number, Map<string, ContractPrefillField>>();
+    let tiberian = false;
     for (const row of rows) {
-        const m = String(row.id).match(FLEX_INSTALLMENT_FIELD_RE);
+        const m = matchFlexInstallmentFieldId(row.id);
         if (!m) continue;
-        const n = Number(m[2]);
-        if (!byInstallment.has(n)) byInstallment.set(n, new Map());
-        byInstallment.get(n)!.set(m[1], row);
+        if (m.tiberian) tiberian = true;
+        if (!byInstallment.has(m.installment)) byInstallment.set(m.installment, new Map());
+        byInstallment.get(m.installment)!.set(m.kind, row);
     }
     const installments = [...byInstallment.keys()].sort((a, b) => a - b);
     if (installments.length === 0) return null;
+    const columns = tiberian ? TIBERIAN_FLEX_INSTALLMENT_COLUMNS : FLEX_INSTALLMENT_COLUMNS;
+    const gridCols = tiberian ? "sm:grid-cols-4" : "sm:grid-cols-3";
 
     return (
         <div className="space-y-2">
-            <div className="hidden grid-cols-3 gap-3 sm:grid" aria-hidden>
-                {FLEX_INSTALLMENT_COLUMNS.map((col) => (
+            <div
+                className={`hidden gap-3 sm:grid ${tiberian ? "grid-cols-4" : "grid-cols-3"}`}
+                aria-hidden
+            >
+                {columns.map((col) => (
                     <p
                         key={col.kind}
                         className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase"
@@ -55,8 +63,8 @@ export function FlexAddendumInstallmentGrid({
             {installments.map((n) => {
                 const cells = byInstallment.get(n)!;
                 return (
-                    <div key={n} className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        {FLEX_INSTALLMENT_COLUMNS.map((col) => {
+                    <div key={n} className={`grid grid-cols-1 gap-3 ${gridCols}`}>
+                        {columns.map((col) => {
                             const row = cells.get(col.kind);
                             if (!row) return <div key={col.kind} aria-hidden />;
                             const inputId = `${idPrefix}${row.id}`;
@@ -69,7 +77,7 @@ export function FlexAddendumInstallmentGrid({
                                         {`Installment ${n} — ${col.title}`}
                                     </Label>
                                     <div className="relative">
-                                        {col.kind === "installment_day" ? (
+                                        {col.isDate ? (
                                             <span
                                                 className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-[11px] font-semibold tabular-nums"
                                                 aria-hidden
@@ -83,7 +91,7 @@ export function FlexAddendumInstallmentGrid({
                                             onChange={(e) => onChange(String(row.id), e.target.value)}
                                             disabled={disabled}
                                             className={`${inputClassName ?? ""} ${
-                                                col.kind === "installment_day" ? "pl-8" : ""
+                                                col.isDate ? "pl-8" : ""
                                             }`.trim()}
                                         />
                                     </div>

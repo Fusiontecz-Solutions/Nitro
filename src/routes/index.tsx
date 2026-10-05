@@ -5,6 +5,8 @@ import RootLayout from '../components/layout/RootLayout';
 import LoginPage from '../pages/auth/LoginPage';
 import ForgotPasswordPage from '../pages/auth/ForgotPasswordPage';
 import { applicationsPageLoader } from './applicationsLoader';
+import { resolveEffectiveRole } from '../lib/sessionRole';
+import { isWorkflowRole } from '../lib/roleAccess';
 
 const Clients = lazy(() => import('../pages/clients/Clients'));
 const Applications = lazy(() => import('../pages/applications/Applications'));
@@ -38,7 +40,15 @@ const NotificationDashboard = lazy(
     () => import('../pages/NotificationDashboard/NotificationDashboard'),
 );
 
+const WorkflowDashboard = lazy(() => import('../pages/workflow/WorkflowDashboard'));
+const WorkflowQueuePage = lazy(() => import('../pages/workflow/WorkflowQueuePage'));
+const TemplatePlayground = lazy(() => import('../pages/templates/TemplatePlayground'));
+
 const ApplicationsRouteEntry: React.FC = () => <Applications />;
+
+/** `/`: Super Admin keeps the contract dashboard; Agent / Underwriter get their workflow dashboard. */
+const DashboardEntry: React.FC = () =>
+    isWorkflowRole(resolveEffectiveRole(undefined)) ? <WorkflowDashboard /> : <OperationsDashboard />;
 
 /** Alias `/settings` → `/user-setting`, keeping `?tab=` (e.g. funders). */
 const SettingsAliasRedirect: React.FC = () => {
@@ -129,7 +139,10 @@ const Routes: RouteObject[] = [
         path: '/',
         element: <RootLayout />,
         children: [
-            { index: true, element: <OperationsDashboard /> },
+            { index: true, element: <DashboardEntry /> },
+            // Agent / Underwriter queues (Super Admin: workflow oversight via ?scope=)
+            { path: 'pipeline', element: <WorkflowQueuePage /> },
+            { path: 'workflow-dashboard', element: <WorkflowDashboard /> },
             { path: 'clients', element: <Clients /> },
             { path: 'create-clients', element: <CreateClient /> },
             { path: 'create-clients/:clientId', element: <CreateClient /> },
@@ -176,6 +189,9 @@ const Routes: RouteObject[] = [
             { path: 'letter-generator', element: <Applications mode="letterGenerator" /> },
             { path: 'user-setting', element: <UserSetting /> },
             { path: 'notifications', element: <NotificationDashboard /> },
+            // Preview / test every built-in email + letter template
+            { path: 'template/playground', element: <TemplatePlayground /> },
+            { path: 'templates/playground', element: <Navigate to="/template/playground" replace /> },
             { path: 'settings', element: <SettingsAliasRedirect /> },
             { path: 'settings/*', element: <SettingsAliasRedirect /> },
             // Catch-all: unused modules redirect into the contract workflow

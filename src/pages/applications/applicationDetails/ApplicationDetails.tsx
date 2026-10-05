@@ -9,6 +9,7 @@ import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
 import ContractTab from "@/components/application/ContractTab";
 import BankAnalysis from "@/components/application/BankAnalysis";
+import ScrubbingWorkspace from "@/components/scrubbing/ScrubbingWorkspace";
 import BackgroundCheckTab from "@/components/application/BackgroundCheckTab";
 
 import { useDispatch, useSelector } from "react-redux";
@@ -56,7 +57,8 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
-import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
+import { normalizeRoleKey, resolveEffectiveRole, resolveSessionUser } from "@/lib/sessionRole";
+import WorkflowActionPanel from "@/components/workflow/WorkflowActionPanel";
 
 
 /** CRM-only re-read of a deal awaiting signatures (no SignNow calls). */
@@ -218,8 +220,28 @@ const ApplicationDetails = () => {
             queueNorm === 'contract out' ||
             queueNorm === 'contracts out';
 
+        // Underwriter (Katam "Scrubbing" role): underwriting only — contract belongs to Super Admin.
         if (isFinalUnderwriter || isUnderwriter) {
-            return [...SUPER_ADMIN_PIPELINE_TABS];
+            return [
+                { id: "overview", label: "OVERVIEW" },
+                { id: "documents", label: "DOCUMENTS" },
+                { id: "background-check", label: "BACKGROUND CHECK" },
+                { id: "decision-making", label: "SCRUBBING" },
+            ];
+        }
+
+        // Agent: once underwriting is handed back, review the scrubbed offer (read-only) before sending to the ISO.
+        if (isAgent) {
+            const offerReady =
+                queueNorm === 'agent review' ||
+                queueNorm === 'agent approval' ||
+                queueNorm === 'approval sent' ||
+                isContractedQueue;
+            return [
+                { id: "overview", label: "OVERVIEW" },
+                { id: "documents", label: "DOCUMENTS" },
+                ...(offerReady ? [{ id: "approval", label: "APPROVAL" }] : []),
+            ];
         }
 
         // - Before sending to Underwriter: show only first two tabs (Overview, Documents)
@@ -252,6 +274,7 @@ const ApplicationDetails = () => {
         queue,
         isFinalUnderwriter,
         isUnderwriter,
+        isAgent,
     ]);
 
     const tabsForOperationsUi = tabs;
@@ -406,7 +429,13 @@ const ApplicationDetails = () => {
         }),
         [applicationData, roleKey],
     );
-    const isStagePreview = stageAccess.isPreview;
+    /** Underwriter viewing a pool deal they have not claimed (backend rejects edits until claim). */
+    const sessionUserId = resolveSessionUser(user)?.id ?? "";
+    const underwriterNotClaimedByMe =
+        isFinalUnderwriter &&
+        isFinalUnderwriterWorkflowQueue(queue) &&
+        String((applicationData as any)?.assignedUnderwriterId ?? "") !== sessionUserId;
+    const isStagePreview = stageAccess.isPreview || underwriterNotClaimedByMe;
     const isOperationsReadOnlyPipelineTab =
         (useOperationsPipelineTabs &&
             (OPERATIONS_READ_ONLY_PIPELINE_TAB_IDS.has(activeTab) ||
@@ -465,8 +494,11 @@ const ApplicationDetails = () => {
     const isPreUnderwriterStage =
         !isPastAgentIntakeQueue &&
         (agentIntakeQueues.has(queueKey) || pendingLikeState);
-    /** Agent intake only — Super Admin / Admin / Operations must not send from Documents. */
-    const canActSendToUnderwriter = isAgent;
+    /**
+     * Legacy "Send to Create Offer" (Scrubbing) button — disabled: Agents now submit drafts to
+     * underwriting from the workflow panel (POST /submit-to-underwriting).
+     */
+    const canActSendToUnderwriter = false;
     const canShowSendToUnderwriterButton =
         canActSendToUnderwriter &&
         !isViewOnlyBrowse &&
@@ -667,6 +699,18 @@ const ApplicationDetails = () => {
                         className="mb-6"
                     />
                 ) : null}
+                {applicationAligned ? (
+                    <WorkflowActionPanel
+                        application={applicationData}
+                        role={roleKey}
+                        onChanged={() => {
+                            if (applicationUuid) invalidateApplicationDetailCache(String(applicationUuid));
+                            if (applicationId) invalidateApplicationDetailCache(applicationId);
+                            invalidateHttpGetCacheForResource("applications");
+                            refetchApplicationDetail();
+                        }}
+                    />
+                ) : null}
                 {isFinalUnderwriter ? (
                     /* UNDERWRITER: 1) Tab row (tabs + links) 2) Application Summary below tabs 3) Tab content */
                     <Tabs key={applicationId} value={activeTab} onValueChange={handleTabChange} className="w-full">
@@ -724,12 +768,13 @@ const ApplicationDetails = () => {
                                     <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
-                                    <ApplicationSummary onBack={() => navigate(-1)} />
-                                    <BankAnalysis
+                                    {/* Scrubbing: Offer + Leverage, Credits Trend, Bank Analysis, Positions. */}
+                                    <ScrubbingWorkspace
                                         readOnly={pipelineStageReadOnly}
                                         enableCreate={!pipelineStageReadOnly}
                                         showBankStatementUpload={false}
                                     />
+                                    <div className="mt-6"><CommentSection isUnderwriter readOnly={commentsReadOnly} /></div>
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
                                     <BackgroundCheckTab />
@@ -891,11 +936,24 @@ const ApplicationDetails = () => {
 
                             <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
+                                    {/* Agents review the underwriter's offer; they never edit it. */}
                                     <BankAnalysis
-                                        readOnly={pipelineStageReadOnly}
-                                        enableCreate={!pipelineStageReadOnly}
+                                        readOnly={pipelineStageReadOnly || isAgent}
+                                        enableCreate={!pipelineStageReadOnly && !isAgent}
                                         showBankStatementUpload={false}
                                     />
+                            </LazyTabContent>
+
+                            <LazyTabContent activeTab={activeTab} value="approval" className="mt-6">
+                                    <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
+                                    {/* Agents review the underwriter's scrubbing; they never edit it. */}
+                                    <ScrubbingWorkspace
+                                        readOnly
+                                        enableCreate={false}
+                                        showBankStatementUpload={false}
+                                        allowDecline={isAgent && !isViewOnlyBrowse && !isStagePreview}
+                                    />
+                                    <div className="mt-6"><CommentSection readOnly={commentsReadOnly} /></div>
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">

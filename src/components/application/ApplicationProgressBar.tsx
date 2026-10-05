@@ -28,7 +28,8 @@ interface ApplicationProgressBarProps {
 
 const TWO_LINE_STAGE_KEYS = new Set<ApplicationProgressStageKey>([
   "APPLICATION_ADDED",
-  "CREATE_OFFER",
+  "AGENT_REVIEW",
+  "SENT_TO_ISO",
   "CONTRACT_GENERATED",
   "CONTRACT_SENT",
   "CONTRACT_SIGNED",
@@ -38,8 +39,11 @@ function splitStageLabel(key: ApplicationProgressStageKey, label: string) {
   if (key === "APPLICATION_ADDED") {
     return { primary: "Application", secondary: "Added" };
   }
-  if (key === "CREATE_OFFER") {
-    return { primary: "Create", secondary: "Offer" };
+  if (key === "AGENT_REVIEW") {
+    return { primary: "Agent", secondary: "Review" };
+  }
+  if (key === "SENT_TO_ISO") {
+    return { primary: "Sent to", secondary: "ISO" };
   }
   if (key === "CONTRACT_GENERATED") {
     return { primary: "Contract", secondary: "Pending" };
@@ -118,7 +122,7 @@ const ApplicationProgressBar = ({
       </div>
 
       <HorizontalScrollFade scrollKey={String(currentIndex)}>
-        <div className="relative min-w-[28rem] px-1 pb-1">
+        <div className="relative min-w-[38rem] px-1 pb-1">
           <div
             className="absolute left-1 right-1 top-[15px] h-[3px] rounded-full"
             style={{ backgroundColor: trackColor }}

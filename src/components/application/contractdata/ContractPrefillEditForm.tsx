@@ -107,6 +107,7 @@ import {
     EXHIBIT_C_ENTITY_FIELD_DEFS,
     EXHIBIT_C_ENTITY_MAX,
     exhibitCEntitiesFromPrefill,
+    exhibitCEntityFromTabValues,
     exhibitCEntityNavTitle,
     exhibitCEntitySectionId,
     exhibitCEntityToTabValues,
@@ -1950,6 +1951,10 @@ export function ContractPrefillEditForm({
         );
     }, [linkedAddendumMappings, linkedAddendumMapping]);
 
+    const exhibitCLinkedMappingIdsKey = exhibitCLinkedMappings
+        .map((row) => String(row?.id ?? ""))
+        .join("|");
+
     useEffect(() => {
         if (!open || !prefillOverridesReady) return;
         const fromPersisted = exhibitCEntitiesFromPrefill(
@@ -1963,16 +1968,41 @@ export function ContractPrefillEditForm({
         );
         const base = fromPersisted.length > 0 ? fromPersisted : fromAdditional;
         // One entity slot per Exhibit C document mapping so extras persist like other addenda.
-        setExhibitCEntities(
-            padExhibitCEntitiesToCount(base, Math.max(base.length, exhibitCLinkedMappings.length)),
+        const padded = padExhibitCEntitiesToCount(
+            base,
+            Math.max(base.length, exhibitCLinkedMappings.length),
         );
+        /**
+         * Backfill each slot from its copy's own saved tab. Save writes every entity
+         * field back onto that tab — empty strings included — so a slot the
+         * `exhibitCEntities` key did not carry (a copy edited from its pencil dialog,
+         * a key an older save dropped) used to erase the copy's values on the next
+         * Info Required save. Same precedence as the backend's `resolveExhibitCEntities`.
+         */
+        const filled = padded.map((entity, index) => {
+            const mappingId = String(exhibitCLinkedMappings[index]?.id ?? "").trim();
+            const tabs = mappingId ? documentTemplatePrefillByMappingId[mappingId] : undefined;
+            if (!tabs) return entity;
+            const fromTabs = exhibitCEntityFromTabValues(tabs, entity);
+            const merged: Record<string, unknown> = { ...entity };
+            for (const [key, value] of Object.entries(fromTabs)) {
+                if (!String(merged[key] ?? "").trim() && String(value ?? "").trim()) {
+                    merged[key] = value;
+                }
+            }
+            return createEmptyExhibitCEntity(merged as Partial<ExhibitCEntityPrefill>);
+        });
+        setExhibitCEntities(filled);
     }, [
         open,
         prefillOverridesReady,
         strippedMainPrefillOverrides,
         persistedPrefillOverrides,
         additionalContractPrefillJson,
-        exhibitCLinkedMappings.length,
+        // Ids, not the array: a re-render that hands over an equal list must not
+        // re-seed the entities over unsaved edits.
+        exhibitCLinkedMappingIdsKey,
+        documentTemplatePrefillByMappingId,
     ]);
 
     const addendumEditorRows = useMemo(() => {

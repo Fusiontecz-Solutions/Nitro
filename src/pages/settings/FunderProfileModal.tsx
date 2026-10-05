@@ -267,6 +267,8 @@ export default function FunderProfileModal({
   const [activeTab, setActiveTab] = useState("setup");
   const [name, setName] = useState("");
   const [defaultCcEmail, setDefaultCcEmail] = useState("");
+  const [sendgridFromEmail, setSendgridFromEmail] = useState("");
+  const [sendgridFromName, setSendgridFromName] = useState("");
   const [isActive, setIsActive] = useState(true);
   const [contractLink, setContractLink] = useState("");
   const [addendums, setAddendums] = useState<LinkRow[]>([]);
@@ -295,6 +297,8 @@ export default function FunderProfileModal({
     setActiveTab("setup");
     setName(initial?.name ?? "");
     setDefaultCcEmail(initial?.defaultCcEmail ?? "");
+    setSendgridFromEmail(initial?.sendgridFromEmail ?? "");
+    setSendgridFromName(initial?.sendgridFromName ?? "");
     setIsActive(initial?.isActive !== false);
     setContractLink(initial?.signnowContractTemplateLink ?? "");
     setAddendums(toRows(initial?.signnowAddendumTemplates));
@@ -430,10 +434,27 @@ export default function FunderProfileModal({
       return null;
     }
 
+    const trimmedSendgridFrom = sendgridFromEmail.trim();
+    if (trimmedSendgridFrom && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedSendgridFrom)) {
+      setError("SendGrid From Email must be a single valid email address.");
+      setActiveTab("setup");
+      return null;
+    }
+    const trimmedSendgridName = sendgridFromName.trim();
+    if (Boolean(trimmedSendgridFrom) !== Boolean(trimmedSendgridName)) {
+      setError(
+        "SendGrid From Email and From Name go together — set both (e.g. Tiberian Funding) or leave both blank.",
+      );
+      setActiveTab("setup");
+      return null;
+    }
+
     setError(null);
     return {
       name: trimmedName,
       defaultCcEmail: defaultCcEmail.trim() || "",
+      sendgridFromEmail: trimmedSendgridFrom,
+      sendgridFromName: trimmedSendgridName,
       isActive,
       signnowContractTemplateLink: contractLink.trim() || null,
       signnowAddendumTemplates: cleanRows(addendums),
@@ -501,6 +522,32 @@ export default function FunderProfileModal({
                   onChange={(e) => setDefaultCcEmail(e.target.value)}
                   placeholder="Optional — comma-separated emails"
                 />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="funder-sendgrid-from">SendGrid From Email</Label>
+                <Input
+                  id="funder-sendgrid-from"
+                  type="email"
+                  value={sendgridFromEmail}
+                  onChange={(e) => setSendgridFromEmail(e.target.value)}
+                  placeholder="e.g. contracts@nitroadvance.com"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="funder-sendgrid-from-name">SendGrid From Name</Label>
+                <Input
+                  id="funder-sendgrid-from-name"
+                  value={sendgridFromName}
+                  onChange={(e) => setSendgridFromName(e.target.value)}
+                  placeholder="e.g. Tiberian Funding"
+                />
+                <p className="text-xs text-muted-foreground">
+                  The verified SendGrid sender identity for this funder's contract, SignNow and payment
+                  emails. Recipients see "From Name &lt;From Email&gt;". Leave both blank to use the
+                  server default (SENDGRID_FROM_EMAIL / SENDGRID_FROM_NAME).
+                </p>
               </div>
 
               <label className="flex items-center gap-2 text-sm">

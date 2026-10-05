@@ -1,6 +1,7 @@
 /** Nitro Advance brand — matches document-request email templates. */
 import {
   APP_BRAND_LOGO_URL,
+  APP_BRAND_LOGO_WATERMARK_URL,
   APP_COMPANY_CRM_NAME,
   APP_COMPANY_NAME,
 } from "@/constants/appBranding";
@@ -31,6 +32,16 @@ export const APPLICATION_APPROVAL_EMAIL_LOGO_SRC = APP_BRAND_LOGO_URL;
 
 /** Center faded background watermark layout image. */
 export const APPLICATION_APPROVAL_EMAIL_WATERMARK_SRC = APP_BRAND_LOGO_URL;
+
+/**
+ * Body background watermark for the approval / offer-updated emails. Email clients
+ * ignore CSS opacity on background images, so this only renders when a pre-faded
+ * asset is configured via `VITE_BRAND_LOGO_WATERMARK_URL`.
+ */
+export const APPLICATION_APPROVAL_EMAIL_BG_WATERMARK_SRC =
+  APP_BRAND_LOGO_WATERMARK_URL !== APP_BRAND_LOGO_URL
+    ? APP_BRAND_LOGO_WATERMARK_URL
+    : "";
 
 export const CLIENT_PROVIDED_STIPS = [
   "Void Check",

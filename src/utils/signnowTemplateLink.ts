@@ -24,6 +24,7 @@ import {
   SIGNNOW_PAYOFF_ADDENDUM_LAYOUT_KEY,
   SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID,
   SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID,
+  SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID,
   registerSignNowDisclosureTemplateRefs,
 } from "@/components/application/contractdata/signnowAddendumTemplates";
 
@@ -38,6 +39,7 @@ const KNOWN_SIGNNOW_TEMPLATE_ID_LABELS: Record<string, string> = {
   [SIGNNOW_FLEX_ADDENDUM_TEMPLATE_ID]: "Flex Addendum",
   [SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID]: "PayOff Addendum (Refi)",
   [SIGNNOW_TIBERIAN_PAYOFF_ADDENDUM_TEMPLATE_ID]: "Payoff Addendum",
+  [SIGNNOW_TIBERIAN_FLEX_ADDENDUM_TEMPLATE_ID]: "Flex Addendum",
   [SIGNNOW_EPA_TEMPLATE_ID]: "EPA Nitro Advance",
   [SIGNNOW_MONTHLY_FEE_TEMPLATE_ID]: "Monthly Fee",
   [SIGNNOW_DISCLOSURE_TEMPLATE_ID]: "State Disclosure",
@@ -116,7 +118,14 @@ function knownLayoutKeyFromName(
     return "exhibit_c";
   }
   if (slug.includes("exhibit_a")) return "exhibit_a";
-  if (slug.includes("flex") && slug.includes("addendum")) return "flex_addendum";
+  // Tiberian titles its copy "FLEX TIBERIAN FUNDING" — no "addendum" in it.
+  if (
+    (slug.includes("flex") && slug.includes("addendum")) ||
+    slug === "flex" ||
+    slug.startsWith("flex_")
+  ) {
+    return "flex_addendum";
+  }
   if (slug.includes("payoff") && slug.includes("addendum")) return "payoff_addendum";
   if (slug.includes("monthly") && slug.includes("fee")) return "monthly_fee";
   if (slug === "epa" || (slug.includes("epa") && !slug.includes("discover"))) {

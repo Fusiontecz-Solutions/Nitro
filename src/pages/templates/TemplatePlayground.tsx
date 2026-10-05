@@ -1,91 +1,102 @@
-import { useMemo, useState } from "react";
-import { TEMPLATE_REGISTRY } from "./registry";
+import { createElement, useCallback, useEffect, useMemo, useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+
+import {
+  TEMPLATE_REGISTRY,
+  previewValuesForBuiltinDefinition,
+  renderBuiltinReactTemplateHtml,
+} from "./registry";
 import { TEMPLATE_CATEGORY_LABELS } from "./types";
 import type { TemplateDefinition, TemplateValues } from "./types";
 
-type ViewMode = "rendered" | "html" | "component";
-
-/** Seed merge values from each template's `defaultValue` / placeholder. */
-function buildInitialValues(template: TemplateDefinition): TemplateValues {
-  return template.variables.reduce<TemplateValues>((acc, variable) => {
-    acc[variable.key] = variable.defaultValue ?? "";
-    return acc;
-  }, {});
+/** Empty values, then each variable's `defaultValue` (mirrors Katan playground). */
+function buildInitialValues(def: TemplateDefinition): TemplateValues {
+  const base = previewValuesForBuiltinDefinition(def);
+  for (const v of def.variables) {
+    if (v.defaultValue) base[v.key] = v.defaultValue;
+  }
+  return base;
 }
 
+/**
+ * `/template/playground` — preview every built-in email and letter template
+ * (approval, offer updated, rejection, document request, payoff, zero balance)
+ * as the React component and as the exact static HTML that is emailed.
+ */
 export default function TemplatePlayground() {
-  const [selectedId, setSelectedId] = useState<string>(
-    TEMPLATE_REGISTRY[0]?.id ?? "",
-  );
-  const [viewMode, setViewMode] = useState<ViewMode>("rendered");
+  const [selectedId, setSelectedId] = useState(TEMPLATE_REGISTRY[0]?.id ?? "");
+  const [values, setValues] = useState<TemplateValues>(() => {
+    const first = TEMPLATE_REGISTRY[0];
+    return first ? buildInitialValues(first) : {};
+  });
   const [copied, setCopied] = useState(false);
-  const [valuesByTemplate, setValuesByTemplate] = useState<
-    Record<string, TemplateValues>
-  >(() =>
-    TEMPLATE_REGISTRY.reduce<Record<string, TemplateValues>>((acc, template) => {
-      acc[template.id] = buildInitialValues(template);
-      return acc;
-    }, {}),
-  );
 
-  const selectedTemplate = useMemo(
-    () => TEMPLATE_REGISTRY.find((t) => t.id === selectedId) ?? null,
+  const selected = useMemo(
+    () => TEMPLATE_REGISTRY.find((t) => t.id === selectedId),
     [selectedId],
   );
 
-  const values = selectedTemplate
-    ? valuesByTemplate[selectedTemplate.id] ?? {}
-    : {};
-
-  const html = useMemo(() => {
-    if (!selectedTemplate?.renderHtml) return "";
-    return selectedTemplate.renderHtml(values);
-  }, [selectedTemplate, values]);
-
-  const hasHtml = Boolean(selectedTemplate?.renderHtml);
-  const hasComponent = Boolean(selectedTemplate?.Component);
-  const effectiveView: ViewMode =
-    viewMode === "rendered" && !hasHtml
-      ? "component"
-      : viewMode === "component" && !hasComponent
-        ? "rendered"
-        : viewMode === "html" && !hasHtml
-          ? "component"
-          : viewMode;
-
-  const updateValue = (key: string, value: string) => {
-    if (!selectedTemplate) return;
-    setValuesByTemplate((prev) => ({
-      ...prev,
-      [selectedTemplate.id]: {
-        ...prev[selectedTemplate.id],
-        [key]: value,
-      },
-    }));
-  };
-
-  const resetValues = () => {
-    if (!selectedTemplate) return;
-    setValuesByTemplate((prev) => ({
-      ...prev,
-      [selectedTemplate.id]: buildInitialValues(selectedTemplate),
-    }));
-  };
-
-  const selectTemplate = (id: string) => {
-    setSelectedId(id);
+  useEffect(() => {
+    if (!selected) return;
+    setValues(buildInitialValues(selected));
     setCopied(false);
-    setValuesByTemplate((prev) => {
-      if (prev[id]) return prev;
-      const template = TEMPLATE_REGISTRY.find((t) => t.id === id);
-      if (!template) return prev;
-      return { ...prev, [id]: buildInitialValues(template) };
+  }, [selected]);
+
+  const setField = useCallback((key: string, next: string) => {
+    setValues((prev) => ({ ...prev, [key]: next }));
+  }, []);
+
+  const fillPlaceholders = useCallback(() => {
+    if (!selected) return;
+    setValues((prev) => {
+      const next = { ...prev };
+      for (const v of selected.variables) {
+        if (v.placeholder) next[v.key] = v.placeholder;
+      }
+      return next;
     });
-  };
+  }, [selected]);
+
+  const clearFields = useCallback(() => {
+    if (!selected) return;
+    setValues(previewValuesForBuiltinDefinition(selected));
+  }, [selected]);
+
+  const staticHtml = useMemo(() => {
+    if (!selected) return "";
+    return renderBuiltinReactTemplateHtml(selected.id, values);
+  }, [selected, values]);
+
+  const iframeDoc = useMemo(
+    () =>
+      /^\s*<!doctype/i.test(staticHtml)
+        ? staticHtml
+        : `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head><body style="margin:0;padding:12px;background:#f8fafc;">${staticHtml}</body></html>`,
+    [staticHtml],
+  );
 
   const copyHtml = async () => {
     try {
-      await navigator.clipboard.writeText(html);
+      await navigator.clipboard.writeText(staticHtml);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -93,327 +104,160 @@ export default function TemplatePlayground() {
     }
   };
 
+  if (TEMPLATE_REGISTRY.length === 0) {
+    return (
+      <div className="p-6">
+        <p className="text-muted-foreground text-sm">
+          No built-in templates are registered.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div style={styles.page}>
-      <aside style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>
-          <h1 style={styles.title}>Template Playground</h1>
-          <p style={styles.subtitle}>
-            {TEMPLATE_REGISTRY.length} template
-            {TEMPLATE_REGISTRY.length === 1 ? "" : "s"} registered
-          </p>
-        </div>
+    <div className="mx-auto flex max-w-[1600px] flex-col gap-4 p-4 md:p-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Template playground
+        </h1>
+        <p className="text-muted-foreground mt-1 text-sm">
+          Preview all built-in email and letter templates — approval, offer
+          updated, rejection, document request, payoff letter, and zero balance
+          letter.
+        </p>
+      </div>
 
-        <div style={styles.selectGroup}>
-          <label htmlFor="template-select" style={styles.selectLabel}>
-            Template
-          </label>
-          <div style={styles.selectWrap}>
-            <select
-              id="template-select"
-              value={selectedId}
-              onChange={(e) => selectTemplate(e.target.value)}
-              style={styles.select}
-            >
-              {TEMPLATE_REGISTRY.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name} ·{" "}
-                  {TEMPLATE_CATEGORY_LABELS[template.category]}
-                </option>
-              ))}
-            </select>
-            <span style={styles.selectCaret} aria-hidden="true">
-              ▾
-            </span>
-          </div>
-        </div>
-
-{selectedTemplate ? (
-          <div style={styles.fields}>
-            <div style={styles.fieldsHeader}>
-              <h2 style={styles.fieldsTitle}>Merge fields</h2>
-              <button type="button" onClick={resetValues} style={styles.resetBtn}>
-                Reset
-              </button>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <Card className="w-full shrink-0 lg:sticky lg:top-4 lg:max-w-md">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Template &amp; fields</CardTitle>
+            <CardDescription>
+              Choose a template, then adjust values. Empty fields fall back to
+              placeholders in the preview.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="tpl-select">Template</Label>
+              <Select value={selectedId} onValueChange={setSelectedId}>
+                <SelectTrigger id="tpl-select">
+                  <SelectValue placeholder="Select template" />
+                </SelectTrigger>
+                <SelectContent>
+                  {TEMPLATE_REGISTRY.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                      <span className="text-muted-foreground ml-1 text-xs">
+                        ({TEMPLATE_CATEGORY_LABELS[t.category].toLowerCase()})
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selected?.description ? (
+                <p className="text-muted-foreground text-xs">
+                  {selected.description}
+                </p>
+              ) : null}
             </div>
-            {selectedTemplate.variables.length === 0 ? (
-              <p style={styles.muted}>This template has no merge fields.</p>
-            ) : (
-              selectedTemplate.variables.map((variable) => (
-                <label key={variable.key} style={styles.field}>
-                  <span style={styles.fieldLabel}>{variable.label}</span>
-                  <input
-                    type="text"
-                    value={values[variable.key] ?? ""}
-                    placeholder={variable.placeholder ?? variable.label}
-                    onChange={(e) => updateValue(variable.key, e.target.value)}
-                    style={styles.input}
-                  />
-                  <span style={styles.fieldKey}>{variable.key}</span>
-                </label>
-              ))
-            )}
-          </div>
-        ) : null}
-      </aside>
 
-      <main style={styles.preview}>
-        {selectedTemplate ? (
-          <>
-            <div style={styles.previewHeader}>
-              <div>
-                <h2 style={styles.previewTitle}>{selectedTemplate.name}</h2>
-                {selectedTemplate.description ? (
-                  <p style={styles.muted}>{selectedTemplate.description}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="secondary" size="sm" onClick={fillPlaceholders}>
+                Fill placeholders
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={clearFields}>
+                Clear values
+              </Button>
+            </div>
+
+            {selected ? (
+              <div className="flex max-h-[min(70vh,720px)] flex-col gap-3 overflow-y-auto pr-1">
+                {selected.variables.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">
+                    This template has no merge fields.
+                  </p>
                 ) : null}
+                {selected.variables.map((v) => {
+                  const long =
+                    (v.placeholder?.length ?? 0) > 100 ||
+                    /message|body|notes/i.test(v.key);
+                  return (
+                    <div key={v.key} className="space-y-1.5">
+                      <Label htmlFor={`field-${v.key}`} className="text-xs font-medium">
+                        {v.label}
+                      </Label>
+                      {long ? (
+                        <Textarea
+                          id={`field-${v.key}`}
+                          rows={4}
+                          value={values[v.key] ?? ""}
+                          onChange={(e) => setField(v.key, e.target.value)}
+                          placeholder={v.placeholder}
+                          className="text-sm"
+                        />
+                      ) : (
+                        <Input
+                          id={`field-${v.key}`}
+                          value={values[v.key] ?? ""}
+                          onChange={(e) => setField(v.key, e.target.value)}
+                          placeholder={v.placeholder}
+                          className="text-sm"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <div style={styles.toolbar}>
-                <div style={styles.tabs}>
-                  {hasHtml ? (
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("rendered")}
-                      style={{
-                        ...styles.tab,
-                        ...(effectiveView === "rendered" ? styles.tabActive : {}),
-                      }}
-                    >
-                      Rendered HTML
-                    </button>
-                  ) : null}
-                  {hasHtml ? (
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("html")}
-                      style={{
-                        ...styles.tab,
-                        ...(effectiveView === "html" ? styles.tabActive : {}),
-                      }}
-                    >
-                      HTML source
-                    </button>
-                  ) : null}
-                  {hasComponent ? (
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("component")}
-                      style={{
-                        ...styles.tab,
-                        ...(effectiveView === "component" ? styles.tabActive : {}),
-                      }}
-                    >
-                      React component
-                    </button>
-                  ) : null}
+            ) : null}
+          </CardContent>
+        </Card>
+
+        <Card className="min-h-[480px] min-w-0 flex-1">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Preview</CardTitle>
+            <CardDescription>
+              Component preview uses your app styles; HTML preview matches email
+              output (tables / inline styles).
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Tabs defaultValue={selected?.Component ? "component" : "html"} className="w-full">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <TabsList>
+                  <TabsTrigger value="component" disabled={!selected?.Component}>
+                    React component
+                  </TabsTrigger>
+                  <TabsTrigger value="html">Static HTML</TabsTrigger>
+                  <TabsTrigger value="source">HTML source</TabsTrigger>
+                </TabsList>
+                <Button type="button" variant="outline" size="sm" onClick={copyHtml}>
+                  {copied ? "Copied!" : "Copy HTML"}
+                </Button>
+              </div>
+              <TabsContent value="component" className="mt-0">
+                <div className="bg-muted/30 rounded-md border p-4">
+                  {selected?.Component
+                    ? createElement(selected.Component, { values })
+                    : null}
                 </div>
-                {hasHtml ? (
-                  <button type="button" onClick={copyHtml} style={styles.copyBtn}>
-                    {copied ? "Copied!" : "Copy HTML"}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {effectiveView === "rendered" && hasHtml ? (
-              <iframe
-                title={`${selectedTemplate.name} preview`}
-                srcDoc={html}
-                style={styles.iframe}
-              />
-            ) : null}
-
-            {effectiveView === "html" && hasHtml ? (
-              <pre style={styles.code}>
-                <code>{html}</code>
-              </pre>
-            ) : null}
-
-            {effectiveView === "component" && selectedTemplate.Component ? (
-              <div style={styles.previewCanvas}>
-                <selectedTemplate.Component values={values} />
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <p style={styles.muted}>No templates registered.</p>
-        )}
-      </main>
+              </TabsContent>
+              <TabsContent value="html" className="mt-0">
+                <iframe
+                  title="Static HTML preview"
+                  className="bg-background h-[min(75vh,900px)] w-full rounded-md border"
+                  srcDoc={iframeDoc}
+                  sandbox="allow-same-origin"
+                />
+              </TabsContent>
+              <TabsContent value="source" className="mt-0">
+                <pre className="h-[min(75vh,900px)] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-200">
+                  <code>{staticHtml}</code>
+                </pre>
+              </TabsContent>
+            </Tabs>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    display: "flex",
-    minHeight: "100vh",
-    fontFamily: "Arial, Helvetica, sans-serif",
-    background: "#f4f5f7",
-    color: "#1f2937",
-  },
-  sidebar: {
-    width: 340,
-    flexShrink: 0,
-    borderRight: "1px solid #e2e8f0",
-    background: "#ffffff",
-    padding: "20px 18px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 18,
-    overflowY: "auto",
-    maxHeight: "100vh",
-    boxSizing: "border-box",
-  },
-  sidebarHeader: { display: "flex", flexDirection: "column", gap: 4 },
-  title: { margin: 0, fontSize: 18, fontWeight: 700 },
-  subtitle: { margin: 0, fontSize: 12, color: "#6b7280" },
-  selectGroup: { display: "flex", flexDirection: "column", gap: 6 },
-  selectLabel: {
-    fontSize: 11,
-    fontWeight: 700,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    color: "#6b7280",
-  },
-  selectWrap: { position: "relative" },
-  select: {
-    width: "100%",
-    font: "inherit",
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#1f2937",
-    padding: "10px 32px 10px 12px",
-    border: "1px solid #cbd5e1",
-    borderRadius: 8,
-    background: "#ffffff",
-    cursor: "pointer",
-    outline: "none",
-    appearance: "none",
-    WebkitAppearance: "none",
-    MozAppearance: "none",
-    boxSizing: "border-box",
-  },
-  selectCaret: {
-    position: "absolute",
-    right: 12,
-    top: "50%",
-    transform: "translateY(-50%)",
-    pointerEvents: "none",
-    fontSize: 11,
-    color: "#6b7280",
-  },
-  fields: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-    borderTop: "1px solid #e2e8f0",
-    paddingTop: 16,
-  },
-  fieldsHeader: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  fieldsTitle: { margin: 0, fontSize: 13, fontWeight: 700 },
-  resetBtn: {
-    font: "inherit",
-    fontSize: 11,
-    fontWeight: 600,
-    color: "#22a1e3",
-    background: "transparent",
-    border: "1px solid #22a1e3",
-    borderRadius: 6,
-    padding: "3px 10px",
-    cursor: "pointer",
-  },
-  field: { display: "flex", flexDirection: "column", gap: 4 },
-  fieldLabel: { fontSize: 12, fontWeight: 600 },
-  input: {
-    font: "inherit",
-    fontSize: 13,
-    padding: "8px 10px",
-    border: "1px solid #cbd5e1",
-    borderRadius: 6,
-    outline: "none",
-  },
-  fieldKey: { fontSize: 10, color: "#9ca3af", fontFamily: "monospace" },
-  preview: {
-    flex: 1,
-    padding: 24,
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-    maxHeight: "100vh",
-    boxSizing: "border-box",
-  },
-  previewHeader: {
-    marginBottom: 16,
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 16,
-    flexWrap: "wrap",
-  },
-  previewTitle: { margin: 0, fontSize: 16, fontWeight: 700 },
-  toolbar: { display: "flex", alignItems: "center", gap: 10 },
-  tabs: {
-    display: "inline-flex",
-    background: "#e5e7eb",
-    borderRadius: 8,
-    padding: 3,
-    gap: 3,
-  },
-  tab: {
-    font: "inherit",
-    fontSize: 12,
-    fontWeight: 600,
-    color: "#4b5563",
-    background: "transparent",
-    border: "none",
-    borderRadius: 6,
-    padding: "6px 12px",
-    cursor: "pointer",
-  },
-  tabActive: { background: "#ffffff", color: "#111827" },
-  copyBtn: {
-    font: "inherit",
-    fontSize: 12,
-    fontWeight: 600,
-    color: "#ffffff",
-    background: "#22a1e3",
-    border: "none",
-    borderRadius: 6,
-    padding: "7px 14px",
-    cursor: "pointer",
-  },
-  iframe: {
-    flex: 1,
-    width: "100%",
-    border: "1px solid #e2e8f0",
-    borderRadius: 8,
-    background: "#ffffff",
-  },
-  code: {
-    flex: 1,
-    margin: 0,
-    overflow: "auto",
-    background: "#0f172a",
-    color: "#e2e8f0",
-    border: "1px solid #1e293b",
-    borderRadius: 8,
-    padding: 16,
-    fontSize: 12,
-    lineHeight: 1.5,
-    fontFamily:
-      "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-  },
-  previewCanvas: {
-    flex: 1,
-    overflow: "auto",
-    background: "#ffffff",
-    border: "1px solid #e2e8f0",
-    borderRadius: 8,
-  },
-  muted: { margin: "4px 0 0", fontSize: 12, color: "#6b7280" },
-};
