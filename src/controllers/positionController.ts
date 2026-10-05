@@ -111,22 +111,12 @@ class PositionController {
         allocatedBankAnalysisId,
       } = req.body;
 
-      if (
-        !position ||
-        !factorRate ||
-        !ach ||
-        !percentOfGross ||
-        !funder ||
-        !paybackAmount ||
-        !fundingDate ||
-        !fundedAmount ||
-        !frequency ||
-        !closeDate ||
-        !application
-      ) {
+      // Rows are persisted as entered (Scrubbing autosaves partially filled rows), so only
+      // the application link and dates are mandatory; blank text/amount fields default below.
+      if (!application || !fundingDate || !closeDate) {
         return res.status(400).json({
           success: false,
-          message: 'All required fields must be provided',
+          message: 'Application, funding date and close date are required',
         });
       }
 
@@ -141,15 +131,15 @@ class PositionController {
 
       const appGuard = await prisma.application.findUnique({
         where: { id: applicationExists.id },
-        select: { currentQueue: true, claimedByUnderwriterId: true },
+        select: { currentQueue: true, claimedByUnderwriterId: true, assignedUnderwriterId: true },
       });
       const denyCreate = getUnderwriterClaimMutationDenial(authUserFromReq(req), appGuard);
       if (denyCreate) {
         return res.status(denyCreate.status).json({ success: false, message: denyCreate.message });
       }
 
-      const paybackAmountNum = parseAmount(paybackAmount);
-      const fundedAmountNum = parseAmount(fundedAmount);
+      const paybackAmountNum = optNum(paybackAmount) ?? 0;
+      const fundedAmountNum = optNum(fundedAmount) ?? 0;
 
       const fundingDateObj = new Date(fundingDate);
       const closeDateObj = new Date(closeDate);
@@ -174,11 +164,11 @@ class PositionController {
 
       const newPosition = await prisma.position.create({
         data: {
-          position,
-          factorRate,
-          ach,
-          percentOfGross,
-          funder,
+          position: position != null ? String(position) : '',
+          factorRate: factorRate != null ? String(factorRate) : '',
+          ach: ach != null ? String(ach) : '',
+          percentOfGross: percentOfGross != null ? String(percentOfGross) : '',
+          funder: funder != null ? String(funder) : '',
           paybackAmount: paybackAmountNum,
           fundingDate: fundingDateObj,
           activeStatus: activeStatus !== undefined ? !!activeStatus : false,
@@ -371,7 +361,7 @@ class PositionController {
 
       const appGuard = await prisma.application.findUnique({
         where: { id: positionDoc.applicationId },
-        select: { currentQueue: true, claimedByUnderwriterId: true },
+        select: { currentQueue: true, claimedByUnderwriterId: true, assignedUnderwriterId: true },
       });
       const denyUpdate = getUnderwriterClaimMutationDenial(authUserFromReq(req), appGuard);
       if (denyUpdate) {
@@ -397,7 +387,7 @@ class PositionController {
       if (percentOfGross !== undefined) data.percentOfGross = percentOfGross;
       if (funder !== undefined) data.funder = funder;
       if (paybackAmount !== undefined) {
-        data.paybackAmount = parseAmount(paybackAmount);
+        data.paybackAmount = optNum(paybackAmount) ?? 0;
       }
       if (fundingDate !== undefined) {
         const fundingDateObj = new Date(fundingDate);
@@ -411,7 +401,7 @@ class PositionController {
       }
       if (activeStatus !== undefined) data.activeStatus = !!activeStatus;
       if (fundedAmount !== undefined) {
-        data.fundedAmount = parseAmount(fundedAmount);
+        data.fundedAmount = optNum(fundedAmount) ?? 0;
       }
       if (frequency !== undefined) {
         const sanitized = sanitizePaymentFrequencyForPersist(frequency);
@@ -501,7 +491,7 @@ class PositionController {
       }
       const appGuard = await prisma.application.findUnique({
         where: { id: positionDoc.applicationId },
-        select: { currentQueue: true, claimedByUnderwriterId: true },
+        select: { currentQueue: true, claimedByUnderwriterId: true, assignedUnderwriterId: true },
       });
       const denyDelete = getUnderwriterClaimMutationDenial(authUserFromReq(req), appGuard);
       if (denyDelete) {

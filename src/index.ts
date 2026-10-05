@@ -12,7 +12,7 @@ import { testRedisConnection } from './config/redis';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
 import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
 import { activityLogger } from './middleware/activityLogger';
-import { getDefaultMailFrom, isSendGridConfigured } from './config/nodemailer';
+import { describeDefaultMailSender, isSendGridConfigured } from './config/nodemailer';
 import { startSignNowContractStatusJob } from './cron-job/signNowContractStatusJob';
 
 process.on('uncaughtException', (err) => {
@@ -134,8 +134,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 cloudinaryConnect();
-console.log(
-  `[mail] Outbound sender: ${getDefaultMailFrom()} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
+void describeDefaultMailSender().then((sender) =>
+  console.log(
+    `[mail] Default outbound sender: ${sender} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
+  ),
 );
 const sendgridWebhookBase = process.env.SENDGRID_WEBHOOK_URL?.trim().replace(/\/$/, '');
 if (sendgridWebhookBase) {

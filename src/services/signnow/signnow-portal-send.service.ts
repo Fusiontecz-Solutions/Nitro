@@ -1,5 +1,7 @@
 import prisma from '../../config/prismaClient';
-import { sendSendGridMail, isSendGridConfigured, getSendGridMailFrom } from '../../config/nodemailer';
+import { sendSendGridMail, isSendGridConfigured } from '../../config/nodemailer';
+import { resolveFunderMailSender } from '../funderProfileService';
+import { resolveMailSender } from '../mailSenderIdentity';
 import { resolveCrmFrontendBaseUrl } from '../../utils/crmFrontendUrl';
 import { createSignNowApiClient } from './utils/signnow-client';
 import { assertPackageWasPrefilledByReview, signNowService } from './signnow.service';
@@ -412,7 +414,12 @@ async function emailPortalInvite(input: {
     email,
     token,
   });
-  const from = getSendGridMailFrom();
+  // The selected funder's own sender identity (email + name); the .env default
+  // sender when the funder has none.
+  const from = await resolveMailSender(
+    await resolveFunderMailSender({ funderName: input.funderName }),
+    { sendgridOnly: true },
+  );
   await sendSendGridMail({
     to: email,
     from,
@@ -421,7 +428,7 @@ async function emailPortalInvite(input: {
       recipientName: input.recipient.name || null,
       contractLabel: input.contractLabel,
       funderName: input.funderName || null,
-      senderEmail: input.replyToEmail || from,
+      senderEmail: input.replyToEmail || from.email,
       signingLink,
     }),
     ...(input.replyToEmail ? { replyTo: input.replyToEmail } : {}),
@@ -780,6 +787,7 @@ async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<
 
   const recipientEmails: string[] = [];
   const failedEmails: string[] = [];
+  const failureReasons: string[] = [];
   // Every merchant gets their own message, so there is no reason to wait for
   // one SendGrid round trip before starting the next.
   const outcomes = await Promise.allSettled(
@@ -804,14 +812,18 @@ async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<
     // Leave emailedAt null so advancePortalSigningQueue retries this signer.
     failedEmails.push(recipient.email);
     const emailError = outcome.reason;
+    const message = emailError instanceof Error ? emailError.message : String(emailError);
+    failureReasons.push(message);
     console.warn('[SignNow] portal invite email failed; will retry on queue advance', {
       envelopeId,
       email: recipient.email,
-      error: emailError instanceof Error ? emailError.message : String(emailError),
+      error: message,
     });
   });
   if (!recipientEmails.length) {
-    throw new BadRequest('Could not email the signing-portal link to any signer.');
+    // Surface the SendGrid / sender reason: the generic line alone gave no way to act on it.
+    const reason = failureReasons[0] ? ` ${failureReasons[0].slice(0, 300)}` : '';
+    throw new BadRequest(`Could not email the signing-portal link to any signer.${reason}`);
   }
 
   const contract = await findContractForEnvelope(envelopeId);

@@ -60,18 +60,6 @@ export function getUnderwriterClaimMutationDenial(
                     'Claim this application before making changes. Until then, you can only review the application overview.',
             };
         }
-        return null;
-    }
-
-    if (roleUpper === 'UNDERWRITER' && isApplicationInFinalUnderwriterQueue(app.currentQueue)) {
-        const assignId = app.assignedUnderwriterId ?? null;
-        if (!assignId) {
-            return {
-                status: 403,
-                message:
-                    'Claim this application before making changes. Until then, you can only review the application overview.',
-            };
-        }
         if (assignId !== user.id) {
             return {
                 status: 403,

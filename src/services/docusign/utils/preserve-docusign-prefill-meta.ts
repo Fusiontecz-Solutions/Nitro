@@ -52,5 +52,40 @@ export function mergePreservingDocuSignEnvelopeMeta(
       next[key] = prev[key];
     }
   }
+  const mergedTabs = mergeDocumentTemplatePrefillBlobs(
+    prev[DOCUMENT_TEMPLATE_PREFILL_KEY],
+    next[DOCUMENT_TEMPLATE_PREFILL_KEY],
+  );
+  if (mergedTabs) next[DOCUMENT_TEMPLATE_PREFILL_KEY] = mergedTabs;
   return next;
+}
+
+const DOCUMENT_TEMPLATE_PREFILL_KEY = 'documentTemplatePrefillByMappingId';
+
+function plainObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Per-document prefill tabs, merged per mapping row instead of replaced whole.
+ *
+ * Each addendum's tab is saved by a different editor (Info Required writes the
+ * first addendum, the disclosure and the Exhibit C copies; each pencil dialog
+ * writes its own row), and every one of them posts the blob as the browser
+ * last loaded it. Replacing the stored blob with that copy dropped every tab the
+ * posting screen had not loaded yet — which is how Exhibit C (2), the Flex /
+ * PayOff tabs and the rest went back to empty after a Review round trip. A
+ * mapping the save names is still taken exactly as sent (its editor owns the
+ * whole row); a mapping it leaves out keeps what is stored.
+ */
+export function mergeDocumentTemplatePrefillBlobs(
+  existing: unknown,
+  incoming: unknown,
+): Record<string, unknown> | null {
+  const prevBlob = plainObject(existing);
+  const nextBlob = plainObject(incoming);
+  if (!prevBlob || !nextBlob) return null;
+  return { ...prevBlob, ...nextBlob };
 }

@@ -120,6 +120,15 @@ import {
     resolveTenantUserId,
 } from '../middleware/authMiddleware';
 import { createPublicPortalToken } from '../services/publicPortalTokenService';
+import {
+    AGENT_REVIEW_QUEUES,
+    WORKFLOW_QUEUE,
+    WORKFLOW_STATE,
+    isAgentIsoSendableQueue,
+    normalizeWorkflowToken,
+} from '../constants/applicationWorkflow';
+import { normalizeRoleValue } from '../constants/roles';
+import { notifyNewInUnderwriterPool } from '../services/applicationWorkflowService';
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
 import { fetchPaginatedApplicationsForList } from '../services/applicationListSort';
 import { buildApplicationListSearchWhere } from '../services/applicationListSearch';
@@ -451,6 +460,17 @@ const APPROVAL_SENT_QUEUE = APPLICATION_QUEUE_APPROVAL_SENT;
 
 const isUnderwriterApprovedToken = (value: unknown): boolean =>
     normalizeQueueToken(value) === 'UNDERWRITER_APPROVED';
+
+/** Agent / Underwriter stages where an ISO approval link must not advance the deal. */
+const ISO_APPROVAL_BLOCKED_QUEUE_TOKENS = new Set(
+    [
+        WORKFLOW_QUEUE.AGENT_DRAFT,
+        'New',
+        WORKFLOW_QUEUE.UNDERWRITER,
+        ...AGENT_REVIEW_QUEUES,
+        WORKFLOW_QUEUES.SCRUBBING,
+    ].map(normalizeWorkflowToken),
+);
 
 const PENDING_QUEUES = [
     'New',
@@ -1243,8 +1263,24 @@ class ApplicationController {
             const newBusinessName = String(req.body.newBusinessName || '').trim();
             const newOwnerFirstName = String(req.body.newOwnerFirstName || '').trim();
 
+            const creatorRole = normalizeRoleValue(req.user?.role);
+            const isAgentCreator = creatorRole === 'AGENT';
+            // Agents always own their deals: default the sales rep to themselves.
+            const effectiveSalesRepresentative =
+                salesRepresentative || (isAgentCreator ? req.user?.id : undefined);
+            // Agent deals go straight to the Underwriter pool unless explicitly saved as a draft.
+            const agentSubmitToUnderwriting =
+                isAgentCreator && !isFormTrue(req.body.saveAsDraft);
+
+            if (agentSubmitToUnderwriting && !String(isoId ?? '').trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Select the ISO for this application before submitting it to underwriting.',
+                });
+            }
+
             // Validate required fields
-            if (!priority || !type || !salesRepresentative || (!client && !createNewClient)) {
+            if (!priority || !type || !effectiveSalesRepresentative || (!client && !createNewClient)) {
                 return res.status(400).json({
                     success: false,
                     message: 'Priority, application type, sales representative, and client are required',
@@ -1337,23 +1373,46 @@ class ApplicationController {
             const assignedToId =
                 authUser && String(authUser.role).toUpperCase() === 'AGENT' ? authUser.id : null;
 
-            // When an AGENT creates an application, set referringAgentId to them so they see it in their list
-            const effectiveReferringAgentId = referringAgent
-                ? String(referringAgent)
-                : (authUser && String(authUser.role).toUpperCase() === 'AGENT' ? authUser.id : null);
+            // When an AGENT creates an application they are always its referring agent (never someone else).
+            const effectiveReferringAgentId = isAgentCreator
+                ? authUser?.id ?? null
+                : referringAgent
+                  ? String(referringAgent)
+                  : null;
+            const optionalText = (value: unknown): string | null => {
+                const trimmed = String(value ?? '').trim();
+                return trimmed ? trimmed.slice(0, 500) : null;
+            };
+            const newBusinessMonthlyRevenue = (() => {
+                const raw = String(req.body.newBusinessMonthlyRevenue ?? '').replace(/[^0-9.-]+/g, '');
+                const n = raw ? Number(raw) : NaN;
+                return Number.isFinite(n) && n >= 0 ? n : null;
+            })();
 
             const loanAmountNum = loanAmount !== undefined && loanAmount !== '' && loanAmount !== null
                 ? (typeof loanAmount === 'number' ? loanAmount : parseFloat(String(loanAmount).replace(/[^0-9.-]+/g, '')))
                 : null;
             const roleUpper = String(authUser?.role || '').toUpperCase();
-            const creationQueue = roleUpper === 'AGENT' ? WORKFLOW_QUEUES.AGENT : undefined;
-            const creationState = roleUpper === 'AGENT' ? ApplicationState.PENDING : undefined;
+            const creationQueue =
+                roleUpper === 'AGENT'
+                    ? agentSubmitToUnderwriting
+                        ? WORKFLOW_QUEUE.UNDERWRITER
+                        : WORKFLOW_QUEUES.AGENT
+                    : undefined;
+            const creationState =
+                roleUpper === 'AGENT'
+                    ? agentSubmitToUnderwriting
+                        ? WORKFLOW_STATE.IN_PROGRESS
+                        : ApplicationState.PENDING
+                    : undefined;
 
             const application = await withAllocatedDealId(async (dealId, tx) => {
                 if (createNewClient) {
                     const owner = {
                         firstName: newOwnerFirstName,
                         lastName: newOwnerLastName,
+                        email: optionalText(req.body.newOwnerEmail) ?? undefined,
+                        mobileNumber: optionalText(req.body.newOwnerPhone) ?? undefined,
                     };
                     const primaryOwnerFields = buildPrimaryOwnerFlatFields(owner);
                     clientRecord = await tx.client.create({
@@ -1361,6 +1420,12 @@ class ApplicationController {
                             businessName: newBusinessName,
                             businessNumber: newBusinessPhone,
                             businessEinNumber: newEin,
+                            businessEmail: optionalText(req.body.newBusinessEmail),
+                            businessAddress1: optionalText(req.body.newBusinessAddress1),
+                            businessCity: optionalText(req.body.newBusinessCity),
+                            businessState: optionalText(req.body.newBusinessState),
+                            businessZipCode: optionalText(req.body.newBusinessZipCode),
+                            businessMonthlyRevenue: newBusinessMonthlyRevenue,
                             ...primaryOwnerFields,
                             createdById: authUser?.id || null,
                             assignedToId,
@@ -1379,7 +1444,7 @@ class ApplicationController {
                     data: applicationCreateUncheckedData({
                         priority,
                         type,
-                        salesRepresentativeId: String(salesRepresentative),
+                        salesRepresentativeId: String(effectiveSalesRepresentative),
                         clientId: clientRecord.id,
                         note: note || '',
                         loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
@@ -1449,6 +1514,13 @@ class ApplicationController {
                 actorName: (req as any).user?.name || '',
                 actorRole: authUser?.role || null,
             });
+
+            if (agentSubmitToUnderwriting) {
+                notifyNewInUnderwriterPool(
+                    { id: application.id, applicationId: application.applicationId, client: clientRecord },
+                    createdById,
+                );
+            }
 
             invalidateAllApplicationStatsCache();
 
@@ -7015,6 +7087,28 @@ class ApplicationController {
                 });
             }
 
+            /**
+             * Agent / Underwriter workflow gate:
+             *   - Underwriters hand the deal to the Agent (send-to-agent-approval); they never email the ISO.
+             *   - Agents email the ISO only after underwriting is approved back to them.
+             */
+            const actorRoleKey = normalizeRoleValue(authUser?.role);
+            if (actorRoleKey === 'UNDERWRITER') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Underwriters send the application to the Agent for approval; the Agent emails the ISO.',
+                });
+            }
+            const isAgentActor = actorRoleKey === 'AGENT';
+            if (isAgentActor && !isAgentIsoSendableQueue((application as any).currentQueue)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'The ISO approval email can be sent once underwriting is complete and the application is awaiting your approval.',
+                });
+            }
+
+            // Transport: ISO approval emails always go out through the system mailer (SendGrid / SMTP).
+
             const client: any = (application as any).client;
             let iso: any = (application as any).iso;
 
@@ -7240,6 +7334,14 @@ class ApplicationController {
             );
             const anyDelivered = deliveryResults.some((r) => r.ok);
             if (!anyDelivered) {
+                try {
+                    await prisma.outbound_communications.update({
+                        where: { id: trackingId },
+                        data: { status: 'failed' },
+                    });
+                } catch (statusErr) {
+                    console.error('Failed to mark approval email as failed:', statusErr);
+                }
                 return res.status(502).json({
                     success: false,
                     message:
@@ -7248,7 +7350,8 @@ class ApplicationController {
                 });
             }
 
-            const shouldReinitiateContract = !!resend && !!reinitiateContract;
+            // Contract reinitiation is a Super Admin contract action — never triggered by an Agent send.
+            const shouldReinitiateContract = !!resend && !!reinitiateContract && !isAgentActor;
             if (shouldReinitiateContract) {
                 try {
                     await reinitiateContractForApplication(String(fallbackId), {
@@ -7282,6 +7385,7 @@ class ApplicationController {
                         metadata: {
                             ...prior,
                             emailDelivery: deliveryResults,
+                            transport: 'system',
                         } as object,
                     },
                 });
@@ -7332,7 +7436,10 @@ class ApplicationController {
             return res.status(200).json({
                 success: true,
                 message: resend ? 'Updated offer email sent' : 'Approval email sent',
-                data: { delivered: deliveryResults.filter((r) => r.ok).map((r) => r.to) },
+                data: {
+                    delivered: deliveryResults.filter((r) => r.ok).map((r) => r.to),
+                    transport: 'system',
+                },
             });
         } catch (error: any) {
             console.error('Send approval email error:', error);
@@ -8394,6 +8501,19 @@ class ApplicationController {
 
             if (blockIfUnderwriterUnclaimedDeal(res, authUser, existingApplication)) {
                 return;
+            }
+
+            // A stale ISO link must not approve a deal that is back in the Agent / Underwriter
+            // stages (e.g. the Agent returned it for changes) — that would skip underwriting.
+            if (
+                reqUser?.publicApprovalActor === 'ISO' &&
+                ISO_APPROVAL_BLOCKED_QUEUE_TOKENS.has(normalizeWorkflowToken(existingApplication.currentQueue))
+            ) {
+                return res.status(409).json({
+                    success: false,
+                    message:
+                        'This application is being updated and is not ready for ISO approval yet. You will receive a new approval email once it is.',
+                });
             }
 
             const result = await approveApplication(whereClause, {

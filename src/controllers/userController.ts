@@ -3,7 +3,52 @@ import type { Role } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { deleteUserCompletely } from '../services/userDeletionService';
 import * as userService from '../services/userService';
-import { isValidRole } from '../constants/roles';
+import { isManageableRole, isValidRole, MANAGEABLE_ROLES, normalizeRoleValue } from '../constants/roles';
+
+const ADMIN_ROLES = new Set(['ADMIN', 'SUPER_ADMIN']);
+
+const isAdminActor = (req: Request): boolean =>
+    ADMIN_ROLES.has(normalizeRoleValue((req as any).user?.role));
+
+/** Fields any signed-in user may change on their own profile. */
+const SELF_EDITABLE_USER_FIELDS = new Set(['firstName', 'lastName', 'phone', 'profilePicture']);
+
+/** Revoke every session of a user (deactivation / role change must take effect immediately). */
+async function revokeUserSessions(userId: string): Promise<void> {
+    try {
+        await prisma.accessToken.deleteMany({ where: { userId } });
+    } catch (err) {
+        console.error('Failed to revoke user sessions:', err);
+    }
+}
+
+const toLiteUser = (user: any) => ({
+    _id: user.id,
+    id: user.id,
+    userId: user.userId,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    role: user.role,
+    isActive: user.isActive,
+});
+
+/** Full profile for admins / self; lite fields for everyone else. Secrets are never returned. */
+const shapeUserForViewer = (req: Request, user: any) => {
+    const viewerId = String((req as any).user?.id ?? '');
+    if (!isAdminActor(req) && viewerId !== user.id) return toLiteUser(user);
+    return {
+        ...user,
+        _id: user.id,
+        password: undefined,
+        otp: undefined,
+        otpExpiry: undefined,
+        docusignAccessToken: undefined,
+        docusignRefreshToken: undefined,
+        googleRefreshToken: undefined,
+        gmailConnected: Boolean(user.googleRefreshToken),
+    };
+};
 
 class UserController {
     // Create user (Admin only). Uses service layer with bcrypt.
@@ -26,6 +71,12 @@ class UserController {
                 return res.status(403).json({
                     success: false,
                     message: 'Only Super Admin can assign the Super Admin role',
+                });
+            }
+            if (!isManageableRole(normalizedRequestedRole)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Role must be one of: ${MANAGEABLE_ROLES.join(', ')}`,
                 });
             }
 
@@ -91,18 +142,41 @@ class UserController {
                 filter.role = normalizedRole;
             }
 
+            const statusFilter = String(req.query.status ?? '').trim().toLowerCase();
+            if (statusFilter === 'active') filter.isActive = true;
+            if (statusFilter === 'inactive') filter.isActive = false;
+
+            const search = String(req.query.search ?? '').trim();
+            if (search) {
+                filter.OR = [
+                    { firstName: { contains: search, mode: 'insensitive' } },
+                    { lastName: { contains: search, mode: 'insensitive' } },
+                    { email: { contains: search, mode: 'insensitive' } },
+                ];
+            }
+
+            const adminActor = isAdminActor(req);
+            // Non-admin roles (Agent / Underwriter) only need active users for pickers.
+            if (!adminActor) filter.isActive = true;
+
             const users = await prisma.user.findMany({
                 where: filter,
                 orderBy: { createdAt: 'desc' },
             });
 
-            const shaped = users.map((user: any) => ({
-                ...user,
-                _id: user.id,
-                password: undefined,
-                otp: undefined,
-                otpExpiry: undefined,
-            }));
+            const shaped = adminActor
+                ? users.map((user: any) => ({
+                    ...user,
+                    _id: user.id,
+                    password: undefined,
+                    otp: undefined,
+                    otpExpiry: undefined,
+                    docusignAccessToken: undefined,
+                    docusignRefreshToken: undefined,
+                    googleRefreshToken: undefined,
+                    gmailConnected: Boolean(user.googleRefreshToken),
+                }))
+                : users.map(toLiteUser);
 
             console.log(`Get users by role: ${role}, found ${users.length} users`);
 
@@ -133,17 +207,9 @@ class UserController {
                 });
             }
 
-            const shaped = {
-                ...user,
-                _id: user.id,
-                password: undefined,
-                otp: undefined,
-                otpExpiry: undefined,
-            };
-
             return res.status(200).json({
                 success: true,
-                data: shaped,
+                data: shapeUserForViewer(req, user),
             });
         } catch (error) {
             console.error('Get user by ID error:', error);
@@ -168,17 +234,9 @@ class UserController {
                 });
             }
 
-            const shaped = {
-                ...user,
-                _id: user.id,
-                password: undefined,
-                otp: undefined,
-                otpExpiry: undefined,
-            };
-
             return res.status(200).json({
                 success: true,
-                data: shaped,
+                data: shapeUserForViewer(req, user),
             });
         } catch (error) {
             console.error('Get user by userId error:', error);
@@ -195,6 +253,22 @@ class UserController {
             const { id } = req.params;
             const { firstName, lastName, email, phone, role, isActive, isVerified, profilePicture } = req.body;
 
+            const adminActor = isAdminActor(req);
+            const actorId = String((req as any).user?.id ?? '');
+            if (!adminActor) {
+                // Non-admins may only edit their own basic profile fields.
+                const requestedKeys = Object.keys(req.body ?? {}).filter(
+                    (k) => (req.body as Record<string, unknown>)[k] !== undefined,
+                );
+                const touchesRestricted = requestedKeys.some((k) => !SELF_EDITABLE_USER_FIELDS.has(k));
+                if (actorId !== id || touchesRestricted) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'Admin access required to change this user',
+                    });
+                }
+            }
+
             const user = await prisma.user.findUnique({ where: { id } });
 
             if (!user) {
@@ -202,6 +276,17 @@ class UserController {
                     success: false,
                     message: 'User not found',
                 });
+            }
+
+            if (adminActor && actorId === id) {
+                const demotingSelf =
+                    role !== undefined && normalizeRoleValue(role) !== normalizeRoleValue(user.role);
+                if (demotingSelf || isActive === false) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'You cannot change your own role or deactivate your own account',
+                    });
+                }
             }
 
             // Check if email is being changed and if it already exists
@@ -232,6 +317,13 @@ class UserController {
                         message: 'Only Super Admin can assign the Super Admin role',
                     });
                 }
+                // Keep legacy roles as-is, but new assignments must be supported by this app.
+                if (nr !== normalizeRoleValue(user.role) && !isManageableRole(nr)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Role must be one of: ${MANAGEABLE_ROLES.join(', ')}`,
+                    });
+                }
                 normalizedRoleUpdate = nr as Role;
             }
 
@@ -250,18 +342,17 @@ class UserController {
                 },
             });
 
-            const shaped = {
-                ...updatedUser,
-                _id: updatedUser.id,
-                password: undefined,
-                otp: undefined,
-                otpExpiry: undefined,
-            };
+            const roleChanged =
+                normalizedRoleUpdate !== undefined &&
+                normalizeRoleValue(normalizedRoleUpdate) !== normalizeRoleValue(user.role);
+            if ((isActive === false && user.isActive) || roleChanged) {
+                await revokeUserSessions(updatedUser.id);
+            }
 
             return res.status(200).json({
                 success: true,
                 message: 'User updated successfully',
-                data: shaped,
+                data: shapeUserForViewer(req, updatedUser),
             });
         } catch (error) {
             console.error('Update user error:', error);
@@ -330,23 +421,26 @@ class UserController {
                 });
             }
 
+            if (String((req as any).user?.id ?? '') === id) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'You cannot deactivate your own account',
+                });
+            }
+
             const updatedUser = await prisma.user.update({
                 where: { id },
                 data: { isActive: !user.isActive },
             });
 
-            const shaped = {
-                ...updatedUser,
-                _id: updatedUser.id,
-                password: undefined,
-                otp: undefined,
-                otpExpiry: undefined,
-            };
+            if (!updatedUser.isActive) {
+                await revokeUserSessions(updatedUser.id);
+            }
 
             return res.status(200).json({
                 success: true,
-                message: `User ${user.isActive ? 'activated' : 'deactivated'} successfully`,
-                data: shaped,
+                message: `User ${updatedUser.isActive ? 'activated' : 'deactivated'} successfully`,
+                data: shapeUserForViewer(req, updatedUser),
             });
         } catch (error) {
             console.error('Toggle user active error:', error);

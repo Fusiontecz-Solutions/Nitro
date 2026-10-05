@@ -28,7 +28,13 @@ export type ApplicationActivityActionType =
   | 'CONTRACT_REINITIATED'
   | 'CONTRACT_GENERATED'
   | 'CONTRACT_DRAFT_CREATED'
-  | 'CONTRACT_ENVELOPE_SENT';
+  | 'CONTRACT_ENVELOPE_SENT'
+  // Agent / Underwriter workflow
+  | 'SUBMITTED_TO_UNDERWRITING'
+  | 'SENT_TO_AGENT_APPROVAL'
+  | 'RETURNED_TO_UNDERWRITER'
+  | 'SENT_TO_ISO_APPROVAL'
+  | 'ISO_APPROVED';
 
 export interface CreateApplicationActivityLogInput {
   applicationId: string | null;

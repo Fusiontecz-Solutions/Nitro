@@ -401,7 +401,13 @@ export function knownLayoutKeyFromSettingsName(
   if (slug === 'exhibit_a' || slug.includes('exhibit_a')) {
     return SIGNNOW_EXHIBIT_A_LAYOUT_KEY;
   }
-  if (slug === 'flex_addendum' || (slug.includes('flex') && slug.includes('addendum'))) {
+  // Tiberian titles its copy "FLEX TIBERIAN FUNDING" — no "addendum" in it.
+  if (
+    slug === 'flex_addendum' ||
+    (slug.includes('flex') && slug.includes('addendum')) ||
+    slug === 'flex' ||
+    slug.startsWith('flex_')
+  ) {
     return SIGNNOW_FLEX_ADDENDUM_LAYOUT_KEY;
   }
   if (

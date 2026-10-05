@@ -7,7 +7,8 @@ import {
   type AuthenticatedUser,
 } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
-import { notificationTriageDefaults } from '../services/notificationCategory';
+import { notifyDealUsersOfComment } from '../services/publicPortalCommentNotificationService';
+import { sendExternalCommentToIsoEmail } from '../services/isoExternalCommentMailService';
 
 const applicationAccessDeniedMessage =
   'Forbidden: you do not have access to this application';
@@ -16,6 +17,7 @@ const applicationCommentAccessSelect = {
   id: true,
   currentQueue: true,
   claimedByUnderwriterId: true,
+  assignedUnderwriterId: true,
   clientId: true,
   applicationId: true,
 } as const;
@@ -24,6 +26,7 @@ type ApplicationCommentAccessRow = {
   id: string;
   currentQueue: string;
   claimedByUnderwriterId?: string | null;
+  assignedUnderwriterId?: string | null;
   clientId: string;
   applicationId: number;
 };
@@ -213,7 +216,31 @@ class CommentController {
         });
       }
 
-      // Notify Underwriter(s) when ISO comments are added from approval page.
+      const isPublicActor = isPublicClientActor || isPublicIsoActor;
+      const actorName = String((req as any).user?.name || '').trim() || null;
+
+      // In-app bell + `comment:new` socket for everyone on the deal (and all Super Admins).
+      // Public ISO sessions map to a CRM user — pass null so that user still gets a row.
+      void notifyDealUsersOfComment({
+        applicationId: application.id,
+        commentBody: content.trim(),
+        commentType: normalizedType,
+        actorName,
+        actorRole: isPublicActor ? null : String((req as any).user?.role || '') || null,
+        createdById: isPublicActor ? null : userId || null,
+        preferIsoActorLabel: isPublicIsoActor,
+      }).catch((err) => console.error('[comment] deal notification failed:', err));
+
+      // Staff External Comment → email the ISO with a "Reply in portal" link.
+      if (normalizedType === 'External Comment' && !isPublicActor) {
+        void sendExternalCommentToIsoEmail({
+          applicationId: application.id,
+          commentBody: content.trim(),
+          actorName,
+        });
+      }
+
+      // Email Underwriter(s) when ISO comments are added from approval page.
       if (normalizedType === 'ISO Comment') {
         try {
           const finalUwRecipients = new Set<string>();
@@ -241,9 +268,8 @@ class CommentController {
             finalUnderwriters.forEach((u) => finalUwRecipients.add(String(u.id)));
           }
 
-          if (finalUwRecipients.size > 0) {
-            const actorName =
-              ((req as any).user?.name && String((req as any).user?.name).trim()) || 'ISO';
+          if (finalUwRecipients.size > 0 && isOutboundSmtpConfigured()) {
+            const isoActorName = actorName || 'ISO';
             const clientRecord = await prisma.client.findUnique({
               where: { id: application.clientId },
               select: {
@@ -257,46 +283,30 @@ class CommentController {
               `${clientRecord?.ownerFirstName || ''} ${clientRecord?.ownerLastName || ''}`.trim() ||
               'Client';
             const appNumber = application.applicationId ?? 'N/A';
-            const title = `ISO comment on Application #${appNumber}`;
-            const message = `${actorName} posted an ISO comment for ${clientName}. Please review updated values/comments on the approval page.`;
 
-            await prisma.notification.createMany({
-              data: Array.from(finalUwRecipients).map((recipientId) => ({
-                title,
-                message,
-                type: 'application_update',
-                recipientId,
-                applicationId: application.id,
-                createdById: userId || undefined,
-                ...notificationTriageDefaults('application_update', application),
-              })),
+            const recipientUsers = await prisma.user.findMany({
+              where: { id: { in: Array.from(finalUwRecipients) } },
+              select: { email: true, firstName: true, lastName: true },
             });
-
-            if (isOutboundSmtpConfigured()) {
-              const recipientUsers = await prisma.user.findMany({
-                where: { id: { in: Array.from(finalUwRecipients) } },
-                select: { email: true, firstName: true, lastName: true },
+            const mailTargets = recipientUsers
+              .map((u) => (u.email || '').trim())
+              .filter(Boolean);
+            if (mailTargets.length > 0) {
+              const html = `
+                <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
+                  <h3 style="margin: 0 0 12px;">ISO Comment Notification</h3>
+                  <p style="margin: 0 0 8px;"><strong>Application:</strong> #${appNumber}</p>
+                  <p style="margin: 0 0 8px;"><strong>Client:</strong> ${clientName}</p>
+                  <p style="margin: 0 0 8px;"><strong>From:</strong> ${isoActorName}</p>
+                  <p style="margin: 0 0 8px;"><strong>Comment:</strong> ${content.trim()}</p>
+                  <p style="margin: 0;">Please review the approval page and update values if needed.</p>
+                </div>
+              `;
+              await sendMail({
+                to: mailTargets,
+                subject: `ISO comment received for Application #${appNumber}`,
+                html,
               });
-              const mailTargets = recipientUsers
-                .map((u) => (u.email || '').trim())
-                .filter(Boolean);
-              if (mailTargets.length > 0) {
-                const html = `
-                  <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
-                    <h3 style="margin: 0 0 12px;">ISO Comment Notification</h3>
-                    <p style="margin: 0 0 8px;"><strong>Application:</strong> #${appNumber}</p>
-                    <p style="margin: 0 0 8px;"><strong>Client:</strong> ${clientName}</p>
-                    <p style="margin: 0 0 8px;"><strong>From:</strong> ${actorName}</p>
-                    <p style="margin: 0 0 8px;"><strong>Comment:</strong> ${content.trim()}</p>
-                    <p style="margin: 0;">Please review the approval page and update values if needed.</p>
-                  </div>
-                `;
-                await sendMail({
-                  to: mailTargets,
-                  subject: `ISO comment received for Application #${appNumber}`,
-                  html,
-                });
-              }
             }
           }
         } catch (notifyError) {

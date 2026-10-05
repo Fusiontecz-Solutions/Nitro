@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   buildSignNowPrefillFingerprint,
   resolveSignNowPrefillReuse,
@@ -30,6 +31,24 @@ describe('buildSignNowPrefillFingerprint', () => {
       values: { net_to_merchant: '38,000.00', underwriter_fee: '2,000.00' },
     });
     expect(withWireFee).not.toBe(withoutWireFee);
+  });
+
+  it('changes when the field mapping changes but values do not', () => {
+    // A group built before a mapping fix (no `mapping` key in the payload) must
+    // not be reused: its pages still carry what the old mapping printed, e.g.
+    // the business name on the Monthly Fee "Print Name of Account Holder" line.
+    const values = { client_name: 'MATHEW CHARLES MILLER', legal_name: 'AMERICAN RADIATOR INC' };
+    const beforeMappingFix = createHash('sha256')
+      .update(JSON.stringify({ package: PACKAGE, values }))
+      .digest('hex');
+    const current = buildSignNowPrefillFingerprint({ packageFingerprint: PACKAGE, values });
+    expect(current).not.toBe(beforeMappingFix);
+    expect(
+      resolveSignNowPrefillReuse({
+        previousFingerprint: beforeMappingFix,
+        currentFingerprint: current,
+      }).reuse,
+    ).toBe(false);
   });
 
   it('changes when the package structure changes but values do not', () => {

@@ -1,6 +1,11 @@
 import type { UploadedFile } from 'express-fileupload';
 import { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import {
+  invalidateSenderDirectoryCache,
+  MissingSenderNameError,
+  type MailSender,
+} from './mailSenderIdentity';
 import uploadService from './uploadService';
 import {
   DEFAULT_FUNDER_CONTRACT_FILENAME,
@@ -66,6 +71,8 @@ export type FunderProfileInput = {
   contactEmail?: string | null;
   contactPhone?: string | null;
   defaultCcEmail?: string | null;
+  sendgridFromEmail?: string | null;
+  sendgridFromName?: string | null;
   addressLine1?: string | null;
   addressCity?: string | null;
   addressState?: string | null;
@@ -176,6 +183,8 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
     contactEmail: row.contactEmail != null ? String(row.contactEmail) : null,
     contactPhone: row.contactPhone != null ? String(row.contactPhone) : null,
     defaultCcEmail: row.defaultCcEmail != null ? String(row.defaultCcEmail) : null,
+    sendgridFromEmail: row.sendgridFromEmail != null ? String(row.sendgridFromEmail) : null,
+    sendgridFromName: row.sendgridFromName != null ? String(row.sendgridFromName) : null,
     addressLine1: row.addressLine1 != null ? String(row.addressLine1) : null,
     addressCity: row.addressCity != null ? String(row.addressCity) : null,
     addressState: row.addressState != null ? String(row.addressState) : null,
@@ -385,6 +394,64 @@ export async function resolveFunderProfile(options: {
     serializeFunderProfile(r as unknown as Record<string, unknown>),
   );
   return pickFunderProfileFromList(serialized, funderName, options.state) ?? null;
+}
+
+/** A funder's SendGrid sender is all-or-nothing: an address always carries its display name. */
+function assertSendGridSenderComplete(email?: string | null, name?: string | null): void {
+  const hasEmail = Boolean(String(email ?? '').trim());
+  const hasName = Boolean(String(name ?? '').trim());
+  if (hasEmail && !hasName) {
+    throw new Error(
+      'SendGrid From Name is required when a SendGrid From Email is set (e.g. "Tiberian Funding").',
+    );
+  }
+  if (hasName && !hasEmail) {
+    throw new Error('SendGrid From Email is required when a SendGrid From Name is set.');
+  }
+}
+
+/**
+ * The funder's own SendGrid sender identity, or null to use the default sender
+ * (SENDGRID_FROM_EMAIL + SENDGRID_FROM_NAME). Looks the funder up by name first;
+ * without a name, uses the funder on the application's most recent contract.
+ * Throws when the funder has a sender address but no display name, so the mail
+ * never goes out under another identity's name.
+ */
+export async function resolveFunderMailSender(options: {
+  funderName?: string | null;
+  applicationId?: string | null;
+}): Promise<MailSender | null> {
+  let funderName = String(options.funderName ?? '').trim();
+  let state: string | null = null;
+  const applicationId = String(options.applicationId ?? '').trim();
+  if (!funderName && applicationId) {
+    const contract = await prisma.contract.findFirst({
+      where: { applicationId, funderName: { not: null } },
+      select: { funderName: true, state: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    funderName = String(contract?.funderName ?? '').trim();
+    state = contract?.state ?? null;
+  }
+  if (!funderName) return null;
+  const profile = await resolveFunderProfile({ funderName, state });
+  const email = profile?.sendgridFromEmail?.trim();
+  if (!email) return null;
+  const name = profile?.sendgridFromName?.trim();
+  if (!name) throw new MissingSenderNameError(email);
+  return { email, name };
+}
+
+/** Funder sender for a SignNow group / DocuSign envelope, via its CRM document row. */
+export async function resolveEnvelopeMailSender(envelopeId: string): Promise<MailSender | null> {
+  const id = String(envelopeId || '').trim();
+  if (!id) return null;
+  const document = await prisma.document.findUnique({
+    where: { envelopeId: id },
+    select: { applicationId: true },
+  });
+  const applicationId = String(document?.applicationId || '').trim();
+  return applicationId ? resolveFunderMailSender({ applicationId }) : null;
 }
 
 export async function listFunderProfiles(options?: { state?: string | null; activeOnly?: boolean }) {
@@ -1094,6 +1161,7 @@ export async function uploadFunderLetterLogo(funderId: string, file: UploadedFil
 }
 
 export async function createFunderProfile(input: FunderProfileInput) {
+  assertSendGridSenderComplete(input.sendgridFromEmail, input.sendgridFromName);
   const contractDefaults = defaultContractFields(input);
   const row = await prisma.funderProfile.create({
     data: {
@@ -1113,6 +1181,8 @@ export async function createFunderProfile(input: FunderProfileInput) {
       contactEmail: input.contactEmail ? String(input.contactEmail).trim() : null,
       contactPhone: input.contactPhone ? String(input.contactPhone).trim() : null,
       defaultCcEmail: input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null,
+      sendgridFromEmail: input.sendgridFromEmail ? String(input.sendgridFromEmail).trim() : null,
+      sendgridFromName: input.sendgridFromName ? String(input.sendgridFromName).trim() : null,
       addressLine1: input.addressLine1 ? String(input.addressLine1).trim() : null,
       addressCity: input.addressCity ? String(input.addressCity).trim() : null,
       addressState: input.addressState ? String(input.addressState).trim() : null,
@@ -1190,6 +1260,7 @@ export async function createFunderProfile(input: FunderProfileInput) {
     },
     include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
+  invalidateSenderDirectoryCache();
   const [enriched] = await enrichFunderProfilesWithSharedNames([
     serializeFunderProfile(row as unknown as Record<string, unknown>),
   ]);
@@ -1244,6 +1315,16 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
   if (input.defaultCcEmail !== undefined) {
     data.defaultCcEmail = input.defaultCcEmail ? String(input.defaultCcEmail).trim() : null;
   }
+  if (input.sendgridFromEmail !== undefined) {
+    data.sendgridFromEmail = input.sendgridFromEmail ? String(input.sendgridFromEmail).trim() : null;
+  }
+  if (input.sendgridFromName !== undefined) {
+    data.sendgridFromName = input.sendgridFromName ? String(input.sendgridFromName).trim() : null;
+  }
+  assertSendGridSenderComplete(
+    input.sendgridFromEmail !== undefined ? input.sendgridFromEmail : existing.sendgridFromEmail,
+    input.sendgridFromName !== undefined ? input.sendgridFromName : existing.sendgridFromName,
+  );
   if (input.addressLine1 !== undefined) {
     data.addressLine1 = input.addressLine1 ? String(input.addressLine1).trim() : null;
   }
@@ -1375,6 +1456,7 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
     data,
     include: { docusignAccountProfile: { select: { id: true, name: true, defaultCcEmail: true } } },
   });
+  invalidateSenderDirectoryCache();
   const [enriched] = await enrichFunderProfilesWithSharedNames([
     serializeFunderProfile(row as unknown as Record<string, unknown>),
   ]);
@@ -1387,6 +1469,7 @@ export async function deleteFunderProfile(id: string) {
     select: { logoPublicId: true, letterLogoPublicId: true },
   });
   await prisma.funderProfile.delete({ where: { id } });
+  invalidateSenderDirectoryCache();
   const logoPublicId = String(existing?.logoPublicId || '').trim();
   if (logoPublicId) {
     void uploadService.deleteFile(logoPublicId, 'image');

@@ -1,7 +1,11 @@
 import express from 'express';
 import positionController from '../controllers/positionController';
+import { authenticateToken } from '../middleware/authMiddleware';
 
 const router = express.Router();
+
+// All position routes require authentication.
+router.use(authenticateToken);
 
 // Create a new position
 router.post('/', positionController.create.bind(positionController));

@@ -21,6 +21,9 @@ model User {
   docusignRefreshToken       String?
   docusignTokenExpiry        DateTime?
   googleRefreshToken         String?
+  /// Gmail address connected via Google OAuth (Agent ISO approval mail is sent from this mailbox).
+  googleEmail                String?
+  googleConnectedAt          DateTime?
   accessTokens               AccessToken[]
   underwriterApprovedApps    Application[]                 @relation("ApplicationApprovedByUnderwriter")
   underwriterAssignedApps    Application[]                 @relation("ApplicationAssignedUnderwriter")
@@ -48,6 +51,7 @@ model User {
   termsOffers                TermsOffer[]
   verificationTokens         VerificationToken[]
   outbound_communications    outbound_communications[]
+  ownedEmailThreads          ApplicationEmailThread[]
 }
 
 model AccessToken {
@@ -268,6 +272,7 @@ model Application {
   PublicApprovalToken             PublicApprovalToken[]
   termsOffers                     TermsOffer[]
   outbound_communications         outbound_communications[]
+  emailThreads                    ApplicationEmailThread[]
 
   @@index([isoId])
   @@index([dealId])
@@ -841,8 +846,28 @@ enum RequestStatus {
   VERIFIED
 }
 
+/// Gmail conversation used for a workflow email (e.g. Agent -> ISO approval request).
+/// Follow-up sends reply on the same thread so the ISO sees one chain per deal.
+model ApplicationEmailThread {
+  id               String      @id @default(uuid()) @db.Uuid
+  applicationId    String      @db.Uuid
+  /// ISO_APPROVAL for the Agent -> ISO approval chain.
+  purpose          String      @db.VarChar(32)
+  /// User whose connected Gmail mailbox owns the thread.
+  ownerUserId      String?     @db.Uuid
+  mailboxEmail     String?
+  gmailThreadId    String
+  /// RFC 5322 Message-ID of the latest message we sent (used for In-Reply-To).
+  lastMessageId    String?
+  /// Accumulated References header for threading.
+  references       String?
+  subject          String?
+  counterpartEmail String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  application      Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  owner            User?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
-
-
-
-
+  @@unique([applicationId, purpose])
+  @@index([gmailThreadId])
+}

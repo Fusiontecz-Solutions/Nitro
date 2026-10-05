@@ -43,10 +43,23 @@ export type SignNowPrefillFingerprintSource = {
   values: Record<string, string> | null | undefined;
 };
 
+/**
+ * Version of the CRM-value → widget mapping in `signnow-field-map.ts`.
+ *
+ * The fingerprint only sees CRM values, so a mapping fix left every group built
+ * before it reusable: the Monthly Fee "Print Name of Account Holder" line
+ * (`authorization_client_name_print_p1`) was corrected to Owner 1 on 09-28, yet
+ * a deal sent on 09-24 with unchanged values kept reusing its group, with the
+ * business name already baked onto the page. Bump this whenever a mapping
+ * change alters what an existing widget prints, so those groups are rebuilt.
+ */
+export const SIGNNOW_PREFILL_MAPPING_VERSION = '2026-10-05.monthly-fee-print-name';
+
 export function buildSignNowPrefillFingerprint(
   input: SignNowPrefillFingerprintSource,
 ): string {
   const payload = {
+    mapping: SIGNNOW_PREFILL_MAPPING_VERSION,
     package: String(input.packageFingerprint || '').trim().toLowerCase(),
     values: canonicalizeValues(input.values),
   };

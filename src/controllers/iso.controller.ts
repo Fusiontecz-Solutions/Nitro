@@ -1,5 +1,18 @@
 import type { Request, Response } from 'express';
 import isoService from '../services/iso.service';
+import { normalizeRoleValue } from '../constants/roles';
+
+/** Agents / Underwriters only need ISO identity for the picker — never banking details. */
+const isWorkflowViewer = (req: Request) => ['AGENT', 'UNDERWRITER'].includes(normalizeRoleValue(req.user?.role));
+
+const toIsoPickerItem = (iso: any) => ({
+    id: iso?.id,
+    _id: iso?.id,
+    name: iso?.name,
+    email: iso?.email ?? null,
+    phone: iso?.phone ?? null,
+    status: iso?.status ?? null,
+});
 
 class IsoController {
     async create(req: Request, res: Response) {
@@ -18,12 +31,12 @@ class IsoController {
         }
     }
 
-    async getAll(_req: Request, res: Response) {
+    async getAll(req: Request, res: Response) {
         try {
             const data = await isoService.getAll();
             return res.status(200).json({
                 success: true,
-                data,
+                data: isWorkflowViewer(req) && Array.isArray(data) ? data.map(toIsoPickerItem) : data,
             });
         } catch (error: any) {
             return res.status(500).json({
@@ -44,7 +57,7 @@ class IsoController {
             }
             return res.status(200).json({
                 success: true,
-                data: iso,
+                data: isWorkflowViewer(req) ? toIsoPickerItem(iso) : iso,
             });
         } catch (error: any) {
             return res.status(400).json({

@@ -2,7 +2,26 @@ import express from 'express';
 import multer from 'multer';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { requireRoles } from '../middleware/requireRoles';
+import { forbidRoles } from '../middleware/forbidRoles';
+import { requirePermission } from '../middleware/requirePermission';
+import { PERMISSIONS } from '../constants/rolePermissions';
 import applicationController from '../controllers/applicationController';
+import applicationWorkflowController from '../controllers/applicationWorkflowController';
+
+/**
+ * Agent / Underwriter move deals only through the dedicated workflow endpoints
+ * (submit, claim, send-to-agent, return, send-to-ISO) — never raw queue/state writes.
+ */
+const blockWorkflowRoles = forbidRoles('AGENT', 'UNDERWRITER');
+
+/**
+ * `/approve` is used by ISO public-portal sessions (JWT carries the referring agent's role
+ * plus `publicApprovalActor`). Workflow roles acting as themselves may not self-approve.
+ */
+const allowApproveActor: express.RequestHandler = (req, res, next) => {
+    if (req.user?.publicApprovalActor) return next();
+    return blockWorkflowRoles(req, res, next);
+};
 
 const router = express.Router();
 
@@ -46,24 +65,33 @@ router.post('/extract-business-details', applicationController.processPDFUpload.
 router.post('/extract-pdf', applicationController.processPDFUpload.bind(applicationController));
 
 // Auto-create client + application directly from uploaded PDF
-router.post('/auto-create-from-pdf', applicationController.autoCreateFromPDF.bind(applicationController));
+router.post('/auto-create-from-pdf', blockWorkflowRoles, applicationController.autoCreateFromPDF.bind(applicationController));
 
 // OCR microservice → parse → create client + application (multipart field: `pdf`)
 router.post(
     '/upload',
+    blockWorkflowRoles,
     applicationPdfMemoryUpload.single('pdf'),
     applicationController.uploadApplicationPdfOcrCreate.bind(applicationController),
 );
 
 // Send approval email to client (non-blocking email send)
 router.post('/send-approval-email', applicationController.sendApprovalEmail.bind(applicationController));
-router.post('/reinitiate-contract', applicationController.reinitiateContract.bind(applicationController));
+router.post('/reinitiate-contract', blockWorkflowRoles, applicationController.reinitiateContract.bind(applicationController));
 
 // Funded / funds-released email (OPERATIONS only; non-blocking)
-router.post('/send-funded-email', applicationController.sendFundedEmail.bind(applicationController));
+router.post('/send-funded-email', blockWorkflowRoles, applicationController.sendFundedEmail.bind(applicationController));
 
 // Create a new application (with optional file uploads - field: 'files')
-router.post('/', applicationController.create.bind(applicationController));
+router.post(
+    '/',
+    requirePermission(PERMISSIONS.APPLICATION_CREATE),
+    applicationController.create.bind(applicationController),
+);
+
+// Agent / Underwriter workflow: role-scoped dashboard counts + queues (before '/:id')
+router.get('/workflow/summary', applicationWorkflowController.summary.bind(applicationWorkflowController));
+router.get('/workflow/queue', applicationWorkflowController.queue.bind(applicationWorkflowController));
 
 // Super Admin: historical applications import from Excel (field: `file`)
 router.post(
@@ -183,7 +211,28 @@ router.post(
 );
 
 // Update application queue
-router.patch('/:id/queue', applicationController.updateQueue.bind(applicationController));
+router.patch('/:id/queue', blockWorkflowRoles, applicationController.updateQueue.bind(applicationController));
+
+// Agent: move a draft into the Underwriter pool
+router.post(
+    '/:id/submit-to-underwriting',
+    requirePermission(PERMISSIONS.APPLICATION_SUBMIT_UNDERWRITING),
+    applicationWorkflowController.submitToUnderwriting.bind(applicationWorkflowController),
+);
+// Underwriter: underwriting complete → Agent Approval
+router.post(
+    '/:id/send-to-agent-approval',
+    requirePermission(PERMISSIONS.UNDERWRITING_SEND_TO_AGENT),
+    applicationWorkflowController.sendToAgentApproval.bind(applicationWorkflowController),
+);
+// Agent: request changes → back to the Underwriter
+router.post(
+    '/:id/return-to-underwriter',
+    requirePermission(PERMISSIONS.AGENT_APPROVAL_ACT),
+    applicationWorkflowController.returnToUnderwriter.bind(applicationWorkflowController),
+);
+// ISO approval email history (Gmail thread + recorded sends)
+router.get('/:id/email-thread', applicationWorkflowController.emailThread.bind(applicationWorkflowController));
 
 // Scrubbing exclusive claim (avoids multiple underwriters working the same deal)
 router.post(
@@ -232,16 +281,17 @@ router.post(
 );
 
 // Update application state
-router.patch('/:id/state', applicationController.updateState.bind(applicationController));
+router.patch('/:id/state', blockWorkflowRoles, applicationController.updateState.bind(applicationController));
 
 // Update document checklist (checked document labels)
 router.patch('/:id/document-checklist', applicationController.updateDocumentChecklist.bind(applicationController));
 
 // Reject/Decline application
+// Agents may decline their own deals (access is scoped in the controller via getApplicationForUser).
 router.post('/:id/reject', applicationController.rejectApplication.bind(applicationController));
 
 // Approve application (idempotent webhook-style endpoint; works for CRM users + ISO public-portal sessions)
-router.post('/:id/approve', applicationController.approve.bind(applicationController));
+router.post('/:id/approve', allowApproveActor, applicationController.approve.bind(applicationController));
 
 // Application activity logs
 router.get(
@@ -274,6 +324,6 @@ router.delete(
 );
 
 // Soft-delete application (moves to Recently Deleted)
-router.delete('/:id', applicationController.delete.bind(applicationController));
+router.delete('/:id', blockWorkflowRoles, applicationController.delete.bind(applicationController));
 
 export default router;

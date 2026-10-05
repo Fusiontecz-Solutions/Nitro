@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import { isValidRole, ROLES } from '../constants/roles';
+import { isAppAllowedRole, isValidRole, ROLES } from '../constants/roles';
 import type { Role } from '@prisma/client';
 
 const SALT_ROUNDS = 10;
@@ -112,6 +112,10 @@ export const impersonateUserService = async (
 
   if (user.role === "ADMIN" || user.role === "SUPER_ADMIN") {
     throw new Error("Cannot impersonate another admin");
+  }
+
+  if (user.isActive === false || !isAppAllowedRole(user.role)) {
+    throw new Error("This user cannot sign in to this application");
   }
 
   const payload = {

@@ -14,6 +14,7 @@ import { createApplicationActivityLog } from '../services/applicationActivityLog
 import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
 import { syncContractValuesFromOfferDecision } from '../services/contractOfferValueSync';
+import { isPreIsoApprovalQueue } from '../constants/applicationWorkflow';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -250,7 +251,8 @@ class OfferDecisionController {
        * can generate the contract. Keep this on the hot path so `meta` is accurate.
        */
       let movedToContractPending = false;
-      if (decisionNorm === 'approved') {
+      // Agent → Underwriter workflow deals reach Contract Pending only after ISO approval.
+      if (decisionNorm === 'approved' && !isPreIsoApprovalQueue(app.currentQueue)) {
         try {
           movedToContractPending = await syncApplicationToContractPending(
             prisma,

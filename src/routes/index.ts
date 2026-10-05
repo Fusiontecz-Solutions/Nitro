@@ -32,6 +32,8 @@ import backgroundCheckRoutes from './backgroundCheckRoutes';
 import opencorporatesRoutes from './opencorporatesRoutes';
 import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
 import notificationRoutes from './notificationRoutes';
+import gmailRoutes, { googleOAuthCallbackRouter } from './gmailRoutes';
+import { denyAgentWrites, denyWorkflowRoles } from '../middleware/denyWorkflowRoles';
 
 /**
  * Contract-workflow API surface.
@@ -45,29 +47,32 @@ router.use('/applications', applicationRoutes);
 router.use('/public', publicApprovalRoutes);
 router.use('/users', userRoutes);
 router.use('/uploads', uploadRoutes);
-router.use('/contract-templates', contractTemplateRoutes);
+router.use('/contract-templates', denyWorkflowRoles, contractTemplateRoutes);
 router.use('/comments', commentRoutes);
-router.use('/positions', positionRoutes);
-router.use('/terms-offers', termsOfferRoutes);
+router.use('/positions', denyAgentWrites, positionRoutes);
+router.use('/terms-offers', denyAgentWrites, termsOfferRoutes);
 router.use('/notes', noteRoutes);
 router.use('/application-questions', applicationQuestionRoutes);
-router.use('/bank-details', bankDetailRoutes);
-router.use('/final-answers', finalAnswerRoutes);
-router.use('/months', monthRoutes);
-router.use('/transactions', transactionRoutes);
-router.use('/bank-analysis', bankAnalysisRoutes);
-router.use('/docusign', docusignRoutes);
-router.use('/boldsign', boldsignRoutes);
-router.use('/offer-decisions', offerDecisionRoutes);
-router.use('/contract', contractRoutes);
+router.use('/bank-details', denyAgentWrites, bankDetailRoutes);
+router.use('/final-answers', denyAgentWrites, finalAnswerRoutes);
+router.use('/months', denyAgentWrites, monthRoutes);
+router.use('/transactions', denyAgentWrites, transactionRoutes);
+router.use('/bank-analysis', denyAgentWrites, bankAnalysisRoutes);
+router.use('/docusign', denyWorkflowRoles, docusignRoutes);
+router.use('/boldsign', denyWorkflowRoles, boldsignRoutes);
+router.use('/offer-decisions', denyAgentWrites, offerDecisionRoutes);
+router.use('/contract', denyWorkflowRoles, contractRoutes);
 router.use('/iso', isoRoutes);
 router.use('/sendgrid', sendgridWebhookRoutes);
-router.use('/signnow', signnowWebhookRoutes);
-router.use('/mail', mailRoutes);
-router.use('/integration-settings', integrationSettingsRoutes);
+router.use('/signnow', denyWorkflowRoles, signnowWebhookRoutes);
+router.use('/mail', denyWorkflowRoles, mailRoutes);
+router.use('/integration-settings', denyWorkflowRoles, integrationSettingsRoutes);
 router.use('/background-checks', backgroundCheckRoutes);
 router.use('/opencorporates', opencorporatesRoutes);
 router.use('/background-check-report', backgroundCheckReportRoutes);
 router.use('/notifications', notificationRoutes);
+// Per-user Gmail connection (Agent ISO approval mail). Callback is public; identity is in signed state.
+router.use('/google', googleOAuthCallbackRouter);
+router.use('/gmail', gmailRoutes);
 
 export default router;

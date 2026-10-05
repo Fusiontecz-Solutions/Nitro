@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { Request } from 'express';
-import { getSendGridMailFrom, sendSendGridMail } from '../config/nodemailer';
+import { sendSendGridMail } from '../config/nodemailer';
 import type { AuthenticatedUser } from './applicationService';
 import {
   assertApplicationMailLogAccess,
@@ -15,6 +15,7 @@ import {
   storeSgMessageIdOnOutbound,
 } from './outboundCommunicationService';
 import { isPayoffOrZeroBalanceLetterTemplate } from '../utils/payoffOrZeroBalanceLetter';
+import { resolveFunderMailSender } from './funderProfileService';
 
 export interface SendPaymentTemplateMailInput {
   to: string;
@@ -146,7 +147,9 @@ export async function sendTrackedPaymentTemplateMail(
       cc: input.cc,
       bcc: input.bcc,
       replyTo: input.replyTo,
-      from: getSendGridMailFrom(),
+      // The application's funder sender identity; the .env default sender when it has none.
+      from:
+        (await resolveFunderMailSender({ applicationId: access.application.id })) ?? undefined,
       trackingId,
       categories: ['payment-template'],
       ...(mailAttachments.length ? { attachments: mailAttachments } : {}),

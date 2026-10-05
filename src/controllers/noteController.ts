@@ -127,6 +127,8 @@ class NoteController {
               firstName: true,
               lastName: true,
               email: true,
+              // Surfaced so the UI can label a note with its author's role.
+              role: true,
             },
           },
         },
@@ -180,6 +182,8 @@ class NoteController {
               firstName: true,
               lastName: true,
               email: true,
+              // Surfaced so the UI can label a note with its author's role.
+              role: true,
             },
           },
         },

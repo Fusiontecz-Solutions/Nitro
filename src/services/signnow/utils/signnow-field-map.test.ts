@@ -7,6 +7,7 @@ import {
   EXHIBIT_C_REQUIRED_UNIQUE_NAMES,
   TIBERIAN_ACH_DAILY_FIELD_NAMES,
   TIBERIAN_EPA_FIELD_NAMES,
+  TIBERIAN_FLEX_ADDENDUM_FIELD_NAMES,
   TIBERIAN_EXHIBIT_A_FIELD_NAMES,
   TIBERIAN_EXHIBIT_C_FIELD_NAMES,
   isDedicatedContractP22RequiredField,
@@ -806,6 +807,74 @@ describe('signnow-field-map', () => {
    * `TIBERIAN_EPA_FIELD_NAMES`) and asserts all three titles fill identically,
    * line for line.
    */
+  /**
+   * Tiberian's Flex Addendum has its own widget names and an extra "Net Funds
+   * Provided" column (see `TIBERIAN_FLEX_ADDENDUM_FIELD_NAMES`). The table only
+   * fills from the document's own CRM tab; the owner block from the deal.
+   */
+  describe('Tiberian Flex Addendum', () => {
+    const names = [...TIBERIAN_FLEX_ADDENDUM_FIELD_NAMES];
+    const documentName = 'FLEX TIBERIAN FUNDING (1)';
+    const prefill = {
+      client_name: 'MARY IRVIN',
+      owner2_guarantor_name: 'JOHN IRVIN',
+      guaranty_guarantor1_ss: '123-45-6789',
+      guaranty_guarantor2_ss: '987-65-4321',
+      payment_amount: '999.00',
+      net_funds: '50,000.00',
+      disbursement_amount: '48,000.00',
+    };
+    const filled = (values: Record<string, string>) =>
+      Object.fromEntries(
+        buildSignNowDocumentPrefillTexts(
+          names,
+          values,
+          signNowPrefillOptionsForDocument(documentName, names),
+        ).map((row) => [row.field_name, row.prefilled_text]),
+      );
+
+    it('covers the live inventory: 24 rows x 4 columns plus the owner block', () => {
+      expect(names).toHaveLength(24 * 4 + 6);
+      expect(names).toContain('net_funds_provided_1');
+      expect(names).toContain('net_funds_provided_24');
+    });
+
+    it('is a plain addendum, never the Tiberian agreement', () => {
+      expect(isSupplementalSignNowDocumentName(documentName)).toBe(true);
+      expect(signNowPrefillDocumentKind(documentName, names)).not.toBe('tiberian_agreement');
+      expect(signNowPrefillDocumentKind(documentName, names)).not.toBe('exhibit_c');
+    });
+
+    it('fills the owner block from the deal and leaves the table to the tab', () => {
+      expect(filled(prefill)).toEqual({
+        owner_guarantor_1_name: 'MARY IRVIN',
+        owner_guarantor_2_name: 'JOHN IRVIN',
+        owner_guarantor_1_ssn: '123456789',
+        owner_guarantor_2_ssn: '987654321',
+      });
+    });
+
+    it('prints each installment column from the values typed for it', () => {
+      const out = filled({
+        ...prefill,
+        payment_date_1: '10/01/2026',
+        net_funds_provided_1: '25,000.00',
+        payment_amount_1: '425.00',
+        receivables_purchased_1: '35,000.00',
+        net_funds_provided_24: '1,000.00',
+      });
+      expect(out).toMatchObject({
+        payment_date_1: '10/01/2026',
+        net_funds_provided_1: '25,000.00',
+        payment_amount_1: '425.00',
+        receivables_purchased_1: '35,000.00',
+        net_funds_provided_24: '1,000.00',
+      });
+      expect(out.payment_amount_2).toBeUndefined();
+      expect(out.owner_guarantor_1_signature).toBeUndefined();
+    });
+  });
+
   describe('Tiberian EPA Addendum', () => {
     const names = [...TIBERIAN_EPA_FIELD_NAMES];
     const prefill = {

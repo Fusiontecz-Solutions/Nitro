@@ -1,11 +1,12 @@
 import express from 'express';
 import termsOfferController from '../controllers/termsOfferController';
 import { authenticateToken } from '../middleware/authMiddleware';
-import { forbidRoles } from '../middleware/forbidRoles';
+import { agentOwnApplicationReadOnly } from '../middleware/agentOwnApplicationRead';
 
 const router = express.Router();
 
-router.use(authenticateToken, forbidRoles('AGENT'));
+// Agents: read-only, and only `GET /?application=` for their own deal (Approval tab).
+router.use(authenticateToken, agentOwnApplicationReadOnly());
 
 // Create a new terms offer
 router.post('/', termsOfferController.create.bind(termsOfferController));

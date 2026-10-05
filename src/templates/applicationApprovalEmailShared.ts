@@ -9,6 +9,15 @@ export const APPLICATION_APPROVAL_EMAIL_LOGO_SRC = BRAND_EMAIL_LOGO_SRC;
 
 export const APPLICATION_APPROVAL_EMAIL_WATERMARK_SRC = BRAND_EMAIL_LOGO_SRC;
 
+/**
+ * Body background watermark for the approval / offer-updated emails. Email clients
+ * ignore CSS opacity on background images, so this only renders when a hosted,
+ * pre-faded asset is configured via `BRAND_EMAIL_WATERMARK_URL`.
+ */
+export const APPLICATION_APPROVAL_EMAIL_BG_WATERMARK_SRC = String(
+    process.env.BRAND_EMAIL_WATERMARK_URL ?? '',
+).trim();
+
 export const CLIENT_PROVIDED_STIPS = ['Void Check', "Driver's License", 'Merchant Interview'] as const;
 
 export const COMPANY_HANDLED_STIPS = [

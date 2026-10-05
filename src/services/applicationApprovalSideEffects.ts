@@ -330,6 +330,41 @@ export async function processApplicationApprovalSideEffects(
                     { realtimeKind: 'iso_approval_for_operations' }
                 );
             }
+
+            /*
+             * Agent → ISO workflow: the Agent who sent the approval request and the
+             * Super Admins (who own the contract stage in this app) must know the
+             * deal is now Contract Pending.
+             */
+            const operationsIds = new Set(operationNotifications.map((r) => r.id));
+            const contractStageRecipients = dedupeById([
+                ...internalUsers
+                    .filter((u) => String(u.role || '').toUpperCase() === 'SUPER_ADMIN')
+                    .map((u) => ({
+                        id: String(u.id),
+                        email: u.email ? String(u.email) : null,
+                        name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+                    })),
+                ...[(application as any).referringAgent]
+                    .filter(Boolean)
+                    .map((u: any) => ({
+                        id: String(u.id),
+                        email: u.email ? String(u.email) : null,
+                        name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+                    })),
+            // No actor filter: an ISO session's actorId is the referring Agent's id (the ISO is not a CRM
+            // user), and that Agent is exactly who must be told.
+            ]).filter((r) => !operationsIds.has(r.id));
+
+            if (contractStageRecipients.length > 0) {
+                await createAndPushNotifications(contractStageRecipients, {
+                    title: `ISO approved application #${applicationNumber}`,
+                    message: `${isoApproverName} approved ${clientName} (application #${applicationNumber}). It is now Contract Pending.`,
+                    type: 'application_update',
+                    applicationId: application.id,
+                    createdById: payload.actorId,
+                });
+            }
         } else {
             /*
              * Non-ISO actor (Underwriter / Admin / etc. approving manually):

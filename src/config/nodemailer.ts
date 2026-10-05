@@ -1,6 +1,10 @@
 import fs from 'fs';
 import nodemailer from 'nodemailer';
-import { resolveEmailBrandDisplayName } from '../constants/emailBrand';
+import {
+    parseMailSender,
+    resolveMailSender,
+    type MailSender,
+} from '../services/mailSenderIdentity';
 import { rewriteBrandLogoUrlsForEmail } from '../constants/brand';
 
 const sendgridApiKey = process.env.SENDGRID_API_KEY?.trim();
@@ -40,66 +44,22 @@ export function isOutboundSmtpConfigured(): boolean {
     );
 }
 
-/** Display name for outbound SMTP / SendGrid (read at send time, not module load). */
-function getMailFromDisplayName(): string {
-    return resolveEmailBrandDisplayName();
-}
 /** Strip optional `"Name"` wrapper and extract the bare email from a From value. */
 function extractEmailAddress(raw: string): string {
-    const trimmed = raw.trim();
-    const angle = trimmed.match(/<([^>]+)>/);
-    if (angle?.[1]) return angle[1].trim();
-    return trimmed;
-}
-
-function resolveVerifiedFromEmail(): string | undefined {
-    return (
-        process.env.SMTP_FROM?.trim() ||
-        process.env.MAIL_FROM?.trim() ||
-        process.env.SENDGRID_FROM_EMAIL?.trim() ||
-        process.env.SENDGRID_AUTH_USER?.trim() ||
-        process.env.SMTP_AUTH_USER?.trim()
-    );
-}
-
-/** Nodemailer + SendGrid: object `from` is more reliable than a formatted string. */
-export function buildMailFrom(optionalRaw?: string): { name: string; address: string } {
-    const raw = optionalRaw?.trim() || resolveVerifiedFromEmail();
-    if (!raw) {
-        if (sendgridApiKey) {
-            throw new Error(
-                'SendGrid is configured but no verified From email is set. Add SENDGRID_FROM_EMAIL or SENDGRID_AUTH_USER to .env.',
-            );
-        }
-        throw new Error(
-            'Outbound email is not configured. Set SENDGRID_FROM_EMAIL (or SENDGRID_API_KEY + verified sender).',
-        );
-    }
-    return {
-        name: getMailFromDisplayName(),
-        address: extractEmailAddress(raw),
-    };
-}
-
-function formatMailFromAddress(emailOrFrom: string): string {
-    const { name, address } = buildMailFrom(emailOrFrom);
-    return `"${name}" <${address}>`;
+    return parseMailSender(raw).email;
 }
 
 /**
- * From address for SendGrid-only sends (contract portal, payment letters).
- * Deliberately reads `SENDGRID_FROM_EMAIL` alone: these sends must go out from the
- * verified contracts sender, never from an SMTP login address left over in `.env`.
+ * Resolve the sender a message goes out as. The display name always belongs to
+ * the chosen sender identity (see `mailSenderIdentity`) — never the SendGrid
+ * account / brand name.
  */
-export function getSendGridMailFrom(): string {
-    const configured = process.env.SENDGRID_FROM_EMAIL?.trim();
-    if (!configured) {
-        throw new Error(
-            'SENDGRID_FROM_EMAIL is not set. Add the verified SendGrid sender address to .env.',
-        );
-    }
-    const { name, address } = buildMailFrom(configured);
-    return `"${name}" <${address}>`;
+async function resolveFromHeader(
+    from: SendMailOptions['from'],
+    options?: { sendgridOnly?: boolean },
+): Promise<{ name: string; address: string }> {
+    const sender = await resolveMailSender(from, options);
+    return { name: sender.name, address: sender.email };
 }
 
 /**
@@ -204,13 +164,16 @@ async function postToSendGridMailApi(body: string): Promise<Response> {
 }
 
 /**
- * Default From header. SendGrid requires a verified sender; use SMTP_FROM,
- * MAIL_FROM, SENDGRID_FROM_EMAIL, or SENDGRID_AUTH_USER (verified address).
- * Display name defaults to Nitro Advance (override with MAIL_FROM_NAME or SENDGRID_FROM_NAME).
+ * Default sender for startup diagnostics: SENDGRID_FROM_EMAIL (or SMTP_FROM /
+ * MAIL_FROM) paired with SENDGRID_FROM_NAME, or the funder that owns the address.
  */
-export function getDefaultMailFrom(): string {
-    const { name, address } = buildMailFrom();
-    return `"${name}" <${address}>`;
+export async function describeDefaultMailSender(): Promise<string> {
+    try {
+        const { name, address } = await resolveFromHeader(undefined);
+        return `"${name}" <${address}>`;
+    } catch (error) {
+        return `NOT READY — ${error instanceof Error ? error.message : String(error)}`;
+    }
 }
 
 function createTransporter() {
@@ -237,7 +200,11 @@ interface SendMailOptions {
     to: string | string[];
     subject: string;
     html: string;
-    from?: string;
+    /**
+     * Sender identity. Prefer `{ email, name }`; a bare email is resolved to the
+     * name stored for that sender. Omit for the default sender from `.env`.
+     */
+    from?: string | MailSender;
     cc?: string | string[];
     bcc?: string | string[];
     replyTo?: string;
@@ -426,7 +393,7 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
     } = options;
 
     const threadingHeaders = buildThreadingHeaders({ inReplyTo, references });
-    const fromAddr = buildMailFrom(from);
+    const fromAddr = await resolveFromHeader(from);
     const wantsTracking = Boolean(trackingId?.trim());
     const openTracking =
         enableOpenTracking ?? (wantsTracking && isSendGridOpenPixelTrackingEnabled());
@@ -546,7 +513,7 @@ const sendMail = async (
             : undefined;
 
         const mailOptions = {
-            from: buildMailFrom(from),
+            from: await resolveFromHeader(from),
             to,
             subject,
             html: htmlWithBrandLogo,
@@ -572,21 +539,13 @@ const sendMail = async (
     }
 };
 
-function resolveSendGridFromAddress(from?: string): string | undefined {
-    return (
-        from ||
-        process.env.SENDGRID_FROM_EMAIL?.trim() ||
-        process.env.SENDGRID_AUTH_USER?.trim()
-    );
-}
-
 /** Deliver one SendGrid message (no CC/BCC/multi-To split). */
 async function deliverSendGridMailOnce(options: SendMailOptions): Promise<SendMailResult> {
     // Tracked sends use the HTTP API so `custom_args.ocid` is present on webhooks.
     if (shouldUseSendGridHttpApi(options)) {
         return sendViaSendGridHttpApi({
             ...options,
-            from: resolveSendGridFromAddress(options.from),
+            from: await resolveMailSender(options.from, { sendgridOnly: true }),
         });
     }
 
@@ -616,7 +575,7 @@ async function deliverSendGridMailOnce(options: SendMailOptions): Promise<SendMa
     });
 
     const mailOptions = {
-        from: buildMailFrom(resolveSendGridFromAddress(from)),
+        from: await resolveFromHeader(from, { sendgridOnly: true }),
         to,
         subject,
         html,
@@ -633,7 +592,26 @@ async function deliverSendGridMailOnce(options: SendMailOptions): Promise<SendMa
               }
             : {}),
     };
-    return transporter.sendMail(mailOptions) as Promise<SendMailResult>;
+    try {
+        return (await transporter.sendMail(mailOptions)) as SendMailResult;
+    } catch (error) {
+        throw explainSendGridSmtpError(error);
+    }
+}
+
+/**
+ * SendGrid answers an exhausted plan with an SMTP auth failure ("Invalid login:
+ * 451 Authentication failed: Maximum credits exceeded"), which reads like a bad
+ * API key. Say what it actually is; the HTTP API path does the same.
+ */
+function explainSendGridSmtpError(error: unknown): unknown {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/maximum credits exceeded/i.test(message)) {
+        return new Error(
+            'SendGrid email credits exceeded. Add credits or upgrade your SendGrid plan, then try again.',
+        );
+    }
+    return error;
 }
 
 /**
@@ -656,6 +634,10 @@ export async function sendSendGridMail(options: SendMailOptions): Promise<SendMa
             'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
         );
     }
+
+    // Resolve once up front: every split copy carries the same sender identity,
+    // and a missing sender name fails the send before anything is delivered.
+    options = { ...options, from: await resolveMailSender(options.from, { sendgridOnly: true }) };
 
     if (shouldSplitTrackedSendGridDelivery(options)) {
         const toList = listRecipientEmails(options.to);

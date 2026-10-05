@@ -28,3 +28,29 @@ export function trackPortalSend(envelopeId: string, work: Promise<unknown>): boo
   work.then(clear, clear);
   return true;
 }
+
+/**
+ * Wait (at most `timeoutMs`) for a running portal send to settle. Resolves
+ * true when nothing is in flight or the send finished, false on timeout.
+ * Never rejects: a failed send has stopped writing, which is all a reader needs.
+ */
+export async function waitForPortalSendToSettle(
+  envelopeId: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const work = inFlight.get(key(envelopeId));
+  if (!work) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = work.then(
+    () => true,
+    () => true,
+  );
+  const timedOut = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+  });
+  try {
+    return await Promise.race([settled, timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

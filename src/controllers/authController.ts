@@ -5,7 +5,14 @@ import jwt from 'jsonwebtoken';
 import sendMail from '../config/nodemailer';
 import prisma from '../config/prismaClient';
 import type { Role } from '@prisma/client';
-import { isValidRole, PUBLIC_REGISTER_ROLES, ROLES } from '../constants/roles';
+import {
+    isAppAllowedRole,
+    isManageableRole,
+    isValidRole,
+    MANAGEABLE_ROLES,
+    PUBLIC_REGISTER_ROLES,
+    ROLES,
+} from '../constants/roles';
 import { sendWelcomeEmail } from '../services/emailService';
 import { recordAuthAudit } from '../services/systemActivityLogService';
 import { getBootstrapSuperAdminSecret } from '../config/loadEnv';
@@ -221,11 +228,17 @@ class AuthController {
 
             const isActive = status !== undefined ? Boolean(status) : true;
 
-            // Contract-workflow app: only Super Admin accounts may be created.
-            if (normalizedRole !== 'SUPER_ADMIN') {
+            // Only roles this app supports (Super Admin, Agent, Underwriter) can be created here.
+            if (!isManageableRole(normalizedRole)) {
                 return res.status(403).json({
                     success: false,
-                    message: 'Only Super Admin role can be assigned in this application',
+                    message: `Only these roles can be assigned in this application: ${MANAGEABLE_ROLES.join(', ')}`,
+                });
+            }
+            if (actingRole !== 'SUPER_ADMIN') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only Super Admin can create users',
                 });
             }
 
@@ -378,6 +391,20 @@ class AuthController {
                 return res.status(401).json({
                     success: false,
                     message: 'Invalid password',
+                });
+            }
+
+            if (user.isActive === false) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your account has been deactivated. Contact your administrator.',
+                });
+            }
+
+            if (!isAppAllowedRole(user.role)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your role does not have access to this application.',
                 });
             }
 

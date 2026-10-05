@@ -39,6 +39,7 @@ import {
   normalizeContractCcEmailSubject,
 } from '../../utils/contractEnvelopeEmailSubject';
 import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
+import { resolveEnvelopeMailSender } from '../funderProfileService';
 import {
   createSignNowApiClient,
   extractSignNowTemplateId,
@@ -183,7 +184,10 @@ import {
   recordSignNowReviewCompleted,
   recordSignNowReviewStarted,
 } from './utils/signnow-review-session';
-import { isPortalSendInFlight } from './utils/signnow-portal-send-inflight';
+import {
+  isPortalSendInFlight,
+  waitForPortalSendToSettle,
+} from './utils/signnow-portal-send-inflight';
 import {
   claimSignNowGroupForReview,
   isSignNowGroupClaimedByReview,
@@ -771,6 +775,12 @@ type ReviewPrefillReadBack = {
   check: SignNowReviewPrefillCheck;
   remote: any;
 };
+
+/**
+ * Longest a package PDF read waits on a running portal send. The CRM gives the
+ * request 120s, and the download itself still has to fit in after the wait.
+ */
+const PORTAL_SEND_PDF_WAIT_MS = 90_000;
 
 /** Read-back rounds before Review gives up instead of opening a half-filled package. */
 const REVIEW_PREFILL_CHECK_ROUNDS = 3;
@@ -3846,6 +3856,22 @@ export class SignNowService {
       funderProfileId?: string | null;
     },
   ): Promise<Buffer> {
+    /**
+     * A portal send answers the click at once and publishes the merchant's copy
+     * in the background, document by document: each one has its old stamps
+     * cleared and the new values baked in its own SignNow write. A package PDF
+     * pulled in that window showed the Contract and Disclosure already done and
+     * the Addendums still blank — which "filled in later" on the next view. Wait
+     * for the publish, so the Sent view only ever shows what the merchant got.
+     */
+    if (isPortalSendInFlight(id)) {
+      const settled = await waitForPortalSendToSettle(id, PORTAL_SEND_PDF_WAIT_MS);
+      if (!settled) {
+        console.warn('[SignNow] package PDF requested mid portal send; serving live copy', {
+          groupId: id,
+        });
+      }
+    }
     const storedArchive = await getStoredEnvelopePdfArchive(id);
     const storedUrl = storedArchive?.url || null;
     const docFullySigned = isDocumentFullySignedStatus(storedArchive?.status);
@@ -4092,11 +4118,14 @@ export class SignNowService {
       String(subjectBase || '').trim() || buildContractEnvelopeEmailSubject('Business', null),
     );
     const pdfFilename = buildContractEnvelopePdfFilename(subject);
+    // Sent as the contract's funder (its stored sender identity), else the .env default.
+    const from = resolveEnvelopeMailSender(groupId).then((sender) => sender ?? undefined);
     // Each CC is its own message; delivering them one after another made the
     // caller wait on every SendGrid round trip in turn.
     const outcomes = await Promise.allSettled(
-      list.map((to) =>
+      list.map(async (to) =>
         sendMail({
+          from: await from,
           to,
           subject,
           html: '<p>Please find the contract package attached for your records.</p>',

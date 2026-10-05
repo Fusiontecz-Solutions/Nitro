@@ -123,6 +123,13 @@ export function buildPublicApprovalPortalUrl(baseUrl: string, token: string): st
   return `${origin}/public/application/approval/${secret}`;
 }
 
+/** Public application status + comments portal — no CRM login required (`/public/application/status/:token`). */
+export function buildPublicApplicationStatusPortalUrl(baseUrl: string, token: string): string {
+  const origin = String(baseUrl || '').trim().replace(/\/$/, '');
+  const secret = String(token || '').trim();
+  return `${origin}/public/application/status/${secret}`;
+}
+
 export function resolveDecisionLogicInvitationBaseUrl(): string {
   const pick = (raw: string | undefined): string | undefined => {
     const t = String(raw || '').trim();

@@ -126,6 +126,12 @@ model FunderProfile {
   contactPhone             String?
   /// DocuSign carbon-copy address included on every contract envelope for this funder.
   defaultCcEmail           String?
+  /// Verified SendGrid sender used for this funder's outbound mail (signing portal, payment letters).
+  /// Null = fall back to SENDGRID_FROM_EMAIL from the environment.
+  sendgridFromEmail        String?
+  /// Display name of that verified SendGrid sender identity (e.g. "Tiberian Funding").
+  /// Required whenever sendgridFromEmail is set — never derived from the SendGrid account name.
+  sendgridFromName         String?
   addressLine1             String?
   addressCity              String?
   addressState             String?

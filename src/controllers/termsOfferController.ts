@@ -419,7 +419,7 @@ class TermsOfferController {
 
       const appForUw = await prisma.application.findUnique({
         where: { id: existing.applicationId },
-        select: { currentQueue: true, claimedByUnderwriterId: true },
+        select: { currentQueue: true, claimedByUnderwriterId: true, assignedUnderwriterId: true },
       });
       const denyUpdate = getUnderwriterClaimMutationDenial(authUserFromReq(req), appForUw);
       if (denyUpdate) {
@@ -541,7 +541,7 @@ class TermsOfferController {
       }
       const appForUw = await prisma.application.findUnique({
         where: { id: offerRow.applicationId },
-        select: { currentQueue: true, claimedByUnderwriterId: true },
+        select: { currentQueue: true, claimedByUnderwriterId: true, assignedUnderwriterId: true },
       });
       const denyDelete = getUnderwriterClaimMutationDenial(authUserFromReq(req), appForUw);
       if (denyDelete) {

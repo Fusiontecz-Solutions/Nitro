@@ -20,7 +20,12 @@ jest.mock('../../config/nodemailer', () => ({
   default: jest.fn(async () => undefined),
   sendSendGridMail: jest.fn(async () => undefined),
   isSendGridConfigured: () => true,
-  getSendGridMailFrom: () => 'contracts@example.com',
+}));
+jest.mock('../funderProfileService', () => ({
+  resolveFunderMailSender: async () => null,
+}));
+jest.mock('../mailSenderIdentity', () => ({
+  resolveMailSender: async () => ({ email: 'contracts@example.com', name: 'Example Funder' }),
 }));
 jest.mock('../../utils/crmFrontendUrl', () => ({
   resolveCrmFrontendBaseUrl: () => 'https://crm.example.com',

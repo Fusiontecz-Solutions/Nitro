@@ -107,3 +107,31 @@ describe('the Flex Addendum installment table reaching SignNow', () => {
     expect(resolveSignNowPrefillValue('installment_day_3_p1', values)).toBe('');
   });
 });
+
+describe('the Tiberian Flex Addendum tab reaching SignNow', () => {
+  const TIBERIAN_FLEX_MAPPING_ID = '4b8f0f32-0000-4000-8000-000000000004';
+  const rows = [
+    {
+      id: TIBERIAN_FLEX_MAPPING_ID,
+      template: {
+        layoutKey: '18be4342d4514c3b96b0d9f4852f0af1790fd04d',
+        name: 'Flex Addendum',
+        type: 'addendum',
+      },
+    },
+  ];
+  const overrides = {
+    documentTemplatePrefillByMappingId: {
+      [TIBERIAN_FLEX_MAPPING_ID]: { net_funds_provided_1: '25,000.00', payment_date_1: '10/01/2026' },
+    },
+  };
+
+  it('matches the live copy titled "FLEX TIBERIAN FUNDING (1)"', () => {
+    const tabs = pickSignNowDocumentTabValues(
+      buildSignNowDocumentTabValues(rows, overrides),
+      'FLEX TIBERIAN FUNDING (1)',
+    );
+    expect(tabs).toEqual({ net_funds_provided_1: '25,000.00', payment_date_1: '10/01/2026' });
+    expect(resolveSignNowPrefillValue('net_funds_provided_1', tabs || {})).toBe('25,000.00');
+  });
+});

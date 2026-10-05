@@ -69,7 +69,12 @@ import {
   clearDocusignProfileJwtCache,
   getDocusignJwtSessionForProfile,
 } from './utils/docusign-profile-jwt';
-import { getFunderWithDocuSignCredentials, resolveFunderProfile, isPersistedFunderProfileId } from '../funderProfileService';
+import {
+  getFunderWithDocuSignCredentials,
+  resolveFunderProfile,
+  isPersistedFunderProfileId,
+  resolveEnvelopeMailSender,
+} from '../funderProfileService';
 import { resolveMainContractLayoutKeyForSend } from './utils/resolve-main-contract-layout';
 import {
   extractCrmApplicationIdFromWebhook,
@@ -3532,9 +3537,12 @@ export class DocusignService {
     );
     const pdfFilename = buildContractEnvelopePdfFilename(subject);
     const emailed: string[] = [];
+    // Sent as the contract's funder (its stored sender identity), else the .env default.
+    const from = resolveEnvelopeMailSender(envelopeId).then((sender) => sender ?? undefined);
     for (const to of list) {
       try {
         await sendMail({
+          from: await from,
           to,
           subject,
           html: '<p>Please find the signed contract package attached for your records.</p>',

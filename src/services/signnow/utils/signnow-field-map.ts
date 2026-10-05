@@ -62,6 +62,16 @@ const ALIASES: Record<string, string[]> = {
   guaranty_guarantor1_ss: ['guaranty_owner1_ss', 'guaranty_ss'],
   guaranty_owner2_ss: ['guaranty_guarantor2_ss'],
   guaranty_guarantor2_ss: ['guaranty_owner2_ss'],
+  /** Tiberian Flex Addendum owner block (see `TIBERIAN_FLEX_ADDENDUM_FIELD_NAMES`). */
+  owner_guarantor_1_name: [
+    'owner1_guarantor_name',
+    'guaranty_guarantor1_name',
+    'guaranty_owner1_name',
+    'client_name',
+  ],
+  owner_guarantor_2_name: OWNER2_NAME_KEYS,
+  owner_guarantor_1_ssn: ['guaranty_ss', 'guaranty_owner1_ss', 'guaranty_guarantor1_ss'],
+  owner_guarantor_2_ssn: ['guaranty_owner2_ss', 'guaranty_guarantor2_ss'],
   guarantor_name: [
     'owner1_guarantor_name',
     'guaranty_guarantor1_name',
@@ -1433,6 +1443,53 @@ export const TIBERIAN_EPA_FIELD_NAMES = [
   'guaranty_ss_p1',
   'guaranty_owner2_ss_p1',
 ] as const;
+
+/**
+ * Tiberian Funding's Flex Addendum (document group template 18be4342…,
+ * document ebff2427…, "FLEX TIBERIAN FUNDING (1)"), read off the live SignNow
+ * API. Unlike the Tiberian Exhibit A / Exhibit C / EPA copies it does NOT share
+ * the Nitro widget names: the Nitro Flex copy (b5c267f0…) has a three-column,
+ * 10-row table (`installment_day_N_p1` / `daily_payment_N_p1` /
+ * `receivable_purchase_N_p1`), while Tiberian's has 24 rows and an extra
+ * "Net Funds Provided" column, with no `_p1` suffix. Left to right:
+ *
+ *   x=39 payment_date_N | x=188 net_funds_provided_N | x=323 payment_amount_N
+ *   | x=460 receivables_purchased_N            (N = 1..24, y=165..542)
+ *
+ *   y=641  owner_guarantor_1_signature (Recipient 1)
+ *          owner_guarantor_2_signature (Recipient 2)
+ *   y=669  owner_guarantor_1_name      owner_guarantor_2_name
+ *   y=691  owner_guarantor_1_ssn       owner_guarantor_2_ssn
+ *
+ * The widget names are swapped against the PDF's printed headers (Date |
+ * Payment Amount | Net Funds Provided | Receivables Purchased): x=188
+ * `net_funds_provided_N` prints under "Payment Amount" and x=323
+ * `payment_amount_N` under "Net Funds Provided". The CRM editor binds each
+ * header to the widget printed beneath it, so the tab saves the right value
+ * under each name and nothing here needs to swap.
+ *
+ * The table widgets have no package-wide meaning: they resolve only from the
+ * values typed into this document's tab in the CRM (see
+ * `signnow-document-tab-values.ts`) and stay blank otherwise. The owner block
+ * resolves through the `owner_guarantor_*` aliases.
+ *
+ * Asserted in `signnow-field-map.test.ts` so a rename on the Tiberian template
+ * fails a test instead of silently emptying the page.
+ */
+export const TIBERIAN_FLEX_ADDENDUM_FIELD_NAMES = [
+  ...Array.from({ length: 24 }, (_, i) => [
+    `payment_date_${i + 1}`,
+    `net_funds_provided_${i + 1}`,
+    `payment_amount_${i + 1}`,
+    `receivables_purchased_${i + 1}`,
+  ]).flat(),
+  'owner_guarantor_1_signature',
+  'owner_guarantor_2_signature',
+  'owner_guarantor_1_name',
+  'owner_guarantor_2_name',
+  'owner_guarantor_1_ssn',
+  'owner_guarantor_2_ssn',
+];
 
 /**
  * Tiberian Funding's ACH Daily Addendum ("ACH Daily", template d68dd23d…,

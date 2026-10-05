@@ -60,7 +60,24 @@ const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
     'finalreview',
 ]);
 
+/**
+ * Past the Underwriter stage for the Underwriter role only. Not global: ISO approval-link
+ * sessions carry the referring Agent's role and must keep commenting / uploading while the
+ * deal sits in `Approval Sent`.
+ */
+const UNDERWRITER_HANDED_OFF_TOKENS = new Set([
+    'approvalsent',
+    'isoapproved',
+    'contractpending',
+    'contractgenerated',
+    'contractsent',
+]);
+
 const POST_FINAL_STAGE_TOKENS = new Set([
+    // Agent / Underwriter workflow: once underwriting is handed back to the Agent the deal
+    // is read-only for both workflow roles; they act only through workflow endpoints.
+    'agentreview',
+    'agentapproval',
     'approved',
     'declined',
     'rejected',
@@ -126,7 +143,10 @@ export function getApplicationStageAccess(
     input: StageAccessInput,
 ): ApplicationStageAccess {
     const roleKey = normalizeRoleKey(input.role);
-    const stageKey = resolveStageKey(input.currentQueue, input.currentState);
+    const stageKey =
+        roleKey === 'UNDERWRITER' && UNDERWRITER_HANDED_OFF_TOKENS.has(normalizeToken(input.currentQueue))
+            ? 'POST_FINAL'
+            : resolveStageKey(input.currentQueue, input.currentState);
 
     const baseEdit: ApplicationStageAccess = {
         mode: 'edit',

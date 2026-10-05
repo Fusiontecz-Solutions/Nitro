@@ -469,6 +469,38 @@ export async function notifyAdminAssignedApplicationToUnderwriter(args: {
     );
 }
 
+/**
+ * Agent / Underwriter workflow alerts (new deal in the pool, sent to agent, returned to
+ * underwriter, ISO approved). Fire-and-forget — never throws to callers.
+ */
+export function scheduleWorkflowNotification(args: {
+    application: ApplicationNotificationRecord;
+    recipientIds: Array<string | null | undefined>;
+    title: string;
+    message: string;
+    actorId?: string | null;
+    importance?: 'low' | 'normal' | 'high' | 'urgent';
+}): void {
+    const recipients = [...new Set(args.recipientIds.map((id) => String(id ?? '').trim()).filter(Boolean))].map(
+        (id) => ({ id, email: null, name: '' }),
+    );
+    if (!args.application?.id || !recipients.length) return;
+    setImmediate(() => {
+        void createAndPushNotifications(
+            recipients,
+            {
+                title: args.title,
+                message: args.message,
+                type: 'application_update',
+                applicationId: args.application.id,
+                createdById: args.actorId ? String(args.actorId) : null,
+                importance: args.importance ?? 'normal',
+            },
+            args.application,
+        ).catch((err) => console.error('[workflowNotification] failed:', err));
+    });
+}
+
 /** Fire-and-forget wrapper — never throws to callers. */
 export function scheduleApplicationStageNotification(ctx: StageNotificationContext): void {
     setImmediate(() => {

@@ -1,5 +1,7 @@
 import prisma from '../../config/prismaClient';
 import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
+import { resolveFunderMailSender } from '../funderProfileService';
+import type { MailSender } from '../mailSenderIdentity';
 import {
   buildBrandHeaderRowHtml,
   buildBrandHeaderStyles,
@@ -268,11 +270,22 @@ export async function sendSignNowCompletionNotice(
     });
   }
 
+  // Sent as the contract's funder (its stored sender identity), else the .env default.
+  // A funder sender without a name fails each send loudly instead of borrowing one.
+  let from: MailSender | undefined;
+  let senderError: unknown = null;
+  try {
+    from = (await resolveFunderMailSender({ applicationId })) ?? undefined;
+  } catch (err) {
+    senderError = err;
+  }
+
   const deliver = async (list: string[]): Promise<string[]> => {
     const sent: string[] = [];
     for (const to of list) {
       try {
-        await sendMail({ to, subject, html, attachments });
+        if (senderError) throw senderError;
+        await sendMail({ to, subject, html, attachments, from });
         sent.push(to);
       } catch (err) {
         console.error(`[SignNow] completion notice to ${to} failed:`, err);

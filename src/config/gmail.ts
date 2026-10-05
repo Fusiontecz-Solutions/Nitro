@@ -3,10 +3,22 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-function getRedirectUri(): string {
-  return (
-    process.env.GOOGLE_REDIRECT_URI ||
-    'https://www.katan.finexusai.com/backend/api/v1/google/callback'
+/**
+ * OAuth redirect registered in Google Cloud Console. Must point at this backend's
+ * `GET /api/v1/google/callback`. Set GOOGLE_REDIRECT_URI in every deployed environment.
+ */
+export function getRedirectUri(): string {
+  const configured = String(process.env.GOOGLE_REDIRECT_URI || '').trim();
+  if (configured) return configured;
+  const port = process.env.PORT || '4000';
+  return `http://localhost:${port}/api/v1/google/callback`;
+}
+
+/** True when Google OAuth client credentials are present (Gmail connect is available). */
+export function isGoogleOAuthConfigured(): boolean {
+  return Boolean(
+    String(process.env.GOOGLE_CLIENT_ID || '').trim() &&
+      String(process.env.GOOGLE_CLIENT_SECRET || '').trim(),
   );
 }
 
