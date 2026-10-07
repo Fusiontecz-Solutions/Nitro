@@ -16,6 +16,8 @@ jest.mock('../../config/prismaClient', () => ({
   __esModule: true,
   default: {
     application: { findUnique: jest.fn(async () => null) },
+    contract: { findFirst: jest.fn(async () => null) },
+    funderProfile: { findMany: jest.fn(async () => []) },
     outbound_communications: { findMany: jest.fn(async () => []) },
   },
 }));
@@ -98,12 +100,55 @@ describe('sendSignNowCompletionNotice', () => {
       ([args]) => args.to === 'broker@example.com',
     );
     expect(ccCall).toBeDefined();
-    expect(ccCall[0].subject).toBe('Signed — Tiberian Funding Acme LLC $25,000.00');
+    // No application to read the book / merchant from: the label stands in.
+    expect(ccCall[0].subject).toBe('Tiberian Funding Acme LLC $25,000.00: Signed Contract');
     expect(
       ccCall[0].attachments.some(
         (a: { contentType?: string }) => a.contentType === 'application/pdf',
       ),
     ).toBe(true);
+  });
+
+  it('titles the email "{Book}: {Merchant}: Signed Contract" and brands it with the funder logo', async () => {
+    (prisma as any).application.findUnique.mockResolvedValueOnce({
+      applicationId: '10428',
+      dealDisplayName: null,
+      client: { businessName: 'VVS CARTELL LLC' },
+    });
+    (prisma as any).contract.findFirst.mockImplementation(async () => ({
+      funderName: 'Obsidian Capital Group',
+      state: 'NY',
+      legalName: null,
+      doingBusinessAs: null,
+      clientName: null,
+      approvedAmount: 30000,
+    }));
+    (prisma as any).funderProfile.findMany.mockResolvedValueOnce([
+      {
+        id: 'f-1',
+        name: 'Obsidian Capital Group',
+        displayName: 'Obsidian Capital Group',
+        isActive: true,
+        letterLogoUrl: 'https://cdn.example.com/obsidian.png',
+      },
+    ]);
+
+    try {
+      await sendSignNowCompletionNotice({
+        groupId: 'group-1',
+        applicationId: 'app-1',
+        contractLabel: 'Obsidian Capital Group VVS CARTELL LLC $30,000.00',
+        pdf: Buffer.from('signed'),
+      });
+    } finally {
+      (prisma as any).contract.findFirst.mockImplementation(async () => null);
+    }
+
+    const [args] = sendMailMock.mock.calls[0];
+    expect(args.subject).toBe('Obsidian Capital Group: VVS CARTELL LLC: Signed Contract');
+    expect(args.html).toContain('https://cdn.example.com/obsidian.png');
+    expect(args.html).toContain('$30,000.00');
+    expect(args.html).toContain('#10428');
   });
 
   it('does not copy a CC address that is already a notice recipient', async () => {

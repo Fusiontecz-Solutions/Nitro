@@ -1,12 +1,13 @@
 import prisma from '../../config/prismaClient';
 import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
 import { resolveFunderMailSender } from '../funderProfileService';
-import type { MailSender } from '../mailSenderIdentity';
+import { formatContractEmailDate, loadContractEmailContext } from '../contractEmailContext';
 import {
-  buildBrandHeaderRowHtml,
-  buildBrandHeaderStyles,
-  buildBrandLogoAttachments,
-} from '../../constants/brand';
+  buildSignedContractEmailSubject,
+  renderSignedContractEmailHtml,
+} from '../emailTemplates/contractStatusEmailHtml';
+import type { MailSender } from '../mailSenderIdentity';
+import { buildBrandLogoAttachments } from '../../constants/brand';
 import { buildContractEnvelopePdfFilename } from '../../utils/contractEnvelopeEmailSubject';
 import { createOutboundCommunication } from '../outboundCommunicationService';
 
@@ -26,9 +27,8 @@ type MailAttachment = {
  * package it ever sends — that subject is baked into SignNow's template and the
  * API exposes no way to change it, so an inbox that receives many contracts a
  * day cannot tell one completion from the next without opening it. This sends a
- * parallel notice from the CRM whose subject carries the contract label
- * ("{Funder} {Business} {$Amount}"), which is the name the team already uses to
- * identify a deal, plus the application number and the signed PDF.
+ * parallel notice from the CRM titled "{Book}: {Merchant}: Signed Contract",
+ * branded with the funder's letter logo, with the signed PDF attached.
  */
 
 /**
@@ -79,77 +79,15 @@ export function resolveSignNowCompletionNoticeRecipients(): string[] {
   return parseEmailList([inbox, String(process.env.SIGNNOW_USERNAME || '').trim()].join(','));
 }
 
-/** `Signed — Tiberian Funding Acme LLC $25,000.00 (#10428)` */
-export function buildSignNowCompletionNoticeSubject(
-  contractLabel: string,
-  applicationNumber?: string | null,
-): string {
-  const label = String(contractLabel || '').trim() || 'Contract';
-  const appNo = String(applicationNumber || '').trim();
-  return appNo ? `Signed — ${label} (#${appNo})` : `Signed — ${label}`;
-}
-
-function escapeHtml(value: string): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function buildSignNowCompletionNoticeHtml(options: {
-  contractLabel: string;
-  applicationNumber?: string | null;
-  documentNames?: string[];
-}): string {
-  const label = escapeHtml(String(options.contractLabel || '').trim() || 'Contract');
-  const appNo = String(options.applicationNumber || '').trim();
-  const names = (options.documentNames || [])
-    .map((name) => String(name || '').trim())
-    .filter(Boolean);
-  const documentsRow = names.length
-    ? `<p style="margin: 0 0 8px;"><strong>Documents:</strong> ${escapeHtml(names.join(', '))}</p>`
-    : '';
-  return `<!DOCTYPE html>
-<html>
-<head>
-    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Contract Signed</title>
-    ${buildBrandHeaderStyles()}
-</head>
-<body style="margin:0; padding:0; background:#f4f7f9; font-family: Arial, Helvetica, sans-serif;">
-    <table border="0" cellpadding="0" cellspacing="0" width="100%">
-        <tr>
-            <td style="padding: 20px 0;">
-                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background:#ffffff; border:1px solid #e5e7eb;">
-                    ${buildBrandHeaderRowHtml()}
-                    <tr>
-                        <td style="padding: 20px 24px 8px;">
-                            <h2 style="margin:0; color:#111827; font-size:22px;">Contract Signed</h2>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 0 24px 20px; color:#374151; font-size:14px; line-height:1.6;">
-                            <p style="margin: 0 0 8px;"><strong>Contract:</strong> ${label}</p>
-                            ${appNo ? `<p style="margin: 0 0 8px;"><strong>Application ID:</strong> #${escapeHtml(appNo)}</p>` : ''}
-                            ${documentsRow}
-                            <p style="margin: 12px 0 0;">Every signer has completed this package. The signed copy is attached.</p>
-                        </td>
-                    </tr>
-                </table>
-            </td>
-        </tr>
-    </table>
-</body>
-</html>`;
-}
-
 export interface SendSignNowCompletionNoticeInput {
   groupId: string;
   applicationId?: string | null;
   /** "{Funder} {Business} {$Amount}" — the name the team identifies contracts by. */
   contractLabel: string;
+  /** Overrides the funder (book) read from the application's contract. */
+  bookName?: string | null;
+  /** Overrides the merchant name read from the application. */
+  merchantName?: string | null;
   /** Merged signed package. Omitted when the download failed; the notice still goes out. */
   pdf?: Buffer | null;
   documentNames?: string[];
@@ -166,6 +104,8 @@ export interface SendSignNowCompletionNoticeInput {
    * Skipped on a `ccOnly` catch-up, which must not email them twice.
    */
   partyEmails?: string[] | null;
+  /** Lower-cased party address → SIGNER / AGENT / SENDER, kept on the mail log for the email history. */
+  partyRoles?: Record<string, string> | null;
   /**
    * Email only the CC list. Used when catching up a CC notice for a package
    * whose inbox copy already went out, so the submissions inbox is not sent a
@@ -256,30 +196,37 @@ export async function sendSignNowCompletionNotice(
   }
 
   const applicationId = String(input.applicationId || '').trim();
-  let applicationNumber = '';
-  if (applicationId) {
-    try {
-      const app = await prisma.application.findUnique({
-        where: { id: applicationId },
-        select: { applicationId: true },
-      });
-      applicationNumber = String(app?.applicationId || '').trim();
-    } catch (err) {
-      console.warn('[SignNow] completion notice could not read application number:', err);
-    }
-  }
-
+  const context = await loadContractEmailContext(applicationId);
   const contractLabel = String(input.contractLabel || '').trim() || 'Contract';
-  const subject = buildSignNowCompletionNoticeSubject(contractLabel, applicationNumber);
-  const html = buildSignNowCompletionNoticeHtml({
-    contractLabel,
-    applicationNumber,
+  const bookName = String(input.bookName || '').trim() || context.bookName;
+  const merchantName = String(input.merchantName || '').trim() || context.merchantName;
+  // Without a book or merchant the subject falls back to the contract label.
+  const subject = buildSignedContractEmailSubject(
+    bookName,
+    bookName || merchantName ? merchantName : contractLabel,
+  );
+  const pdfFilename = buildContractEnvelopePdfFilename(contractLabel);
+  const { branding } = context;
+  const html = renderSignedContractEmailHtml({
+    bookName: bookName || contractLabel,
+    merchantName: merchantName || contractLabel,
+    applicationId: context.applicationNumber,
+    fundedAmount: context.fundedAmount,
+    signedDate: formatContractEmailDate(new Date()),
     documentNames: input.documentNames,
+    attachmentName: input.pdf?.length ? pdfFilename : null,
+    companyName: branding.companyName,
+    logoSrc: branding.logoSrc,
+    brandPrimary: branding.accentDark,
+    brandAccent: branding.accentLight,
   });
-  const attachments: MailAttachment[] = [...buildBrandLogoAttachments()];
+  // The Nitro Advance logo is inlined by CID; a funder logo is a hosted URL.
+  const attachments: MailAttachment[] = branding.logoSrc.startsWith('cid:')
+    ? [...buildBrandLogoAttachments()]
+    : [];
   if (input.pdf?.length) {
     attachments.push({
-      filename: buildContractEnvelopePdfFilename(contractLabel),
+      filename: pdfFilename,
       content: input.pdf,
       contentType: 'application/pdf',
     });
@@ -335,6 +282,7 @@ export async function sendSignNowCompletionNotice(
           recipients: emailed,
           ccEmails: emailedCc,
           partyEmails: emailedParties,
+          ...(input.partyRoles ? { partyRoles: input.partyRoles } : {}),
         },
       });
     } catch (err) {

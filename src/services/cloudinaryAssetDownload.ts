@@ -104,6 +104,92 @@ function isOurCloudinaryCloud(cloud: string): boolean {
   return Boolean(ours) && ours === cloud;
 }
 
+const FETCH_TIMEOUT_MS = 20_000;
+const FETCH_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 400;
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+/**
+ * GET with a per-attempt timeout, retrying network errors and transient
+ * statuses (408/425/429/5xx). Returns the last response for non-retryable or
+ * exhausted statuses; throws only when every attempt failed at the network level.
+ */
+async function fetchWithRetry(url: string): Promise<Response> {
+  let lastError: unknown;
+  let lastRes: Response | undefined;
+  for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+    }
+    try {
+      const res = await fetch(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      if (res.ok || !isRetryableStatus(res.status)) return res;
+      lastRes = res;
+      lastError = undefined;
+    } catch (error) {
+      lastError = error;
+      lastRes = undefined;
+    }
+  }
+  if (lastRes) return lastRes;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/**
+ * Short-lived cache so repeated previews of the same template PDF (tab
+ * switches, modal re-opens) don't re-download it and re-risk a Cloudinary blip.
+ * Cloudinary delivery URLs are versioned, so a URL's bytes don't change.
+ */
+const CACHE_TTL_MS = 10 * 60_000;
+const CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const assetCache = new Map<string, { buf: Buffer; expiresAt: number }>();
+let assetCacheBytes = 0;
+
+function cacheGet(url: string): Buffer | null {
+  const hit = assetCache.get(url);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    assetCache.delete(url);
+    assetCacheBytes -= hit.buf.length;
+    return null;
+  }
+  // Refresh LRU position.
+  assetCache.delete(url);
+  assetCache.set(url, hit);
+  return hit.buf;
+}
+
+function cacheSet(url: string, buf: Buffer): void {
+  if (buf.length > CACHE_MAX_BYTES / 4) return;
+  const prev = assetCache.get(url);
+  if (prev) {
+    assetCache.delete(url);
+    assetCacheBytes -= prev.buf.length;
+  }
+  while (assetCacheBytes + buf.length > CACHE_MAX_BYTES && assetCache.size > 0) {
+    const [oldestKey, oldest] = assetCache.entries().next().value as [
+      string,
+      { buf: Buffer; expiresAt: number },
+    ];
+    assetCache.delete(oldestKey);
+    assetCacheBytes -= oldest.buf.length;
+  }
+  assetCache.set(url, { buf, expiresAt: Date.now() + CACHE_TTL_MS });
+  assetCacheBytes += buf.length;
+}
+
+/** Test hook. */
+export function clearCloudinaryAssetCache(): void {
+  assetCache.clear();
+  assetCacheBytes = 0;
+}
+
 /**
  * Download a Cloudinary asset as a Buffer.
  * Public delivery URLs on this account currently return 401 (ACL / restricted media),
@@ -115,15 +201,35 @@ export async function fetchCloudinaryAssetBuffer(rawUrl: string): Promise<Buffer
     throw new Error('Cloudinary URL is required');
   }
 
-  const publicRes = await fetch(url, { redirect: 'follow' });
-  if (publicRes.ok) {
-    return Buffer.from(await publicRes.arrayBuffer());
+  const cached = cacheGet(url);
+  if (cached) return cached;
+
+  const buf = await downloadCloudinaryAsset(url);
+  cacheSet(url, buf);
+  return buf;
+}
+
+async function downloadCloudinaryAsset(url: string): Promise<Buffer> {
+  // A network-level failure on the public URL must still fall through to the
+  // authenticated download rather than surfacing as a 502.
+  let publicStatus = 0;
+  let publicError: unknown;
+  try {
+    const publicRes = await fetchWithRetry(url);
+    if (publicRes.ok) {
+      return Buffer.from(await publicRes.arrayBuffer());
+    }
+    publicStatus = publicRes.status;
+  } catch (error) {
+    publicError = error;
   }
 
   const parsed = parseCloudinaryDeliveryUrl(url);
   if (!parsed || !isOurCloudinaryCloud(parsed.cloud)) {
     throw new Error(
-      `Could not fetch Cloudinary asset (${publicRes.status})`,
+      publicError
+        ? `Could not fetch Cloudinary asset (${publicError instanceof Error ? publicError.message : String(publicError)})`
+        : `Could not fetch Cloudinary asset (${publicStatus})`,
     );
   }
 
@@ -139,7 +245,7 @@ export async function fetchCloudinaryAssetBuffer(rawUrl: string): Promise<Buffer
     attachment: false,
   });
 
-  const authRes = await fetch(downloadUrl, { redirect: 'follow' });
+  const authRes = await fetchWithRetry(downloadUrl);
   if (!authRes.ok) {
     throw new Error(
       `Could not fetch Cloudinary asset via authenticated download (${authRes.status})`,

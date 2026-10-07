@@ -82,6 +82,25 @@ export async function resolveSignedCopyParties(
   };
 }
 
+/**
+ * Lower-cased party address → the role it gets the signed copy as. A signer
+ * who is also the agent or sender is recorded as the signer, matching the
+ * order `signedCopyPartyEmails` lists them in.
+ */
+export function signedCopyPartyRoles(
+  parties: SignedCopyParties,
+): Record<string, 'SIGNER' | 'AGENT' | 'SENDER'> {
+  const roles: Record<string, 'SIGNER' | 'AGENT' | 'SENDER'> = {};
+  const add = (email: string | null, role: 'SIGNER' | 'AGENT' | 'SENDER') => {
+    const key = cleanEmail(email).toLowerCase();
+    if (key && !roles[key]) roles[key] = role;
+  };
+  for (const email of parties.signerEmails) add(email, 'SIGNER');
+  for (const email of parties.agentEmails) add(email, 'AGENT');
+  add(parties.senderEmail, 'SENDER');
+  return roles;
+}
+
 /** Flat, de-duplicated list of every party address. */
 export function signedCopyPartyEmails(parties: SignedCopyParties): string[] {
   const seen = new Set<string>();

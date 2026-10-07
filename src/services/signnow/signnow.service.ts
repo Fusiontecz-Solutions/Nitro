@@ -4,10 +4,9 @@ import prisma from '../../config/prismaClient';
 import { resolveDocumentOwnerNumericUserId } from '../../middleware/authMiddleware';
 import { resolveSignedNoticeFunderCcEmails } from '../../utils/contractCcDefaults';
 import { readContractAgentEmail } from '../../utils/contractAgentEmail';
-import {
-  buildAgentContractSentHtml,
-  buildAgentContractSentSubject,
-} from './utils/signnow-agent-sent-email';
+import { buildAgentContractSentEmail } from './utils/signnow-agent-sent-email';
+import { loadContractEmailContext } from '../contractEmailContext';
+import { buildBrandLogoAttachments } from '../../constants/brand';
 import {
   archiveMainContractEnvelopeToHistory,
   persistMainContractSendPackage,
@@ -39,7 +38,9 @@ import {
 import {
   resolveSignedCopyParties,
   signedCopyPartyEmails,
+  signedCopyPartyRoles,
 } from './utils/signnow-signed-copy-parties';
+import { logContractEmails } from '../contractEmailHistoryService';
 import {
   buildContractEnvelopeEmailSubject,
   ensureSubjectAmountHasDollarSign,
@@ -4203,17 +4204,36 @@ export class SignNowService {
     });
     if (emailed.length) {
       console.log(`[SignNow] CC contract emailed to ${emailed.join(', ')} (group ${groupId}, subject "${subject}")`);
+      void logContractEmails({
+        groupId,
+        kind: 'cc_copy',
+        subject,
+        recipients: emailed.map((email) => ({ email, role: 'CC' as const })),
+        provider: 'smtp',
+      });
     }
 
-    // Each agent gets the "sent for contract" message, one message apiece.
+    // Each agent gets the "Contract Sent" message, one message apiece, branded
+    // with the contract's funder.
+    const agentEmail = agents.length
+      ? buildAgentContractSentEmail({
+          contractLabel: subject,
+          context: await this.readContractEmailContextForGroup(groupId),
+          signerEmails,
+          attachmentName: attachments ? pdfFilename : null,
+        })
+      : null;
+    const agentAttachments = agentEmail?.usesBrandLogoAttachment
+      ? [...buildBrandLogoAttachments(), ...(attachments || [])]
+      : attachments;
     const agentOutcomes = await Promise.allSettled(
       agents.map(async (to) =>
         sendMail({
           from: await from,
           to,
-          subject: buildAgentContractSentSubject(subject),
-          html: buildAgentContractSentHtml(subject),
-          attachments,
+          subject: agentEmail!.subject,
+          html: agentEmail!.html,
+          attachments: agentAttachments,
         }),
       ),
     );
@@ -4227,6 +4247,13 @@ export class SignNowService {
     });
     if (agentsEmailed.length) {
       console.log(`[SignNow] contract-sent notice emailed to agents ${agentsEmailed.join(', ')} (group ${groupId})`);
+      void logContractEmails({
+        groupId,
+        kind: 'agent_sent_notice',
+        subject: agentEmail!.subject,
+        recipients: agentsEmailed.map((email) => ({ email, role: 'AGENT' as const })),
+        provider: 'smtp',
+      });
     }
     return { emailed, agentsEmailed };
   }
@@ -4276,6 +4303,21 @@ export class SignNowService {
   }
 
   /** The deal's agents (send panel values, else referring agent) for a sent group. */
+  /** Book, merchant and funder branding for the contract behind a group. */
+  private async readContractEmailContextForGroup(groupId: string) {
+    let applicationId = '';
+    try {
+      const document = await prisma.document.findFirst({
+        where: { envelopeId: String(groupId || '').trim() },
+        select: { applicationId: true },
+      });
+      applicationId = String(document?.applicationId || '').trim();
+    } catch (err) {
+      console.warn(`[SignNow] could not resolve the application for ${groupId}:`, err);
+    }
+    return loadContractEmailContext(applicationId);
+  }
+
   private async readAgentEmailsForGroup(groupId: string): Promise<string[]> {
     try {
       const document = await prisma.document.findFirst({
@@ -5203,12 +5245,11 @@ export class SignNowService {
 
     const ccEmails = await this.readSignedNoticeCcRecipients(groupId, applicationId);
     // Signers, agent and sender get their own signed copy too.
-    const partyEmails = await resolveSignedCopyParties(groupId, applicationId)
-      .then(signedCopyPartyEmails)
-      .catch((err) => {
-        console.warn(`[SignNow] signed-copy parties lookup failed for ${groupId}:`, err);
-        return [] as string[];
-      });
+    const parties = await resolveSignedCopyParties(groupId, applicationId).catch((err) => {
+      console.warn(`[SignNow] signed-copy parties lookup failed for ${groupId}:`, err);
+      return null;
+    });
+    const partyEmails = parties ? signedCopyPartyEmails(parties) : [];
     if (
       !resolveSignNowCompletionNoticeRecipients().length &&
       !ccEmails.length &&
@@ -5235,6 +5276,7 @@ export class SignNowService {
       documentNames: documents.map((doc) => String(doc.document_name || doc.name || '')),
       ccEmails,
       partyEmails,
+      partyRoles: parties ? signedCopyPartyRoles(parties) : undefined,
     });
     await this.rememberCcSignedNoticeForGroup(groupId, notice.ccReached);
   }
@@ -8579,7 +8621,26 @@ export class SignNowService {
       repairForFailedDetail,
       log: logSignNowSend,
     });
-    if (result.ok) return result.inviteId;
+    if (result.ok) {
+      // SignNow emails the merchants itself; record who it was asked to email.
+      const inviteSubject = String(subject || '').trim() || 'Nitro Advance Contract';
+      void logContractEmails({
+        groupId,
+        applicationId: meta.applicationId,
+        kind: 'signing_invite',
+        subject: inviteSubject,
+        recipients: steps
+          .filter((step) => step.actions.length && !isCrmInviteStep(step))
+          .map((step) => ({
+            email: step.email,
+            role: 'SIGNER' as const,
+            roleDetail: uniqueRoleNames(step.actions.map((a) => a.role_name)).join(', ') || null,
+            name: step.name || null,
+          })),
+        provider: 'signnow',
+      });
+      return result.inviteId;
+    }
 
     throw new BadRequestException(
       `SignNow send failed: ${result.detail || 'groupinvite rejected'}`,

@@ -14,6 +14,7 @@ import { buildSigningPortalEmailHtml } from './utils/signnow-portal-email';
 import { isPortalSendInFlight, trackPortalSend } from './utils/signnow-portal-send-inflight';
 import { clearUnfinishedSentArchive } from '../docusign/utils/archive-signed-envelope-pdf';
 import { saveContractAgentEmail } from '../../utils/contractAgentEmail';
+import { logContractEmails } from '../contractEmailHistoryService';
 
 /**
  * CRM signing portal Ã¢â‚¬â€ contracts emailed by SendGrid instead of by SignNow.
@@ -432,6 +433,8 @@ async function emailPortalInvite(input: {
   emailSubject: string;
   funderName: string | null;
   replyToEmail: string | null;
+  /** A Resend of the link, recorded as a reminder in the email history. */
+  reminder?: boolean;
 }): Promise<void> {
   const baseUrl = resolveCrmFrontendBaseUrl();
   if (!baseUrl) {
@@ -463,6 +466,15 @@ async function emailPortalInvite(input: {
       signingLink,
     }),
     ...(input.replyToEmail ? { replyTo: input.replyToEmail } : {}),
+  });
+  void logContractEmails({
+    groupId: input.envelopeId,
+    kind: input.reminder ? 'signing_reminder' : 'signing_invite',
+    subject: input.emailSubject || input.contractLabel,
+    recipients: [
+      { email, role: 'SIGNER', roleDetail: input.recipient.role, name: input.recipient.name },
+    ],
+    provider: 'sendgrid',
   });
 }
 
@@ -1188,6 +1200,7 @@ async function emailResendLinks(
         emailSubject: queue.emailSubject,
         funderName: queue.funderName,
         replyToEmail: queue.replyToEmail,
+        reminder: Boolean(recipient.emailedAt),
       }),
     ),
   );

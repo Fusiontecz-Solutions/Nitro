@@ -301,7 +301,8 @@ router.get(
 router.get('/:id/activity-logs', applicationController.getActivityLogs.bind(applicationController));
 
 // Payment workspace: mail send history (persisted)
-router.get('/:id/payment-mail-logs', applicationController.getPaymentMailLogs.bind(applicationController));
+router.get('/:id/contract-email-history', applicationController.getContractEmailHistory.bind(applicationController));
+router.get('/:id/payment-mail-logs',applicationController.getPaymentMailLogs.bind(applicationController));
 router.post('/:id/payment-mail-logs', applicationController.createPaymentMailLog.bind(applicationController));
 
 // Disbursement review: planned debit schedule (persisted on confirm)

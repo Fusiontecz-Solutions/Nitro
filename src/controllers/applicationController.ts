@@ -93,6 +93,7 @@ import {
 import { resolveIsoApprovalEmailHtml } from '../services/applicationApprovalEmailRenderService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
 import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
+import { listContractEmailHistory } from '../services/contractEmailHistoryService';
 import {
     findHistoricalSamePdfFileApplications,
     findSamePdfFileApplications,
@@ -7748,6 +7749,44 @@ class ApplicationController {
             return res.status(200).json({ success: true, data });
         } catch (error: any) {
             console.error('Get payment mail logs error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    async getContractEmailHistory(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+
+            const appIdStr = String(id);
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(appIdStr)
+                ? { applicationId: Number(appIdStr) }
+                : { id: appIdStr };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const data = await listContractEmailHistory(application.id);
+
+            return res.status(200).json({ success: true, data });
+        } catch (error: any) {
+            console.error('Get contract email history error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',

@@ -25,6 +25,10 @@ const readContractAgentEmail = jest.fn();
 jest.mock('../../utils/contractAgentEmail', () => ({
   readContractAgentEmail: (...args: unknown[]) => readContractAgentEmail(...args),
 }));
+const logContractEmails = jest.fn(async (_input: Record<string, unknown>) => undefined);
+jest.mock('../contractEmailHistoryService', () => ({
+  logContractEmails: (input: Record<string, unknown>) => logContractEmails(input),
+}));
 
 import prisma from '../../config/prismaClient';
 import { signNowService } from './signnow.service';
@@ -36,6 +40,20 @@ const service = signNowService as any;
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(prisma.document, 'findFirst').mockResolvedValue({ applicationId: 'app-1' } as never);
+  jest.spyOn(prisma.application, 'findUnique').mockResolvedValue({
+    applicationId: '10428',
+    dealDisplayName: null,
+    client: { businessName: 'Acme LLC' },
+  } as never);
+  jest.spyOn(prisma.contract, 'findFirst').mockResolvedValue({
+    funderName: 'Tiberian Funding',
+    state: 'NY',
+    legalName: null,
+    doingBusinessAs: null,
+    clientName: null,
+    approvedAmount: 25000,
+  } as never);
+  jest.spyOn(prisma.funderProfile, 'findMany').mockResolvedValue([] as never);
   service.downloadGroupPdf = jest.fn(async () => PDF);
   service.rememberCcRecipientsForGroup = jest.fn(async () => undefined);
   service.readSignedNoticeCcRecipients = jest.fn(async () => []);
@@ -59,10 +77,30 @@ it('emails the agent the package from the funder sender, separately from the CC 
   const agentMail = sendMail.mock.calls
     .map(([options]) => options)
     .find((options) => options.to === 'agent@broker.com')!;
-  expect(agentMail.subject).toContain('Contract Sent');
+  expect(agentMail.subject).toBe('Tiberian Funding: Acme LLC: Contract Sent');
   expect(agentMail.from).toEqual({ email: 'contracts@tiberianfunding.com', name: 'Tiberian Funding' });
-  expect(String(agentMail.html)).toContain('Application Sent for Contract');
-  expect((agentMail.attachments as Array<{ content: Buffer }>)[0].content).toBe(PDF);
+  expect(String(agentMail.html)).toContain('Awaiting Signature');
+  expect(String(agentMail.html)).toContain('$25,000.00');
+  expect(String(agentMail.html)).toContain('merchant@acme.com');
+  expect(
+    (agentMail.attachments as Array<{ content?: Buffer }>).some((a) => a.content === PDF),
+  ).toBe(true);
+  // Each copy lands in the contract email history under the role it went to.
+  expect(logContractEmails).toHaveBeenCalledWith(
+    expect.objectContaining({
+      groupId: GROUP,
+      kind: 'cc_copy',
+      recipients: [{ email: 'funder@tiberianfunding.com', role: 'CC' }],
+    }),
+  );
+  expect(logContractEmails).toHaveBeenCalledWith(
+    expect.objectContaining({
+      groupId: GROUP,
+      kind: 'agent_sent_notice',
+      subject: agentMail.subject,
+      recipients: [{ email: 'agent@broker.com', role: 'AGENT' }],
+    }),
+  );
 });
 
 it('emails every agent their own contract-sent notice, and none of them a CC copy', async () => {
