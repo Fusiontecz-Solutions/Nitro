@@ -81,7 +81,7 @@ interface ContractEmailLayout {
   badge: Badge;
   /** Already-escaped HTML. */
   leadHtml: string;
-  /** Label + already-escaped value rows, appended after Book / Merchant / Application / Amount. */
+  /** Label + already-escaped value rows, appended after Funder / Merchant / Application / Amount. */
   extraRows: Array<[string, string]>;
   steps?: Step[];
   attachmentCaption: string;
@@ -141,7 +141,7 @@ function renderContractEmail(fields: ContractEmailBrandFields, layout: ContractE
   const badge = layout.badge;
 
   const detailRows: Array<[string, string]> = [
-    ['Book', book],
+    ['Funder', book],
     ['Merchant', merchant],
   ];
   if (clean(fields.applicationId)) {
@@ -216,11 +216,11 @@ function renderContractEmail(fields: ContractEmailBrandFields, layout: ContractE
             <td height="5" bgcolor="${accent}" style="height:5px;line-height:5px;font-size:0;background-color:${accent};">&nbsp;</td>
           </tr>
           <tr>
-            <td align="center" bgcolor="${primary}" style="padding:26px 0 0 0;line-height:0;font-size:0;background-color:${primary};">
+            <td align="center" bgcolor="${primary}" style="padding:14px 0 0 0;line-height:0;font-size:0;background-color:${primary};">
               <table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto;border-collapse:separate;">
                 <tr>
-                  <td align="center" bgcolor="#ffffff" style="background-color:#ffffff;padding:14px 28px 10px 28px;border-top-left-radius:10px;border-top-right-radius:10px;line-height:0;font-size:0;">
-                    <img src="${logoSrc}" alt="${company}" width="150" border="0" style="display:block;width:150px;max-width:150px;height:auto;margin:0 auto;" />
+                  <td align="center" bgcolor="#ffffff" style="background-color:#ffffff;padding:8px 18px 6px 18px;border-top-left-radius:10px;border-top-right-radius:10px;line-height:0;font-size:0;">
+                    <img src="${logoSrc}" alt="${company}" width="80" border="0" style="display:block;width:auto;max-width:130px;height:auto;max-height:48px;margin:0 auto;" />
                   </td>
                 </tr>
               </table>

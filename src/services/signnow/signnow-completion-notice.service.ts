@@ -71,12 +71,20 @@ function mergeEmailLists(base: string[], extra: string[]): string[] {
  * `SIGNNOW_COMPLETION_NOTICE_TO` overrides the list outright. Otherwise the
  * signed package goes to the submissions inbox and to the SignNow account
  * owner, so the address the contract was sent from keeps its own copy.
+ *
+ * `funderInbox` is the contract funder's own signed-copy address (its CC). When
+ * the funder has one, the platform submissions inbox is that funder's only — an
+ * Obsidian contract is filed at Obsidian's subs@, never Nitro's.
  */
-export function resolveSignNowCompletionNoticeRecipients(): string[] {
+export function resolveSignNowCompletionNoticeRecipients(funderInbox: string[] = []): string[] {
   const configured = String(process.env.SIGNNOW_COMPLETION_NOTICE_TO || '').trim();
   if (configured) return parseEmailList(configured);
   const inbox = String(process.env.SIGNNOW_SIGNED_COPY_TO || '').trim() || DEFAULT_SIGNED_COPY_INBOX;
-  return parseEmailList([inbox, String(process.env.SIGNNOW_USERNAME || '').trim()].join(','));
+  const funderKeys = new Set(funderInbox.map((e) => String(e || '').trim().toLowerCase()));
+  const inboxes = parseEmailList(inbox).filter(
+    (email) => !funderKeys.size || funderKeys.has(email.toLowerCase()),
+  );
+  return parseEmailList([...inboxes, String(process.env.SIGNNOW_USERNAME || '').trim()].join(','));
 }
 
 export interface SendSignNowCompletionNoticeInput {
@@ -176,7 +184,9 @@ export async function sendSignNowCompletionNotice(
   input: SendSignNowCompletionNoticeInput,
 ): Promise<SignNowCompletionNoticeResult> {
   const groupId = String(input.groupId || '').trim();
-  const recipients = input.ccOnly ? [] : resolveSignNowCompletionNoticeRecipients();
+  const recipients = input.ccOnly
+    ? []
+    : resolveSignNowCompletionNoticeRecipients(input.ccEmails || []);
   const ccRecipients = mergeEmailLists(
     [],
     parseEmailList((input.ccEmails || []).join(',')),

@@ -5251,7 +5251,7 @@ export class SignNowService {
     });
     const partyEmails = parties ? signedCopyPartyEmails(parties) : [];
     if (
-      !resolveSignNowCompletionNoticeRecipients().length &&
+      !resolveSignNowCompletionNoticeRecipients(ccEmails).length &&
       !ccEmails.length &&
       !partyEmails.length
     ) {

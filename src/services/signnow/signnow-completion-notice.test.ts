@@ -71,6 +71,19 @@ describe('resolveSignNowCompletionNoticeRecipients', () => {
       'legal@example.com',
     ]);
   });
+
+  it("keeps the submissions inbox only when it is the funder's own address", () => {
+    delete process.env.SIGNNOW_COMPLETION_NOTICE_TO;
+    delete process.env.SIGNNOW_SIGNED_COPY_TO;
+    process.env.SIGNNOW_USERNAME = 'contracts@nitroadvance.com';
+    expect(resolveSignNowCompletionNoticeRecipients(['subs@obsidiancapitalgrps.com'])).toEqual([
+      'contracts@nitroadvance.com',
+    ]);
+    expect(resolveSignNowCompletionNoticeRecipients(['Subs@NitroAdvance.com'])).toEqual([
+      'subs@nitroadvance.com',
+      'contracts@nitroadvance.com',
+    ]);
+  });
 });
 
 describe('sendSignNowCompletionNotice', () => {
@@ -85,6 +98,29 @@ describe('sendSignNowCompletionNotice', () => {
     process.env = { ...env };
   });
 
+  it('sends to the submissions inbox when the funder has no inbox of its own', async () => {
+    const result = await sendSignNowCompletionNotice({
+      groupId: 'group-1',
+      contractLabel: 'Acme LLC',
+    });
+
+    expect(result.emailed).toEqual(['subs@nitroadvance.com', 'contracts@nitroadvance.com']);
+  });
+
+  it('files the signed copy at the funder inbox instead of the platform subs@', async () => {
+    const result = await sendSignNowCompletionNotice({
+      groupId: 'group-1',
+      contractLabel: 'Obsidian Capital Group Re-New-It Renovations, LLC',
+      ccEmails: ['subs@obsidiancapitalgrps.com'],
+    });
+
+    expect(result.emailed).toEqual(['contracts@nitroadvance.com']);
+    expect(result.emailedCc).toEqual(['subs@obsidiancapitalgrps.com']);
+    expect(sendMailMock.mock.calls.map(([args]) => args.to)).not.toContain(
+      'subs@nitroadvance.com',
+    );
+  });
+
   it('emails the CC list from the send alongside the inbox, signed PDF attached', async () => {
     const result = await sendSignNowCompletionNotice({
       groupId: 'group-1',
@@ -93,7 +129,7 @@ describe('sendSignNowCompletionNotice', () => {
       ccEmails: ['broker@example.com'],
     });
 
-    expect(result.emailed).toEqual(['subs@nitroadvance.com', 'contracts@nitroadvance.com']);
+    expect(result.emailed).toEqual(['contracts@nitroadvance.com']);
     expect(result.emailedCc).toEqual(['broker@example.com']);
 
     const ccCall = sendMailMock.mock.calls.find(
