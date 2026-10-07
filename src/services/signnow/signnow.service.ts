@@ -3,6 +3,11 @@ import { BadRequestException } from '@nestjs/common';
 import prisma from '../../config/prismaClient';
 import { resolveDocumentOwnerNumericUserId } from '../../middleware/authMiddleware';
 import { resolveSignedNoticeFunderCcEmails } from '../../utils/contractCcDefaults';
+import { readContractAgentEmail } from '../../utils/contractAgentEmail';
+import {
+  buildAgentContractSentHtml,
+  buildAgentContractSentSubject,
+} from './utils/signnow-agent-sent-email';
 import {
   archiveMainContractEnvelopeToHistory,
   persistMainContractSendPackage,
@@ -31,6 +36,10 @@ import {
   sendSignNowCompletionNotice,
   findLoggedSignNowCompletionNotice,
 } from './signnow-completion-notice.service';
+import {
+  resolveSignedCopyParties,
+  signedCopyPartyEmails,
+} from './utils/signnow-signed-copy-parties';
 import {
   buildContractEnvelopeEmailSubject,
   ensureSubjectAmountHasDollarSign,
@@ -100,9 +109,11 @@ import {
   type SignNowPrefillOptions,
   isMonthlyFeeDocumentName,
   isMonthlyFeeForcedBlankField,
+  isNitroAgreementDocumentName,
   isRemittanceStartDateField,
   isSupplementalSignNowDocumentName,
   resolveSignNowPrefillValue,
+  isSignNowDbaWidget,
   shouldSkipSignNowPrefill,
   signNowPrefillOptionsForDocument,
 } from './utils/signnow-field-map';
@@ -314,7 +325,9 @@ function entityFromExhibitCTabs(tabs: Record<string, string>): ExhibitCEntityPre
       'ach_account_holder_name',
       'ach_authorization_account_holder_name',
     ),
-    accountHolderDba: str('ach_account_holder_dba_p1', 'ach_account_holder_dba', 'doing_business_as'),
+    // Not `doing_business_as`: that is the deal-wide D/B/A key, and saving any
+    // other addendum pushed it into every mapping tab, Exhibit C's included.
+    accountHolderDba: str('ach_account_holder_dba_p1', 'ach_account_holder_dba'),
     accountHolderAddress: str('ach_account_holder_address_p1', 'ach_account_holder_address'),
     bankName: str('ach_bank_name_p1', 'ach_bank_name', 'authorization_client_bank_name'),
     bankAccount: str('ach_bank_account_p1', 'ach_bank_account', 'authorization_client_bank_account'),
@@ -413,6 +426,16 @@ const EXHIBIT_C_PREFILL_KEYS = [
   'agreement_date_p1',
 ] as const;
 
+/** Every key an Exhibit C "Account Holder DBA" line can resolve from. */
+const EXHIBIT_C_DBA_VALUE_KEYS = [
+  'ach_account_holder_dba',
+  'ach_account_holder_dba_p1',
+  'ach_authorization_account_holder_dba',
+  'doing_business_as',
+  'dba',
+  'security_doing_business_as',
+] as const;
+
 function blankExhibitCPrefillKeys(
   values: Record<string, string>,
 ): Record<string, string> {
@@ -463,6 +486,12 @@ function overlayExhibitCEntityOntoSignNowValues(
     String(values.legal_name || '').trim() ||
     String(values.business_legal_name || '').trim();
   if (entity) {
+    // A copy that names a business prints that business's DBA or nothing. Its
+    // blank DBA used to leave the package-wide DBA keys in place, so Exhibit C
+    // #1 printed another copy's DBA while the CRM showed the line empty.
+    if (exhibitCEntityRowHasData(entity)) {
+      for (const key of EXHIBIT_C_DBA_VALUE_KEYS) out[key] = '';
+    }
     set(out, ['client_name', 'client_name_p1', 'owner1_guarantor_name', 'merchant_contact_name'], entity.clientName);
     set(
       out,
@@ -473,11 +502,7 @@ function overlayExhibitCEntityOntoSignNowValues(
       ],
       entity.accountHolderName || entity.clientLegalName,
     );
-    set(
-      out,
-      ['ach_account_holder_dba', 'ach_account_holder_dba_p1', 'doing_business_as'],
-      entity.accountHolderDba,
-    );
+    set(out, [...EXHIBIT_C_DBA_VALUE_KEYS], entity.accountHolderDba);
     set(
       out,
       [
@@ -535,12 +560,19 @@ function overlayExhibitCEntityOntoSignNowValues(
   }
   // A copy isolated for its own entity names that entity, never the deal's
   // merchant — writing `merchantLegal` back here is what put the main
-  // application's legal name on every other entity's Exhibit C.
+  // application's legal name on every other entity's Exhibit C. An older CRM
+  // build also saved that legal name onto the entity itself, so a slot whose
+  // legal name only repeats the merchant's counts as blank.
+  const entityLegal = String(entity?.clientLegalName ?? '').trim();
+  const ownLegal =
+    entityLegal && normalizeDbaForMatch(entityLegal) === normalizeDbaForMatch(merchantLegal)
+      ? ''
+      : entityLegal;
   set(
     out,
     ['client_legal_name', 'client_legal_name_p1', 'legal_name', 'business_legal_name'],
     options?.isolateFromMainCrm
-      ? String(entity?.clientLegalName || entity?.accountHolderName || '').trim()
+      ? String(ownLegal || entity?.accountHolderName || '').trim()
       : merchantLegal,
   );
   const date =
@@ -551,42 +583,40 @@ function overlayExhibitCEntityOntoSignNowValues(
   return out;
 }
 
-/** Slot i = payload entity i, backfilled from Exhibit C mapping tab i. */
-function mergeExhibitCEntitySources(
-  payloadEntitiesRaw: unknown,
-  mappingEntities: readonly ExhibitCEntityPrefillRow[],
-): ExhibitCEntityPrefillRow[] {
-  const payloadEntities = parseExhibitCEntitiesForPrefill(payloadEntitiesRaw);
-  const maxSlots = Math.max(payloadEntities.length, mappingEntities.length);
-  const out: ExhibitCEntityPrefillRow[] = [];
-  for (let i = 0; i < maxSlots; i += 1) {
-    out[i] = mergeExhibitCEntityRows(payloadEntities[i], mappingEntities[i]);
-  }
-  return out;
-}
-
 /**
  * One entity per Exhibit C copy, with what the CRM has *saved* first.
  *
- * Order per field: the contract's stored `exhibitCEntities`, then that copy's
- * own saved mapping tab, then the list the browser posted. The posted list is
- * built from whatever contract the screen loaded, so it can predate the copy's
- * latest save — and it used to win, while a request without a contract id
- * never read the saved copy at all. Either way `Exhibit C (2)` reached SignNow
- * with no entity and was filled from the package values (Exhibit C #1's bank,
- * the Monthly Fee holder), which is exactly what Review showed.
+ * A copy whose stored `exhibitCEntities` slot names a business is a record of
+ * its own: it is used as saved, and a field left blank there stays blank. Only
+ * the agreement date may still come from elsewhere. Filling blank fields from
+ * the copy's mapping tab or the posted list let values entered on *other*
+ * addendums leak in — saving one pushed the deal's DBA / bank into every tab,
+ * so a copy whose DBA is blank in the CRM printed the merchant's on SignNow.
+ *
+ * A slot with no saved record (an older contract, or a request without a
+ * contract id) is built from the copy's own mapping tab, then the list the
+ * browser posted — otherwise `Exhibit C (2)` reached SignNow with no entity and
+ * was filled from the package values.
  */
 export function resolveExhibitCEntities(args: {
   storedEntitiesRaw?: unknown;
   mappingEntities?: readonly ExhibitCEntityPrefillRow[];
   payloadEntitiesRaw?: unknown;
 }): ExhibitCEntityPrefillRow[] {
-  const stored = mergeExhibitCEntitySources(args.storedEntitiesRaw, args.mappingEntities ?? []);
+  const stored = parseExhibitCEntitiesForPrefill(args.storedEntitiesRaw);
+  const tabs = args.mappingEntities ?? [];
   const payload = parseExhibitCEntitiesForPrefill(args.payloadEntitiesRaw);
-  const maxSlots = Math.max(stored.length, payload.length);
+  const maxSlots = Math.max(stored.length, tabs.length, payload.length);
   const out: ExhibitCEntityPrefillRow[] = [];
   for (let i = 0; i < maxSlots; i += 1) {
-    out[i] = mergeExhibitCEntityRows(stored[i], payload[i]);
+    const fallback = mergeExhibitCEntityRows(tabs[i], payload[i]);
+    if (exhibitCEntityRowHasData(stored[i])) {
+      const own = mergeExhibitCEntityRows(stored[i], undefined);
+      if (!own.agreementDate && fallback.agreementDate) own.agreementDate = fallback.agreementDate;
+      out[i] = own;
+    } else {
+      out[i] = mergeExhibitCEntityRows(stored[i], fallback);
+    }
   }
   return out;
 }
@@ -640,6 +670,49 @@ export function exhibitCEntityRowHasData(
   );
 }
 
+function normalizeDbaForMatch(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Payload keys a D/B/A line reads — `doing_business_as`, `*_dba*`, `merchant_dba`… */
+const PACKAGE_DBA_KEY_RE = /dba|doing_?business/i;
+
+/**
+ * Drop every package-wide DBA value that is really an Exhibit C (2)/(3)/…
+ * entity's DBA.
+ *
+ * Those copies are other businesses. The CRM picked "copy #1" by list position
+ * in several places, so when the mappings came back in another order copy (2)'s
+ * DBA was saved as the contract's own `doingBusinessAs` (contracts 183 and 188)
+ * and printed on the agreement's D/B/A line and the addendums. A DBA that copy
+ * #1's entity — the deal's merchant — also holds is kept, and so is the
+ * business name (Monthly Fee prints it on its holder line).
+ */
+export function withoutExhibitCCopyDbas(
+  values: Record<string, string>,
+  entities: readonly ExhibitCEntityPrefillRow[],
+): Record<string, string> {
+  const primary = normalizeDbaForMatch(entities[0]?.accountHolderDba);
+  const legal = new Set(
+    ['client_legal_name', 'client_legal_name_p1', 'legal_name', 'business_legal_name']
+      .map((key) => normalizeDbaForMatch(values[key]))
+      .filter(Boolean),
+  );
+  const copyDbas = new Set<string>();
+  for (const entity of entities.slice(1)) {
+    const dba = normalizeDbaForMatch(entity?.accountHolderDba);
+    if (dba && dba !== primary && !legal.has(dba)) copyDbas.add(dba);
+  }
+  if (!copyDbas.size) return values;
+  let out: Record<string, string> | null = null;
+  for (const [key, value] of Object.entries(values)) {
+    if (!PACKAGE_DBA_KEY_RE.test(key) || !copyDbas.has(normalizeDbaForMatch(value))) continue;
+    out ??= { ...values };
+    out[key] = '';
+  }
+  return out ?? values;
+}
+
 /**
  * The values ONE document in the package should be prefilled with.
  *
@@ -647,7 +720,8 @@ export function exhibitCEntityRowHasData(
  * `Exhibit C` from `Exhibit C (2)` is its position in the send order. Baking the
  * package-wide `values` onto both copies is what made the two copies render
  * identically in SignNow even though the CRM held different entities for them.
- * Non-Exhibit documents are returned untouched.
+ * Non-Exhibit documents keep the package values, minus any DBA that belongs
+ * only to an Exhibit C copy (see `withoutExhibitCCopyDbas`).
  */
 export function exhibitCDocumentPrefillValues(
   values: Record<string, string>,
@@ -655,48 +729,22 @@ export function exhibitCDocumentPrefillValues(
   documentName: unknown,
 ): { values: Record<string, string>; entityIndex: number | null; isolated: boolean } {
   const entityIndex = exhibitCInstanceIndexFromDocumentName(documentName);
-  if (entityIndex == null) return { values, entityIndex, isolated: false };
-  const entity = entities[entityIndex];
+  if (entityIndex == null) {
+    return { values: withoutExhibitCCopyDbas(values, entities), entityIndex, isolated: false };
+  }
   /**
-   * Isolation is what a second *entity* needs, not what a second *copy* needs.
-   *
-   * A copy whose slot names its own business must not inherit the main CRM
-   * merchant/ACH values — an unset key there stays blank rather than falling
-   * back to the primary merchant, so one entity's page can never carry
-   * another's bank or holder details.
-   *
-   * A copy with no entity of its own is simply another Exhibit C for this
-   * deal's merchant. Isolating it blanked every holder/bank/merchant key and
-   * put nothing back, which is why `Exhibit C (2)` and `(3)` reached SignNow
-   * showing only the agreement date while the merchant still had to sign them.
-   * Those copies are filled from the package values, exactly like the first.
+   * Every Exhibit C addendum — the first one and every added copy alike — is an
+   * independent record. The agreement's own bank pages carry the deal's ACH /
+   * funding bank; an Exhibit C prints only its own slot (the values entered for
+   * it, or a void check the scraper routed to it). An unset key stays blank
+   * rather than falling back to the deal's merchant / ACH / void-check values.
    */
-  const isolatedExtra = entityIndex > 0 && exhibitCEntityRowHasData(entity);
-  /**
-   * A copy that is not its own entity is the deal's merchant, so its "Account
-   * Holder Business Address" is the deal's business address. The CRM mirrors
-   * the ACH holder address — Owner 1's home, from the driver's-licence KYC —
-   * into that slot, and overlaying it rewrote `business_address` with the
-   * guarantor's street and city. Only a separate entity brings its own address.
-   */
-  const overlayEntity =
-    entity && !isolatedExtra
-      ? {
-          ...entity,
-          accountHolderAddress: '',
-          accountHolderCity: '',
-          accountHolderState: '',
-          accountHolderZip: '',
-        }
-      : entity;
   return {
-    values: overlayExhibitCEntityOntoSignNowValues(
-      values,
-      overlayEntity,
-      isolatedExtra ? { isolateFromMainCrm: true } : { blankSharedFieldsFirst: false },
-    ),
+    values: overlayExhibitCEntityOntoSignNowValues(values, entities[entityIndex], {
+      isolateFromMainCrm: true,
+    }),
     entityIndex,
-    isolated: isolatedExtra,
+    isolated: true,
   };
 }
 
@@ -727,13 +775,13 @@ export function signNowDocumentPrefillValues(
   if (!tabs) return { ...base, values: alignDisclosureWireFeeWithTotalFees(base.values) };
   // A disclosure tab saved from a calculation that ran without inputs holds
   // 0.00 placeholders; they must not bury the deal's real amounts.
-  return {
-    ...base,
-    values: alignDisclosureWireFeeWithTotalFees({
-      ...base.values,
-      ...dropZeroDisclosurePlaceholders(tabs, base.values),
-    }),
-  };
+  const merged = alignDisclosureWireFeeWithTotalFees({
+    ...base.values,
+    ...dropZeroDisclosurePlaceholders(tabs, base.values),
+  });
+  // Only an isolated copy prints its own entity's DBA; a tab saved on any other
+  // document must not bring an Exhibit C copy's DBA back in.
+  return { ...base, values: base.isolated ? merged : withoutExhibitCCopyDbas(merged, entities) };
 }
 
 type SignNowDocumentRef = {
@@ -1293,7 +1341,12 @@ function existingValuesBeneathCrmValues(
   const out = { ...existing };
   for (const name of fieldNames) {
     if (shouldSkipSignNowPrefill(name, prefillOpts)) continue;
-    if (!formatSignNowPrefillValue(resolveSignNowPrefillValue(name, values, prefillOpts))) {
+    // A D/B/A line is the CRM's alone: a blank CRM DBA must not fall back to
+    // whatever an earlier send left on the widget (see `isSignNowDbaWidget`).
+    if (
+      !isSignNowDbaWidget(name, prefillOpts) &&
+      !formatSignNowPrefillValue(resolveSignNowPrefillValue(name, values, prefillOpts))
+    ) {
       continue;
     }
     delete out[name];
@@ -1924,6 +1977,13 @@ const ccNoticeCatchUpInflight = new Set<string>();
 /** Last catch-up attempt per envelope; a failed send is retried after the cooldown. */
 const ccNoticeCatchUpAttempts = new Map<string, number>();
 const CC_NOTICE_RETRY_MS = 10 * 60 * 1000;
+/** Completion notices being sent, per envelope, so a CC catch-up never races the first send. */
+const completionNoticeInflight = new Set<string>();
+/**
+ * How long after completion a CC catch-up waits, so the first notice (PDF
+ * download + one mail per recipient) has time to land in the outbound log.
+ */
+const CC_NOTICE_CATCH_UP_GRACE_MS = 5 * 60 * 1000;
 
 export class SignNowService {
   isEnabled(): boolean {
@@ -4083,30 +4143,27 @@ export class SignNowService {
     ccEmails: string[] | undefined | null,
     signerEmails: string[] | undefined | null,
     subjectBase?: string,
-  ): Promise<{ emailed: string[]; skippedReason?: string }> {
-    const signerSet = new Set(
-      (signerEmails || []).map((e) => String(e || '').trim().toLowerCase()).filter(Boolean),
-    );
-    const list = [
-      ...new Set(
-        (ccEmails || [])
-          .map((e) => String(e || '').trim())
-          .filter((e) => e && !signerSet.has(e.toLowerCase())),
-      ),
-    ];
-    if (!list.length) return { emailed: [], skippedReason: 'no_cc_addresses' };
+    agentEmails?: string[] | null,
+  ): Promise<{ emailed: string[]; agentsEmailed?: string[]; skippedReason?: string }> {
+    const { list: ccList, agents } = this.splitSendCopyRecipients(ccEmails, signerEmails, agentEmails);
+    if (!ccList.length && !agents.length) return { emailed: [], skippedReason: 'no_cc_addresses' };
 
     // Remember the list before attempting delivery. The CC addresses exist
     // nowhere but the send request body, and the completion notice — which runs
     // days later, from a webhook with no request of its own — has no other way
     // to reach the people who were copied on the unsigned package.
-    await this.rememberCcRecipientsForGroup(groupId, list);
+    if (ccList.length) await this.rememberCcRecipientsForGroup(groupId, ccList);
+    const list = await this.withoutFunderCc(groupId, ccList);
+    if (!list.length && !agents.length) {
+      return { emailed: [], skippedReason: 'funder_cc_gets_signed_copy_only' };
+    }
 
     if (!isOutboundSmtpConfigured()) {
       console.warn('[SignNow] CC contract email skipped: SMTP not configured.');
       return { emailed: [], skippedReason: 'smtp_not_configured' };
     }
 
+    // One download serves the CC copies and every agent's copy.
     let pdf: Buffer | null = null;
     try {
       pdf = await this.downloadGroupPdf(groupId);
@@ -4118,6 +4175,9 @@ export class SignNowService {
       String(subjectBase || '').trim() || buildContractEnvelopeEmailSubject('Business', null),
     );
     const pdfFilename = buildContractEnvelopePdfFilename(subject);
+    const attachments = pdf?.length
+      ? [{ filename: pdfFilename, content: pdf, contentType: 'application/pdf' }]
+      : undefined;
     // Sent as the contract's funder (its stored sender identity), else the .env default.
     const from = resolveEnvelopeMailSender(groupId).then((sender) => sender ?? undefined);
     // Each CC is its own message; delivering them one after another made the
@@ -4129,15 +4189,7 @@ export class SignNowService {
           to,
           subject,
           html: '<p>Please find the contract package attached for your records.</p>',
-          attachments: pdf?.length
-            ? [
-                {
-                  filename: pdfFilename,
-                  content: pdf,
-                  contentType: 'application/pdf',
-                },
-              ]
-            : undefined,
+          attachments,
         }),
       ),
     );
@@ -4152,7 +4204,89 @@ export class SignNowService {
     if (emailed.length) {
       console.log(`[SignNow] CC contract emailed to ${emailed.join(', ')} (group ${groupId}, subject "${subject}")`);
     }
-    return { emailed };
+
+    // Each agent gets the "sent for contract" message, one message apiece.
+    const agentOutcomes = await Promise.allSettled(
+      agents.map(async (to) =>
+        sendMail({
+          from: await from,
+          to,
+          subject: buildAgentContractSentSubject(subject),
+          html: buildAgentContractSentHtml(subject),
+          attachments,
+        }),
+      ),
+    );
+    const agentsEmailed: string[] = [];
+    agentOutcomes.forEach((outcome, index) => {
+      if (outcome.status === 'fulfilled') {
+        agentsEmailed.push(agents[index]);
+      } else {
+        console.error(`[SignNow] Failed to email contract-sent notice to agent ${agents[index]}:`, outcome.reason);
+      }
+    });
+    if (agentsEmailed.length) {
+      console.log(`[SignNow] contract-sent notice emailed to agents ${agentsEmailed.join(', ')} (group ${groupId})`);
+    }
+    return { emailed, agentsEmailed };
+  }
+
+  /**
+   * CC list without signers, and the agents kept apart: an agent gets the
+   * "sent for contract" message instead of a bare CC copy, never both.
+   */
+  private splitSendCopyRecipients(
+    ccEmails: string[] | undefined | null,
+    signerEmails: string[] | undefined | null,
+    agentEmails?: string[] | null,
+  ): { list: string[]; agents: string[] } {
+    const signerSet = new Set(
+      (signerEmails || []).map((e) => String(e || '').trim().toLowerCase()).filter(Boolean),
+    );
+    const agents = [
+      ...new Map(
+        (agentEmails || [])
+          .map((e) => String(e || '').trim())
+          .filter((e) => e.includes('@') && !signerSet.has(e.toLowerCase()))
+          .map((e) => [e.toLowerCase(), e] as const),
+      ).values(),
+    ];
+    const agentSet = new Set(agents.map((e) => e.toLowerCase()));
+    const list = [
+      ...new Set(
+        (ccEmails || [])
+          .map((e) => String(e || '').trim())
+          .filter((e) => e && !signerSet.has(e.toLowerCase()) && !agentSet.has(e.toLowerCase())),
+      ),
+    ];
+    return { list, agents };
+  }
+
+  /**
+   * The send-time CC list minus the selected funder's CC. The funder receives
+   * only the signed copy (the branded completion notice); the bare unsigned
+   * package at send time is for the extra addresses typed into the send dialog.
+   */
+  private async withoutFunderCc(groupId: string, list: string[]): Promise<string[]> {
+    if (!list.length) return list;
+    const funderCc = new Set(
+      (await this.readSignedNoticeCcRecipients(groupId)).map((e) => e.toLowerCase()),
+    );
+    return list.filter((e) => !funderCc.has(e.toLowerCase()));
+  }
+
+  /** The deal's agents (send panel values, else referring agent) for a sent group. */
+  private async readAgentEmailsForGroup(groupId: string): Promise<string[]> {
+    try {
+      const document = await prisma.document.findFirst({
+        where: { envelopeId: String(groupId || '').trim() },
+        select: { applicationId: true },
+      });
+      return (await readContractAgentEmail(document?.applicationId)).agentEmails ?? [];
+    } catch (err) {
+      console.warn(`[SignNow] could not resolve agent emails for ${groupId}:`, err);
+      return [];
+    }
   }
 
   /**
@@ -4161,35 +4295,34 @@ export class SignNowService {
    * The list is persisted before returning because the completion notice needs
    * it days later; the PDF download and the SendGrid sends run after the HTTP
    * response, so a send only waits on one DB write for its CC recipients.
+   * The deal's agents are emailed the package in the same background job.
    */
   async queueCcRecipientsOnSend(
     groupId: string,
     ccEmails: string[] | undefined | null,
     signerEmails: string[] | undefined | null,
     subjectBase?: string,
-  ): Promise<{ emailed: string[]; queued: string[]; skippedReason?: string }> {
-    const signerSet = new Set(
-      (signerEmails || []).map((e) => String(e || '').trim().toLowerCase()).filter(Boolean),
-    );
-    const list = [
-      ...new Set(
-        (ccEmails || [])
-          .map((e) => String(e || '').trim())
-          .filter((e) => e && !signerSet.has(e.toLowerCase())),
-      ),
-    ];
-    if (!list.length) return { emailed: [], queued: [], skippedReason: 'no_cc_addresses' };
-    await this.rememberCcRecipientsForGroup(groupId, list);
+  ): Promise<{ emailed: string[]; queued: string[]; agentsQueued?: string[]; skippedReason?: string }> {
+    const agentEmails = await this.readAgentEmailsForGroup(groupId);
+    const { list, agents } = this.splitSendCopyRecipients(ccEmails, signerEmails, agentEmails);
+    if (!list.length && !agents.length) {
+      return { emailed: [], queued: [], skippedReason: 'no_cc_addresses' };
+    }
+    if (list.length) await this.rememberCcRecipientsForGroup(groupId, list);
+    const unsignedCopyList = await this.withoutFunderCc(groupId, list);
+    if (!unsignedCopyList.length && !agents.length) {
+      return { emailed: [], queued: [], skippedReason: 'funder_cc_gets_signed_copy_only' };
+    }
     if (!isOutboundSmtpConfigured()) {
       console.warn('[SignNow] CC contract email skipped: SMTP not configured.');
       return { emailed: [], queued: [], skippedReason: 'smtp_not_configured' };
     }
     setImmediate(() => {
-      this.notifyCcRecipientsOnSend(groupId, list, signerEmails, subjectBase).catch((err) =>
+      this.notifyCcRecipientsOnSend(groupId, list, signerEmails, subjectBase, agents).catch((err) =>
         console.warn(`[SignNow] background CC email failed for ${groupId}:`, err),
       );
     });
-    return { emailed: [], queued: list };
+    return { emailed: [], queued: unsignedCopyList, agentsQueued: agents };
   }
 
   private async downloadMergedGroupPdf(
@@ -4614,9 +4747,8 @@ export class SignNowService {
                 // A retry re-reads the document: the snapshot is what failed.
                 remote: fresh ? undefined : doc.remote,
                 // A copy's own entity outranks whatever an earlier send left on
-                // the widget, otherwise copy 2 keeps copy 1's baked text. A copy
-                // without one is just another page for this deal's merchant, so
-                // it keeps what is there rather than being blanked.
+                // the widget, otherwise copy 2 keeps copy 1's baked text. An Exhibit C
+                // with no entity yet goes out blank, never with the deal's bank.
                 ignoreExistingFieldValues: isolated,
               });
             } catch (err) {
@@ -4986,23 +5118,35 @@ export class SignNowService {
       });
       return;
     }
+    // The webhook, every open CRM tab's poll and the status cron can all see
+    // completion within the same second, and each used to send its own
+    // completion notice. Stamping `completedAt` only where it is still null is
+    // atomic per row, so exactly one caller claims the notice.
+    let claimedNotice = false;
+    if (status === 'completed') {
+      const claim = await prisma.document.updateMany({
+        where: { envelopeId: id, completedAt: null } as any,
+        data: { status: mappedInternal, completedAt: new Date() } as any,
+      });
+      claimedNotice =
+        claim.count > 0 || (await prisma.document.count({ where: { envelopeId: id } })) === 0;
+      if (claimedNotice && completionNoticeInflight.has(id)) claimedNotice = false;
+      if (claimedNotice) completionNoticeInflight.add(id);
+    }
     await prisma.document.updateMany({
       where: { envelopeId: id },
-      data: {
-        status: mappedInternal,
-        ...(status === 'completed' ? { completedAt: new Date() } : {}),
-      } as any,
+      data: { status: mappedInternal } as any,
     });
     await this.syncContractSigningFromGroupStatus(id, mappedInternal, applicationId);
-    if (status === 'completed') {
+    if (status === 'completed' && claimedNotice) {
       // Warm the Cloudinary archive as soon as SignNow reports completion
       // (webhook or manual refresh) so the "eye" preview never needs a live
       // SignNow GET for a finished contract. The same buffer then rides
       // along on the CRM completion notice, so the contracts inbox gets one
       // email whose subject actually names the deal.
-      void this.notifyContractsInboxOnCompletion(id, applicationId, groupPayload).catch((err) =>
-        console.warn(`[SignNow] completion notice failed for ${id}:`, err),
-      );
+      void this.notifyContractsInboxOnCompletion(id, applicationId, groupPayload)
+        .catch((err) => console.warn(`[SignNow] completion notice failed for ${id}:`, err))
+        .finally(() => completionNoticeInflight.delete(id));
     }
   }
 
@@ -5058,7 +5202,20 @@ export class SignNowService {
     }
 
     const ccEmails = await this.readSignedNoticeCcRecipients(groupId, applicationId);
-    if (!resolveSignNowCompletionNoticeRecipients().length && !ccEmails.length) return;
+    // Signers, agent and sender get their own signed copy too.
+    const partyEmails = await resolveSignedCopyParties(groupId, applicationId)
+      .then(signedCopyPartyEmails)
+      .catch((err) => {
+        console.warn(`[SignNow] signed-copy parties lookup failed for ${groupId}:`, err);
+        return [] as string[];
+      });
+    if (
+      !resolveSignNowCompletionNoticeRecipients().length &&
+      !ccEmails.length &&
+      !partyEmails.length
+    ) {
+      return;
+    }
 
     const documents = this.normalizeGroupDocuments(
       (groupPayload as { documents?: unknown } | null)?.documents,
@@ -5077,6 +5234,7 @@ export class SignNowService {
       pdf,
       documentNames: documents.map((doc) => String(doc.document_name || doc.name || '')),
       ccEmails,
+      partyEmails,
     });
     await this.rememberCcSignedNoticeForGroup(groupId, notice.ccReached);
   }
@@ -5109,6 +5267,7 @@ export class SignNowService {
       select: {
         status: true,
         applicationId: true,
+        completedAt: true,
         ccEmails: true,
         ccSignedNoticeSentAt: true,
         ccSignedNoticeEmails: true,
@@ -5116,6 +5275,7 @@ export class SignNowService {
     })) as {
       status?: string;
       applicationId?: string;
+      completedAt?: Date | null;
       ccEmails?: string[];
       ccSignedNoticeSentAt?: Date | null;
       ccSignedNoticeEmails?: string[];
@@ -5141,6 +5301,16 @@ export class SignNowService {
     if (logged && reached.length && !missing.length) {
       await this.recordCcSignedNotice(id, logged.sentAt, reached);
       return { ccSignedNoticeSentAt: logged.sentAt, ccSignedNoticeEmails: reached };
+    }
+
+    // The first completion notice may still be downloading the PDF or mailing;
+    // catching up now would send the CC list a second copy.
+    const completedAt = doc.completedAt ? new Date(doc.completedAt).getTime() : 0;
+    if (
+      completionNoticeInflight.has(id) ||
+      (completedAt && Date.now() - completedAt < CC_NOTICE_CATCH_UP_GRACE_MS)
+    ) {
+      return null;
     }
 
     const last = ccNoticeCatchUpAttempts.get(id);
@@ -5768,6 +5938,23 @@ export class SignNowService {
     /** Set when the restore below puts this document's own signature widgets back. */
     let restoredSignFields = false;
     /**
+     * Nitro agreement Owner Review only: put back the CRM-held (Owner) text
+     * widgets the live copy is missing, not just the signer-owned ones.
+     *
+     * Review reads a freshly copied group, and on the 26-page Nitro agreement
+     * SignNow can still be attaching widgets when that read happens — the
+     * snapshot then holds only the first pages' Owner widgets. The restore below
+     * brings back signatures and signer slots but skipped Owner text, and the
+     * field PUT that follows replaces the whole set, so every Owner widget from
+     * page 3 on (the Waiver of Personal Service, Notification of Assignment and
+     * the other closing addendums on pages 23-26) was deleted and those pages
+     * opened empty. Other funders' agreements keep their existing behaviour.
+     */
+    const restoreOwnerTextFields =
+      !exposeToMerchant && !supplementalDoc && !isExhibitC && isNitroAgreementDocumentName(documentName);
+    /** Owner text widgets that restore re-created; they do not exist on the copy yet. */
+    const restoredOwnerTextNames = new Set<string>();
+    /**
      * Every document — agreement, addenda, disclosures — is rebuilt against the
      * template it was copied from, not just the agreement and Exhibit C.
      *
@@ -5857,6 +6044,9 @@ export class SignNowService {
               }
             }
             const beforeRequired = sourceFields.length;
+            const namesBeforeRestore = new Set(
+              sourceFields.map((field) => String(field.name || '').trim().toLowerCase()),
+            );
             /**
              * A template with a different page count is not this document's
              * template, whatever resolution picked it, and its widgets can only
@@ -5878,9 +6068,26 @@ export class SignNowService {
                 // A merchant publish is CRM-driven end to end: bring back every
                 // widget an earlier bake deleted so this send's values can land
                 // on them instead of the page keeping the previous stamp.
-                ...(bakeFilledText ? { restoreAllTextFields: true } : {}),
+                ...(bakeFilledText || restoreOwnerTextFields ? { restoreAllTextFields: true } : {}),
               },
             );
+            if (restoreOwnerTextFields) {
+              for (const field of sourceFields) {
+                const name = String(field.name || '').trim();
+                if (!name || SIGN_FIELD_TYPES.has(String(field.type || ''))) continue;
+                if (!namesBeforeRestore.has(name.toLowerCase())) {
+                  restoredOwnerTextNames.add(name.toLowerCase());
+                }
+              }
+              if (restoredOwnerTextNames.size) {
+                console.info('[SignNow] restored Owner text widgets missing from Nitro agreement', {
+                  documentId,
+                  templateId,
+                  restored: restoredOwnerTextNames.size,
+                  sample: [...restoredOwnerTextNames].slice(0, 10),
+                });
+              }
+            }
             if (!templateMatchesDocument) {
               console.warn('[SignNow] skipped field restore from a template of a different size', {
                 documentId,
@@ -6002,6 +6209,7 @@ export class SignNowService {
       } else if (
         !SIGN_FIELD_TYPES.has(type) &&
         ((clearUnresolvedValues && !/^(checkbox|checkmark|radiobutton)$/.test(type)) ||
+          isSignNowDbaWidget(String(next.name || ''), prefillOpts) ||
           (prefillOpts?.documentKind === 'monthly_fee' &&
             isMonthlyFeeForcedBlankField(String(next.name || ''))))
       ) {
@@ -6101,7 +6309,13 @@ export class SignNowService {
     // dropping the failing field so the rest of the agreement still fills.
     // A renamed Exhibit C copy skips it: prefill-texts addresses widgets by
     // name, which the field PUT is about to change, and the PUT carries the values.
-    let textPrefills = relabelledExhibitCCopy ? [] : signNowPrefillTextPayload(putFields);
+    // Restored widgets are not on the document until the field PUT below
+    // creates them (carrying their values), so prefill-texts cannot address them.
+    let textPrefills = relabelledExhibitCCopy
+      ? []
+      : signNowPrefillTextPayload(putFields).filter(
+          (row) => !restoredOwnerTextNames.has(String(row.field_name || '').trim().toLowerCase()),
+        );
     let textsApplied = 0;
     if (textPrefills.length) {
       const paths = [
@@ -6255,7 +6469,8 @@ export class SignNowService {
       !exposeToMerchant &&
       textsApplied > 0 &&
       !needsMerchantRequiredReviewPut &&
-      !relabelledExhibitCCopy
+      !relabelledExhibitCCopy &&
+      !restoredOwnerTextNames.size
     ) {
       console.info('[SignNow] review prefill complete via prefill-texts (skipped field PUT)', {
         documentId,
@@ -7309,6 +7524,22 @@ export class SignNowService {
     if (!appId) return;
 
     const statusKey = String(envelopeStatus || '').trim().toLowerCase();
+
+    /**
+     * A superseded send ("Resend New Contract" archived it and dropped its Document row)
+     * can still be refreshed or voided from Contracts Generated. Its status belongs on the
+     * history entry only — writing it onto Contract / Application would flip the deal's
+     * replacement draft to Sent / Voided.
+     */
+    const isLiveEnvelope =
+      (await prisma.document.count({ where: { envelopeId: groupId } })) > 0;
+    if (
+      !isLiveEnvelope &&
+      (await updateArchivedContractSendHistoryStatus(appId, groupId, statusKey))
+    ) {
+      return;
+    }
+
     const contractStatusMap: Record<string, string> = {
       sent: 'SENT',
       viewed: 'VIEWED',
@@ -8190,22 +8421,17 @@ export class SignNowService {
 
     const invitedEmails = () =>
       uniqueEmails(inviteSteps.flatMap((step) => step.invite_emails.map((row) => row.email)));
-    // SignNow's own "documents signed" email goes to completion_emails. Only
-    // the selected funder's CC is added there — extra addresses typed at send
-    // get the unsigned copy, not the signed one.
-    const funderCc = new Set(
-      (await this.readSignedNoticeCcRecipients(groupId, meta.applicationId)).map((e) =>
-        e.toLowerCase(),
-      ),
-    );
-    const extraCc = uniqueEmails(ccEmails).filter((e) => funderCc.has(e.toLowerCase()));
+    // SignNow's own "documents signed" email goes to completion_emails: the
+    // signers and the preparer only. The funder's CC is not added — it already
+    // gets the CRM's branded completion notice, and listing it here too sent it
+    // the signed copy twice.
     const buildBody = (): Record<string, unknown> => {
       const emails = invitedEmails();
       // Do not send `cc` on groupinvite — SignNow treats malformed CC as
       // "Email is invalid". Notify extras when the package completes instead.
       return {
         invite_steps: inviteSteps,
-        completion_emails: uniqueEmails([...emails, preparer?.email || '', ...extraCc]).map(
+        completion_emails: uniqueEmails([...emails, preparer?.email || '']).map(
           (email) => ({
             email,
             disable_document_attachment: 0,

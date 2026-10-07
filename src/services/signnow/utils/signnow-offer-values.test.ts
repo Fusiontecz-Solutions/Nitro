@@ -118,6 +118,7 @@ describe('buildOfferPrefillOverrides', () => {
     expect(overrides.payment_frequency).toBe('Weekly');
     expect(overrides.disclosure_payment_frequency).toBe('Weekly');
     expect(overrides.disclouser_pg2_frequency).toBe('Weekly');
+    expect(overrides.page2_frequency).toBe('Weekly');
   });
 
   it('discloses a weekly term in days (weeks x 7)', () => {

@@ -160,6 +160,13 @@ export interface SendSignNowCompletionNoticeInput {
    */
   ccEmails?: string[] | null;
   /**
+   * The people on the deal itself — the merchant signers, the agent and the CRM
+   * user who sent the contract. A portal send gets no SignNow completion email,
+   * so without this nobody who signed or sent the contract got the signed copy.
+   * Skipped on a `ccOnly` catch-up, which must not email them twice.
+   */
+  partyEmails?: string[] | null;
+  /**
    * Email only the CC list. Used when catching up a CC notice for a package
    * whose inbox copy already went out, so the submissions inbox is not sent a
    * duplicate.
@@ -170,6 +177,8 @@ export interface SendSignNowCompletionNoticeInput {
 export interface SignNowCompletionNoticeResult {
   emailed: string[];
   emailedCc: string[];
+  /** Signers, agent and sender reached (see `partyEmails`). */
+  emailedParties?: string[];
   /**
    * CC addresses that received the notice, whether as a CC or because they are
    * also on the inbox list (e.g. subs@ CC'd on the send). This is what the
@@ -232,7 +241,13 @@ export async function sendSignNowCompletionNotice(
     [],
     parseEmailList((input.ccEmails || []).join(',')),
   ).filter((email) => !recipients.some((r) => r.toLowerCase() === email.toLowerCase()));
-  if (!recipients.length && !ccRecipients.length) {
+  const partyRecipients = input.ccOnly
+    ? []
+    : parseEmailList((input.partyEmails || []).join(',')).filter(
+        (email) =>
+          ![...recipients, ...ccRecipients].some((r) => r.toLowerCase() === email.toLowerCase()),
+      );
+  if (!recipients.length && !ccRecipients.length && !partyRecipients.length) {
     return { emailed: [], emailedCc: [], ccReached: [], skippedReason: 'no_recipients' };
   }
   if (!isOutboundSmtpConfigured()) {
@@ -296,20 +311,22 @@ export async function sendSignNowCompletionNotice(
 
   const emailed = await deliver(recipients);
   const emailedCc = await deliver(ccRecipients);
+  const emailedParties = await deliver(partyRecipients);
 
-  if (emailed.length || emailedCc.length) {
+  if (emailed.length || emailedCc.length || emailedParties.length) {
     console.info('[SignNow] completion notice sent', {
       groupId,
       subject,
       recipients: emailed,
       cc: emailedCc,
+      parties: emailedParties,
     });
     try {
       await createOutboundCommunication({
         applicationId: applicationId || null,
         channel: 'EMAIL',
         recipientType: 'USER',
-        recipient: [...emailed, ...emailedCc].join(', '),
+        recipient: [...emailed, ...emailedCc, ...emailedParties].join(', '),
         subject,
         documentName: contractLabel,
         metadata: {
@@ -317,6 +334,7 @@ export async function sendSignNowCompletionNotice(
           groupId,
           recipients: emailed,
           ccEmails: emailedCc,
+          partyEmails: emailedParties,
         },
       });
     } catch (err) {
@@ -325,5 +343,5 @@ export async function sendSignNowCompletionNotice(
   }
 
   const ccReached = ccAddressesReached(input.ccEmails || [], [...emailed, ...emailedCc]);
-  return { emailed, emailedCc, ccReached };
+  return { emailed, emailedCc, emailedParties, ccReached };
 }

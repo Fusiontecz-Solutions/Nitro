@@ -69,7 +69,7 @@ function exhibitCDocument(id: string, documentName: string, stale: Record<string
   };
 }
 
-/** Package-wide CRM values: the deal's own merchant, i.e. Exhibit C #1. */
+/** Package-wide CRM values: the deal's own merchant and ACH / funding bank. */
 const PACKAGE_VALUES: Record<string, string> = {
   client_legal_name: 'MERCHANT A LLC',
   client_name: 'MARY IRVIN',
@@ -80,6 +80,12 @@ const PACKAGE_VALUES: Record<string, string> = {
   ach_bank_account: '1111111111',
   ach_bank_routing: '111000614',
   agreement_date: '09/28/2026',
+};
+
+const ENTITY_1 = {
+  accountHolderName: 'MERCHANT D LLC',
+  bankName: 'CITIBANK',
+  bankAccount: '4444444444',
 };
 
 const ENTITY_2 = {
@@ -159,16 +165,23 @@ async function warm(documentNames: string[], entities: unknown[]) {
 }
 
 describe('the warm prefills each Exhibit C copy from its own entity', () => {
-  it('keeps a single Exhibit C on the package values', async () => {
+  it('leaves a single Exhibit C with no entity blank, never the ACH / funding bank', async () => {
     const { prefillTexts } = await warm(['Exhibit C'], []);
-    expect(prefillTexts['doc-1'].ach_account_holder_name_p1).toBe('MERCHANT A LLC');
-    expect(prefillTexts['doc-1'].ach_bank_name_p1).toBe('CHASE');
+    expect(prefillTexts['doc-1']?.ach_account_holder_name_p1 ?? '').toBe('');
+    expect(prefillTexts['doc-1']?.ach_bank_name_p1 ?? '').toBe('');
+  });
+
+  it('gives a single Exhibit C its own entity', async () => {
+    const { prefillTexts } = await warm(['Exhibit C'], [ENTITY_1]);
+    expect(prefillTexts['doc-1'].ach_account_holder_name_p1).toBe('MERCHANT D LLC');
+    expect(prefillTexts['doc-1'].ach_bank_account_p1).toBe('4444444444');
+    expect(prefillTexts['doc-1'].ach_bank_routing_p1).toBeUndefined();
   });
 
   it('gives Exhibit C (2) its own values, not Exhibit C #1', async () => {
-    const { prefillTexts } = await warm(['Exhibit C', 'Exhibit C (2)'], [{}, ENTITY_2]);
-    expect(prefillTexts['doc-1'].ach_bank_name_p1).toBe('CHASE');
-    expect(prefillTexts['doc-1'].ach_bank_account_p1).toBe('1111111111');
+    const { prefillTexts } = await warm(['Exhibit C', 'Exhibit C (2)'], [ENTITY_1, ENTITY_2]);
+    expect(prefillTexts['doc-1'].ach_bank_name_p1).toBe('CITIBANK');
+    expect(prefillTexts['doc-1'].ach_bank_account_p1).toBe('4444444444');
     expect(prefillTexts['doc-2'].ach_account_holder_name_p1).toBe('MERCHANT B LLC');
     expect(prefillTexts['doc-2'].ach_account_holder_dba_p1).toBe('MERCHANT B');
     expect(prefillTexts['doc-2'].ach_bank_name_p1).toBe('WELLS FARGO');
@@ -179,9 +192,9 @@ describe('the warm prefills each Exhibit C copy from its own entity', () => {
   it('keeps three copies apart and leaves an unset optional value blank', async () => {
     const { prefillTexts, fieldPuts } = await warm(
       ['Exhibit C', 'Exhibit C (2)', 'Exhibit C (3)'],
-      [{}, ENTITY_2, ENTITY_3],
+      [ENTITY_1, ENTITY_2, ENTITY_3],
     );
-    expect(prefillTexts['doc-1'].ach_bank_account_p1).toBe('1111111111');
+    expect(prefillTexts['doc-1'].ach_bank_account_p1).toBe('4444444444');
     expect(prefillTexts['doc-2'].ach_bank_account_p1).toBe('2222222222');
     expect(prefillTexts['doc-3'].ach_bank_account_p1).toBe('3333333333');
     expect(prefillTexts['doc-3'].ach_bank_name_p1).toBe('BANK OF AMERICA');
@@ -197,10 +210,11 @@ describe('the warm prefills each Exhibit C copy from its own entity', () => {
     expect(copy3.get('initial_g1_p1')).toBeDefined();
   });
 
-  it('fills an extra copy with no entity of its own from the deal merchant', async () => {
+  it('leaves every Exhibit C with no entity blank, never the deal merchant', async () => {
     const { prefillTexts } = await warm(['Exhibit C', 'Exhibit C (2)'], [{}, {}]);
-    expect(prefillTexts['doc-2'].ach_bank_name_p1).toBe('CHASE');
-    expect(prefillTexts['doc-2'].ach_account_holder_name_p1).toBe('MERCHANT A LLC');
+    expect(prefillTexts['doc-1']?.ach_bank_name_p1 ?? '').toBe('');
+    expect(prefillTexts['doc-2']?.ach_bank_name_p1 ?? '').toBe('');
+    expect(prefillTexts['doc-2']?.ach_account_holder_name_p1 ?? '').toBe('');
   });
 });
 

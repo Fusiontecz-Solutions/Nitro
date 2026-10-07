@@ -25,7 +25,7 @@ describe('readBankFieldsFromPrefill', () => {
     });
   });
 
-  it('falls back to the primary Exhibit C entity when top-level keys are blank', () => {
+  it('never reads an Exhibit C entity as the deal bank', () => {
     expect(
       readBankFieldsFromPrefill({
         authorizationClientBankName: '',
@@ -34,11 +34,7 @@ describe('readBankFieldsFromPrefill', () => {
           { bankName: 'Other Bank', bankAccount: '111111111' },
         ]),
       }),
-    ).toEqual({
-      bankName: 'JP Morgan',
-      accountNumber: '789846303',
-      bankPortal: 'chase.com',
-    });
+    ).toEqual({});
   });
 });
 
@@ -85,7 +81,7 @@ describe('applyBankFieldsToPrefill', () => {
     expect(next.authorizationClientBankAccount).toBe('789846303');
   });
 
-  it('fills only blank fields on the primary Exhibit C entity and leaves other slots alone', () => {
+  it('leaves every Exhibit C entity untouched, the first one included', () => {
     const next = applyBankFieldsToPrefill(
       {
         exhibitCEntities: JSON.stringify([
@@ -95,8 +91,9 @@ describe('applyBankFieldsToPrefill', () => {
       },
       { bankName: 'JP Morgan', accountNumber: '789846303' },
     );
+    expect(next.authorizationClientBankAccount).toBe('789846303');
     expect(JSON.parse(String(next.exhibitCEntities))).toEqual([
-      { bankName: 'Existing Bank', bankAccount: '789846303' },
+      { bankName: 'Existing Bank', bankAccount: '' },
       { bankName: 'Other Bank', bankAccount: '111111111' },
     ]);
   });

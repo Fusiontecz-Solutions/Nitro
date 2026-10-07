@@ -2351,3 +2351,60 @@ describe('the bank block reaches every addendum', () => {
     ).toBe('Renew DBA');
   });
 });
+
+describe('DBA widgets never repeat the business legal name', () => {
+  // Mirrors application #272: the CRM DBA is blank, but an earlier build saved
+  // the business name under every DBA key of the per-template prefill.
+  const prefill = {
+    client_legal_name: 'Re-New-It Renovations, LLC',
+    doing_business_as: 'RE-NEW-IT RENOVATIONS, LLC',
+    doing_business_as_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+    ach_account_holder_dba: 'RE-NEW-IT RENOVATIONS, LLC',
+    ach_account_holder_dba_p1: 'RE-NEW-IT RENOVATIONS, LLC',
+    addendum_p_funder_and_business_name: 'RE-NEW-IT RENOVATIONS, LLC',
+  };
+
+  it.each([
+    'doing_business_as',
+    'doing_business_as_p1',
+    'ach_account_holder_dba_p19',
+    'ach_account_holder_dba_p1',
+    'addendum_p_funder_and_business_namehalf_p1',
+  ])('%s prints blank', (field) => {
+    expect(resolveSignNowPrefillValue(field, prefill)).toBe('');
+  });
+
+  it('keeps a real DBA', () => {
+    const withDba = { ...prefill, doing_business_as: 'Renew Roofing', doing_business_as_p1: '' };
+    expect(resolveSignNowPrefillValue('doing_business_as', withDba)).toBe('Renew Roofing');
+    expect(resolveSignNowPrefillValue('addendum_p_funder_and_business_namehalf_p1', withDba)).toBe(
+      'Renew Roofing',
+    );
+  });
+
+  it('still prints the legal name on the legal-name line', () => {
+    expect(resolveSignNowPrefillValue('client_legal_name', prefill)).toBe('Re-New-It Renovations, LLC');
+  });
+});
+
+describe('Exhibit C entity-only DBA', () => {
+  const copy = {
+    client_legal_name: 'FUSIONTECZ',
+    ach_account_holder_dba: 'FUSIONTECZ',
+  };
+
+  it('prints the copy own DBA even when it matches that copy legal name', () => {
+    expect(
+      resolveSignNowPrefillValue('ach_account_holder_dba_p1', copy, {
+        documentKind: 'exhibit_c',
+        exhibitCEntityOnly: true,
+      }),
+    ).toBe('FUSIONTECZ');
+  });
+
+  it('still drops a package DBA that only echoes the legal name', () => {
+    expect(
+      resolveSignNowPrefillValue('ach_account_holder_dba_p1', copy, { documentKind: 'exhibit_c' }),
+    ).toBe('');
+  });
+});

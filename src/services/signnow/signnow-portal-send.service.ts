@@ -13,6 +13,7 @@ import {
 import { buildSigningPortalEmailHtml } from './utils/signnow-portal-email';
 import { isPortalSendInFlight, trackPortalSend } from './utils/signnow-portal-send-inflight';
 import { clearUnfinishedSentArchive } from '../docusign/utils/archive-signed-envelope-pdf';
+import { saveContractAgentEmail } from '../../utils/contractAgentEmail';
 
 /**
  * CRM signing portal Ã¢â‚¬â€ contracts emailed by SendGrid instead of by SignNow.
@@ -278,6 +279,17 @@ export async function verifyPortalAccess(input: {
   if (['voided', 'declined', 'cancelled'].includes(status)) {
     throw new BadRequest('This contract is no longer open for signing.');
   }
+  // A signer replaced through Resend keeps a validly signed token; their link
+  // must stop working once the contract went to the corrected address.
+  const contract = await findContractForEnvelope(envelopeId);
+  const queue = contract ? readQueue(contract.overrides, envelopeId) : null;
+  if (queue && !queue.recipients.some((row) => emailAliasBase(row.email) === emailAliasBase(email))) {
+    const err = new BadRequest(
+      'This signing link was replaced. Ask your funder to resend the contract to you.',
+    );
+    err.status = 401;
+    throw err;
+  }
   return { envelopeId, email };
 }
 
@@ -292,6 +304,18 @@ export type PortalQueueEntry = {
   emailedAt: string | null;
   /** ISO timestamp once SignNow reports this signer finished. */
   completedAt: string | null;
+  /** ISO timestamp of the latest "Resend" of this signer's link, if any. */
+  remindedAt?: string | null;
+};
+
+/** Signer roles as the send request carried them — needed to swap a signer's email later. */
+export type PortalQueueRole = {
+  roleName?: string;
+  signerRole?: string;
+  signerName?: string;
+  signerEmail?: string;
+  signerOrder?: number;
+  roleIndex?: number;
 };
 
 type PortalQueue = {
@@ -301,8 +325,12 @@ type PortalQueue = {
   emailSubject: string;
   funderName: string | null;
   replyToEmail: string | null;
+  /** CRM user who clicked Send — they get the signed copy on completion. */
+  senderEmail?: string | null;
   startedAt: string;
   recipients: PortalQueueEntry[];
+  /** Roles posted with the send; absent on queues written before resend existed. */
+  roles?: PortalQueueRole[];
 };
 
 /** Move Contract + Application to Contract Sent after a signing-portal send. */
@@ -367,6 +395,7 @@ function readQueue(overrides: Record<string, unknown>, envelopeId: string): Port
     emailSubject: String(queue.emailSubject || '').trim() || contractLabel,
     funderName: queue.funderName ? String(queue.funderName) : null,
     replyToEmail: queue.replyToEmail ? String(queue.replyToEmail) : null,
+    senderEmail: queue.senderEmail ? String(queue.senderEmail) : null,
     startedAt: String(queue.startedAt || new Date().toISOString()),
     recipients: queue.recipients.map((row) => ({
       email: normalizeEmail((row as PortalQueueEntry)?.email),
@@ -374,7 +403,9 @@ function readQueue(overrides: Record<string, unknown>, envelopeId: string): Port
       role: (row as PortalQueueEntry)?.role ?? null,
       emailedAt: (row as PortalQueueEntry)?.emailedAt ?? null,
       completedAt: (row as PortalQueueEntry)?.completedAt ?? null,
+      remindedAt: (row as PortalQueueEntry)?.remindedAt ?? null,
     })),
+    ...(Array.isArray(queue.roles) && queue.roles.length ? { roles: queue.roles } : {}),
   };
 }
 
@@ -646,13 +677,22 @@ export type PortalSendInput = {
   contractLabel: string;
   funderName?: string | null;
   replyToEmail?: string | null;
+  /** CRM user who clicked Send; stored so they receive the signed copy. */
+  senderEmail?: string | null;
   /** Current CRM values, built by the same payload builder the SignNow send uses. */
   prefillFields?: Array<{ id: string; value: string }>;
-  roles?: Array<{ roleName?: string; name?: string; email?: string }>;
+  roles?: PortalQueueRole[];
   /** Copy-only recipients (never a signer) Ã¢â‚¬â€ emailed the contract package once merchants are sent. */
   ccEmails?: string[];
   /** Live "$25 wire fee" checkbox from the contract modal. */
   includeWireFee?: unknown;
+  /**
+   * Agent emails from the send panel (array, or a comma-separated string).
+   * Saved on the contract before the send, so every agent is emailed the
+   * package now and the signed copy later. Omitted leaves the saved list alone;
+   * empty clears it.
+   */
+  agentEmails?: string[] | string | null;
 };
 
 type PreparedPortalSend = {
@@ -693,6 +733,13 @@ async function prepareContractPortalSend(input: PortalSendInput): Promise<Prepar
   const resent = Boolean(existing?.portalSentAt || existing?.sentAt);
   // Same guard as the SignNow invite send: an unprefilled package goes out blank.
   if (!resent) assertPackageWasPrefilledByReview(existing?.prefillFingerprint);
+  if (input.agentEmails !== undefined && existing?.applicationId) {
+    try {
+      await saveContractAgentEmail(String(existing.applicationId), input.agentEmails);
+    } catch (err) {
+      throw new BadRequest(err instanceof Error ? err.message : 'Invalid agent email.');
+    }
+  }
   return {
     input,
     envelopeId,
@@ -775,6 +822,7 @@ async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<
     emailSubject,
     funderName: input.funderName || null,
     replyToEmail: input.replyToEmail || null,
+    senderEmail: input.senderEmail || null,
     startedAt: sentAt.toISOString(),
     recipients: recipients.map((recipient) => ({
       email: normalizeEmail(recipient.email),
@@ -783,6 +831,7 @@ async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<
       emailedAt: null as string | null,
       completedAt: null as string | null,
     })),
+    ...(input.roles?.length ? { roles: input.roles } : {}),
   };
 
   const recipientEmails: string[] = [];
@@ -940,4 +989,354 @@ export async function startContractPortalSend(
     )
     .catch((err) => console.warn('[SignNow] portal send outcome report failed', err));
   return { ...accepted, alreadyInProgress: false };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Resend an unsigned contract                                                */
+/* -------------------------------------------------------------------------- */
+
+export type PortalRecipientView = {
+  email: string;
+  name: string | null;
+  role: string | null;
+  emailedAt: string | null;
+  completedAt: string | null;
+  remindedAt: string | null;
+};
+
+/** Signers on the portal queue of a sent contract — what the Resend dialog lists. */
+export async function readPortalSigningRecipients(
+  envelopeId: string,
+): Promise<{ envelopeId: string; recipients: PortalRecipientView[] } | null> {
+  const id = String(envelopeId || '').trim();
+  if (!id) return null;
+  const contract = await findContractForEnvelope(id);
+  const queue = contract ? readQueue(contract.overrides, id) : null;
+  if (!queue) return null;
+  return {
+    envelopeId: id,
+    recipients: queue.recipients.map((row) => ({
+      email: row.email,
+      name: row.name,
+      role: row.role,
+      emailedAt: row.emailedAt,
+      completedAt: row.completedAt,
+      remindedAt: row.remindedAt ?? null,
+    })),
+  };
+}
+
+export type PortalRecipientChange = {
+  /** Address currently on the queue. */
+  email: string;
+  newEmail: string;
+  newName?: string | null;
+};
+
+export type PortalResendInput = {
+  envelopeId: string;
+  /** Optional signer address corrections; every other unsigned signer is simply re-emailed. */
+  recipientChanges?: PortalRecipientChange[];
+};
+
+export type PortalResendResult = {
+  envelopeId: string;
+  /** Signers whose link was emailed by this resend. */
+  emailed: string[];
+  /** Signer address corrections that were applied. */
+  changed: Array<{ from: string; to: string }>;
+  /** Signers skipped because they already signed. */
+  alreadySigned: string[];
+};
+
+/** A second click within this window is a double click, not a reminder. */
+const PORTAL_RESEND_COOLDOWN_MS = 60_000;
+
+const TERMINAL_DOCUMENT_STATUSES = [
+  'completed',
+  'signed',
+  'voided',
+  'declined',
+  'cancelled',
+  'revoked',
+];
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+class Conflict extends Error {
+  status = 409;
+}
+
+type PreparedPortalResend = {
+  envelopeId: string;
+  queue: PortalQueue;
+  changes: Map<string, { email: string; name: string | null }>;
+  /** Signers SignNow (or the queue) reports as finished. */
+  finished: Set<string>;
+};
+
+/** Rebuilds the role list for queues written before the roles were stored. */
+function rolesForQueue(queue: PortalQueue): PortalQueueRole[] {
+  if (queue.roles?.length) return queue.roles.map((role) => ({ ...role }));
+  return queue.recipients.map((row, index) => ({
+    roleName: row.role || `Recipient ${index + 1}`,
+    signerRole: row.role || `Recipient ${index + 1}`,
+    signerName: row.name || '',
+    signerEmail: row.email,
+    signerOrder: index + 1,
+  }));
+}
+
+async function prepareContractPortalResend(input: PortalResendInput): Promise<PreparedPortalResend> {
+  const envelopeId = String(input.envelopeId || '').trim();
+  if (!envelopeId) throw new BadRequest('Missing contract id.');
+  if (!isSendGridConfigured()) {
+    const err = new BadRequest(
+      'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
+    );
+    err.status = 503;
+    throw err;
+  }
+  if (!resolveCrmFrontendBaseUrl()) {
+    throw new BadRequest('No CRM frontend URL is configured for signing-portal links.');
+  }
+
+  const document = await prisma.document.findUnique({
+    where: { envelopeId },
+    select: { status: true, sentAt: true, portalSentAt: true },
+  });
+  if (!document) throw new BadRequest('This contract is no longer on the deal.');
+  const status = String(document.status || '').toLowerCase();
+  if (TERMINAL_DOCUMENT_STATUSES.includes(status)) {
+    throw new Conflict(`This contract is ${status} — there is nothing left to resend.`);
+  }
+  if (!document.portalSentAt && !document.sentAt) {
+    throw new Conflict('This contract has not been sent yet. Use Send via SignNow first.');
+  }
+  if (isPortalSendInFlight(envelopeId)) {
+    throw new Conflict('A send for this contract is still running. Try again in a minute.');
+  }
+
+  const contract = await findContractForEnvelope(envelopeId);
+  const queue = contract ? readQueue(contract.overrides, envelopeId) : null;
+  if (!queue) {
+    throw new Conflict(
+      'This contract was not sent through the signing portal, so its link cannot be resent here.',
+    );
+  }
+
+  const onQueue = new Set(queue.recipients.map((row) => row.email));
+  const changes = new Map<string, { email: string; name: string | null }>();
+  for (const change of input.recipientChanges || []) {
+    const from = normalizeEmail(change?.email);
+    const to = normalizeEmail(change?.newEmail);
+    if (!from || !to) continue;
+    if (!onQueue.has(from)) throw new BadRequest(`${from} is not a signer on this contract.`);
+    if (!EMAIL_PATTERN.test(to)) throw new BadRequest(`${to} is not a valid email address.`);
+    const row = queue.recipients.find((r) => r.email === from)!;
+    const name = String(change?.newName ?? '').trim() || row.name;
+    if (to === from && name === row.name) continue;
+    if (to !== from && onQueue.has(to)) {
+      throw new BadRequest(`${to} is already a signer on this contract.`);
+    }
+    changes.set(from, { email: to, name });
+  }
+
+  // One SignNow read, so a signer who already finished is neither reminded nor
+  // swapped out. In verified-webhook mode the queue never records finishes.
+  const finished = new Set(
+    queue.recipients.filter((row) => row.completedAt).map((row) => row.email),
+  );
+  try {
+    const states = await readSignerFinishStates(envelopeId);
+    for (const row of queue.recipients) {
+      if (states?.get(emailAliasBase(row.email)) === 'finished') finished.add(row.email);
+    }
+  } catch (err) {
+    console.warn('[SignNow] resend could not read signer finish states', {
+      envelopeId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (changes.size && finished.size) {
+    // Changing a signer recreates the group's signing invite, which would
+    // throw away the session of anyone who already signed.
+    throw new Conflict(
+      `${[...finished].join(', ')} already signed, so a signer's email can no longer be changed ` +
+        'on this contract. Void it and send a new contract instead.',
+    );
+  }
+  return { envelopeId, queue, changes, finished };
+}
+
+/** Email each listed signer their portal link again and stamp the queue. */
+async function emailResendLinks(
+  envelopeId: string,
+  queue: PortalQueue,
+  targets: PortalQueueEntry[],
+): Promise<string[]> {
+  const now = new Date().toISOString();
+  const emailed: string[] = [];
+  const failures: string[] = [];
+  const outcomes = await Promise.allSettled(
+    targets.map((recipient) =>
+      emailPortalInvite({
+        envelopeId,
+        recipient,
+        contractLabel: queue.contractLabel,
+        emailSubject: queue.emailSubject,
+        funderName: queue.funderName,
+        replyToEmail: queue.replyToEmail,
+      }),
+    ),
+  );
+  outcomes.forEach((outcome, index) => {
+    const row = targets[index];
+    if (outcome.status === 'fulfilled') {
+      row.emailedAt = row.emailedAt || now;
+      row.remindedAt = now;
+      emailed.push(row.email);
+      return;
+    }
+    const message =
+      outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+    failures.push(message);
+    console.warn('[SignNow] portal resend email failed', {
+      envelopeId,
+      email: row.email,
+      error: message,
+    });
+  });
+  // Re-read the contract so a concurrent edit to other prefill keys is not lost.
+  // Saved even when every email failed: a signer change must still be recorded,
+  // and an un-emailed signer is retried by advancePortalSigningQueue.
+  const contract = await findContractForEnvelope(envelopeId);
+  if (contract) await saveQueue(contract.id, contract.overrides, queue);
+  if (!emailed.length && targets.length) {
+    const reason = failures[0] ? ` ${failures[0].slice(0, 300)}` : '';
+    throw new BadRequest(`Could not email the signing link.${reason}`);
+  }
+  return emailed;
+}
+
+/**
+ * Re-email the signing link of every signer who has not signed yet. Costs no
+ * SignNow write: the package, its values and the signing session are untouched.
+ */
+async function remindPortalSigners(prepared: PreparedPortalResend): Promise<PortalResendResult> {
+  const { envelopeId, queue, finished } = prepared;
+  const nowMs = Date.now();
+  for (const row of queue.recipients) {
+    if (finished.has(row.email) && !row.completedAt) row.completedAt = new Date().toISOString();
+  }
+  const pending = queue.recipients.filter((row) => !finished.has(row.email));
+  if (!pending.length) {
+    throw new Conflict('Every signer has already signed this contract.');
+  }
+  const due = pending.filter((row) => {
+    const last = Date.parse(row.remindedAt || row.emailedAt || '');
+    return !Number.isFinite(last) || nowMs - last >= PORTAL_RESEND_COOLDOWN_MS;
+  });
+  if (!due.length) {
+    const err = new BadRequest('The signing link was just sent. Wait a minute before resending.');
+    err.status = 429;
+    throw err;
+  }
+  const emailed = await emailResendLinks(envelopeId, queue, due);
+  console.info('[SignNow] unsigned contract resent', { envelopeId, emailed });
+  return { envelopeId, emailed, changed: [], alreadySigned: [...finished] };
+}
+
+/**
+ * Swap one or more signers' addresses on a sent, unsigned contract and email
+ * the new addresses their link — keeping the same package and every value on
+ * it. Only the merchant signing invite is recreated for the new signer; nothing
+ * is rebuilt from the template and the CRM contract data is not touched.
+ */
+async function changePortalSigners(prepared: PreparedPortalResend): Promise<PortalResendResult> {
+  const { envelopeId, queue, changes } = prepared;
+  const roles = rolesForQueue(queue).map((role) => {
+    const change = changes.get(normalizeEmail(role.signerEmail));
+    if (!change) return role;
+    return { ...role, signerEmail: change.email, signerName: change.name || role.signerName };
+  });
+
+  // No prefillFields: the values come from the CRM and what the documents
+  // already carry, exactly as they were sent.
+  const published = await signNowService.publishGroupFieldsToMerchant(envelopeId, {
+    keepParty2: queue.recipients.length > 1,
+    roles: roles as never,
+  });
+  if (published.failed.length) {
+    const reason = Object.values(published.errors).find(Boolean) || '';
+    throw new BadRequest(
+      `Could not move the contract to the new signer (${published.failed.length} of ` +
+        `${published.documentCount} documents failed). Nothing was emailed.` +
+        (reason ? ` ${reason.slice(0, 200)}` : ''),
+    );
+  }
+
+  const changed: Array<{ from: string; to: string }> = [];
+  for (const row of queue.recipients) {
+    const change = changes.get(row.email);
+    if (!change) continue;
+    changed.push({ from: row.email, to: change.email });
+    row.email = change.email;
+    row.name = change.name;
+    row.emailedAt = null;
+    row.completedAt = null;
+    row.remindedAt = null;
+  }
+  queue.roles = roles;
+  // Everyone still waiting gets the link: the corrected signer for the first
+  // time, the others as a reminder alongside it.
+  const emailed = await emailResendLinks(envelopeId, queue, [...queue.recipients]);
+  console.info('[SignNow] contract signer changed and resent', { envelopeId, changed, emailed });
+  return { envelopeId, emailed, changed, alreadySigned: [] };
+}
+
+export type PortalResendAccepted = {
+  envelopeId: string;
+  /** True when the work continues in the background (a signer change). */
+  queued: boolean;
+  result?: PortalResendResult;
+};
+
+/**
+ * "Resend" on a sent, unsigned contract.
+ *
+ * Without address changes the links are re-emailed straight away and the result
+ * is returned. A signer change republishes the merchant invite (a chain of
+ * SignNow calls), so it runs in the background and reports through `onSettled`,
+ * like the original portal send.
+ */
+export async function startContractPortalResend(
+  input: PortalResendInput,
+  onSettled?: (
+    outcome: { ok: true; result: PortalResendResult } | { ok: false; error: unknown },
+    context: { envelopeId: string },
+  ) => void | Promise<void>,
+): Promise<PortalResendAccepted> {
+  const prepared = await prepareContractPortalResend(input);
+  if (!prepared.changes.size) {
+    const result = await remindPortalSigners(prepared);
+    return { envelopeId: prepared.envelopeId, queued: false, result };
+  }
+  const { envelopeId } = prepared;
+  const work = changePortalSigners(prepared);
+  trackPortalSend(envelopeId, work);
+  void work
+    .then(
+      (result) => onSettled?.({ ok: true, result }, { envelopeId }),
+      (error) => {
+        console.error('[SignNow] background portal resend failed', {
+          envelopeId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return onSettled?.({ ok: false, error }, { envelopeId });
+      },
+    )
+    .catch((err) => console.warn('[SignNow] portal resend outcome report failed', err));
+  return { envelopeId, queued: true };
 }

@@ -147,6 +147,37 @@ describe('sendSignNowCompletionNotice', () => {
       'broker@example.com',
     ]);
   });
+
+  it('sends the signed copy to the signer, agent and sender too', async () => {
+    const result = await sendSignNowCompletionNotice({
+      groupId: 'group-1',
+      contractLabel: 'Acme LLC',
+      pdf: Buffer.from('signed'),
+      ccEmails: ['broker@example.com'],
+      partyEmails: ['jane@merchant.com', 'agent@nitroadvance.com', 'Broker@example.com'],
+    });
+
+    // A party who is already on the CC list is not emailed twice.
+    expect(result.emailedParties).toEqual(['jane@merchant.com', 'agent@nitroadvance.com']);
+    const signerCall = sendMailMock.mock.calls.find(([args]) => args.to === 'jane@merchant.com');
+    expect(
+      signerCall[0].attachments.some(
+        (a: { contentType?: string }) => a.contentType === 'application/pdf',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not email the parties again on a CC-only catch-up', async () => {
+    const result = await sendSignNowCompletionNotice({
+      groupId: 'group-1',
+      contractLabel: 'Acme LLC',
+      ccEmails: ['broker@example.com'],
+      partyEmails: ['jane@merchant.com'],
+      ccOnly: true,
+    });
+    expect(result.emailedParties).toEqual([]);
+    expect(sendMailMock.mock.calls.map(([args]) => args.to)).toEqual(['broker@example.com']);
+  });
 });
 
 describe('findLoggedSignNowCompletionNotice', () => {

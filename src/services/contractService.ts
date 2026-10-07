@@ -22,13 +22,17 @@ import {
   mergeContractPrefillPatch,
   normalizeKycDocumentType,
   resolveKycUploadSlot,
-  upsertExhibitCEntitiesJson,
+  pickExhibitCCopySlotForVoidCheck,
+  setExhibitCEntitySlotFromVoidCheckJson,
   voidCheckAccountHolderDiffersFromBusiness,
   type KycDocumentType,
   type KycExtractionMapped,
   type KycOwnerIndex,
 } from './contractKycPrefillMapper';
-import { expandAddendumRefsAllowingDuplicates } from './signnow/utils/signnow-addendum-templates';
+import {
+  expandAddendumRefsAllowingDuplicates,
+  isExhibitCAddendumRow,
+} from './signnow/utils/signnow-addendum-templates';
 import {
   loadContractReverseDisbursementConfig,
   normalizeReverseDisbursementScheduleData,
@@ -795,6 +799,52 @@ class ContractService {
   }
 
   /**
+   * The Exhibit C slot a void-check scan fills, or null when the scan is the deal's
+   * own ACH / funding bank. See
+   * `pickExhibitCCopySlotForVoidCheck`.
+   */
+  async resolveVoidCheckExhibitCCopySlot(
+    contractId: number,
+    accountNumber: unknown,
+    contractRow?: { contractPrefillOverrides?: unknown; authorizationClientBankAccount?: unknown },
+  ): Promise<number | null> {
+    const mappings = (await (prisma as any).contractDocumentTemplateMapping.findMany({
+      where: { contractId },
+      select: { template: { select: { name: true, layoutKey: true, templateId: true } } },
+    })) as Array<{
+      template?: { name?: string | null; layoutKey?: string | null; templateId?: string | null } | null;
+    }>;
+    const copyCount = mappings.filter((row) =>
+      isExhibitCAddendumRow({
+        name: row.template?.name,
+        layoutKey: row.template?.layoutKey,
+        templateId: row.template?.templateId,
+      }),
+    ).length;
+    if (copyCount < 1) return null;
+    const row =
+      contractRow ??
+      (await (prisma as any).contract.findUnique({
+        where: { id: contractId },
+        select: { contractPrefillOverrides: true, authorizationClientBankAccount: true },
+      }));
+    if (!row) return null;
+    const overrides = row.contractPrefillOverrides;
+    const mainBankAccount =
+      readBankFieldsFromPrefill(overrides).accountNumber ||
+      firstNonEmptyString(decryptSensitiveField(String(row.authorizationClientBankAccount ?? '')));
+    return pickExhibitCCopySlotForVoidCheck({
+      existingRaw:
+        overrides && typeof overrides === 'object' && !Array.isArray(overrides)
+          ? (overrides as Record<string, unknown>)[EXHIBIT_C_ENTITIES_PREFILL_KEY]
+          : undefined,
+      copyCount,
+      mainBankAccount,
+      accountNumber: firstNonEmptyString(accountNumber),
+    });
+  }
+
+  /**
    * Persist KYC extraction into contract prefill JSON, contract scalar columns, and ACH row.
    * Voided-check scans must update bank fields everywhere they are read (not only JSON overrides).
    */
@@ -809,6 +859,7 @@ class ContractService {
         clientId: true,
         legalName: true,
         contractPrefillOverrides: true,
+        authorizationClientBankAccount: true,
         client: { select: { businessName: true } },
       },
     });
@@ -838,27 +889,25 @@ class ContractService {
 
     let prefillPatch: Record<string, string> = { ...mapped.contractPrefill };
 
-    if (mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
-      const ach = mapped.panels.ach;
-      const holderOnCheck = firstNonEmptyString(ach.fullNameOnAccount) || '';
-      if (
-        holderOnCheck &&
-        voidCheckAccountHolderDiffersFromBusiness(holderOnCheck, businessLegalName)
-      ) {
-        // Keep merchant legal name; park the check's entity on Exhibit C.
-        delete prefillPatch.legalName;
-        delete prefillPatch.authorizationClientName;
-        delete prefillPatch.authorizationClientNamePrint;
-        delete prefillPatch.authorizationApplication;
-        delete prefillPatch.securityBusinessName;
-        delete prefillPatch.achAuthorizationConcentAccountHolderName;
-        // Main ACH holder stays the merchant business name (re-applied on prefill build).
-        delete prefillPatch.achAuthorizationAccountHolderName;
+    // A check for another account fills only its Exhibit C: the deal's ACH /
+    // funding bank and its ACH row keep their values.
+    const exhibitCCopySlot =
+      mapped.documentType === 'voidedCheck' && mapped.panels?.ach
+        ? await this.resolveVoidCheckExhibitCCopySlot(
+            contractId,
+            mapped.panels.ach.accountNumber,
+            contractRow,
+          )
+        : null;
 
-        const entities = upsertExhibitCEntitiesJson(
+    if (exhibitCCopySlot != null && mapped.panels?.ach) {
+      const ach = mapped.panels.ach;
+      prefillPatch = {
+        [EXHIBIT_C_ENTITIES_PREFILL_KEY]: setExhibitCEntitySlotFromVoidCheckJson(
           existingOverrides[EXHIBIT_C_ENTITIES_PREFILL_KEY],
+          exhibitCCopySlot,
           {
-            accountHolderName: holderOnCheck,
+            accountHolderName: firstNonEmptyString(ach.fullNameOnAccount) || undefined,
             dba: firstNonEmptyString(ach.dba) || undefined,
             bankName: firstNonEmptyString(ach.bankName) || undefined,
             accountNumber: firstNonEmptyString(ach.accountNumber) || undefined,
@@ -868,10 +917,25 @@ class ContractService {
             state: firstNonEmptyString(ach.state) || undefined,
             zip: firstNonEmptyString(ach.zip) || undefined,
           },
-        );
-        if (entities) {
-          prefillPatch[EXHIBIT_C_ENTITIES_PREFILL_KEY] = entities;
-        }
+        ),
+      };
+    } else if (mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
+      const ach = mapped.panels.ach;
+      const holderOnCheck = firstNonEmptyString(ach.fullNameOnAccount) || '';
+      if (
+        holderOnCheck &&
+        voidCheckAccountHolderDiffersFromBusiness(holderOnCheck, businessLegalName)
+      ) {
+        // Keep the merchant legal name. The check is never parked on an Exhibit C:
+        // every Exhibit C is its own record and starts blank.
+        delete prefillPatch.legalName;
+        delete prefillPatch.authorizationClientName;
+        delete prefillPatch.authorizationClientNamePrint;
+        delete prefillPatch.authorizationApplication;
+        delete prefillPatch.securityBusinessName;
+        delete prefillPatch.achAuthorizationConcentAccountHolderName;
+        // Main ACH holder stays the merchant business name (re-applied on prefill build).
+        delete prefillPatch.achAuthorizationAccountHolderName;
       }
 
       // Heal merchant legal name if an older OCR write poisoned Contract.legalName / overrides.
@@ -908,7 +972,7 @@ class ContractService {
       ...scalarUpdate,
     });
 
-    if (mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
+    if (exhibitCCopySlot == null && mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
       const ach = mapped.panels.ach;
       const achPayload = {
         bankName: firstNonEmptyString(ach.bankName) || undefined,
@@ -1703,17 +1767,30 @@ class ContractService {
       }
     }
 
-    const buildContractUpdateData = (existingStatusRaw?: string | null) => {
+    const buildContractUpdateData = (existingRow: {
+      status?: string | null;
+      contractPrefillOverrides?: unknown;
+    }) => {
       // Preserve lifecycle status set by BoldSign/DocuSign webhooks
       // (SENT/VIEWED/SIGNED/COMPLETED/etc.) when a repeated create is triggered.
       // Never downgrade an advanced status back to DRAFT.
-      const existingStatus = String(existingStatusRaw ?? '').toUpperCase();
+      const existingStatus = String(existingRow.status ?? '').toUpperCase();
       const incomingStatusRaw = (contractData as { status?: string }).status;
       const incomingStatus = String(incomingStatusRaw ?? '').toUpperCase();
       const lifecycleAdvanced = Boolean(existingStatus && existingStatus !== 'DRAFT');
       const updateData: Record<string, unknown> = { ...contractData };
       if (lifecycleAdvanced && (!incomingStatus || incomingStatus === 'DRAFT')) {
         delete updateData.status;
+      }
+      // The only prefill a create carries is the saved-KYC patch. On an existing row it is
+      // layered over the stored blob: written as-is it replaced every per-document addendum
+      // tab (Flex / PayOff / Exhibit C copies), the hand-entered Exhibit C entities and the
+      // send history — which is how "Regenerate Contract" emptied the addendums.
+      if (updateData.contractPrefillOverrides !== undefined) {
+        updateData.contractPrefillOverrides = mergeContractPrefillPatch(
+          existingRow.contractPrefillOverrides,
+          updateData.contractPrefillOverrides as Record<string, string>,
+        );
       }
       return updateData;
     };
@@ -1726,18 +1803,22 @@ class ContractService {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const createdContract = await (prisma as any).$transaction(async (tx: any) => {
-          const findExistingContractRow = async (): Promise<{ id: number; status: string } | null> => {
+          const findExistingContractRow = async (): Promise<{
+            id: number;
+            status: string;
+            contractPrefillOverrides: unknown;
+          } | null> => {
             if (data.applicationId) {
               const byApp = await tx.contract.findUnique({
                 where: { applicationId: data.applicationId },
-                select: { id: true, status: true },
+                select: { id: true, status: true, contractPrefillOverrides: true },
               });
               if (byApp?.id) return byApp;
             }
             if (derivedOfferId) {
               const byOffer = await tx.contract.findUnique({
                 where: { offerId: derivedOfferId },
-                select: { id: true, status: true },
+                select: { id: true, status: true, contractPrefillOverrides: true },
               });
               if (byOffer?.id) return byOffer;
             }
@@ -1749,7 +1830,7 @@ class ContractService {
           if (existing?.id) {
             created = await tx.contract.update({
               where: { id: existing.id },
-              data: buildContractUpdateData(existing.status),
+              data: buildContractUpdateData(existing),
               include: contractInclude,
             });
           } else {
@@ -1769,7 +1850,7 @@ class ContractService {
               if (!raced?.id) throw createErr;
               created = await tx.contract.update({
                 where: { id: raced.id },
-                data: buildContractUpdateData(raced.status),
+                data: buildContractUpdateData(raced),
                 include: contractInclude,
               });
             }

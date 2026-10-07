@@ -2,9 +2,14 @@ import prisma from '../config/prismaClient';
 import { ContractStatus, type Prisma } from '@prisma/client';
 import {
     archiveMainContractEnvelopeToHistory,
+    buildContractOfferFingerprint,
     buildContractSendHistoryTermsSnapshot,
+    contractOfferFingerprintsDiffer,
     isCompletedEnvelopeStatus,
+    parseContractOfferFingerprint,
     resolveArchivedMainContractEnvelopeStatus,
+    resolveTermsSnapshotFromContractPrefill,
+    type ContractOfferFingerprint,
 } from './docusign/utils/contract-send-history';
 import {
     recordContractWorkflowActivityLog,
@@ -165,9 +170,12 @@ export async function reconcileStaleContractReinitiationFlags(): Promise<number>
  */
 export type ContractReinitiationOptions = {
     /**
-     * Drop every saved prefill field override so the replacement package re-derives each
-     * value from the live offer / application / owner records. Used by the Contract tab's
-     * "Resend New Contract", where the whole point is that edited deal data must win.
+     * Refresh saved prefill field overrides so the replacement package picks up edited
+     * deal data. Used by the Contract tab's "Resend New Contract". How much goes depends
+     * on whether the offer changed since the last contract
+     * (see {@link resolveRegenerationPrefillMode}): a changed offer drops every cached
+     * value; an unchanged one keeps the addendum / disclosure values and drops only the
+     * values that mirror application records (address, email, names…).
      */
     clearFieldOverrides?: boolean;
     /**
@@ -190,7 +198,7 @@ export async function reinitiateContractForApplication(
 
     const applicationBefore = await prisma.application.findUnique({
         where: { id: appId },
-        select: { currentQueue: true, currentState: true },
+        select: { currentQueue: true, currentState: true, needsContractReinitiation: true },
     });
     const previousStatus = applicationBefore
         ? `${applicationBefore.currentQueue ?? ''} / ${applicationBefore.currentState ?? ''}`.trim()
@@ -212,6 +220,8 @@ export async function reinitiateContractForApplication(
                     rate: true,
                     repayPerPeriod: true,
                     totalRemit: true,
+                    frequency: true,
+                    fees: true,
                 },
             },
             termsOffers: {
@@ -277,6 +287,30 @@ export async function reinitiateContractForApplication(
     const priorEnvelopeId = String(doc?.envelopeId ?? '').trim();
     let archivedEnvelopeStatus: string | null = null;
 
+    /**
+     * Decide before archiving: the archive writes a history entry whose snapshot is built
+     * from the live (possibly already updated) offer, so only the pre-archive blob still
+     * says which offer the previous package was built from.
+     */
+    const liveOfferFingerprint = buildContractOfferFingerprint(
+        contract.offer as unknown as Record<string, unknown> | null,
+    );
+    const offerChangedSinceLastContract = detectOfferChangeSinceLastContract(
+        contract.contractPrefillOverrides,
+        priorEnvelopeId,
+        liveOfferFingerprint,
+        {
+            status: contract.status,
+            approvedAmount: contract.approvedAmount,
+            totalAmount: contract.totalAmount,
+        },
+    );
+    const prefillMode = resolveRegenerationPrefillMode({
+        offerChanged: offerChangedSinceLastContract,
+        clearFieldOverrides,
+        flaggedForReinitiation: applicationBefore?.needsContractReinitiation === true,
+    });
+
     if (priorEnvelopeId) {
         const archiveStatus = resolveArchivedMainContractEnvelopeStatus(
             doc?.status,
@@ -315,9 +349,10 @@ export async function reinitiateContractForApplication(
      * mapping — left in place, the regenerated package would attach the superseded
      * documents instead of building fresh ones.
      */
-    const clearedPrefillOverrides = resetPrefillOverridesForReinitiation(
+    const clearedPrefillOverrides = resetPrefillOverridesForRegeneration(
         prefillAfterArchive,
-        { clearFieldOverrides },
+        prefillMode,
+        liveOfferFingerprint,
     );
 
     await prisma.contract.update({
@@ -330,11 +365,13 @@ export async function reinitiateContractForApplication(
         },
     });
 
-    // The archived envelope carried the old terms; refresh every offer-derived value
-    // (and clear stale prefill overrides) so the regenerated ACH / disclosure documents
-    // prefill the re-approved offer rather than the superseded one.
+    // Refresh every offer-derived contract column from the live offer. Saved offer-derived
+    // prefill overrides are dropped only when the offer actually changed — otherwise they
+    // were entered against this same offer and must survive the regeneration.
     try {
-        await syncContractValuesFromOfferDecision(appId);
+        await syncContractValuesFromOfferDecision(appId, {
+            stripOfferOverrides: prefillMode === 'clear-all',
+        });
     } catch (syncErr) {
         console.error('reinitiateContractForApplication: offer value sync failed', syncErr);
     }
@@ -376,6 +413,8 @@ export async function reinitiateContractForApplication(
                 priorEnvelopeId: priorEnvelopeId || null,
                 archivedEnvelopeStatus,
                 priorContractStatus: String(contract.status ?? ''),
+                offerChangedSinceLastContract,
+                prefillMode,
             },
         },
     );
@@ -399,9 +438,15 @@ const LIVE_ENVELOPE_POINTER_KEYS = [
  * Prefill keys that survive a "start from scratch" resend even though they look like
  * ordinary overrides. `includeWireFee` is a deal-level toggle rather than a document value,
  * and `exhibitCEntities` is a JSON string of hand-entered extra account holders that exists
- * nowhere else — re-deriving it from the application is not possible.
+ * nowhere else — re-deriving it from the application is not possible. Likewise
+ * `disclosureMonthlyRevenues`: the months typed into the disclosure calculator, which
+ * would otherwise fall back to the raw bank analysis on every regeneration.
  */
-const PRESERVED_SCALAR_PREFILL_KEYS = new Set(['includeWireFee', 'exhibitCEntities']);
+const PRESERVED_SCALAR_PREFILL_KEYS = new Set([
+    'includeWireFee',
+    'exhibitCEntities',
+    'disclosureMonthlyRevenues',
+]);
 
 /**
  * Object-valued prefill keys that ARE snapshots of deal data rather than history, so a
@@ -457,6 +502,222 @@ export function resetPrefillOverridesForReinitiation(
     const withoutFields = clearPrefillFieldOverrides(base);
     if (withoutFields !== undefined) return withoutFields as Prisma.InputJsonValue;
     return withoutPointers;
+}
+
+/** Offer terms the regenerated package is built from — the next regeneration's baseline. */
+export const CONTRACT_OFFER_SNAPSHOT_KEY = 'contractOfferSnapshot';
+
+/**
+ * How a regeneration treats the saved prefill values:
+ * - `clear-all`: the offer changed, so every cached document value (Flex addendum
+ *   installments, disclosure figures, per-document tabs…) goes and is re-derived from
+ *   the new offer.
+ * - `refresh-application`: the offer is the same; addendum / disclosure values are kept
+ *   and only values mirroring application records are dropped so edits there flow in.
+ * - `pointers-only`: nothing but the live envelope pointers is cleared.
+ */
+export type RegenerationPrefillMode = 'clear-all' | 'refresh-application' | 'pointers-only';
+
+/**
+ * Whether the live offer differs from the one the previous contract package was built
+ * from. Baseline, most specific first: the send-time snapshot of the envelope being
+ * archived, then the snapshot stamped by the last regeneration. `null` when neither
+ * exists (nothing to compare against).
+ */
+export function detectOfferChangeSinceLastContract(
+    overrides: unknown,
+    priorEnvelopeId: string | null | undefined,
+    liveOffer: ContractOfferFingerprint | null,
+    /**
+     * The contract row's own amount columns, used when no snapshot exists (a package sent
+     * before snapshots carried offer terms). Only past DRAFT: an offer save re-syncs a
+     * DRAFT row's columns, so there they no longer say what the package was built from.
+     */
+    contractColumns?: {
+        status?: string | null;
+        approvedAmount?: number | null;
+        totalAmount?: number | null;
+    } | null,
+): boolean | null {
+    if (!liveOffer) return null;
+    const envelopeSnapshot = priorEnvelopeId
+        ? resolveTermsSnapshotFromContractPrefill(overrides, priorEnvelopeId)
+        : null;
+    if (envelopeSnapshot?.offerValues) {
+        return contractOfferFingerprintsDiffer(envelopeSnapshot.offerValues, liveOffer);
+    }
+    const stamped =
+        overrides && typeof overrides === 'object' && !Array.isArray(overrides)
+            ? parseContractOfferFingerprint(
+                  (overrides as Record<string, unknown>)[CONTRACT_OFFER_SNAPSHOT_KEY],
+              )
+            : null;
+    if (stamped) return contractOfferFingerprintsDiffer(stamped, liveOffer);
+    if (envelopeSnapshot) {
+        const legacy = legacyTermsSnapshotDiffers(envelopeSnapshot, liveOffer);
+        if (legacy != null) return legacy;
+    }
+    const status = String(contractColumns?.status ?? '').trim().toUpperCase();
+    if (contractColumns && status && status !== 'DRAFT') {
+        return legacyTermsSnapshotDiffers(
+            {
+                approvedAmount: contractColumns.approvedAmount,
+                totalAmount: contractColumns.totalAmount,
+            },
+            liveOffer,
+        );
+    }
+    return null;
+}
+
+/** Snapshots written before `offerValues` existed only carry amount / payback / term. */
+function legacyTermsSnapshotDiffers(
+    snapshot: { approvedAmount?: number | null; totalAmount?: number | null; term?: string | null },
+    liveOffer: ContractOfferFingerprint,
+): boolean | null {
+    const cents = (v: number | null | undefined) =>
+        v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 100);
+    const text = (v: unknown) =>
+        String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase() || null;
+    let compared = false;
+    const pairs: Array<[number | null, number | null]> = [
+        [cents(snapshot.approvedAmount), cents(liveOffer.offer)],
+        [cents(snapshot.totalAmount), cents(liveOffer.totalRemit)],
+    ];
+    for (const [prior, next] of pairs) {
+        if (prior == null || next == null) continue;
+        compared = true;
+        if (prior !== next) return true;
+    }
+    const priorTerm = text(snapshot.term);
+    const nextTerm = text(liveOffer.term);
+    if (priorTerm && nextTerm) {
+        compared = true;
+        if (priorTerm !== nextTerm) return true;
+    }
+    return compared ? false : null;
+}
+
+/**
+ * Pick the prefill reset for a regeneration. With no baseline to compare against, a
+ * deal flagged for reinitiation (UW changed the offer after the contract) and a
+ * user-driven resend fall back to a full clear, as before.
+ */
+export function resolveRegenerationPrefillMode(input: {
+    offerChanged: boolean | null;
+    clearFieldOverrides: boolean;
+    flaggedForReinitiation: boolean;
+}): RegenerationPrefillMode {
+    const offerChanged =
+        input.offerChanged ?? (input.clearFieldOverrides || input.flaggedForReinitiation);
+    if (offerChanged) return 'clear-all';
+    return input.clearFieldOverrides ? 'refresh-application' : 'pointers-only';
+}
+
+/**
+ * Words that mark a flat prefill key as a copy of application / client / owner data.
+ * Matched against the key split into words (`businessAddressCity` → business, address,
+ * city; `owner_1_email` → owner, 1, email), so offer and document values such as
+ * `disclosure_avg_monthly_revenue` or `installment_day_1_p1` never match.
+ */
+const APPLICATION_DERIVED_KEY_TOKENS = new Set([
+    'address',
+    'street',
+    'city',
+    'state',
+    'zip',
+    'zipcode',
+    'postal',
+    'email',
+    'phone',
+    'mobile',
+    'fax',
+    'name',
+    'ein',
+    'ssn',
+    'dob',
+    'birth',
+    'tax',
+    'guarantor',
+    'legal',
+    'dba',
+    'doing',
+    'entity',
+    'bank',
+    'routing',
+    'account',
+]);
+
+function prefillKeyTokens(key: string): string[] {
+    return key
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/([A-Za-z])([0-9])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean);
+}
+
+export function isApplicationDerivedPrefillKey(key: string): boolean {
+    return prefillKeyTokens(key).some((token) => APPLICATION_DERIVED_KEY_TOKENS.has(token));
+}
+
+/**
+ * Same-offer regeneration: keep every addendum / disclosure value (per-document tabs,
+ * offer amounts, disclosure figures) and drop only the flat values that mirror
+ * application records plus the signer roster, so an edited address or email reaches
+ * the new package. Send history and the preserved keys are untouched.
+ */
+export function refreshApplicationDerivedPrefillOverrides(
+    overrides: unknown,
+): Record<string, unknown> | undefined {
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+        return undefined;
+    }
+    const source = overrides as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    let changed = false;
+    for (const [key, value] of Object.entries(source)) {
+        if (PRESERVED_SCALAR_PREFILL_KEYS.has(key)) {
+            next[key] = value;
+            continue;
+        }
+        const isContainer = value !== null && typeof value === 'object';
+        if (
+            key === 'contractSignerOverrides' ||
+            (!isContainer && isApplicationDerivedPrefillKey(key))
+        ) {
+            changed = true;
+            continue;
+        }
+        next[key] = value;
+    }
+    return changed ? next : undefined;
+}
+
+/**
+ * The prefill blob a regenerated contract starts from, per {@link RegenerationPrefillMode},
+ * stamped with the offer it is built from so the next regeneration has a baseline.
+ */
+export function resetPrefillOverridesForRegeneration(
+    overrides: unknown,
+    mode: RegenerationPrefillMode,
+    liveOffer: ContractOfferFingerprint | null,
+): Prisma.InputJsonValue | undefined {
+    let next: unknown =
+        mode === 'clear-all'
+            ? resetPrefillOverridesForReinitiation(overrides, { clearFieldOverrides: true })
+            : clearLiveEnvelopePointers(overrides);
+    if (mode === 'refresh-application') {
+        next = refreshApplicationDerivedPrefillOverrides(next ?? overrides) ?? next;
+    }
+    if (!liveOffer) return next as Prisma.InputJsonValue | undefined;
+    const base = next ?? overrides;
+    const blob =
+        base && typeof base === 'object' && !Array.isArray(base)
+            ? { ...(base as Record<string, unknown>) }
+            : {};
+    blob[CONTRACT_OFFER_SNAPSHOT_KEY] = liveOffer;
+    return blob as Prisma.InputJsonValue;
 }
 
 export function clearLiveEnvelopePointers(

@@ -34,9 +34,29 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Readable message for a Cloudinary failure. The SDK sometimes rejects with a plain
+ * `{ error: { message, http_code } }` object (no top-level `message`), which `String()`
+ * would turn into "[object Object]".
+ */
+export function describeCloudinaryError(error: unknown): string {
+    const e = error as any;
+    const inner = e?.error && typeof e.error === 'object' ? e.error : null;
+    const message = e?.message || inner?.message;
+    const code = e?.http_code || inner?.http_code;
+    if (message) return code ? `${message} (HTTP ${code})` : String(message);
+    if (typeof error === 'string') return error;
+    try {
+        return JSON.stringify(error) || 'Unknown Cloudinary error';
+    } catch {
+        return 'Unknown Cloudinary error';
+    }
+}
+
 export function isCloudinaryRateLimitError(error: unknown): boolean {
-    const msg = String((error as any)?.message || error || '');
-    const code = Number((error as any)?.http_code || (error as any)?.httpCode || 0);
+    const e = error as any;
+    const msg = describeCloudinaryError(error);
+    const code = Number(e?.http_code || e?.httpCode || e?.error?.http_code || 0);
     return code === 429 || /429|rate.?limit|too many requests/i.test(msg);
 }
 

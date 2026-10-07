@@ -374,6 +374,14 @@ export async function loadOfferDerivedValuesForContract(target: {
  */
 export async function syncContractValuesFromOfferDecision(
   applicationId: string,
+  options?: {
+    /**
+     * Drop offer-derived prefill overrides (default). A regeneration whose offer did not
+     * change passes false: the saved values were entered against this same offer, so they
+     * stay exactly as they were.
+     */
+    stripOfferOverrides?: boolean;
+  },
 ): Promise<boolean> {
   const appId = String(applicationId || '').trim();
   if (!appId) return false;
@@ -422,10 +430,12 @@ export async function syncContractValuesFromOfferDecision(
     data.appendixUnderwritingFees = derived.appendixUnderwritingFees;
   }
 
-  const { next: strippedOverrides, changed: overridesChanged } = stripStaleOfferOverrides(
-    contract.contractPrefillOverrides,
-  );
-  if (overridesChanged) data.contractPrefillOverrides = strippedOverrides;
+  if (options?.stripOfferOverrides !== false) {
+    const { next: strippedOverrides, changed: overridesChanged } = stripStaleOfferOverrides(
+      contract.contractPrefillOverrides,
+    );
+    if (overridesChanged) data.contractPrefillOverrides = strippedOverrides;
+  }
 
   if (Object.keys(data).length > 0) {
     await prisma.contract.update({ where: { id: contract.id }, data });

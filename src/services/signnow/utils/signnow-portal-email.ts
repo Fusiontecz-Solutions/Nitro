@@ -30,8 +30,11 @@ export function buildSigningPortalEmailHtml(input: {
   const greeting = input.recipientName
     ? `Hi ${escapeHtml(input.recipientName)},`
     : 'Hello,';
-  const brand = escapeHtml(BRAND_DISPLAY_NAME);
-  const sender = escapeHtml(input.funderName || BRAND_DISPLAY_NAME);
+  // The header bar names the funder the contract is from, so an Obsidian or
+  // Tiberian invite never opens with "Nitro Advance" in its preview line.
+  const funderName = String(input.funderName || '').trim();
+  const brand = escapeHtml(funderName || BRAND_DISPLAY_NAME);
+  const sender = brand;
   const label = escapeHtml(input.contractLabel);
   const link = escapeHtml(input.signingLink);
   const senderEmail = input.senderEmail ? escapeHtml(input.senderEmail) : '';

@@ -27,6 +27,9 @@ model Contract {
   paymentBankId                  String?                           @db.Uuid
   status                         ContractStatus                    @default(DRAFT)
   funderName                     String?
+  /// Agents on the deal (comma-separated), set in the contract send panel. Each is emailed
+  /// the package when the contract is sent and the signed copy when it is signed (as the selected funder).
+  agentEmail                     String?
   state                          String?
   /// BoldSign contract prefill overrides (flat string map); edited in CRM Deal Review prefill form.
   contractPrefillOverrides       Json?

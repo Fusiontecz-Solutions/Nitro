@@ -55,37 +55,48 @@ describe('exhibitCDocumentPrefillValues', () => {
     expect(result.values).toBe(MERCHANT_VALUES);
   });
 
-  it('fills the first copy from the package values', () => {
+  it('sends a single Exhibit C with no entity blank, never with the ACH / funding bank', () => {
     const { values, entityIndex } = exhibitCDocumentPrefillValues(
       MERCHANT_VALUES,
       [],
       'EXHIBIT C OBSIDIAN CAPITAL GROUP',
     );
     expect(entityIndex).toBe(0);
-    expect(values.ach_account_holder_name).toBe('RE-NEW-IT RENOVATIONS LLC');
-    expect(values.ach_bank_account).toBe('1234567890');
+    expect(values.client_legal_name).toBe('');
+    expect(values.ach_account_holder_name).toBe('');
+    expect(values.ach_bank_name).toBe('');
+    expect(values.ach_bank_account).toBe('');
+    expect(values.ach_bank_routing).toBe('');
+    expect(values.agreement_date).toBe('09/21/2026');
   });
 
-  it('fills an extra copy that has no entity of its own', () => {
+  it('sends an added copy with no entity of its own blank, never as the original', () => {
     const { values, entityIndex } = exhibitCDocumentPrefillValues(
       MERCHANT_VALUES,
       [{}, {}, { agreementDate: '09/21/2026' }],
       'EXHIBIT C OBSIDIAN CAPITAL GROUP (3)',
     );
     expect(entityIndex).toBe(2);
-    expect(values.ach_account_holder_name).toBe('RE-NEW-IT RENOVATIONS LLC');
-    expect(values.ach_bank_name).toBe('CHASE');
-    expect(values.ach_bank_routing).toBe('111000614');
+    expect(values.client_legal_name).toBe('');
+    expect(values.client_name).toBe('');
+    expect(values.ach_account_holder_name).toBe('');
+    expect(values.ach_account_holder_dba).toBe('');
+    expect(values.ach_account_holder_address).toBe('');
+    expect(values.ach_bank_name).toBe('');
+    expect(values.ach_bank_account).toBe('');
+    expect(values.ach_bank_routing).toBe('');
+    // The deal's agreement date is not entity data; it stays.
     expect(values.agreement_date).toBe('09/21/2026');
   });
 
-  it('fills an extra copy when the entity list is shorter than the package', () => {
+  it('keeps an added copy blank when the entity list is shorter than the package', () => {
     const { values } = exhibitCDocumentPrefillValues(
       MERCHANT_VALUES,
       [{}],
       'EXHIBIT C OBSIDIAN CAPITAL GROUP (2)',
     );
-    expect(values.ach_bank_account).toBe('1234567890');
+    expect(values.ach_bank_account).toBe('');
+    expect(values.ach_bank_name).toBe('');
   });
 
   it('keeps an extra copy that names its own business isolated from the merchant', () => {
@@ -116,31 +127,32 @@ describe('exhibitCDocumentPrefillValues', () => {
     expect(MERCHANT_VALUES.client_legal_name).toBe('RE-NEW-IT RENOVATIONS LLC');
   });
 
-  it('keeps the deal merchant on the first copy', () => {
+  it('prints the first Exhibit C own entity, never the deal merchant', () => {
     const { values } = exhibitCDocumentPrefillValues(
       MERCHANT_VALUES,
       [OTHER_ENTITY],
       'EXHIBIT C OBSIDIAN CAPITAL GROUP',
     );
-    expect(values.client_legal_name).toBe('RE-NEW-IT RENOVATIONS LLC');
+    expect(values.client_legal_name).toBe('IRVIN HOLDINGS LLC');
+    expect(values.ach_bank_name).toBe('WELLS FARGO');
+    expect(values.ach_bank_routing).toBe('');
   });
 });
 
 /**
- * `ignoreExistingFieldValues` is driven by this flag. Setting it for every copy
- * is what let a thin package payload empty an Exhibit C page down to the bare
- * agreement date the overlay always stamps, on Nitro, Obsidian and Tiberian
- * alike, while every other document quietly kept its previous widget values.
+ * `ignoreExistingFieldValues` is driven by this flag. Every Exhibit C — the
+ * first one included — is an independent record that prints only its own
+ * entity, on Nitro, Obsidian and Tiberian alike.
  */
 describe('isolation is reported per copy, not per Exhibit C', () => {
-  it('never isolates the first copy, even when its slot names a business', () => {
+  it('isolates the first copy too', () => {
     const { isolated, entityIndex } = exhibitCDocumentPrefillValues(
       MERCHANT_VALUES,
-      [OTHER_ENTITY],
+      [],
       'EXHIBIT C TIBERIAN FUNDING',
     );
     expect(entityIndex).toBe(0);
-    expect(isolated).toBe(false);
+    expect(isolated).toBe(true);
   });
 
   it('isolates an extra copy that names its own business', () => {
@@ -153,14 +165,14 @@ describe('isolation is reported per copy, not per Exhibit C', () => {
     expect(values.ach_bank_name).toBe('WELLS FARGO');
   });
 
-  it('leaves an extra copy with no entity of its own un-isolated', () => {
+  it('isolates an added copy with no entity of its own, so no earlier text survives', () => {
     const { isolated, values } = exhibitCDocumentPrefillValues(
       MERCHANT_VALUES,
       [OTHER_ENTITY],
       'EXHIBIT C TIBERIAN FUNDING (2)',
     );
-    expect(isolated).toBe(false);
-    expect(values.ach_bank_name).toBe('CHASE');
+    expect(isolated).toBe(true);
+    expect(values.ach_bank_name).toBe('');
   });
 
   it('reports no isolation for a document that is not an Exhibit C', () => {
@@ -206,7 +218,7 @@ describe('signNowDocumentPrefillValues', () => {
     expect(MERCHANT_VALUES.client_name).toBe('MARY IRVIN');
   });
 
-  it('keeps the business address when entity 1 carries the guarantor home address', () => {
+  it('prints the first Exhibit C own address, never the deal business address', () => {
     const { values } = signNowDocumentPrefillValues(
       {
         ...MERCHANT_VALUES,
@@ -227,9 +239,9 @@ describe('signNowDocumentPrefillValues', () => {
       'Exhibit C',
       TABS,
     );
-    expect(values.business_address).toBe('218 LAUREL WOODS');
-    expect(values.business_address_city).toBe('WARNER ROBINS');
-    expect(values.business_address_zip).toBe('31088');
+    expect(values.business_address).toBe('3273 COVE CREEK ROAD');
+    expect(values.business_address_city).toBe('GWALIOR');
+    expect(values.business_address_zip).toBe('28785');
   });
 
   it('still isolates an Exhibit C copy that carries its own entity', () => {
@@ -271,14 +283,40 @@ describe('resolveExhibitCEntities', () => {
     expect(entities[1].bankName).toBe('Test Usera');
   });
 
-  it('still fills gaps from the posted list', () => {
+  it('fills a slot with no saved record from the posted list', () => {
     const entities = resolveExhibitCEntities({
       storedEntitiesRaw: JSON.stringify([{}, { bankName: 'Test Usera' }]),
       payloadEntitiesRaw: JSON.stringify([COPY_1, { bankAccount: '123456788' }]),
     });
     expect(entities[0].bankName).toBe('Test Bank');
     expect(entities[1].bankName).toBe('Test Usera');
-    expect(entities[1].bankAccount).toBe('123456788');
+  });
+
+  it('never backfills a saved copy from other sources', () => {
+    // Saving another addendum pushed the deal DBA / bank into this copy's tab;
+    // the copy's own record has those lines blank and must stay that way.
+    const entities = resolveExhibitCEntities({
+      storedEntitiesRaw: JSON.stringify([
+        { clientLegalName: 'FUSIONTECZ', accountHolderName: 'RE-NEW-IT RENOVATIONS, LLC', bankName: 'FUSIONTECZ' },
+      ]),
+      mappingEntities: [
+        { accountHolderDba: 'RE-NEW-IT RENOVATIONS, LLC', bankPortal: 'chase.com', agreementDate: '10/07/2026' },
+      ],
+      payloadEntitiesRaw: JSON.stringify([{ accountHolderDba: 'RE-NEW-IT RENOVATIONS, LLC', bankAccount: '555' }]),
+    });
+    expect(entities[0].accountHolderName).toBe('RE-NEW-IT RENOVATIONS, LLC');
+    expect(entities[0].accountHolderDba).toBeUndefined();
+    expect(entities[0].bankPortal).toBeUndefined();
+    expect(entities[0].bankAccount).toBeUndefined();
+    expect(entities[0].agreementDate).toBe('10/07/2026');
+
+    const { values } = signNowDocumentPrefillValues(
+      { ...MERCHANT_VALUES, doing_business_as: 'RE-NEW-IT RENOVATIONS, LLC' },
+      entities,
+      'Exhibit C',
+    );
+    expect(values.ach_account_holder_dba).toBe('');
+    expect(values.doing_business_as).toBe('');
   });
 
   it('gives Exhibit C (2) its own values end to end', () => {
@@ -295,5 +333,38 @@ describe('resolveExhibitCEntities', () => {
     expect(values.ach_account_holder_name_p1).toBe('Test Usera');
     expect(values.ach_bank_name_p1).toBe('Test Usera');
     expect(values.ach_bank_account).toBe('123456788');
+  });
+});
+
+/**
+ * Exhibit C #1 (RE-NEW-IT, no DBA) printed FUSIONTECZ — the package-wide DBA —
+ * while its CRM copy showed the line blank, and Exhibit C (2) lost its own DBA.
+ */
+describe('Exhibit C DBA stays with its own copy', () => {
+  const PACKAGE = { ...MERCHANT_VALUES, ach_account_holder_dba: 'FUSIONTECZ', doing_business_as: 'FUSIONTECZ' };
+  const FIRST = { accountHolderName: 'RE-NEW-IT RENOVATIONS, LLC', bankName: 'JP Morgan' };
+  const SECOND = {
+    clientLegalName: 'FUSIONTECZ',
+    accountHolderName: 'FUSIONTECZ',
+    accountHolderDba: 'FUSIONTECZ',
+    bankName: 'JP Morgan',
+  };
+
+  it('leaves the first copy DBA blank when its entity has none', () => {
+    const { values } = exhibitCDocumentPrefillValues(PACKAGE, [FIRST, SECOND], 'EXHIBIT C');
+    expect(values.ach_account_holder_dba).toBe('');
+    expect(values.ach_account_holder_dba_p1).toBe('');
+    expect(values.doing_business_as).toBe('');
+  });
+
+  it('puts the second copy own DBA on its page', () => {
+    const { values } = exhibitCDocumentPrefillValues(PACKAGE, [FIRST, SECOND], 'EXHIBIT C (2)');
+    expect(values.ach_account_holder_dba).toBe('FUSIONTECZ');
+    expect(values.ach_account_holder_dba_p1).toBe('FUSIONTECZ');
+  });
+
+  it('leaves an Exhibit C with no entity DBA blank, never the package DBA', () => {
+    const { values } = exhibitCDocumentPrefillValues(PACKAGE, [], 'EXHIBIT C');
+    expect(values.ach_account_holder_dba).toBe('');
   });
 });

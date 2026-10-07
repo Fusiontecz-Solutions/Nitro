@@ -85,6 +85,7 @@ export function buildOfferPrefillOverrides(
   put('payment_frequency', derived.frequency);
   put('disclosure_payment_frequency', derived.frequency);
   put('disclouser_pg2_frequency', derived.frequency);
+  put('page2_frequency', derived.frequency);
 
   if (derived.disclosureTermDays != null) {
     const termDaysText = String(derived.disclosureTermDays);

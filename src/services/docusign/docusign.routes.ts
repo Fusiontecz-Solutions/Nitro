@@ -89,5 +89,16 @@ router.post(
   authenticateToken,
   signingPortalController.sendContractPortal.bind(signingPortalController),
 );
+// Resend the SAME unsigned contract (optionally to a corrected signer email).
+router.get(
+  '/contract-portal-recipients',
+  authenticateToken,
+  signingPortalController.getContractPortalRecipients.bind(signingPortalController),
+);
+router.post(
+  '/resend-contract-portal',
+  authenticateToken,
+  signingPortalController.resendContractPortal.bind(signingPortalController),
+);
 
 export default router;

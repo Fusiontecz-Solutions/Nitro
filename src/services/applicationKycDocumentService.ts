@@ -82,6 +82,23 @@ export function resolveApplicationKycOwnerCount(client: {
   return 1;
 }
 
+/**
+ * True when the deal's contract routes this check into an Exhibit C — then the
+ * application's own (funding) bank is left alone.
+ */
+async function voidCheckBelongsToAddedExhibitC(
+  applicationId: string,
+  accountNumber: unknown,
+): Promise<boolean> {
+  const contract = await (prisma as any).contract.findUnique({
+    where: { applicationId },
+    select: { id: true },
+  });
+  if (!contract?.id) return false;
+  const slot = await contractService.resolveVoidCheckExhibitCCopySlot(contract.id, accountNumber);
+  return slot != null;
+}
+
 async function persistKycToClientAndBank(
   applicationId: string,
   mapped: KycExtractionMapped,
@@ -332,7 +349,11 @@ async function persistKycToClientAndBank(
     }
   }
 
-  if (mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
+  if (
+    mapped.documentType === 'voidedCheck' &&
+    mapped.panels?.ach &&
+    !(await voidCheckBelongsToAddedExhibitC(applicationId, mapped.panels.ach.accountNumber))
+  ) {
     const ach = mapped.panels.ach;
     const bankName = str(ach.bankName);
     const accountNumber = str(ach.accountNumber);

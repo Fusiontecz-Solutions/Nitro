@@ -3,7 +3,9 @@ import prisma from '../config/prismaClient';
 import {
   advancePortalSigningQueue,
   mintPortalSigningLink,
+  readPortalSigningRecipients,
   resolvePortalRecipients,
+  startContractPortalResend,
   startContractPortalSend,
   syncPortalEnvelopeAfterSignerFinished,
   verifyPortalAccess,
@@ -42,6 +44,8 @@ class SigningPortalController {
         prefillFields,
         ccEmails,
         includeWireFee,
+        agentEmail,
+        agentEmails,
       } = req.body ?? {};
       const id = String(envelopeId ?? '').trim();
       if (!id) {
@@ -58,6 +62,7 @@ class SigningPortalController {
         });
       }
       const senderUserId = String((req as any).user?.id ?? '').trim();
+      const senderEmail = String((req as any).user?.email ?? '').trim();
       // Answered as soon as the send is validated; the SignNow publish and the
       // SendGrid emails finish in the background (they took 1–2 minutes inline).
       const accepted = await startContractPortalSend({
@@ -66,6 +71,13 @@ class SigningPortalController {
         contractLabel: String(contractLabel ?? '').trim() || 'Your funding agreement',
         funderName: typeof funderName === 'string' ? funderName.trim() : null,
         replyToEmail: typeof replyToEmail === 'string' ? replyToEmail.trim() : null,
+        agentEmails: Array.isArray(agentEmails)
+          ? agentEmails.map((v: unknown) => String(v ?? '').trim()).filter(Boolean)
+          : typeof agentEmail === 'string'
+            ? agentEmail.trim()
+            : undefined,
+        // The sender gets the signed copy when every signer has finished.
+        senderEmail: senderEmail.includes('@') ? senderEmail : null,
         // Same payload `/send-envelope` receives, so the portal bakes the values
         // the CRM holds right now instead of whatever Owner review left behind.
         prefillFields: Array.isArray(prefillFields) ? prefillFields : undefined,
@@ -102,6 +114,81 @@ class SigningPortalController {
         }
       });
       return res.status(202).json({ success: true, data: { ...accepted, queued: true } });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+
+  /**
+   * GET /docusign/contract-portal-recipients?envelopeId=  (authenticated)
+   * Signers of a sent contract, for the Resend dialog.
+   */
+  async getContractPortalRecipients(req: Request, res: Response) {
+    try {
+      const id = String(req.query.envelopeId ?? '').trim();
+      if (!id) {
+        return res.status(400).json({ success: false, message: 'envelopeId is required.' });
+      }
+      const data = await readPortalSigningRecipients(id);
+      if (!data) {
+        return res.status(404).json({
+          success: false,
+          message: 'This contract was not sent through the signing portal.',
+        });
+      }
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+
+  /**
+   * POST /docusign/resend-contract-portal  (authenticated)
+   * Body: { envelopeId, recipientChanges?: [{ email, newEmail, newName? }] }
+   *
+   * Re-emails the signing link of every signer who has not signed the SAME
+   * contract yet — nothing is rebuilt or reset. With `recipientChanges` the
+   * signer's address is corrected first; that runs in the background (202) and
+   * reports over the portal-send socket event.
+   */
+  async resendContractPortal(req: Request, res: Response) {
+    try {
+      const { envelopeId, recipientChanges } = req.body ?? {};
+      const id = String(envelopeId ?? '').trim();
+      if (!id) {
+        return res.status(400).json({ success: false, message: 'envelopeId is required.' });
+      }
+      const senderUserId = String((req as any).user?.id ?? '').trim();
+      const accepted = await startContractPortalResend(
+        {
+          envelopeId: id,
+          recipientChanges: Array.isArray(recipientChanges) ? recipientChanges : undefined,
+        },
+        async (outcome, context) => {
+          const document = await prisma.document
+            .findUnique({ where: { envelopeId: context.envelopeId }, select: { applicationId: true } })
+            .catch(() => null);
+          const applicationId = document?.applicationId ? String(document.applicationId) : null;
+          const payload = outcome.ok
+            ? {
+                envelopeId: context.envelopeId,
+                applicationId,
+                ok: true,
+                resend: true,
+                recipientEmails: outcome.result.emailed,
+              }
+            : {
+                envelopeId: context.envelopeId,
+                applicationId,
+                ok: false,
+                resend: true,
+                message:
+                  (outcome.error as Error)?.message || 'Could not resend the signing link.',
+              };
+          if (senderUserId) emitToUser(senderUserId, PORTAL_SEND_RESULT_SOCKET_EVENT, payload);
+        },
+      );
+      return res.status(accepted.queued ? 202 : 200).json({ success: true, data: accepted });
     } catch (error: any) {
       return fail(res, error);
     }

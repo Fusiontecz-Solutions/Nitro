@@ -7,6 +7,7 @@ import {
 } from '../middleware/authMiddleware';
 import contractService from '../services/contractService';
 import { withDbRetry } from '../utils/dbRetry';
+import { readContractAgentEmail, saveContractAgentEmail } from '../utils/contractAgentEmail';
 
 class ContractController {
   async createContract(req: Request, res: Response) {
@@ -173,6 +174,57 @@ class ContractController {
       const msg = error?.message || 'Internal server error';
       console.error(`Get contract by applicationId error: ${msg}`);
       return res.status(500).json({ success: false, message: msg });
+    }
+  }
+
+  /**
+   * GET /contract/agent-email/:applicationId
+   * The deal's agent emails for the contract send panel: the saved values, else
+   * the referring agent (`source` says which).
+   */
+  async getAgentEmail(req: Request, res: Response) {
+    try {
+      const applicationId = String(req.params.applicationId || '').trim();
+      if (!applicationId) {
+        return res.status(400).json({ success: false, message: 'applicationId is required' });
+      }
+      const data = await readContractAgentEmail(applicationId);
+      return res.status(200).json({ success: true, data });
+    } catch (error: any) {
+      const msg = error?.message || 'Internal server error';
+      console.error(`Get contract agent email error: ${msg}`);
+      return res.status(500).json({ success: false, message: msg });
+    }
+  }
+
+  /**
+   * PUT /contract/agent-email/:applicationId   Body: { agentEmails: string[] }
+   * (or the legacy `{ agentEmail }`, comma-separated). Replaces the saved list;
+   * empty clears it. Each agent is emailed the package when the contract is sent
+   * and the signed copy when it is signed.
+   */
+  async updateAgentEmail(req: Request, res: Response) {
+    try {
+      const applicationId = String(req.params.applicationId || '').trim();
+      if (!applicationId) {
+        return res.status(400).json({ success: false, message: 'applicationId is required' });
+      }
+      const data = await saveContractAgentEmail(
+        applicationId,
+        req.body?.agentEmails ?? req.body?.agentEmail,
+      );
+      if (!data) {
+        return res.status(404).json({
+          success: false,
+          message: 'Contract not found for this applicationId',
+        });
+      }
+      return res.status(200).json({ success: true, data });
+    } catch (error: any) {
+      const status = Number(error?.status) || 500;
+      const msg = error?.message || 'Internal server error';
+      if (status >= 500) console.error(`Update contract agent email error: ${msg}`);
+      return res.status(status).json({ success: false, message: msg });
     }
   }
 

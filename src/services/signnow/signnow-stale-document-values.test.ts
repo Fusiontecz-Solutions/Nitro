@@ -87,6 +87,20 @@ function warmedDocument() {
         prefilled_text: 'mary.irvin',
       },
       {
+        // An earlier send stamped an Exhibit C (2) entity's DBA here; the CRM's
+        // DBA is blank, so the agreement's D/B/A line must come out empty.
+        id: 'f6',
+        type: 'text',
+        name: 'doing_business_as',
+        role: 'Owner',
+        page_number: 0,
+        x: 10,
+        y: 110,
+        width: 120,
+        height: 12,
+        prefilled_text: 'FUSIONTECZ',
+      },
+      {
         id: 'f5',
         type: 'signature',
         name: 'sig_1',
@@ -158,6 +172,11 @@ describe('a Review landing on a document the pre-warm already stamped', () => {
   it('replaces a stale address', async () => {
     const written = await prefill();
     expect(written.business_address_p1).toBe('218 LAUREL WOODS');
+  });
+
+  it('clears a stale D/B/A when the CRM has no DBA', async () => {
+    const written = await prefill();
+    expect(written.doing_business_as).toBeUndefined();
   });
 
   it('leaves a merchant-typed value the CRM has nothing for', async () => {

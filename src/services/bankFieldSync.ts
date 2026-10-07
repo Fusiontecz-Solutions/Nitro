@@ -60,8 +60,6 @@ const CONTRACT_COLUMNS: Partial<Record<BankSyncField, string>> = {
   routingNumber: 'authorizationClientBankRouting',
 };
 
-const EXHIBIT_C_ENTITIES_KEY = 'exhibitCEntities';
-
 /** Plaintext + trimmed; encrypted-at-rest values are decrypted so prefill never shows ciphertext. */
 function plain(value: unknown): string {
   if (value == null) return '';
@@ -90,26 +88,12 @@ export function hasBankSyncValues(bank: BankSyncFields): boolean {
   return BANK_SYNC_FIELDS.some((field) => plain(bank[field]) !== '');
 }
 
-function parseExhibitCEntities(raw: unknown): Record<string, unknown>[] | null {
-  let parsed: unknown = raw;
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      return null;
-    }
-  }
-  if (!Array.isArray(parsed)) return null;
-  return parsed.map((row) => asObject(row));
-}
-
-/** Read the bank block out of prefill overrides, falling back to the primary Exhibit C entity. */
+/**
+ * Read the bank block out of prefill overrides. Exhibit C entities are never read:
+ * every Exhibit C (the first included) is its own account, not the deal's bank.
+ */
 export function readBankFieldsFromPrefill(overrides: unknown): BankSyncFields {
   const source = asObject(overrides);
-  const entities = parseExhibitCEntities(source[EXHIBIT_C_ENTITIES_KEY]);
-  const primaryEntity = entities?.[0];
   const out: BankSyncFields = {};
 
   for (const field of BANK_SYNC_FIELDS) {
@@ -118,7 +102,6 @@ export function readBankFieldsFromPrefill(overrides: unknown): BankSyncFields {
       value = plain(source[key]);
       if (value) break;
     }
-    if (!value && primaryEntity) value = plain(primaryEntity[ENTITY_KEYS[field]]);
     if (value) out[field] = value;
   }
   return out;
@@ -136,8 +119,8 @@ export function readBankFieldsFromExhibitCEntity(entity: unknown): BankSyncField
 }
 
 /**
- * Write the bank block into every prefill alias and into the primary Exhibit C entity.
- * Extra Exhibit C slots are left alone — they intentionally carry other entities' banks.
+ * Write the bank block into every prefill alias. Exhibit C entities are left alone —
+ * each Exhibit C, the first one included, is an independent account.
  */
 export function applyBankFieldsToPrefill(
   overrides: unknown,
@@ -150,26 +133,6 @@ export function applyBankFieldsToPrefill(
     const value = values[field];
     if (!value) continue;
     for (const key of PREFILL_KEYS[field]) next[key] = value;
-  }
-
-  const entities = parseExhibitCEntities(next[EXHIBIT_C_ENTITIES_KEY]);
-  if (entities && entities.length > 0) {
-    const primary = { ...entities[0] };
-    let changed = false;
-    for (const field of BANK_SYNC_FIELDS) {
-      const value = values[field];
-      if (!value) continue;
-      // Fill blanks only: a primary slot already carrying another entity's bank keeps it.
-      if (!plain(primary[ENTITY_KEYS[field]])) {
-        primary[ENTITY_KEYS[field]] = value;
-        changed = true;
-      }
-    }
-    if (changed) {
-      const patched = [primary, ...entities.slice(1)];
-      next[EXHIBIT_C_ENTITIES_KEY] =
-        typeof next[EXHIBIT_C_ENTITIES_KEY] === 'string' ? JSON.stringify(patched) : patched;
-    }
   }
 
   return decryptEncryptedStringsInJson(next) as Record<string, unknown>;

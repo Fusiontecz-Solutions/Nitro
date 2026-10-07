@@ -474,12 +474,13 @@ const ALIASES: Record<string, string[]> = {
     'legal_name',
     'business_legal_name',
   ],
+  // The PayOff addendum's "Merchant DBA" line: a real DBA or blank, never the
+  // merchant name printed on the line above it.
   addendum_p_funder_and_business_namehalf: [
-    'addendum_p_funder_and_business_name',
     'doing_business_as',
     'dba',
-    'client_legal_name',
-    'legal_name',
+    'security_doing_business_as',
+    'ach_authorization_account_holder_dba',
   ],
   addendum_p_pay_up_to_amount: [
     'previous_refi_balance',
@@ -545,6 +546,18 @@ const ALIASES: Record<string, string[]> = {
     'funding_provided',
   ],
   disclouser_pg2_frequency: [
+    'disclouser_pg2_frequency',
+    'disclosure_payment_frequency',
+    'payment_frequency',
+    'frequency',
+  ],
+  /**
+   * Cadence label printed beside the Estimated Term on disclosure page 2
+   * ("40 DAILY"), so the term reads in the offer's own unit. Same widget name
+   * on the Nitro, Obsidian and Tiberian disclosures.
+   */
+  page2_frequency: [
+    'page2_frequency',
     'disclouser_pg2_frequency',
     'disclosure_payment_frequency',
     'payment_frequency',
@@ -882,7 +895,9 @@ export function hasDisclosureFieldSignature(fieldNames?: string[]): boolean {
   if (!names.size) return false;
   return (
     names.has('estimated_term_p2') &&
-    (names.has('disclouser_pg2_frequency') || names.has('disclosure_page3_net_p3'))
+    (names.has('disclouser_pg2_frequency') ||
+      names.has('page2_frequency') ||
+      names.has('disclosure_page3_net_p3'))
   );
 }
 
@@ -906,6 +921,18 @@ export function isTiberianDocumentName(value: unknown): boolean {
     .trim()
     .toLowerCase()
     .includes('tiberian');
+}
+
+/**
+ * Nitro Advance's own main agreement ("Agreement - Nitro Advance") — not the
+ * Obsidian / Tiberian copies of the same layout, and not a Nitro addendum,
+ * disclosure or exhibit.
+ */
+export function isNitroAgreementDocumentName(value: unknown): boolean {
+  const name = String(value || '').trim().toLowerCase();
+  if (!name.includes('nitro') || !name.includes('agreement')) return false;
+  if (isObsidianDocumentName(name) || isTiberianDocumentName(name)) return false;
+  return !isSupplementalSignNowDocumentName(name);
 }
 
 export type SignNowPrefillDocumentKind =
@@ -2452,7 +2479,70 @@ function isOwner1ContactAlias(key: string): boolean {
   );
 }
 
+/** D/B/A, Account Holder DBA, Merchant DBA — on every funder's contract and addendum. */
+const DBA_WIDGET_RE =
+  /(?:^|_)dba\d*(?:_|$)|doing_business|holder_dba|merchant_dba|funder_and_business_namehalf/i;
+
+/** Keys that carry the business's legal name, which a DBA line must never repeat. */
+const BUSINESS_LEGAL_NAME_KEYS: readonly string[] = [
+  'client_legal_name',
+  'legal_name',
+  'business_legal_name',
+  'merchant_legal_name',
+  'security_business_name',
+  'addendum_p_funder_and_business_name',
+];
+
+function isDbaWidget(fieldName: string, options?: SignNowPrefillOptions): boolean {
+  const raw = String(fieldName || '').trim();
+  const slot = options?.documentKind === 'exhibit_c' ? exhibitCTextFieldNumber(raw) : null;
+  const id = slot ? EXHIBIT_C_TEXT_FIELD_CRM_IDS[slot] || '' : canonicalizeSignNowFieldName(raw);
+  // Monthly Fee prints `ach_account_holder_dba_p1` as "Authorized Holder
+  // Business Name", so the business name is that line's correct value.
+  if (options?.documentKind === 'monthly_fee' && /ach_account_holder_dba/i.test(id)) return false;
+  return DBA_WIDGET_RE.test(id);
+}
+
+/**
+ * Any D/B/A line — the agreement's, the addendums', Exhibit C's. The CRM owns
+ * it: when it resolves blank it is cleared, and text already on the widget is
+ * never read back as its value. Otherwise a DBA one earlier send stamped there
+ * (an Exhibit C (2) entity's, on a reused Tiberian group) kept printing on the
+ * agreement after the CRM's DBA was blank.
+ */
+export function isSignNowDbaWidget(fieldName: string, options?: SignNowPrefillOptions): boolean {
+  return isDbaWidget(fieldName, options);
+}
+
+function normalizeBusinessName(value: string): string {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * A DBA widget prints only a real DBA. Earlier CRM builds filled a blank DBA
+ * with the business name and saved it into the per-template prefill, so the
+ * value arriving here can be the legal name under a DBA key; that prints blank.
+ */
 export function resolveSignNowPrefillValue(
+  fieldName: string,
+  prefill: Record<string, string>,
+  options?: SignNowPrefillOptions,
+): string {
+  const value = resolveSignNowPrefillValueUnguarded(fieldName, prefill, options);
+  if (!value || !isDbaWidget(fieldName, options)) return value;
+  // An entity-only Exhibit C copy reads its DBA from that entity's own record
+  // (see EXHIBIT_C_ENTITY_OWN_KEYS), never a fallback, so it prints exactly
+  // what the CRM shows for that copy even when it matches the legal name.
+  if (options?.documentKind === 'exhibit_c' && options.exhibitCEntityOnly) return value;
+  const dba = normalizeBusinessName(value);
+  const map = lookupMap(prefill);
+  const echoesLegalName = BUSINESS_LEGAL_NAME_KEYS.some(
+    (key) => normalizeBusinessName(mapGet(map, key)) === dba,
+  );
+  return echoesLegalName ? '' : value;
+}
+
+function resolveSignNowPrefillValueUnguarded(
   fieldName: string,
   prefill: Record<string, string>,
   options?: SignNowPrefillOptions,

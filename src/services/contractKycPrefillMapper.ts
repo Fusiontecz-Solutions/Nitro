@@ -544,6 +544,101 @@ export function upsertExhibitCEntitiesJson(
   return merged.length ? JSON.stringify(merged) : '';
 }
 
+function exhibitCEntityRowHasData(row: ExhibitCEntityRow | undefined): boolean {
+  if (!row) return false;
+  return Boolean(
+    row.clientLegalName ||
+      row.clientName ||
+      row.accountHolderName ||
+      row.accountHolderDba ||
+      row.accountHolderAddress ||
+      row.bankName ||
+      row.bankAccount ||
+      row.bankRouting,
+  );
+}
+
+/**
+ * Which Exhibit C slot a void-check scan fills, or null when the scan is the
+ * deal's own ACH / funding bank.
+ *
+ * Every Exhibit C addendum (the first one included) is an independent record
+ * that starts blank. The deal's first check is its funding bank and never
+ * reaches an Exhibit C. Once the deal has its bank, a check for another account
+ * fills the first Exhibit C still blank; re-scanning a check already on an
+ * Exhibit C goes back to that slot.
+ */
+export function pickExhibitCCopySlotForVoidCheck(args: {
+  existingRaw: unknown;
+  /** Exhibit C documents on the contract. */
+  copyCount: number;
+  /** The deal's own ACH / funding bank account, if any. */
+  mainBankAccount?: string | null;
+  accountNumber?: string | null;
+}): number | null {
+  const copyCount = Math.min(EXHIBIT_C_ENTITY_MAX, Math.floor(args.copyCount || 0));
+  if (copyCount < 1) return null;
+  const account = digitsOnly(str(args.accountNumber));
+  const mainAccount = digitsOnly(str(args.mainBankAccount));
+  // No funding bank yet: this check is it.
+  if (!mainAccount || !account || account === mainAccount) return null;
+  const entities = parseExhibitCEntitiesRaw(args.existingRaw);
+  const matchIdx = entities.findIndex((row) => digitsOnly(row.bankAccount) === account);
+  if (matchIdx >= 0) return matchIdx;
+  for (let i = 0; i < copyCount; i += 1) {
+    if (!exhibitCEntityRowHasData(entities[i])) return i;
+  }
+  return null;
+}
+
+/** Write a void-check scan into Exhibit C entity slot `index` only; returns serialized list. */
+export function setExhibitCEntitySlotFromVoidCheckJson(
+  existingRaw: unknown,
+  index: number,
+  source: Parameters<typeof upsertExhibitCEntitiesJson>[1],
+): string {
+  const idx = Math.max(0, Math.min(EXHIBIT_C_ENTITY_MAX - 1, Math.floor(index)));
+  const existing = parseExhibitCEntitiesRaw(existingRaw);
+  const empty = (): ExhibitCEntityRow => ({
+    id: `exhibit-c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    clientLegalName: '',
+    clientName: '',
+    accountHolderName: '',
+    accountHolderDba: '',
+    accountHolderAddress: '',
+    accountHolderCity: '',
+    accountHolderState: '',
+    accountHolderZip: '',
+    bankName: '',
+    bankAccount: '',
+    bankRouting: '',
+    bankPortal: '',
+    bankUsername: '',
+    bankPassword: '',
+    securityQa1: '',
+    securityQa2: '',
+    agreementDate: '',
+  });
+  const next = [...existing];
+  while (next.length <= idx) next.push(empty());
+  const prev = next[idx];
+  const holder = str(source.accountHolderName);
+  next[idx] = {
+    ...prev,
+    clientLegalName: holder || prev.clientLegalName,
+    accountHolderName: holder || prev.accountHolderName,
+    accountHolderDba: str(source.dba) || prev.accountHolderDba,
+    accountHolderAddress: str(source.address) || prev.accountHolderAddress,
+    accountHolderCity: str(source.city) || prev.accountHolderCity,
+    accountHolderState: str(source.state) || prev.accountHolderState,
+    accountHolderZip: str(source.zip) || prev.accountHolderZip,
+    bankName: str(source.bankName) || prev.bankName,
+    bankAccount: str(source.accountNumber) || prev.bankAccount,
+    bankRouting: str(source.routingNumber) || prev.bankRouting,
+  };
+  return JSON.stringify(next);
+}
+
 export function normalizeKycDocumentType(raw: unknown): KycDocumentType | null {
   return resolveKycUploadSlot(raw)?.documentType ?? null;
 }

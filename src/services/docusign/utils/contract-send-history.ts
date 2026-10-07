@@ -16,7 +16,82 @@ export type ContractSendHistoryTermsSnapshot = {
   paymentAmount?: number | null;
   paybackAmount?: number | null;
   percentOfGross?: number | null;
+  /**
+   * The OfferDecision terms the package was built from. The contract columns above can
+   * lag the offer, so this is what a later regeneration compares the live offer against
+   * to decide whether the saved addendum / disclosure prefill still belongs to it.
+   */
+  offerValues?: ContractOfferFingerprint | null;
 };
+
+/** OfferDecision terms that drive every offer-derived document value. */
+export type ContractOfferFingerprint = {
+  offer: number | null;
+  totalRemit: number | null;
+  term: string | null;
+  frequency: string | null;
+  repayPerPeriod: number | null;
+  rate: number | null;
+  fees: number | null;
+};
+
+const OFFER_FINGERPRINT_MONEY_KEYS = ['offer', 'totalRemit', 'repayPerPeriod'] as const;
+const OFFER_FINGERPRINT_RATE_KEYS = ['rate', 'fees'] as const;
+const OFFER_FINGERPRINT_TEXT_KEYS = ['term', 'frequency'] as const;
+
+function roundTo(value: number | null, places: number): number | null {
+  if (value == null) return null;
+  const f = 10 ** places;
+  return Math.round(value * f) / f;
+}
+
+function normalizeFingerprintText(value: unknown): string | null {
+  const s = String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+  return s || null;
+}
+
+/** Normalized fingerprint of an OfferDecision (Decimal / numeric strings accepted). */
+export function buildContractOfferFingerprint(
+  offer: Record<string, unknown> | null | undefined,
+): ContractOfferFingerprint | null {
+  if (!offer || typeof offer !== 'object' || Array.isArray(offer)) return null;
+  const fingerprint: ContractOfferFingerprint = {
+    offer: roundTo(toSnapshotNumber(offer.offer), 2),
+    totalRemit: roundTo(toSnapshotNumber(offer.totalRemit), 2),
+    term: normalizeFingerprintText(offer.term),
+    frequency: normalizeFingerprintText(offer.frequency),
+    repayPerPeriod: roundTo(toSnapshotNumber(offer.repayPerPeriod), 2),
+    rate: roundTo(toSnapshotNumber(offer.rate), 6),
+    fees: roundTo(toSnapshotNumber(offer.fees), 6),
+  };
+  const hasAny = Object.values(fingerprint).some((v) => v != null);
+  return hasAny ? fingerprint : null;
+}
+
+/** True when any offer term differs between two fingerprints. */
+export function contractOfferFingerprintsDiffer(
+  prior: ContractOfferFingerprint,
+  next: ContractOfferFingerprint,
+): boolean {
+  for (const key of OFFER_FINGERPRINT_MONEY_KEYS) {
+    if (roundTo(prior[key] ?? null, 2) !== roundTo(next[key] ?? null, 2)) return true;
+  }
+  for (const key of OFFER_FINGERPRINT_RATE_KEYS) {
+    if (roundTo(prior[key] ?? null, 6) !== roundTo(next[key] ?? null, 6)) return true;
+  }
+  for (const key of OFFER_FINGERPRINT_TEXT_KEYS) {
+    if (normalizeFingerprintText(prior[key]) !== normalizeFingerprintText(next[key])) return true;
+  }
+  return false;
+}
+
+export function parseContractOfferFingerprint(raw: unknown): ContractOfferFingerprint | null {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return buildContractOfferFingerprint(raw as Record<string, unknown>);
+}
 
 export type ContractSendHistoryEntry = {
   envelopeId: string;
@@ -57,6 +132,7 @@ function parseTermsSnapshotFromUnknown(
     paymentAmount: toSnapshotNumber(o.paymentAmount),
     paybackAmount: toSnapshotNumber(o.paybackAmount),
     percentOfGross: toSnapshotNumber(o.percentOfGross),
+    offerValues: parseContractOfferFingerprint(o.offerValues),
   };
   const hasAny = Object.values(snapshot).some((v) => v != null && v !== '');
   return hasAny ? snapshot : null;
@@ -158,6 +234,7 @@ export function buildContractSendHistoryTermsSnapshot(
     paybackAmount:
       toSnapshotNumber(terms?.paybackAmount) ?? toSnapshotNumber(offer?.totalRemit),
     percentOfGross: toSnapshotNumber(terms?.percentOfGross),
+    offerValues: buildContractOfferFingerprint(offer),
   };
 }
 
@@ -671,6 +748,8 @@ export async function persistMainContractSendPackage(
         totalRemit: true,
         repayPerPeriod: true,
         rate: true,
+        frequency: true,
+        fees: true,
       },
     },
     termsOffers: {

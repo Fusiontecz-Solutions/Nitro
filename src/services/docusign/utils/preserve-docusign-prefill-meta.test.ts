@@ -51,3 +51,21 @@ describe('mergePreservingDocuSignEnvelopeMeta — per-document prefill tabs', ()
     });
   });
 });
+
+describe('mergePreservingDocuSignEnvelopeMeta — disclosure monthly revenues', () => {
+  it('keeps the saved months when another editor rebuilds the blob without them', () => {
+    const merged = mergePreservingDocuSignEnvelopeMeta(
+      { legalName: 'ACME LLC', disclosureMonthlyRevenues: [85000, 92000] },
+      { legalName: 'ACME HOLDINGS LLC' },
+    );
+    expect(merged?.disclosureMonthlyRevenues).toEqual([85000, 92000]);
+  });
+
+  it('takes the months the disclosure calculator sends, including a removed month', () => {
+    const merged = mergePreservingDocuSignEnvelopeMeta(
+      { disclosureMonthlyRevenues: [85000, 92000] },
+      { disclosureMonthlyRevenues: [92000] },
+    );
+    expect(merged?.disclosureMonthlyRevenues).toEqual([92000]);
+  });
+});

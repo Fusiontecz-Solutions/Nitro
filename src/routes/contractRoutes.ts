@@ -8,6 +8,8 @@ router.use(authenticateToken);
 
 // Static paths must be registered before `/:id/...` so `/templates` is never captured as an id.
 router.get('/templates', contractController.getBoldSignTemplates.bind(contractController));
+router.get('/agent-email/:applicationId', contractController.getAgentEmail.bind(contractController));
+router.put('/agent-email/:applicationId', contractController.updateAgentEmail.bind(contractController));
 
 router.post('/create_contract', contractController.createContract.bind(contractController));
 router.get('/get_all_contracts', contractController.getAllContracts.bind(contractController));

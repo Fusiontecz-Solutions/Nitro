@@ -2,7 +2,7 @@
 import { randomUUID } from 'crypto';
 import { Readable } from 'stream';
 import { cloudinary } from '../config/cloudinary';
-import { runCloudinaryUpload } from './cloudinaryUploadLimiter';
+import { describeCloudinaryError, runCloudinaryUpload } from './cloudinaryUploadLimiter';
 
 interface UploadedFile {
     name: string;
@@ -88,7 +88,7 @@ class UploadToCloudinaryService {
             return {
                 success: false,
                 message: 'Error occurred while uploading file to Cloudinary',
-                error: error?.message || String(error),
+                error: describeCloudinaryError(error),
             };
         }
     }
@@ -151,7 +151,7 @@ class UploadToCloudinaryService {
             return {
                 success: false,
                 message: 'Error occurred while uploading file to Cloudinary',
-                error: error?.message || String(error),
+                error: describeCloudinaryError(error),
             };
         }
     }

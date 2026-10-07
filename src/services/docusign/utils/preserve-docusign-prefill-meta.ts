@@ -22,6 +22,17 @@ export const DOCUSIGN_ENVELOPE_PREFILL_META_KEYS = [
    * fall back to "on" and re-add $25 the review had left out.
    */
   'includeWireFee',
+  /**
+   * Offer terms the current contract package was regenerated from (see
+   * `reinitiateContractForApplication`). The next regeneration compares the live offer
+   * against it to decide whether the saved addendum / disclosure values still apply.
+   */
+  'contractOfferSnapshot',
+  /**
+   * Merchant monthly revenue the disclosure calculator was last saved with. Only that
+   * modal writes it, so every other prefill save must carry it over.
+   */
+  'disclosureMonthlyRevenues',
 ] as const;
 
 /**
