@@ -46,6 +46,8 @@ export type TemplateDefinition = {
    * playground shows the real, email-client-safe output.
    */
   renderHtml?: (values: TemplateValues) => string;
+  /** Optional subject line, shown above the playground preview. */
+  renderSubject?: (values: TemplateValues) => string;
 };
 
 /**

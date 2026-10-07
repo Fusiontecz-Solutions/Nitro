@@ -42,14 +42,43 @@ export function isCloudinaryPdfUrl(url: string, name = ""): boolean {
     return /\/(image|raw)\/upload\//i.test(u) && !/\.(png|jpe?g|gif|webp|bmp|svg)($|[?#])/i.test(u);
 }
 
+const INLINE_PREVIEW_ATTEMPTS = 3;
+
+function isTransientPreviewError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    // No response = network error / timeout; 5xx and 429 = upstream storage blip.
+    return status === undefined || status === 429 || status >= 500;
+}
+
+async function getInlinePreviewWithRetry(url: string, name: string) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < INLINE_PREVIEW_ATTEMPTS; attempt += 1) {
+        if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, 600 * attempt));
+        }
+        try {
+            return await axiosGet("/uploads/inline-preview", {
+                params: { url, name, mimeType: "application/pdf" },
+                responseType: "blob",
+            });
+        } catch (error) {
+            lastError = error;
+            if (!isTransientPreviewError(error)) break;
+        }
+    }
+    if (isTransientPreviewError(lastError)) {
+        throw new Error(
+            "Could not load the contract template from storage. Close and reopen the preview to try again.",
+        );
+    }
+    throw lastError;
+}
+
 export async function fetchCloudinaryPdfBlobUrl(
     url: string,
     name = "document.pdf",
 ): Promise<string> {
-    const response = await axiosGet("/uploads/inline-preview", {
-        params: { url, name, mimeType: "application/pdf" },
-        responseType: "blob",
-    });
+    const response = await getInlinePreviewWithRetry(url, name);
     const rawBlob =
         response.data instanceof Blob
             ? response.data

@@ -36,6 +36,18 @@ import PayOffWireInformation, {
   PAY_OFF_WIRE_INFORMATION_VARIABLES,
 } from "./PayOffWireInformation";
 import { renderPayOffWireInformationEmailHtml } from "./payOffWireInformationEmailHtml";
+import SignedContractEmail, {
+  SIGNED_CONTRACT_EMAIL_VARIABLES,
+} from "./SignedContractEmail";
+import ContractSentEmail, {
+  CONTRACT_SENT_EMAIL_VARIABLES,
+} from "./ContractSentEmail";
+import {
+  buildContractSentEmailSubject,
+  buildSignedContractEmailSubject,
+  renderContractSentEmailTemplateHtml,
+  renderSignedContractEmailTemplateHtml,
+} from "./contractStatusEmailHtml";
 import ZeroBalanceLetter, {
   ZERO_BALANCE_LETTER_VARIABLES,
 } from "./ZeroBalanceLetter";
@@ -135,6 +147,36 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
     variables: OFFER_UPDATED_EMAIL_VARIABLES,
     Component: OfferUpdatedEmail,
     renderHtml: renderOfferUpdatedEmailHtml,
+  },
+  {
+    id: "contract-sent-email",
+    name: "Contract Sent Email",
+    category: "email",
+    description:
+      "Email sent to the deal's agent when the contract goes out for signature, with the package attached. Subject: {Book}: {Merchant}: Contract Sent.",
+    variables: CONTRACT_SENT_EMAIL_VARIABLES,
+    Component: ContractSentEmail,
+    renderHtml: renderContractSentEmailTemplateHtml,
+    renderSubject: (values) =>
+      buildContractSentEmailSubject(
+        values.book_name || "Obsidian Capital Group",
+        values.merchant_name || "Acme LLC",
+      ),
+  },
+  {
+    id: "signed-contract-email",
+    name: "Signed Contract Email",
+    category: "email",
+    description:
+      "Email sent to the inbox, CC list, signers, agent and sender once every signer completes the contract. Subject: {Book}: {Merchant}: Signed Contract.",
+    variables: SIGNED_CONTRACT_EMAIL_VARIABLES,
+    Component: SignedContractEmail,
+    renderHtml: renderSignedContractEmailTemplateHtml,
+    renderSubject: (values) =>
+      buildSignedContractEmailSubject(
+        values.book_name || "Obsidian Capital Group",
+        values.merchant_name || "Acme LLC",
+      ),
   },
 ];
 

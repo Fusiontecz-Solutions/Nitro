@@ -20,6 +20,9 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
+import { useFunderProfiles } from "@/hooks/useFunderProfiles";
+
+import { resolveLetterEmailBranding } from "./letterEmailBranding";
 import {
   TEMPLATE_REGISTRY,
   previewValuesForBuiltinDefinition,
@@ -39,7 +42,8 @@ function buildInitialValues(def: TemplateDefinition): TemplateValues {
 
 /**
  * `/template/playground` — preview every built-in email and letter template
- * (approval, offer updated, rejection, document request, payoff, zero balance)
+ * (approval, offer updated, rejection, document request, contract sent,
+ * signed contract, payoff, zero balance)
  * as the React component and as the exact static HTML that is emailed.
  */
 export default function TemplatePlayground() {
@@ -49,17 +53,44 @@ export default function TemplatePlayground() {
     return first ? buildInitialValues(first) : {};
   });
   const [copied, setCopied] = useState(false);
+  const [funderId, setFunderId] = useState("");
 
   const selected = useMemo(
     () => TEMPLATE_REGISTRY.find((t) => t.id === selectedId),
     [selectedId],
   );
 
+  /** Templates with a logo merge field are branded per funder (book). */
+  const funderBranded = Boolean(
+    selected?.variables.some((v) => v.key === "logo_url"),
+  );
+  const { funders } = useFunderProfiles(null, { enabled: funderBranded });
+
   useEffect(() => {
     if (!selected) return;
     setValues(buildInitialValues(selected));
     setCopied(false);
+    setFunderId("");
   }, [selected]);
+
+  /** Fill book name, logo and colors from the funder's Letter Info (same as Letters). */
+  const applyFunder = useCallback(
+    (id: string) => {
+      setFunderId(id);
+      const funder = funders.find((f) => f.id === id);
+      if (!funder) return;
+      const branding = resolveLetterEmailBranding(funder);
+      setValues((prev) => ({
+        ...prev,
+        book_name: String(funder.displayName || funder.name || "").trim(),
+        company_name: branding.companyName,
+        logo_url: branding.logoSrc,
+        brand_primary: branding.accentStripDark,
+        brand_accent: branding.accentStripLight,
+      }));
+    },
+    [funders],
+  );
 
   const setField = useCallback((key: string, next: string) => {
     setValues((prev) => ({ ...prev, [key]: next }));
@@ -122,8 +153,8 @@ export default function TemplatePlayground() {
         </h1>
         <p className="text-muted-foreground mt-1 text-sm">
           Preview all built-in email and letter templates — approval, offer
-          updated, rejection, document request, payoff letter, and zero balance
-          letter.
+          updated, rejection, document request, contract sent, signed contract,
+          payoff letter, and zero balance letter.
         </p>
       </div>
 
@@ -160,6 +191,27 @@ export default function TemplatePlayground() {
                 </p>
               ) : null}
             </div>
+
+            {funderBranded ? (
+              <div className="space-y-2">
+                <Label htmlFor="tpl-funder">Funder (book)</Label>
+                <Select value={funderId} onValueChange={applyFunder}>
+                  <SelectTrigger id="tpl-funder">
+                    <SelectValue placeholder="Nitro Advance (default branding)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {funders.map((f) => (
+                      <SelectItem key={f.id} value={f.id}>
+                        {f.displayName || f.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-muted-foreground text-xs">
+                  Uses the funder&apos;s Letter Info logo and colors, as the sent email does.
+                </p>
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
               <Button type="button" variant="secondary" size="sm" onClick={fillPlaceholders}>
@@ -234,6 +286,12 @@ export default function TemplatePlayground() {
                   {copied ? "Copied!" : "Copy HTML"}
                 </Button>
               </div>
+              {selected?.renderSubject ? (
+                <p className="mb-3 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                  <span className="text-muted-foreground">Subject: </span>
+                  <span className="font-medium">{selected.renderSubject(values)}</span>
+                </p>
+              ) : null}
               <TabsContent value="component" className="mt-0">
                 <div className="bg-muted/30 rounded-md border p-4">
                   {selected?.Component

@@ -70,13 +70,13 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Ban, Eye, FileText, Landmark, Loader2, MailPlus, RefreshCw } from "lucide-react";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Ban, Eye, FileText, Landmark, Loader2, Mail, MailPlus, RefreshCw } from "lucide-react";
 import {
     filterBankDetailsForApplication,
 } from "@/lib/bankDetailUtils";
 import PDFViewerModal from "./PDFViewerModal";
 import { ResendUnsignedContractDialog } from "./ResendUnsignedContractDialog";
+import { ContractEmailHistoryDialog } from "./ContractEmailHistoryDialog";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHFormViewerModal from "./ACHFormViewerModal";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
@@ -1161,6 +1161,7 @@ export default function ContractTab({
         [contractEnvelopeDocument],
     );
     const ccSignedNoticeSent = Boolean(ccSignedNotice.sentAt);
+    const [emailHistoryOpen, setEmailHistoryOpen] = useState(false);
 
     // The signed-copy email to the CC list goes out in the background right after
     // the signing platform reports completion, so the status that first shows the
@@ -5179,32 +5180,21 @@ export default function ContractTab({
                         </TableBody>
                     </Table>
                 </div>
-                {contractFullySigned ? (
-                    <div
-                        className={`mt-3 flex items-start gap-2 text-sm transition-opacity ${refreshingContractsTable ? "opacity-60" : ""} ${isDark ? "text-gray-300" : "text-[#374151]"}`}
-                    >
-                        <Checkbox
-                            id="contract-cc-signed-notice"
-                            checked={ccSignedNoticeSent}
-                            disabled
-                            aria-readonly
-                            className="mt-0.5 disabled:opacity-100"
+                {contractSendTableRows.length > 0 && applicationUuid ? (
+                    <div className="mt-3">
+                        <button
+                            type="button"
+                            onClick={() => setEmailHistoryOpen(true)}
+                            className={`inline-flex items-center gap-2 text-sm font-medium hover:underline ${isDark ? "text-blue-300" : "text-[#2563eb]"}`}
+                        >
+                            <Mail className="h-4 w-4" aria-hidden />
+                            View email recipients
+                        </button>
+                        <ContractEmailHistoryDialog
+                            open={emailHistoryOpen}
+                            onOpenChange={setEmailHistoryOpen}
+                            applicationId={String(applicationUuid)}
                         />
-                        <label htmlFor="contract-cc-signed-notice" className="leading-5">
-                            <span className="font-medium">
-                                Signed contract notification sent to CC
-                            </span>
-                            <span className={isDark ? "text-gray-400" : "text-[#687182]"}>
-                                {ccSignedNoticeSent
-                                    ? ` — ${(ccSignedNotice.sentTo.length
-                                          ? ccSignedNotice.sentTo
-                                          : ccSignedNotice.ccEmails
-                                      ).join(", ")} on ${formatTableSentAt(ccSignedNotice.sentAt)}`
-                                    : ccSignedNotice.ccEmails.length
-                                      ? ` — pending for ${ccSignedNotice.ccEmails.join(", ")}`
-                                      : " — no CC email address on this contract"}
-                            </span>
-                        </label>
                     </div>
                 ) : null}
             </div>

@@ -20,7 +20,7 @@ import {
 import WorkflowStatusBadge from "./WorkflowStatusBadge";
 import WorkflowNoteDialog from "./WorkflowNoteDialog";
 import SendToIsoDialog from "./SendToIsoDialog";
-import IsoEmailThreadCard from "./IsoEmailThreadCard";
+// import IsoEmailThreadCard from "./IsoEmailThreadCard";
 
 const CONTRACT_STAGE_TOKENS = new Set(
   [
@@ -297,7 +297,7 @@ export default function WorkflowActionPanel({
           {banner}
         </div>
       ) : null}
-      {showEmailHistory ? <IsoEmailThreadCard applicationUuid={uuid} /> : null}
+      {/* {showEmailHistory ? <IsoEmailThreadCard applicationUuid={uuid} /> : null} */}
 
       <WorkflowNoteDialog
         open={dialog === "sendToAgent"}
