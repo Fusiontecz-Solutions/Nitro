@@ -71,8 +71,9 @@ test("ACH Weekly prints the full billing address", () => {
     assert.equal(rowsFor("ach_weekly", "ACH Weekly").business_address_p1_ach, FULL);
 });
 
-test("Exhibit C prints the full account holder address", () => {
-    assert.equal(rowsFor("exhibit_c", "Exhibit C").ach_account_holder_address_p1, FULL);
+test("Exhibit C with no entity of its own leaves the account holder address blank", () => {
+    // Exhibit C is an independent record — never the deal's business address.
+    assert.equal(rowsFor("exhibit_c", "Exhibit C").ach_account_holder_address_p1 ?? "", "");
 });
 
 test("Monthly Fee prints the full business and account holder address", () => {
@@ -104,22 +105,22 @@ test("ACH Daily prints the BUSINESS address as the account holder business addre
     assert.equal(rows.ach_account_holder_address_p1, FULL);
 });
 
-test("Exhibit C prints the BUSINESS address as the account holder business address", () => {
+test("Exhibit C never takes the ACH holder or business address", () => {
     const rows = rowsFor("exhibit_c", "Exhibit C", {
         ...GUARANTOR_CONTRACT,
         ach_authorization_account_holder_address: "9 OAK ST",
     });
-    assert.equal(rows.ach_account_holder_address_p1, FULL);
+    assert.equal(rows.ach_account_holder_address_p1 ?? "", "");
 });
 
-test("Exhibit C ignores the guarantor address mirrored onto its first entity", () => {
+test("Exhibit C prints only the address entered on its own entity", () => {
     const rows = rowsFor("exhibit_c", "Exhibit C", {
         ...GUARANTOR_CONTRACT,
         exhibitCEntities: JSON.stringify([
-            { id: "e1", accountHolderName: "Erbar Consulting INC", accountHolderAddress: "9 OAK ST" },
+            { id: "e1", accountHolderName: "Erbar Consulting INC", accountHolderAddress: "44 ELM ST" },
         ]),
     });
-    assert.equal(rows.ach_account_holder_address_p1, FULL);
+    assert.equal(rows.ach_account_holder_address_p1, "44 ELM ST");
 });
 
 test("Monthly Fee prints the GUARANTOR address as the account holder address", () => {
@@ -137,7 +138,6 @@ test("ACH Weekly keeps the BUSINESS address on its billing line", () => {
 test("an account holder address falls back to the business address", () => {
     // No guarantor address on file — the widget must not be left blank.
     assert.equal(rowsFor("ach_daily", "ACH Daily").ach_account_holder_address_p1, FULL);
-    assert.equal(rowsFor("exhibit_c", "Exhibit C").ach_account_holder_address_p1, FULL);
     assert.equal(rowsFor("monthly_fee", "Monthly Fee").ach_account_holder_address_p1, FULL);
 });
 

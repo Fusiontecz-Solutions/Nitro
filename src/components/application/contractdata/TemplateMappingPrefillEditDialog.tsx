@@ -149,7 +149,7 @@ function groupPrefillEditorRows(rows: ContractPrefillField[]): PrefillEditorGrou
 }
 
 /**
- * Exhibit C (2)/(3)/… mapping ids for a contract, for callers that do not hold
+ * Every Exhibit C mapping id for a contract (each is its own entity), for callers that do not hold
  * the addendum mapping rows (e.g. the ACH form viewer). Empty on failure.
  */
 async function fetchExhibitCCopyMappingIds(contractId: number): Promise<string[]> {
@@ -172,7 +172,6 @@ async function fetchExhibitCCopyMappingIds(contractId: number): Promise<string[]
                 ),
             )
             .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))
-            .slice(1)
             .map((r) => String(r.id ?? "").trim())
             .filter(Boolean);
     } catch {
@@ -351,21 +350,17 @@ export function TemplateMappingPrefillEditDialog({
                 [row.id]: tabValues,
             };
 
-            const existingEntities = exhibitCEntitiesFromPrefill(rawOverrides);
-            const entityForSlot = exhibitCEntityFromTabValues(
-                tabValues,
-                existingEntities[exhibitCEntityIndex] ?? null,
-            );
-            const nextEntities = upsertExhibitCEntityAtIndex(
-                existingEntities,
-                exhibitCEntityIndex,
-                entityForSlot,
-            );
-            const exhibitCSerialized = serializeExhibitCEntities(nextEntities);
-
             // Extra Exhibit C copies: write only this mapping + entity slot.
             // Do not push bank/DBA into sibling mappings or main ACH columns.
             if (isolateExhibitCInstance) {
+                const existingEntities = exhibitCEntitiesFromPrefill(rawOverrides);
+                const entityForSlot = exhibitCEntityFromTabValues(
+                    tabValues,
+                    existingEntities[exhibitCEntityIndex] ?? null,
+                );
+                const exhibitCSerialized = serializeExhibitCEntities(
+                    upsertExhibitCEntityAtIndex(existingEntities, exhibitCEntityIndex, entityForSlot),
+                );
                 const main = { ...rawOverrides } as Record<string, unknown>;
                 delete main[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
                 delete main[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
@@ -417,8 +412,16 @@ export function TemplateMappingPrefillEditDialog({
                 nextBlob[row.id] = tabValues;
             }
 
-            const copyIds =
-                exhibitCCopyMappingIds ?? (await fetchExhibitCCopyMappingIds(cid));
+            // Every Exhibit C tab on the contract, not only the ones in the current
+            // send selection: a funder's copy (Obsidian's, stored as a bare SignNow
+            // id) can be missing from that list, and its tab then took this
+            // addendum's DBA / bank.
+            const copyIds = Array.from(
+                new Set([
+                    ...(exhibitCCopyMappingIds ?? []),
+                    ...(await fetchExhibitCCopyMappingIds(cid)),
+                ]),
+            );
             const sharedDba = resolveSharedDbaValue({
                 mainPrefill: { ...(mainPrefillOverrides ?? {}), ...tabValues },
                 contract: resolvedContract,
@@ -458,12 +461,11 @@ export function TemplateMappingPrefillEditDialog({
                 };
             }
 
+            // Exhibit C entities are left as they are: this is another document's
+            // tab, and rebuilding slot 0 from it is what overwrote Exhibit C #1.
             const main = { ...rawOverrides } as Record<string, unknown>;
             delete main[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
             delete main[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
-            if (exhibitCSerialized) {
-                main[EXHIBIT_C_ENTITIES_PREFILL_KEY] = exhibitCSerialized;
-            }
 
             const contractPrefillOverrides: Record<string, unknown> = {
                 ...main,

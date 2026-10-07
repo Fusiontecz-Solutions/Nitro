@@ -52,6 +52,7 @@ import {
     stripStaleOfferOverridesFromPersisted,
     coercePaymentFrequencyLabel,
     mergeNonemptyPrefillPartial,
+    resolveContractBusinessLegalNameForPrefill,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./Contract";
@@ -76,6 +77,7 @@ import {
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasStateDisclosurePrefillFieldMap,
     omitMappingBlobIds,
+    withoutExhibitCCopyDbas,
     resolveSharedDbaValue,
     LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
     LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID,
@@ -114,6 +116,7 @@ import {
     padExhibitCEntitiesToCount,
     parseExhibitCEntitySectionIndex,
     serializeExhibitCEntities,
+    withoutDealLegalNameEcho,
     type ExhibitCEntityPrefill,
 } from "./exhibitCEntityPrefill";
 import { FlexAddendumInstallmentGrid } from "./FlexAddendumInstallmentGrid";
@@ -868,58 +871,8 @@ const PREFILL_REALTIME_MIRROR_BY_KEY = (() => {
     return map;
 })();
 
-/**
- * Exhibit C slot 1 is the primary entity, so its bank and online-banking block holds the
- * same values as the main ACH pages. Edits are mirrored between the two instead of being
- * typed twice — the extra Exhibit C slots keep their own bank (other void-check entities).
- */
-const EXHIBIT_C_PRIMARY_BANK_MIRROR: Array<{
-    entityKey: keyof Omit<ExhibitCEntityPrefill, "id">;
-    mainKeys: ContractPrefillFormFieldKey[];
-}> = [
-    {
-        entityKey: "bankName",
-        mainKeys: ["authorizationClientBankName", "achAuthorizationAccountHolderBankName"],
-    },
-    {
-        entityKey: "bankAccount",
-        mainKeys: [
-            "authorizationClientBankAccount",
-            "achAuthorizationAccountHolderBankAccountNumber",
-        ],
-    },
-    {
-        entityKey: "bankRouting",
-        mainKeys: [
-            "authorizationClientBankRouting",
-            "achAuthorizationAccountHolderBankRoutingNumber",
-        ],
-    },
-    { entityKey: "bankPortal", mainKeys: ["achAuthorizationBankPortalWebsite"] },
-    { entityKey: "bankUsername", mainKeys: ["achAuthorizationUsername"] },
-    { entityKey: "bankPassword", mainKeys: ["achAuthorizationPassword"] },
-    { entityKey: "securityQa1", mainKeys: ["achAuthorizationSecurityQuestion1"] },
-    { entityKey: "securityQa2", mainKeys: ["achAuthorizationSecurityQuestion2"] },
-    { entityKey: "accountHolderName", mainKeys: ["achAuthorizationAccountHolderName"] },
-    { entityKey: "accountHolderDba", mainKeys: ["achAuthorizationAccountHolderDba"] },
-    // No address rows: Exhibit C prints "Account Holder Business Address" (the
-    // business), while the ACH holder address is Owner 1's home from the KYC —
-    // mirroring it is what put the guarantor's address on Exhibit C.
-];
-
-const EXHIBIT_C_PRIMARY_MIRROR_BY_ENTITY_KEY = new Map(
-    EXHIBIT_C_PRIMARY_BANK_MIRROR.map((row) => [row.entityKey, row.mainKeys] as const),
-);
-
-const MAIN_KEY_TO_EXHIBIT_C_PRIMARY_FIELD = (() => {
-    const map = new Map<ContractPrefillFormFieldKey, keyof Omit<ExhibitCEntityPrefill, "id">>();
-    for (const row of EXHIBIT_C_PRIMARY_BANK_MIRROR) {
-        for (const mainKey of row.mainKeys) {
-            if (!map.has(mainKey)) map.set(mainKey, row.entityKey);
-        }
-    }
-    return map;
-})();
+// Exhibit C entities are independent of the main ACH / bank stages: nothing is
+// mirrored between them in either direction.
 
 const ADDENDUM_VERIFY_SKIP_ID_RE =
     /bank_name|bank_account|bank_routing|routing_number|account_number|authorization_client_bank|agreement_date|client_legal_name|^client_name|ach_account_holder_|federal_tax|doing_business|guaranty_ss|ein|_dba/i;
@@ -1951,9 +1904,37 @@ export function ContractPrefillEditForm({
         );
     }, [linkedAddendumMappings, linkedAddendumMapping]);
 
+    /**
+     * The "Selected addendum" stage for an Exhibit C is that Exhibit C itself — an
+     * independent record. Main ACH / bank values never flow into it, and its edits
+     * never flow back.
+     */
+    const linkedAddendumIsExhibitC = Boolean(
+        linkedAddendumMapping &&
+            isMultiInstanceAddendumRef(
+                linkedAddendumMapping.template?.layoutKey ||
+                    linkedAddendumMapping.template?.templateId ||
+                    linkedAddendumMapping.templateId ||
+                    "",
+                linkedAddendumMapping.template?.name,
+            ),
+    );
+    const linkedAddendumIsExhibitCRef = useRef(linkedAddendumIsExhibitC);
+    linkedAddendumIsExhibitCRef.current = linkedAddendumIsExhibitC;
+    const linkedAddendumMainSource = useCallback(
+        <T extends Record<string, string>>(main: T): T | Record<string, string> =>
+            linkedAddendumIsExhibitCRef.current ? {} : main,
+        [],
+    );
+
     const exhibitCLinkedMappingIdsKey = exhibitCLinkedMappings
         .map((row) => String(row?.id ?? ""))
         .join("|");
+    // A string, so a re-render that hands over an equal contract does not re-seed.
+    const exhibitCDealLegalName = resolveContractBusinessLegalNameForPrefill(
+        (resolvedContract ?? contractRecords?.contract ?? {}) as Record<string, unknown>,
+        applicationData,
+    );
 
     useEffect(() => {
         if (!open || !prefillOverridesReady) return;
@@ -1979,10 +1960,13 @@ export function ContractPrefillEditForm({
          * a key an older save dropped) used to erase the copy's values on the next
          * Info Required save. Same precedence as the backend's `resolveExhibitCEntities`.
          */
+        // An older build seeded Exhibit C with the deal's legal name and saved it;
+        // every Exhibit C is its own entity, so that echo starts blank.
+        const dealLegalName = exhibitCDealLegalName;
         const filled = padded.map((entity, index) => {
             const mappingId = String(exhibitCLinkedMappings[index]?.id ?? "").trim();
             const tabs = mappingId ? documentTemplatePrefillByMappingId[mappingId] : undefined;
-            if (!tabs) return entity;
+            if (!tabs) return withoutDealLegalNameEcho(entity, dealLegalName);
             const fromTabs = exhibitCEntityFromTabValues(tabs, entity);
             const merged: Record<string, unknown> = { ...entity };
             for (const [key, value] of Object.entries(fromTabs)) {
@@ -1990,7 +1974,10 @@ export function ContractPrefillEditForm({
                     merged[key] = value;
                 }
             }
-            return createEmptyExhibitCEntity(merged as Partial<ExhibitCEntityPrefill>);
+            return withoutDealLegalNameEcho(
+                createEmptyExhibitCEntity(merged as Partial<ExhibitCEntityPrefill>),
+                dealLegalName,
+            );
         });
         setExhibitCEntities(filled);
     }, [
@@ -2003,6 +1990,7 @@ export function ContractPrefillEditForm({
         // re-seed the entities over unsaved edits.
         exhibitCLinkedMappingIdsKey,
         documentTemplatePrefillByMappingId,
+        exhibitCDealLegalName,
     ]);
 
     const addendumEditorRows = useMemo(() => {
@@ -2024,7 +2012,7 @@ export function ContractPrefillEditForm({
             mainPrefillOverrides: strippedMainPrefillOverrides ?? undefined,
             siblingPrefillByMappingId: omitMappingBlobIds(
                 documentTemplatePrefillByMappingId,
-                exhibitCLinkedMappings.slice(1).map((m) => String(m?.id ?? "")),
+                exhibitCLinkedMappings.map((m) => String(m?.id ?? "")),
             ),
             savedOverridesForMapping: saved,
             bankDetail: contractRecords?.bankDetail ?? null,
@@ -2234,7 +2222,7 @@ export function ContractPrefillEditForm({
                 id: exhibitCEntitySectionId(i),
                 title: exhibitCEntityNavTitle(entity, i),
                 description:
-                    "Extra Exhibit C entity — use when the void-check account holder differs from the merchant legal name.",
+                    "Independent Exhibit C — starts blank and is never linked to the ACH / bank stages.",
                 Icon: FileText,
                 groups: [],
             });
@@ -2353,13 +2341,25 @@ export function ContractPrefillEditForm({
         clearParty2PrefillPartial(merged as Record<string, unknown>, ownerCount);
         /** Undo stale overrides that mirrored business address onto contact / owner tabs. */
         merged = applySeparatedAddressPrefillFields(merged, applicationData);
-        // Exhibit C (2)/(3)/… belong to other entities — never seed the application.
+        // Every Exhibit C (first included) is its own entity — never seeds the application.
         overlayAddendumBlobOntoMainPrefill(
             merged as Record<string, unknown>,
             omitMappingBlobIds(
                 documentTemplatePrefillByMappingId,
-                exhibitCLinkedMappings.slice(1).map((m) => String(m?.id ?? "")),
+                exhibitCLinkedMappings.map((m) => String(m?.id ?? "")),
             ),
+        );
+        // An earlier save may have stored an Exhibit C DBA as the deal's. Drop it
+        // by value — an Exhibit C copy's DBA is never the deal's.
+        merged = withoutExhibitCCopyDbas(
+            merged,
+            exhibitCEntitiesFromPrefill(
+                (strippedMainPrefillOverrides ?? persistedPrefillOverrides ?? {}) as Record<
+                    string,
+                    unknown
+                >,
+            ),
+            [merged.legalName],
         );
         /** Re-assert live deal business name after addendum overlay (never keep OCR legal name). */
         merged = applyAuthorizationBusinessNamePrefillFields(merged, applicationData);
@@ -2412,13 +2412,13 @@ export function ContractPrefillEditForm({
         (mainValues?: Record<string, string>) => {
             const fromRows = Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""]));
             setAddendumFieldValues(
-                overlayLinkedDocFieldsFromMain(fromRows, mainValues ?? valuesRef.current, {
+                overlayLinkedDocFieldsFromMain(fromRows, linkedAddendumMainSource(mainValues ?? valuesRef.current), {
                     emptyOnly: true,
                     knownIds: addendumEditorRows.map((r) => String(r.id)),
                 }),
             );
         },
-        [addendumEditorRows],
+        [addendumEditorRows, linkedAddendumMainSource],
     );
 
     const resetDisclosureFromSources = useCallback(() => {
@@ -2682,22 +2682,7 @@ export function ContractPrefillEditForm({
             setExhibitCEntities((prev) =>
                 prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)),
             );
-            // Slot 1 is the primary entity: push its bank / online-banking block onto the
-            // main ACH fields so the same values are not typed again on those stages.
-            if (index !== 0) return;
-            const mirrorKeys = EXHIBIT_C_PRIMARY_MIRROR_BY_ENTITY_KEY.get(key);
-            if (!mirrorKeys?.length) return;
-            fieldEditSeqRef.current += 1;
-            const editedAt = fieldEditSeqRef.current;
-            setValues((prev) => {
-                const next = { ...prev };
-                for (const mainKey of mirrorKeys) {
-                    next[mainKey] = value;
-                    dirtyFieldKeysRef.current.add(mainKey);
-                    fieldEditedAtRef.current.set(mainKey, editedAt);
-                }
-                return next;
-            });
+            // Every slot, the first included, is its own Exhibit C: never written to ACH.
             setSaveError(null);
         },
         [],
@@ -2706,7 +2691,7 @@ export function ContractPrefillEditForm({
     useEffect(() => {
         if (!open || !isLinkedAddendumSection || addendumEditorRows.length === 0) return;
         setAddendumFieldValues((prev) =>
-            overlayLinkedDocFieldsFromMain(prev, valuesRef.current, {
+            overlayLinkedDocFieldsFromMain(prev, linkedAddendumMainSource(valuesRef.current), {
                 emptyOnly: true,
                 knownIds: addendumEditorRows.map((r) => String(r.id)),
             }),
@@ -2849,7 +2834,7 @@ export function ContractPrefillEditForm({
         }
         setValues(nextMain);
         setAddendumFieldValues((linked) =>
-            overlayLinkedDocFieldsFromMain(linked, nextMain, {
+            overlayLinkedDocFieldsFromMain(linked, linkedAddendumMainSource(nextMain), {
                 knownIds: addendumEditorRows.map((r) => String(r.id)),
             }),
         );
@@ -2891,10 +2876,14 @@ export function ContractPrefillEditForm({
         setSaveErrorSections([]);
         setSaving(true);
         try {
-            const aliased = copySharedPrefillAliases({ ...values }) as Record<
-                keyof BuildContractPrefillFieldsArgs,
-                string
-            >;
+            // An Exhibit C (2)/(3)/… DBA is another business's: it must never be
+            // saved as the deal's own DBA (column + overrides) — see
+            // `withoutExhibitCCopyDbas`.
+            const aliased = withoutExhibitCCopyDbas(
+                copySharedPrefillAliases({ ...values }),
+                exhibitCEntities,
+                [values.legalName],
+            ) as Record<keyof BuildContractPrefillFieldsArgs, string>;
             const rawPayload = toPayload(aliased);
             const separated = applySeparatedAddressPrefillFields(rawPayload, applicationData);
             const payload = finalizeContractPrefillMoneyFields(separated, {
@@ -2911,7 +2900,7 @@ export function ContractPrefillEditForm({
             if (linkedAddendumMapping?.id && addendumEditorRows.length > 0) {
                 const addendumValues = overlayLinkedDocFieldsFromMain(
                     { ...addendumFieldValues },
-                    aliased,
+                    linkedAddendumMainSource(aliased),
                     {
                         emptyOnly: true,
                         knownIds: addendumEditorRows.map((r) => String(r.id)),
@@ -2938,32 +2927,36 @@ export function ContractPrefillEditForm({
             }
             // Persist each Exhibit C entity onto its matching addendum mapping row in DB
             // (documentTemplatePrefillByMappingId), same pattern as other addendums.
-            const exhibitMappingIds = new Set<string>();
+            // Every Exhibit C tab is shielded from the shared DBA below — also a copy
+            // with no entity slot yet, which otherwise took the deal's DBA.
+            const exhibitMappingIds = new Set<string>(
+                exhibitCLinkedMappings.map((m) => String(m?.id ?? "")).filter(Boolean),
+            );
             for (let i = 0; i < exhibitCEntities.length; i++) {
                 const mapping = exhibitCLinkedMappings[i];
                 if (!mapping?.id) continue;
-                exhibitMappingIds.add(String(mapping.id));
                 const entityTabs = exhibitCEntityToTabValues(exhibitCEntities[i]);
                 nextBlob[mapping.id] = {
                     ...(nextBlob[mapping.id] ?? {}),
                     ...entityTabs,
                 };
             }
-            // Exhibit C (2)/(3)/… carry another entity's DBA — never the application's.
+            // Every Exhibit C carries its own entity's DBA — never the application's.
             const sharedDba = resolveSharedDbaValue({
                 mainPrefill: aliased,
                 contract: resolvedContract,
+                exhibitCEntities,
                 mappingBlobs: omitMappingBlobIds(
                     nextBlob,
-                    exhibitCLinkedMappings.slice(1).map((m) => String(m?.id ?? "")),
+                    exhibitCLinkedMappings.map((m) => String(m?.id ?? "")),
                 ),
             });
             if (sharedDba) {
                 const withDba = applySharedDbaToMappingBlob(nextBlob, sharedDba);
                 // Do not push shared DBA onto isolated Exhibit C copies.
                 for (const [mappingId, row] of Object.entries(withDba)) {
-                    if (exhibitMappingIds.has(mappingId) && exhibitCLinkedMappings.length > 1) {
-                        // Keep entity-written values for multi Exhibit C deals.
+                    if (exhibitMappingIds.has(mappingId)) {
+                        // Every Exhibit C keeps its entity-written values.
                         continue;
                     }
                     nextBlob[mappingId] = row;
@@ -3288,21 +3281,8 @@ export function ContractPrefillEditForm({
             }
             const nextMain = { ...valuesRef.current, ...updates };
             setValues(nextMain);
-            // Fill the primary Exhibit C slot from the main form too, but only where it is
-            // still blank — a slot already carrying another entity's bank keeps its own.
-            const primaryEntityField = MAIN_KEY_TO_EXHIBIT_C_PRIMARY_FIELD.get(
-                key as ContractPrefillFormFieldKey,
-            );
-            if (primaryEntityField) {
-                setExhibitCEntities((prev) => {
-                    if (!prev.length) return prev;
-                    const primary = prev[0];
-                    if (String(primary[primaryEntityField] ?? "").trim()) return prev;
-                    return [{ ...primary, [primaryEntityField]: v }, ...prev.slice(1)];
-                });
-            }
             setAddendumFieldValues((linked) =>
-                overlayLinkedDocFieldsFromMain(linked, nextMain, {
+                overlayLinkedDocFieldsFromMain(linked, linkedAddendumMainSource(nextMain), {
                     typed: { key: key as ContractPrefillFormFieldKey, value: v },
                     knownIds: addendumEditorRows.map((r) => String(r.id)),
                 }),
@@ -3318,7 +3298,13 @@ export function ContractPrefillEditForm({
                 return next;
             });
         },
-        [showSecondPartyFields, owner2KeySet, guarantor2KeySet, addendumEditorRows],
+        [
+            showSecondPartyFields,
+            owner2KeySet,
+            guarantor2KeySet,
+            addendumEditorRows,
+            linkedAddendumMainSource,
+        ],
     );
 
     return (
@@ -3496,6 +3482,8 @@ export function ContractPrefillEditForm({
                                                 ...prev,
                                                 [rowId]: nextValue,
                                             }));
+                                            // Exhibit C is its own record: its fields never write the ACH stages.
+                                            if (linkedAddendumIsExhibitCRef.current) return;
                                             const mainUpdates = mainUpdatesFromLinkedDocField(rowId, nextValue);
                                             if (Object.keys(mainUpdates).length === 0) return;
                                             setValues((prev) => {

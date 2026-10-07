@@ -22,6 +22,12 @@ type DisclosureCalculationModalProps = {
     loadingBankAnalysis?: boolean;
     disclosureLabel?: string;
     saving?: boolean;
+    /**
+     * Persist the merchant monthly revenue as soon as a month is edited or removed, so
+     * the values survive closing the modal and regenerating the contract. Resolves
+     * false when the save failed.
+     */
+    onSaveMonthlyRevenues?: (revenues: number[]) => Promise<boolean>;
     onApply: (args: {
         inputs: DisclosureCalculatorInputs;
         metrics: DisclosureCalculatorResult;
@@ -79,6 +85,12 @@ function buildFormFromInputs(
     return { ...inputs, monthlyRevenues };
 }
 
+function parseMonthlyRevenueText(monthlyRevenueText: string[]): number[] {
+    return monthlyRevenueText.map((v) => parseInputMoney(v)).filter((v) => v > 0);
+}
+
+type RevenueSaveStatus = "idle" | "saving" | "saved" | "error";
+
 export function DisclosureCalculationModal({
     open,
     onOpenChange,
@@ -87,6 +99,7 @@ export function DisclosureCalculationModal({
     loadingBankAnalysis = false,
     disclosureLabel,
     saving = false,
+    onSaveMonthlyRevenues,
     onApply,
 }: DisclosureCalculationModalProps) {
     const [form, setForm] = useState<DisclosureCalculatorInputs | null>(null);
@@ -100,8 +113,12 @@ export function DisclosureCalculationModal({
     const [refinanceAmountText, setRefinanceAmountText] = useState("");
     const [previousDealDateText, setPreviousDealDateText] = useState("");
 
+    const [revenueSaveStatus, setRevenueSaveStatus] = useState<RevenueSaveStatus>("idle");
+
     const seededForOpenRef = useRef(false);
     const bankRevenuesMergedRef = useRef(false);
+    /** Months as last persisted (or as seeded), so an unchanged blur does not re-save. */
+    const lastSavedRevenuesKeyRef = useRef("");
 
     /** Seed form once per modal open — avoids reset when bank analysis or parent state updates. */
     useEffect(() => {
@@ -140,6 +157,10 @@ export function DisclosureCalculationModal({
                 ? seedInputs.monthlyRevenues.map((v) => formatMoneyFromNumber(v))
                 : [""],
         );
+        lastSavedRevenuesKeyRef.current = JSON.stringify(
+            seedInputs.monthlyRevenues.filter((v) => Number.isFinite(v) && v > 0),
+        );
+        setRevenueSaveStatus("idle");
         setMetrics(null);
         setAprText("");
     }, [open, seedInputs]);
@@ -259,6 +280,24 @@ export function DisclosureCalculationModal({
         }
         return rows;
     }, [metrics, resolvedForm]);
+
+    const persistMonthlyRevenues = async (nextText: string[]) => {
+        if (!onSaveMonthlyRevenues) return;
+        const revenues = parseMonthlyRevenueText(nextText);
+        const key = JSON.stringify(revenues);
+        if (key === lastSavedRevenuesKeyRef.current) return;
+        setRevenueSaveStatus("saving");
+        const ok = await onSaveMonthlyRevenues(revenues);
+        if (ok) lastSavedRevenuesKeyRef.current = key;
+        setRevenueSaveStatus(ok ? "saved" : "error");
+    };
+
+    const removeMonth = (index: number) => {
+        if (monthlyRevenueText.length <= 1) return;
+        const next = monthlyRevenueText.filter((_, i) => i !== index);
+        setMonthlyRevenueText(next);
+        void persistMonthlyRevenues(next);
+    };
 
     const updateForm = <K extends keyof DisclosureCalculatorInputs>(
         key: K,
@@ -569,12 +608,18 @@ export function DisclosureCalculationModal({
                                     <Label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                                         Merchant monthly revenue (bank analysis)
                                     </Label>
-                                    {loadingBankAnalysis ? (
+                                    {loadingBankAnalysis || revenueSaveStatus === "saving" ? (
                                         <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--brand)]" />
+                                    ) : revenueSaveStatus === "saved" ? (
+                                        <span className="text-[11px] text-emerald-600">Saved</span>
+                                    ) : revenueSaveStatus === "error" ? (
+                                        <span className="text-[11px] text-red-600">Not saved</span>
                                     ) : null}
                                 </div>
                                 <p className="text-[11px] text-slate-500">
-                                    Pulled from bank analysis net credit by month. Edit if needed.
+                                    Pulled from bank analysis net credit by month. Edits and
+                                    removed months are saved to this contract and kept when the
+                                    contract is regenerated.
                                 </p>
                                 <div className="flex flex-wrap gap-x-3 gap-y-2">
                                     {monthlyRevenueText.map((value, index) => (
@@ -592,15 +637,7 @@ export function DisclosureCalculationModal({
                                                     size="icon-sm"
                                                     className="text-slate-500 hover:text-slate-900 dark:hover:text-slate-100"
                                                     disabled={monthlyRevenueText.length <= 1}
-                                                    onClick={() =>
-                                                        setMonthlyRevenueText((prev) =>
-                                                            prev.length <= 1
-                                                                ? prev
-                                                                : prev.filter(
-                                                                      (_, i) => i !== index,
-                                                                  ),
-                                                        )
-                                                    }
+                                                    onClick={() => removeMonth(index)}
                                                     aria-label={`Remove month ${index + 1}`}
                                                     title={
                                                         monthlyRevenueText.length <= 1
@@ -626,6 +663,7 @@ export function DisclosureCalculationModal({
                                                         e.target.value,
                                                     );
                                                     setMonthlyRevenueText(next);
+                                                    void persistMonthlyRevenues(next);
                                                 }}
                                                 placeholder="$0.00"
                                             />

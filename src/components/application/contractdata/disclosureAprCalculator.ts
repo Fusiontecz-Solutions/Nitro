@@ -552,6 +552,32 @@ export function extractMonthlyRevenuesFromBankAnalyses(
     return listBankAnalysisRevenueRowTargets(analyses).map((target) => target.netCredit);
 }
 
+/**
+ * `contractPrefillOverrides` key holding the merchant monthly revenue last saved from
+ * the disclosure calculator. The backend keeps it through prefill saves and contract
+ * regeneration, so hand-entered months outrank the bank analysis they started from.
+ */
+export const DISCLOSURE_MONTHLY_REVENUES_KEY = "disclosureMonthlyRevenues";
+
+/** Saved calculator months, or `null` when none have been saved for this contract. */
+export function readSavedDisclosureMonthlyRevenues(
+    contractPrefillOverrides: unknown,
+): number[] | null {
+    if (
+        !contractPrefillOverrides ||
+        typeof contractPrefillOverrides !== "object" ||
+        Array.isArray(contractPrefillOverrides)
+    ) {
+        return null;
+    }
+    const raw = (contractPrefillOverrides as Record<string, unknown>)[
+        DISCLOSURE_MONTHLY_REVENUES_KEY
+    ];
+    if (!Array.isArray(raw)) return null;
+    const revenues = raw.map((v) => parseMoney(v)).filter((v) => v > 0);
+    return revenues.length > 0 ? revenues : null;
+}
+
 export function buildDisclosureCalculatorInputsFromSources(args: {
     state?: string | null;
     application?: Record<string, unknown> | null;
@@ -682,6 +708,7 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
                 "",
         ).trim() || undefined;
 
+    const savedRevenues = readSavedDisclosureMonthlyRevenues(contract.contractPrefillOverrides);
     const bankRevenues = extractMonthlyRevenuesFromBankAnalyses(args.bankAnalyses);
     const fallbackRevenue =
         parseMoney(business?.monthlyRevenue) ||
@@ -690,12 +717,13 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         parseMoney(app.avgMonthlyDeposit) ||
         parseMoney((client as Record<string, unknown> | null)?.monthlyRevenue) ||
         parseMoney((business as Record<string, unknown> | null)?.avgMonthlyRevenue);
-    const monthlyRevenues =
-        bankRevenues.length > 0
-            ? bankRevenues
-            : fallbackRevenue > 0
-              ? [fallbackRevenue]
-              : [];
+    const monthlyRevenues = savedRevenues
+        ? savedRevenues
+        : bankRevenues.length > 0
+          ? bankRevenues
+          : fallbackRevenue > 0
+            ? [fallbackRevenue]
+            : [];
 
     const today = new Date();
     const defaultDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;

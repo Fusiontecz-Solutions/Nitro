@@ -145,6 +145,29 @@ function tabPick(tabs: Record<string, string>, ...keys: string[]): string {
     return "";
 }
 
+/**
+ * True when an Exhibit C legal name is only an echo of the deal's merchant legal name.
+ *
+ * Every Exhibit C is its own entity and starts blank. An older build seeded the
+ * first slot with the application's legal name, and that value was saved into
+ * `exhibitCEntities` and the copy's tab — so the echo kept coming back on every
+ * Exhibit C as if someone had typed it.
+ */
+export function isDealLegalNameEcho(value: unknown, dealLegalName: unknown): boolean {
+    const v = normName(value);
+    return Boolean(v) && v === normName(dealLegalName);
+}
+
+/** Blank an entity's legal name when it only echoes the deal's merchant legal name. */
+export function withoutDealLegalNameEcho(
+    entity: ExhibitCEntityPrefill,
+    dealLegalName: unknown,
+): ExhibitCEntityPrefill {
+    return isDealLegalNameEcho(entity.clientLegalName, dealLegalName)
+        ? { ...entity, clientLegalName: "" }
+        : entity;
+}
+
 /** Build / update an Exhibit C entity slot from a mapping prefill tab map. */
 export function exhibitCEntityFromTabValues(
     tabs: Record<string, string>,
@@ -161,12 +184,9 @@ export function exhibitCEntityFromTabValues(
             "ach_account_holder_name",
             "ach_authorization_account_holder_name",
         ),
-        accountHolderDba: tabPick(
-            tabs,
-            "ach_account_holder_dba_p1",
-            "ach_account_holder_dba",
-            "doing_business_as",
-        ),
+        // Not `doing_business_as`: that is the deal-wide D/B/A key other
+        // addendums' saves push into every tab.
+        accountHolderDba: tabPick(tabs, "ach_account_holder_dba_p1", "ach_account_holder_dba"),
         accountHolderAddress: tabPick(
             tabs,
             "ach_account_holder_address_p1",
@@ -394,6 +414,15 @@ export function mergeExhibitCEntitiesForSignNowSend(args: {
         if (!mappingId) continue;
         const fromTabs = exhibitCEntityFromTabValues(blob[mappingId] ?? {}, next[i]);
         const prev = next[i];
+        // A saved entity is this copy's record: its blank lines stay blank. The
+        // tab is only a fallback for a copy that has no record yet — other
+        // addendums' saves pushed the deal's DBA / bank into it.
+        if (exhibitCEntityHasData(prev)) {
+            if (!prev.agreementDate && fromTabs.agreementDate) {
+                next[i] = { ...prev, agreementDate: fromTabs.agreementDate };
+            }
+            continue;
+        }
         next[i] = createEmptyExhibitCEntity({
             id: prev.id || fromTabs.id,
             agreementDate: prev.agreementDate || fromTabs.agreementDate,

@@ -9,6 +9,7 @@ import {
     isRefinanceDeal,
 } from "./refinanceDealCalculations";
 import {
+    buildDisclosureCalculatorInputsFromSources,
     computeDisclosureApr,
     calculateDisclosureMetrics,
     formatDisclosureDocumentFrequencyLabel,
@@ -598,6 +599,30 @@ test("Daily offer keeps its term in days and its Daily cadence", () => {
     const ctx = buildStateDisclosurePrefillContextFromContract({ contract, application: {} });
     assert.equal(ctx.frequency, "Daily");
     assert.equal(ctx.estimatedTermDays, "20");
+});
+
+test("Saved disclosure monthly revenues outrank the bank analysis", () => {
+    const bankAnalyses = [
+        {
+            _id: "ba-1",
+            rows: [
+                { _id: "r1", monthLabel: "August 2026", totalCredit: 50000 },
+                { _id: "r2", monthLabel: "July 2026", totalCredit: 60000 },
+            ],
+        },
+    ];
+    const saved = buildDisclosureCalculatorInputsFromSources({
+        contract: { contractPrefillOverrides: { disclosureMonthlyRevenues: [85000, 92000.5] } },
+        bankAnalyses,
+    });
+    assert.deepEqual(saved.monthlyRevenues, [85000, 92000.5]);
+
+    // Nothing saved yet: the calculator still starts from the bank analysis.
+    const fresh = buildDisclosureCalculatorInputsFromSources({
+        contract: { contractPrefillOverrides: {} },
+        bankAnalyses,
+    });
+    assert.deepEqual(fresh.monthlyRevenues, [50000, 60000]);
 });
 
 console.log(`\n${passed} tests passed`);

@@ -12,7 +12,12 @@ import {
 } from "./Contract";
 import { bankSlotFromRecords, overlayCanonicalBankOnPrefillRows } from "./sharedBankDetails";
 import { addendumCompanySlots } from "./exhibitCompanyPrefill";
-import { exhibitCEntitiesFromPrefill } from "./exhibitCEntityPrefill";
+import {
+    exhibitCEntitiesFromPrefill,
+    exhibitCEntityHasData,
+    isDealLegalNameEcho,
+    type ExhibitCEntityPrefill,
+} from "./exhibitCEntityPrefill";
 import {
     buildBalanceTransferSheetContractPrefillFields,
     formatFunderNameWithDealIdPrefix,
@@ -497,13 +502,155 @@ export function isSharedDbaFieldId(id: string): boolean {
     return SHARED_DBA_FIELD_ID_RE.test(String(id ?? ""));
 }
 
+function normalizeBusinessNameForDba(value: unknown): string {
+    return str(value).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Business / legal names a DBA must never echo. Earlier builds seeded a blank
+ * DBA with the business name and saved it into the mapping blobs, from where the
+ * shared-DBA sync copied it onto every contract and addendum.
+ */
+function businessLegalNamesForDba(
+    contract: Record<string, unknown>,
+    rows: Array<Record<string, unknown>>,
+): Set<string> {
+    const names = new Set<string>();
+    const add = (value: unknown) => {
+        const n = normalizeBusinessNameForDba(value);
+        if (n) names.add(n);
+    };
+    const nested = contract.contractPrefillOverrides;
+    const records = [
+        contract,
+        ...(nested && typeof nested === "object" && !Array.isArray(nested)
+            ? [nested as Record<string, unknown>]
+            : []),
+        ...rows,
+    ];
+    for (const row of records) {
+        add(row.legalName);
+        add(row.securityBusinessName);
+        add(row.clientLegalName);
+        add(row.businessName);
+        add(row.client_legal_name);
+        add(row.legal_name);
+        add(row.business_legal_name);
+        add(row.security_business_name);
+    }
+    return names;
+}
+
+/** True when `dba` is just the business legal name — not a real DBA. */
+export function isDbaEchoOfBusinessName(
+    dba: unknown,
+    contract?: Record<string, unknown> | null,
+    rows: Array<Record<string, unknown>> = [],
+): boolean {
+    const n = normalizeBusinessNameForDba(dba);
+    return Boolean(n) && businessLegalNamesForDba(contract ?? {}, rows).has(n);
+}
+
+/**
+ * Saved mapping values with every DBA that merely repeats the business name
+ * blanked, so a value an earlier build saved there no longer prints on the
+ * D/B/A line. A real DBA is kept as-is.
+ */
+export function withoutDbaEchoesOfBusinessName(
+    saved: Record<string, string> | null | undefined,
+    contract?: Record<string, unknown> | null,
+): Record<string, string> | null | undefined {
+    if (!saved) return saved;
+    let next: Record<string, string> | null = null;
+    for (const [id, raw] of Object.entries(saved)) {
+        if (!isSharedDbaFieldId(id) || !isDbaEchoOfBusinessName(raw, contract, [saved])) continue;
+        next ??= { ...saved };
+        next[id] = "";
+    }
+    return next ?? saved;
+}
+
+type ExhibitCDbaEntity = { accountHolderDba?: string | null } | null | undefined;
+
+/**
+ * DBAs held only by Exhibit C (2)/(3)/… — other businesses, never the deal's.
+ * A DBA copy #1 (the deal's merchant) also holds, or one that is just the
+ * business name, is not counted.
+ */
+export function exhibitCCopyOnlyDbas(
+    entities: readonly ExhibitCDbaEntity[],
+    businessNames: readonly unknown[] = [],
+): Set<string> {
+    const primary = normalizeBusinessNameForDba(entities[0]?.accountHolderDba);
+    const names = new Set(businessNames.map(normalizeBusinessNameForDba).filter(Boolean));
+    const out = new Set<string>();
+    for (const entity of entities.slice(1)) {
+        const dba = normalizeBusinessNameForDba(entity?.accountHolderDba);
+        if (dba && dba !== primary && !names.has(dba)) out.add(dba);
+    }
+    return out;
+}
+
+/** Exhibit C entities from whichever record carries them (main prefill, contract, its overrides). */
+function exhibitCEntitiesFromRecords(
+    ...records: Array<Record<string, unknown> | null | undefined>
+): ExhibitCDbaEntity[] {
+    for (const record of records) {
+        const entities = exhibitCEntitiesFromPrefill(record);
+        if (entities.length) return entities;
+    }
+    return [];
+}
+
+/**
+ * Blank every DBA key on `values` that holds an Exhibit C copy's DBA. Copy #1
+ * was picked by list position, so when the mappings came back in another order
+ * copy (2)'s DBA was saved as the contract's own `doingBusinessAs` (Nitro
+ * contracts 183, 188) and printed on the agreement's D/B/A line.
+ */
+export function withoutExhibitCCopyDbas<T extends Record<string, unknown>>(
+    values: T,
+    entities: readonly ExhibitCDbaEntity[],
+    businessNames: readonly unknown[] = [],
+): T {
+    const copyDbas = exhibitCCopyOnlyDbas(entities, businessNames);
+    if (!copyDbas.size) return values;
+    let next: T | null = null;
+    for (const [key, raw] of Object.entries(values)) {
+        if (!/dba|doing_?business/i.test(key)) continue;
+        if (!copyDbas.has(normalizeBusinessNameForDba(raw))) continue;
+        next ??= { ...values };
+        (next as Record<string, unknown>)[key] = "";
+    }
+    return next ?? values;
+}
+
 export function resolveSharedDbaValue(sources: {
     mainPrefill?: Record<string, unknown> | null;
     contract?: Record<string, unknown> | null;
     mappingBlobs?: Record<string, Record<string, string>> | null;
+    /** The live Exhibit C entities, when the caller holds newer ones than the contract. */
+    exhibitCEntities?: readonly ExhibitCDbaEntity[] | null;
 }): string {
     const main = sources.mainPrefill ?? {};
     const contract = sources.contract ?? {};
+    const nestedOverrides =
+        contract.contractPrefillOverrides &&
+        typeof contract.contractPrefillOverrides === "object" &&
+        !Array.isArray(contract.contractPrefillOverrides)
+            ? (contract.contractPrefillOverrides as Record<string, unknown>)
+            : null;
+    const copyDbas = exhibitCCopyOnlyDbas(
+        sources.exhibitCEntities?.length
+            ? sources.exhibitCEntities
+            : exhibitCEntitiesFromRecords(main, nestedOverrides, contract),
+        [
+            contract.legalName,
+            nestedOverrides?.legalName,
+            main.legalName,
+            main.client_legal_name,
+        ],
+    );
     const fromRecord = (row: Record<string, unknown>) =>
         str(row.doingBusinessAs) ||
         str(row.achAuthorizationAccountHolderDba) ||
@@ -514,21 +661,32 @@ export function resolveSharedDbaValue(sources: {
         str(row.ach_account_holder_dba) ||
         str(row.ach_account_holder_dba_p1) ||
         str(row.dba);
-    const fromMain = fromRecord(main);
+    // Saved mapping blobs may still carry a DBA that an earlier build filled
+    // with the business name; that is not a DBA and must not spread.
+    const blobRows = Object.values(sources.mappingBlobs ?? {}).filter(
+        (row): row is Record<string, string> => Boolean(row) && typeof row === "object",
+    );
+    // …and an Exhibit C copy's DBA is another business's, never the deal's.
+    const realDba = (value: string) =>
+        value &&
+        !isDbaEchoOfBusinessName(value, contract, [main, ...blobRows]) &&
+        !copyDbas.has(normalizeBusinessNameForDba(value))
+            ? value
+            : "";
+    const fromMain = realDba(fromRecord(main));
     if (fromMain) return fromMain;
-    const fromContract = fromRecord(contract);
+    const fromContract = realDba(fromRecord(contract));
     if (fromContract) return fromContract;
     const nested = contract.contractPrefillOverrides;
     if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-        const fromOverrides = fromRecord(nested as Record<string, unknown>);
+        const fromOverrides = realDba(fromRecord(nested as Record<string, unknown>));
         if (fromOverrides) return fromOverrides;
     }
-    for (const row of Object.values(sources.mappingBlobs ?? {})) {
-        if (!row || typeof row !== "object") continue;
+    for (const row of blobRows) {
         for (const [id, raw] of Object.entries(row)) {
             if (!isSharedDbaFieldId(id)) continue;
             const value = str(raw);
-            if (value) return value;
+            if (realDba(value)) return value;
         }
     }
     return "";
@@ -947,16 +1105,22 @@ function mergeExhibitCFieldRows(
     allDefs: ContractPrefillField[],
     computed: ContractPrefillField[],
     savedForRow: Record<string, string> | null | undefined,
+    dealLegalName = "",
 ): ContractPrefillField[] {
     const computedById = new Map(computed.map((f) => [f.id, f]));
     const saved = savedForRow ?? {};
     return allDefs.map((def) => {
         const computedVal = String(computedById.get(def.id)?.value ?? "").trim();
         const fromSaved = saved[def.id] ?? saved[`${def.id}_p1`] ?? saved[`${def.id}_p3`];
-        const fromSavedTrim =
+        let fromSavedTrim =
             fromSaved !== undefined ? String(fromSaved).trim() : "";
         if (isMerchantLegalNameFieldId(def.id) && computedVal) {
             return { id: def.id, label: def.label, value: computedVal, group: def.group };
+        }
+        // A tab saved by an older build holds the deal's merchant here; this
+        // Exhibit C's own legal name starts blank.
+        if (isMerchantLegalNameFieldId(def.id) && isDealLegalNameEcho(fromSavedTrim, dealLegalName)) {
+            fromSavedTrim = "";
         }
         return {
             id: def.id,
@@ -1557,13 +1721,11 @@ function buildAddendumAchDailyComputed(
     });
 }
 
-function buildAddendumExhibitCComputed(
+/** The saved entity slot behind Exhibit C copy `entityIndex`, or null. */
+function exhibitCEntityForContract(
     contract: Record<string, unknown> | null,
-    sctx: StateDisclosureContext,
-    application: Record<string, unknown> | null,
-    contractRecords?: ContractPrefillContractRecords | null,
-    entityIndex = 0,
-): ContractPrefillField[] {
+    entityIndex: number,
+): ExhibitCEntityPrefill | null {
     const c = contract ?? {};
     const overrides =
         c.contractPrefillOverrides &&
@@ -1571,128 +1733,35 @@ function buildAddendumExhibitCComputed(
         !Array.isArray(c.contractPrefillOverrides)
             ? (c.contractPrefillOverrides as Record<string, unknown>)
             : null;
-    const exhibitEntities = exhibitCEntitiesFromPrefill(overrides ?? c);
-    const dealLegalName = dealMerchantLegalName(c, application, sctx);
-    // Extra Exhibit C copies (2)/(3)/… must start empty — never inherit entity[0] or main ACH.
-    if (entityIndex > 0) {
-        const entity = exhibitEntities[entityIndex] ?? null;
-        return buildExhibitCContractPrefillFields({
-            agreementDate: str(entity?.agreementDate) || todayUsDate(),
-            // This copy's own entity — never the main application's merchant.
-            clientLegalName: str(entity?.clientLegalName),
-            clientName: str(entity?.clientName),
-            accountHolderName: str(entity?.accountHolderName),
-            accountHolderDba: str(entity?.accountHolderDba),
-            accountHolderAddress: str(entity?.accountHolderAddress),
-            bankName: str(entity?.bankName),
-            bankAccount: str(entity?.bankAccount),
-            bankRouting: str(entity?.bankRouting),
-            bankPortal: str(entity?.bankPortal),
-            bankUsername: str(entity?.bankUsername),
-            bankPassword: str(entity?.bankPassword),
-            securityQa1: str(entity?.securityQa1),
-            securityQa2: str(entity?.securityQa2),
-        });
-    }
+    return exhibitCEntitiesFromPrefill(overrides ?? c)[entityIndex] ?? null;
+}
 
-    const fromApp = buildContractPrefillFieldsFromApplication(application, {
-        agreementDate: sctx.signatureDate || todayUsDate(),
-        contractRecords: { contract: c },
-    });
-    const get = (...ids: string[]) => {
-        const fromFields = fieldValueById(fromApp, ...ids);
-        if (fromFields) return fromFields;
-        for (const id of ids) {
-            const v = str(c[id]);
-            if (v) return v;
-        }
-        return "";
-    };
-    const primaryEntity = exhibitEntities[0] ?? null;
-
-    const legalName = dealLegalName;
-    const guarantor =
-        str(primaryEntity?.clientName) ||
-        sctx.merchantName ||
-        get("client_name", "owner1_guarantor_name", "merchant_contact_name") ||
-        str(c.clientName);
-    const holderName =
-        str(primaryEntity?.accountHolderName) ||
-        get("ach_authorization_account_holder_name", "ach_account_holder_name") ||
-        legalName ||
-        guarantor;
-
+function buildAddendumExhibitCComputed(
+    contract: Record<string, unknown> | null,
+    entityIndex = 0,
+    dealLegalName = "",
+): ContractPrefillField[] {
+    const entity = exhibitCEntityForContract(contract, entityIndex);
+    // Every Exhibit C — the first one included — is an independent record. It
+    // starts blank and shows only its own entity slot, never the application,
+    // the void-check scan or the ACH / bank (funding) stage. A saved legal name
+    // that only repeats the deal's merchant is an older build's seed, not data.
+    const clientLegalName = str(entity?.clientLegalName);
     return buildExhibitCContractPrefillFields({
-        agreementDate: todayUsDate(),
-        clientLegalName: legalName,
-        clientName: guarantor,
-        accountHolderName: holderName,
-        accountHolderDba:
-            str(primaryEntity?.accountHolderDba) || dbaFromContractAndGet(c, get),
-        // Printed as "c. Account Holder Business Address:" — the business address.
-        // Entity 1 is the deal's own merchant; its saved address is a mirror of
-        // the ACH holder (Owner 1's home), so it is only a last resort.
-        accountHolderAddress:
-            resolveMerchantFullAddress(get, ACCOUNT_HOLDER_BUSINESS_ADDRESS_STREET_IDS) ||
-            str(primaryEntity?.accountHolderAddress),
-        bankName:
-            str(primaryEntity?.bankName) ||
-            get(
-                "ach_authorization_account_holder_bank_name",
-                "ach_bank_name",
-                "authorization_client_bank_name",
-            ) ||
-            str(c.authorizationClientBankName) ||
-            str(c.achAuthorizationAccountHolderBankName) ||
-            str(c.bankName) ||
-            str((c.paymentBank as Record<string, unknown> | null)?.bankName),
-        bankAccount:
-            str(primaryEntity?.bankAccount) ||
-            get(
-                "ach_authorization_account_holder_bank_account_number",
-                "ach_bank_account",
-                "authorization_client_bank_account",
-            ) ||
-            str(c.authorizationClientBankAccount) ||
-            str(c.achAuthorizationAccountHolderBankAccountNumber) ||
-            str(c.accountNumber) ||
-            str((c.paymentBank as Record<string, unknown> | null)?.accountNumber),
-        bankRouting:
-            str(primaryEntity?.bankRouting) ||
-            get(
-                "ach_authorization_account_holder_bank_routing_number",
-                "ach_bank_routing",
-                "authorization_client_bank_routing",
-            ) ||
-            str(c.authorizationClientBankRouting) ||
-            str(c.achAuthorizationAccountHolderBankRoutingNumber) ||
-            str(c.routingNumber) ||
-            str((c.paymentBank as Record<string, unknown> | null)?.routingNumber),
-        bankPortal:
-            str(primaryEntity?.bankPortal) ||
-            get("ach_authorization_bank_portal_website", "ach_bank_portal"),
-        bankUsername:
-            str(primaryEntity?.bankUsername) ||
-            get("ach_authorization_username", "ach_username"),
-        bankPassword:
-            str(primaryEntity?.bankPassword) ||
-            get("ach_authorization_password", "ach_password"),
-        securityQa1:
-            str(primaryEntity?.securityQa1) ||
-            (() => {
-                const q = get("ach_authorization_security_question1");
-                const a = get("ach_authorization_security_answer1");
-                if (q && a) return `${q} / ${a}`;
-                return q || a;
-            })(),
-        securityQa2:
-            str(primaryEntity?.securityQa2) ||
-            (() => {
-                const q = get("ach_authorization_security_question2");
-                const a = get("ach_authorization_security_answer2");
-                if (q && a) return `${q} / ${a}`;
-                return q || a;
-            })(),
+        agreementDate: str(entity?.agreementDate) || todayUsDate(),
+        clientLegalName: isDealLegalNameEcho(clientLegalName, dealLegalName) ? "" : clientLegalName,
+        clientName: str(entity?.clientName),
+        accountHolderName: str(entity?.accountHolderName),
+        accountHolderDba: str(entity?.accountHolderDba),
+        accountHolderAddress: str(entity?.accountHolderAddress),
+        bankName: str(entity?.bankName),
+        bankAccount: str(entity?.bankAccount),
+        bankRouting: str(entity?.bankRouting),
+        bankPortal: str(entity?.bankPortal),
+        bankUsername: str(entity?.bankUsername),
+        bankPassword: str(entity?.bankPassword),
+        securityQa1: str(entity?.securityQa1),
+        securityQa2: str(entity?.securityQa2),
     });
 }
 
@@ -1814,7 +1883,8 @@ function payoffAddendumValues(
     return {
         addendumDated: today,
         funderAndBusinessName: sctx.recipientName,
-        merchantDba: str(c.doingBusinessAs) || str(c.dba) || sctx.recipientName,
+        // A real DBA only — a blank DBA stays blank, never the merchant's legal name.
+        merchantDba: str(c.doingBusinessAs) || str(c.dba),
         agreementToLabelName: label,
         payUpToAmount:
             sctx.previousRefiBalance ||
@@ -1962,6 +2032,8 @@ function buildAddendumMonthlyFeeComputed(
             sctx.recipientAddress,
         ),
         holderName,
+        // Printed as "Account Holder Business Name" on this form, so the business
+        // name is the right fallback here (unlike every real D/B/A line).
         holderDba: dbaFromContractAndGet(c, get) || businessName,
         // Account holder address is the GUARANTOR's, not the business location
         // — see ACCOUNT_HOLDER_ADDRESS_STREET_IDS. On this form it also stops
@@ -2670,10 +2742,8 @@ function addendumComputed(
         case "exhibit_c":
             return buildAddendumExhibitCComputed(
                 contract,
-                sctx,
-                application,
-                contractRecords,
                 exhibitCEntityIndex,
+                dealMerchantLegalName(contract, application, sctx),
             );
         case "exhibit_a":
             return buildAddendumExhibitAComputed(contract, sctx, application, contractRecords);
@@ -2911,6 +2981,17 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
         norm,
         options.templateLayoutKey,
     );
+    // Monthly Fee's `ach_account_holder_dba_p1` is its "Account Holder Business
+    // Name" line, so the business name saved there is correct and stays.
+    if (addendum !== "monthly_fee") {
+        options = {
+            ...options,
+            savedOverridesForMapping: withoutDbaEchoesOfBusinessName(
+                options.savedOverridesForMapping,
+                options.contract,
+            ),
+        };
+    }
 
     // Addendum mappings must never use the disclosure calculator catalog.
     // SignNow stores a 40-char hex templateId on every document — that used to
@@ -2938,13 +3019,23 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
             exhibitIndex,
             variant,
         );
+        // A copy with its own saved entity shows exactly that record (it is what
+        // SignNow receives); its tab only fills a copy that has no record yet.
+        const exhibitCHasOwnRecord =
+            addendum === "exhibit_c" &&
+            exhibitCEntityHasData(exhibitCEntityForContract(effectiveContract, exhibitIndex));
         const merged =
             addendum === "exhibit_c"
-                ? mergeExhibitCFieldRows(all, computed, options.savedOverridesForMapping)
+                ? mergeExhibitCFieldRows(
+                      all,
+                      computed,
+                      exhibitCHasOwnRecord ? null : options.savedOverridesForMapping,
+                      dealMerchantLegalName(effectiveContract, options.application ?? null, sctx),
+                  )
                 : mergeFieldRows(all, computed, options.savedOverridesForMapping);
-        // Extra Exhibit C copies stay isolated — no shared bank/DBA auto-fill.
-        // Same field map as Exhibit C #1; values come from that copy's entity only.
-        if (addendum === "exhibit_c" && exhibitIndex > 0) {
+        // Every Exhibit C stays isolated — no shared bank/DBA auto-fill.
+        // One field map for all copies; values come from that copy's entity only.
+        if (addendum === "exhibit_c") {
             return merged.filter((row) => !isOptionalExtraBankField(row));
         }
         return withCanonicalBank(merged);
@@ -3055,6 +3146,8 @@ function upsertPrefillFieldValueIfEmpty(
 
 type TemplateMappingRowLike = {
     id: string;
+    /** Send order; Exhibit C copy #1 is the lowest. */
+    order?: number | null;
     documentType?: string | null;
     template?: {
         id?: string;
@@ -3066,6 +3159,17 @@ type TemplateMappingRowLike = {
         type?: string | null;
     } | null;
 };
+
+function mappingRowAddendumKind(row: TemplateMappingRowLike): AddendumKind | null {
+    const layoutKey = String(row.template?.layoutKey ?? "").trim();
+    const tid = String(row.template?.templateId ?? "").trim();
+    const templateId = String(row.template?.id ?? "").trim();
+    return resolveAddendumKind(
+        templateId || tid || null,
+        normalizeKey(row.template?.name ?? ""),
+        layoutKey || null,
+    );
+}
 
 function mappingRowMatchesSendRef(row: TemplateMappingRowLike, ref: string): boolean {
     const layoutKey = String(row.template?.layoutKey ?? "").trim();
@@ -3080,11 +3184,7 @@ function mappingRowMatchesSendRef(row: TemplateMappingRowLike, ref: string): boo
         String(row.documentType || "").toLowerCase() === "disclosure" ||
         isSignNowDisclosureTemplateRef(layoutKey, tid, row.template?.name);
     if (isDisclosure && isSignNowDisclosureLayoutKey(key)) return true;
-    const kind = resolveAddendumKind(
-        templateId || tid || null,
-        normalizeKey(row.template?.name ?? ""),
-        layoutKey || null,
-    );
+    const kind = mappingRowAddendumKind(row);
     if (!kind) return false;
     const refKind = resolveAddendumKind(key, normalizeKey(key), key);
     return refKind === kind || key === kind || key.endsWith(`_${kind}`);
@@ -3154,7 +3254,21 @@ export function savedOverridesForSupplementalRef(args: {
 
     const matched = rows.filter((row) => mappingRowMatchesSendRef(row, ref));
     if (matched.length) {
-        for (const row of matched) assign(blob[row.id]);
+        // Every Exhibit C copy is the same template, so one ref matches them
+        // all. Copy (2)/(3)/… is another entity: merging its tab here put that
+        // entity's DBA on the agreement's D/B/A line. Only copy #1 is the deal's.
+        const exhibitCRows = matched.filter((row) => mappingRowAddendumKind(row) === "exhibit_c");
+        const primaryExhibitC = exhibitCRows.reduce<TemplateMappingRowLike | null>(
+            (best, row) =>
+                !best || Number(row.order ?? Infinity) < Number(best.order ?? Infinity)
+                    ? row
+                    : best,
+            null,
+        );
+        for (const row of matched) {
+            if (primaryExhibitC && row !== primaryExhibitC && exhibitCRows.includes(row)) continue;
+            assign(blob[row.id]);
+        }
         return out;
     }
 
@@ -3281,25 +3395,6 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     ]);
     const byId = new Map(args.prefillFieldsPayload.map((f) => [f.id, { ...f }]));
 
-    // Exhibit C and ACH Daily/Weekly are different documents that ride on the
-    // same SignNow widget names (ach_bank_name, ach_account_holder_*, ...). The
-    // flat payload is keyed by those shared ids, so merging Exhibit C's saved
-    // values here also rewrote the ACH Daily document — Exhibit C data showing up
-    // on the daily form. When both are in one package, leave the shared keys to
-    // the ACH row and let SignNow fill every Exhibit C copy from exhibitCEntities
-    // (which already carries copy #1), keeping each document on its own record.
-    const packageHasAchFrequencyDoc = args.templateMappingRows.some((row) => {
-        if (!mappingRowIsInSendPackage(row, mergedSet)) return false;
-        const kind = resolveAddendumKind(
-            String(row.template?.id ?? "").trim() ||
-                String(row.template?.templateId ?? "").trim() ||
-                null,
-            normalizeKey(row.template?.name ?? ""),
-            String(row.template?.layoutKey ?? "").trim() || null,
-        );
-        return kind === "ach_daily" || kind === "ach_weekly";
-    });
-
     let exhibitCEntityIndex = 0;
     for (const row of args.templateMappingRows) {
         const layoutKey = String(row.template?.layoutKey ?? "").trim();
@@ -3313,12 +3408,10 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         );
         const thisExhibitIndex =
             addendumKindForIndex === "exhibit_c" ? exhibitCEntityIndex++ : 0;
-        // Extra Exhibit C copies share field ids with copy #1. Keep #1 in the
-        // flat payload; SignNow fills (2)/(3) from exhibitCEntities by index.
-        if (
-            addendumKindForIndex === "exhibit_c" &&
-            (thisExhibitIndex > 0 || packageHasAchFrequencyDoc)
-        ) {
+        // Every Exhibit C copy shares its field ids with the ACH pages, and each is
+        // its own record: none goes into the flat payload. SignNow fills each copy
+        // from exhibitCEntities by index.
+        if (addendumKindForIndex === "exhibit_c") {
             continue;
         }
         const perMap =
@@ -3629,16 +3722,23 @@ export function mergeSignNowSupplementalPrefillFallback(args: {
 
     const blob = parseDocumentTemplatePrefillByMappingId(args.contractPrefillOverridesRaw);
     const byId = new Map(args.payload.map((f) => [f.id, { ...f }]));
-    const refKind = (ref: string) => resolveAddendumKind(ref, normalizeKey(ref), ref);
-    // Same shared-widget guard as applyDocumentTemplateMappingPrefillOverrides:
-    // when ACH Daily/Weekly is in the package, Exhibit C must not write the shared
-    // ach_* keys of the flat payload. SignNow fills Exhibit C from exhibitCEntities.
-    const packageHasAchFrequencyDoc = refs.some((ref) => {
-        const kind = refKind(ref);
-        return kind === "ach_daily" || kind === "ach_weekly";
-    });
+    // A funder's own template is often a bare SignNow hex id (Tiberian's ACH
+    // Daily and Exhibit C), which says nothing about its kind on its own — the
+    // mapping row it came from carries the name that does.
+    const refKind = (ref: string) => {
+        const fromRef = resolveAddendumKind(ref, normalizeKey(ref), ref);
+        if (fromRef) return fromRef;
+        const row = (args.templateMappingRows ?? []).find((r) => mappingRowMatchesSendRef(r, ref));
+        return row ? mappingRowAddendumKind(row) : null;
+    };
     for (const ref of refs) {
-        if (packageHasAchFrequencyDoc && refKind(ref) === "exhibit_c") continue;
+        // Same guard as applyDocumentTemplateMappingPrefillOverrides: an Exhibit C
+        // never writes the flat payload. Its widget names (ach_bank_name,
+        // ach_account_holder_*, …) are the ones the agreement's own Exhibit C page
+        // (`*_p19` / `*_p20`) resolves through, so its saved tab used to print the
+        // added Exhibit C's entity there instead of the ACH / funding bank.
+        // SignNow fills each Exhibit C from exhibitCEntities.
+        if (refKind(ref) === "exhibit_c") continue;
         const saved = savedOverridesForSupplementalRef({
             ref,
             blob,

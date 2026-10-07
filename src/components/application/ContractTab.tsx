@@ -70,12 +70,13 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Ban, Eye, FileText, Landmark, Loader2, RefreshCw } from "lucide-react";
+import { Ban, Eye, FileText, Landmark, Loader2, MailPlus, RefreshCw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
     filterBankDetailsForApplication,
 } from "@/lib/bankDetailUtils";
 import PDFViewerModal from "./PDFViewerModal";
+import { ResendUnsignedContractDialog } from "./ResendUnsignedContractDialog";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHFormViewerModal from "./ACHFormViewerModal";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
@@ -496,6 +497,11 @@ export default function ContractTab({
     const [viewingSignedContract, setViewingSignedContract] = useState(false);
     const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
     const [voidingContract, setVoidingContract] = useState(false);
+    /** Row whose "Resend unsigned contract" dialog is open — same package, values kept. */
+    const [resendUnsignedRow, setResendUnsignedRow] = useState<{
+        envelopeId: string;
+        label: string;
+    } | null>(null);
     const [viewingAchDocument, setViewingAchDocument] = useState(false);
     const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
     const [contractSyncError, setContractSyncError] = useState<string | null>(null);
@@ -1946,9 +1952,14 @@ export default function ContractTab({
     }, [dispatch, applicationId, applicationUuid, applicationData]);
 
     const refreshContractEnvelopeStatus = useCallback(
-        async (silent?: boolean, options?: { force?: boolean }) => {
-            const mainEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
-            if (!mainEnvelopeId || contractFullySigned) {
+        async (silent?: boolean, options?: { force?: boolean; envelopeId?: string | null }) => {
+            const currentEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
+            // A superseded send row refreshes its own envelope; the backend records the
+            // result on that send's history entry, not on the current contract.
+            const rowEnvelopeId = String(options?.envelopeId ?? "").trim();
+            const isSupersededSend = Boolean(rowEnvelopeId) && rowEnvelopeId !== currentEnvelopeId;
+            const mainEnvelopeId = isSupersededSend ? rowEnvelopeId : currentEnvelopeId;
+            if (!mainEnvelopeId || (!isSupersededSend && contractFullySigned)) {
                 if (!silent) setContractSyncError(null);
                 return;
             }
@@ -1965,7 +1976,7 @@ export default function ContractTab({
                     contractId: selectedContractId,
                     force: options?.force,
                     silent,
-                    signingFinished: contractFullySigned,
+                    signingFinished: isSupersededSend ? false : contractFullySigned,
                 });
                 if (result.rateLimited) {
                     if (!silent) {
@@ -4239,6 +4250,7 @@ export default function ContractTab({
     const renderContractSendTableRow = (row: ContractSendTableRow) => {
         const isAchRow = row.rowType === "ach";
         const isPackageRow = row.rowType === "package";
+        const isContractRow = row.rowType === "contract";
         const isNonContractDocument =
             row.documentKind === "addendum" ||
             row.documentKind === "disclosure" ||
@@ -4319,6 +4331,20 @@ export default function ContractTab({
             !isReadOnly &&
             isPrimaryVoidRowForEnvelope &&
             canVoidContractSendTableRow(contractRecordForActions, row);
+        // Same-contract resend: any SignNow contract send still out for signature.
+        // Superseded sends are offered too; the backend rejects them when no signing
+        // queue is left to resend from.
+        const rowCanResendUnsigned =
+            !isReadOnly &&
+            !isAchRow &&
+            !isPackageRow &&
+            isPrimaryVoidRowForEnvelope &&
+            Boolean(rowEnvelopeId) &&
+            isSignNowEnvelopeId(rowEnvelopeId) &&
+            Boolean(row.sentAt) &&
+            rowCapsuleStatus !== "DRAFT" &&
+            !rowFullySigned &&
+            !isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
         const rowIsVoided = isAchRow
             ? row.achStatus === "VOIDED"
             : isPackageRow
@@ -4462,7 +4488,9 @@ export default function ContractTab({
                                             <Eye className="h-3.5 w-3.5" aria-hidden />
                                         )}
                                     </Button>
-                                    {row.isCurrent && !rowFullySigned && !rowIsVoided ? (
+                                    {(row.isCurrent || isContractRow) &&
+                                    !rowFullySigned &&
+                                    !rowIsVoided ? (
                                         <Button
                                             type="button"
                                             variant="ghost"
@@ -4479,6 +4507,7 @@ export default function ContractTab({
                                                         })
                                                       : refreshContractEnvelopeStatus(false, {
                                                             force: true,
+                                                            envelopeId: rowEnvelopeId,
                                                         }))
                                             }
                                             disabled={refreshingSigningStatus}
@@ -4495,6 +4524,24 @@ export default function ContractTab({
                                                 className={`h-3.5 w-3.5 ${refreshingSigningStatus ? "animate-spin" : ""}`}
                                                 aria-hidden
                                             />
+                                        </Button>
+                                    ) : null}
+                                    {rowCanResendUnsigned ? (
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            onClick={() =>
+                                                setResendUnsignedRow({
+                                                    envelopeId: rowEnvelopeId,
+                                                    label: row.label,
+                                                })
+                                            }
+                                            className={`h-7 w-7 shrink-0 ${brandActionButtonClass}`}
+                                            title="Resend unsigned contract"
+                                            aria-label={`Resend unsigned ${row.label}`}
+                                        >
+                                            <MailPlus className="h-3.5 w-3.5" aria-hidden />
                                         </Button>
                                     ) : null}
                                     {rowCanVoid ? (
@@ -5316,6 +5363,15 @@ export default function ContractTab({
                 getSignerName={getPrimaryRecipientName}
             />
 
+            <ResendUnsignedContractDialog
+                open={Boolean(resendUnsignedRow)}
+                onOpenChange={(open) => {
+                    if (!open) setResendUnsignedRow(null);
+                }}
+                envelopeId={resendUnsignedRow?.envelopeId ?? ""}
+                contractLabel={resendUnsignedRow?.label}
+                onResent={() => void refreshContractEnvelopeStatus(false, { force: true })}
+            />
             <PDFViewerModal
                 isOpen={pdfViewerOpen}
                 onClose={() => {

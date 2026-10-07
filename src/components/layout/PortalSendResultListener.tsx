@@ -11,6 +11,8 @@ export type PortalSendResultPayload = {
     ok?: boolean;
     recipientEmails?: string[];
     message?: string;
+    /** Set for "Resend unsigned contract" (signer change finished in the background). */
+    resend?: boolean;
 };
 
 /**
@@ -27,13 +29,21 @@ const PortalSendResultListener = () => {
         const onResult = (payload: PortalSendResultPayload) => {
             if (payload?.ok) {
                 const to = (payload.recipientEmails || []).join(", ");
+                if (payload.resend) {
+                    toast.success(
+                        to ? `Signer updated — signing link sent to ${to}.` : "Signer updated and link resent.",
+                    );
+                    return;
+                }
                 toast.success(
                     to ? `Signing link emailed to ${to}.` : "Signing link emailed to the merchant.",
                 );
                 return;
             }
             toast.error(
-                `Contract was not sent: ${payload?.message || "Could not email the signing link."}`,
+                payload?.resend
+                    ? `Contract was not resent: ${payload?.message || "Could not update the signer."}`
+                    : `Contract was not sent: ${payload?.message || "Could not email the signing link."}`,
                 { autoClose: false },
             );
         };

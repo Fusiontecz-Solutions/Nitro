@@ -185,10 +185,13 @@ test("an Exhibit C copy names its own entity, not the application merchant", () 
     assert.equal(copy.client_legal_name_p1, "ENTITY B LLC");
     assert.equal(copy.ach_account_holder_dba_p1, "ENTITY B DBA");
     assert.equal(copy.ach_bank_account_p1, "2222222222");
-    // The original Exhibit C still carries the deal's merchant and bank.
+    // The first Exhibit C is independent too: with no entity of its own it is
+    // blank, never the deal's merchant or ACH / funding bank.
     const original = exhibitCCopyRows(MULTI_ENTITY_CONTRACT, 0);
-    assert.equal(original.client_legal_name_p1.toUpperCase(), "ERBAR CONSULTING INC");
-    assert.equal(original.ach_bank_account_p1, "725307998");
+    assert.equal(original.client_legal_name_p1 ?? "", "");
+    assert.equal(original.ach_account_holder_name_p1 ?? "", "");
+    assert.equal(original.ach_bank_account_p1 ?? "", "");
+    assert.equal(original.ach_bank_routing_p1 ?? "", "");
 });
 
 test("a new Exhibit C copy starts empty instead of copying the application", () => {

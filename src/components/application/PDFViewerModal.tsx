@@ -206,6 +206,7 @@ import { SpaCalculationModal } from "./contractdata/SpaCalculationModal";
 import { persistCalculatedPurchasePercent } from "./contractdata/spaPrefillSync";
 import {
     buildDisclosureCalculatorInputsFromSources,
+    DISCLOSURE_MONTHLY_REVENUES_KEY,
     extractMonthlyRevenuesFromBankAnalyses,
 } from "./contractdata/disclosureAprCalculator";
 import { resolveWantedAddendumKinds } from "./contractdata/disclosureDocumentRules";
@@ -294,6 +295,7 @@ import {
 } from "./contractdata/contractSendHistory";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AddendumSendOrderBoard } from "./AddendumSendOrderBoard";
+import { ResendUnsignedContractDialog } from "./ResendUnsignedContractDialog";
 import {
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
 } from "./contractdata/docusignTemplateConfig";
@@ -2014,6 +2016,13 @@ const AddendumTemplatesPicker = memo(function AddendumTemplatesPicker({
     );
 });
 
+/** Agent list from `/contract/agent-email` (falls back to the single `agentEmail`). */
+function readAgentEmailsFromResponse(data: unknown): string[] {
+    const d = (data ?? {}) as { agentEmails?: unknown; agentEmail?: unknown };
+    const list = Array.isArray(d.agentEmails) ? d.agentEmails : d.agentEmail ? [d.agentEmail] : [];
+    return list.map((e) => String(e ?? "").trim()).filter(Boolean);
+}
+
 const PDFViewerModal = ({
     isOpen,
     onClose,
@@ -2033,6 +2042,15 @@ const PDFViewerModal = ({
     const [effectiveTemplateId, setEffectiveTemplateId] = useState<string | null>(templateId ?? null);
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
+    /**
+     * Agents on the deal, saved on the contract. Each is emailed the package when
+     * the contract is sent and the signed copy when it is signed (as the funder).
+     * `agentEmailSource` is "contract" when saved here, else the referring agent.
+     */
+    const [agentEmails, setAgentEmails] = useState<string[]>([]);
+    const [agentEmailSource, setAgentEmailSource] = useState<string>("none");
+    const [agentEmailDraft, setAgentEmailDraft] = useState("");
+    const [isSavingAgentEmail, setIsSavingAgentEmail] = useState(false);
     const [isSending, setIsSending] = useState(false);
     /**
      * Set from the Review click until SignNow opens (or fails): the package is
@@ -2046,6 +2064,8 @@ const PDFViewerModal = ({
     const sendingLockRef = useRef(false);
     const [isCancellingContract, setIsCancellingContract] = useState(false);
     const [isResendingNewContract, setIsResendingNewContract] = useState(false);
+    /** "Resend unsigned contract" — same package, same values, optionally a corrected signer email. */
+    const [resendUnsignedOpen, setResendUnsignedOpen] = useState(false);
     /** Set when the browser blocks `window.open` after the draft URL is ready — user opens via button click. */
     const [docuSignOpenUrl, setDocuSignOpenUrl] = useState<string | null>(null);
     const [signNowEmbedUrl, setSignNowEmbedUrl] = useState<string | null>(null);
@@ -3340,7 +3360,7 @@ const PDFViewerModal = ({
         selectedFunderAddendumOptions,
     ]);
 
-    /** Mapping ids of Exhibit C (2)/(3)/… — each belongs to its own entity. */
+    /** Mapping ids of every Exhibit C (first included) — each is its own entity. */
     const exhibitCCopyMappingIds = useMemo(
         () =>
             orderedLinkedAddendumMappings
@@ -3359,7 +3379,6 @@ const PDFViewerModal = ({
                         match?.name || candidate?.template?.name,
                     );
                 })
-                .slice(1)
                 .map((candidate) => String(candidate?.id ?? "").trim())
                 .filter(Boolean),
         [orderedLinkedAddendumMappings, selectedFunderAddendumOptions],
@@ -3387,6 +3406,23 @@ const PDFViewerModal = ({
         // Backend accepts numeric display applicationId as fallback.
         return fromData || fromProp || null;
     }, [applicationId, applicationData]);
+
+    useEffect(() => {
+        if (!isOpen || !applicationIdForLookup) return;
+        let cancelled = false;
+        axiosGet(`/contract/agent-email/${encodeURIComponent(applicationIdForLookup)}`)
+            .then((res) => {
+                if (cancelled) return;
+                setAgentEmails(readAgentEmailsFromResponse(res?.data?.data));
+                setAgentEmailSource(String(res?.data?.data?.source ?? "none"));
+            })
+            .catch(() => {
+                /* No contract yet — the agent row stays empty. */
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [isOpen, applicationIdForLookup]);
 
     const applicationMongoId = useMemo(() => {
         const d = applicationData as { _id?: string; id?: string } | undefined;
@@ -3875,6 +3911,12 @@ const PDFViewerModal = ({
     useEffect(() => {
         if (!isOpen) {
             setResolvedContractId(null);
+            /**
+             * The row must not outlive the opening it was loaded for. The next opening judged
+             * "already sent" from it before the fresh load landed, so after a resend archived
+             * the envelope the wizard still treated the deal as sent and hid Review in SignNow.
+             */
+            setResolvedContract(null);
             addendumDropdownOpenRef.current = false;
             userSelectedFunderRef.current = false;
             userSelectedStateRef.current = false;
@@ -4021,7 +4063,11 @@ const PDFViewerModal = ({
         let cancelled = false;
         void (async () => {
             try {
-                const res = await dispatch(getByApplicationIdContract(appId)).unwrap();
+                // `fresh`: a cached copy from before a resend still carries the archived,
+                // sent envelope and would mark the new draft as already sent.
+                const res = await dispatch(
+                    getByApplicationIdContract({ applicationId: appId, fresh: true }),
+                ).unwrap();
                 const contract = (res as any)?.data ?? res;
                 const id = Number((contract as any)?.id);
                 if (cancelled) return;
@@ -4117,6 +4163,14 @@ const PDFViewerModal = ({
         if (fromRow) return fromRow;
         return linkedEnvelopeId;
     }, [selectedSentRow, linkedEnvelopeId]);
+
+    /** Same-contract resend: only a SignNow contract still out for signature. */
+    const canResendUnsignedContract =
+        activeStep === "sent" &&
+        isSignNowContractUiEnabled() &&
+        isContractOutForSignature &&
+        Boolean(String(selectedSentRow?.envelopeId || linkedEnvelopeId || "").trim()) &&
+        !(selectedSentRow && isContractSendTableRowFullySigned(selectedSentRow));
 
     const canCancelSentContract = useMemo(
         () =>
@@ -5668,6 +5722,69 @@ const PDFViewerModal = ({
         setCcEmailDraft("");
     };
 
+    /** Saved agents only — a referring-agent fallback is not part of the stored list. */
+    const savedAgentEmails = agentEmailSource === "contract" ? agentEmails : [];
+
+    /** Replace the saved agent list on the contract (empty clears it). */
+    const saveAgentEmails = async (next: string[], successMessage: string) => {
+        if (!applicationIdForLookup) {
+            toast.error("This contract is not linked to an application yet.");
+            return;
+        }
+        setIsSavingAgentEmail(true);
+        try {
+            const res = await axiosPut(
+                `/contract/agent-email/${encodeURIComponent(applicationIdForLookup)}`,
+                { agentEmails: next },
+            );
+            setAgentEmails(readAgentEmailsFromResponse(res?.data?.data));
+            setAgentEmailSource(String(res?.data?.data?.source ?? "none"));
+            setAgentEmailDraft("");
+            toast.success(successMessage);
+        } catch (error) {
+            const msg = await parseApiErrorMessageFromAxios(error);
+            toast.error(msg || "Could not save the agent email.");
+        } finally {
+            setIsSavingAgentEmail(false);
+        }
+    };
+
+    /** Add the typed address(es) — comma-separated is fine — to the saved agents. */
+    const addAgentFromDraft = () => {
+        const typed = agentEmailDraft
+            .split(/[,;\s]+/)
+            .map((e) => e.trim())
+            .filter(Boolean);
+        if (!typed.length) return;
+        const invalid = typed.find((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+        if (invalid) {
+            toast.error(`${invalid} is not a valid agent email address.`);
+            return;
+        }
+        const known = new Set(savedAgentEmails.map((e) => e.toLowerCase()));
+        const added: string[] = [];
+        for (const email of typed) {
+            if (known.has(email.toLowerCase())) continue;
+            known.add(email.toLowerCase());
+            added.push(email);
+        }
+        if (!added.length) {
+            setAgentEmailDraft("");
+            return;
+        }
+        void saveAgentEmails(
+            [...savedAgentEmails, ...added],
+            added.length > 1 ? "Agent emails saved." : "Agent email saved.",
+        );
+    };
+
+    const removeAgentEmail = (email: string) => {
+        void saveAgentEmails(
+            savedAgentEmails.filter((e) => e.toLowerCase() !== email.toLowerCase()),
+            "Agent email removed.",
+        );
+    };
+
     const voidLinkedContractEnvelope = async (envelopeId: string, reason: string) => {
         await dispatch(
             voidBoldSignDocument({
@@ -5766,6 +5883,15 @@ const PDFViewerModal = ({
             toast.error("This contract is not linked to an application yet.");
             return;
         }
+        // This rebuilds the package from scratch — users reached for it to send the
+        // same contract to a corrected email and lost every value they had entered.
+        const confirmed = window.confirm(
+            "Start a NEW contract? The sent contract is archived and every value edited by hand " +
+                "on the prefill form, addendums and signer list is cleared. The deal returns to " +
+                "Contract Pending.\n\nTo send the same contract again (or to a corrected email), " +
+                "cancel and use \"Resend unsigned contract\" instead.",
+        );
+        if (!confirmed) return;
         setIsResendingNewContract(true);
         try {
             /**
@@ -5904,6 +6030,9 @@ const PDFViewerModal = ({
                 // Copy-only recipients — the backend emails them the contract
                 // package once merchants are sent (never a signer).
                 ccEmails: ccForSend,
+                // Saved on the contract server-side too, in case the panel's
+                // own save is still in flight when Send is clicked.
+                ...(savedAgentEmails.length ? { agentEmails: savedAgentEmails } : {}),
             }, {
                 // The backend only validates before answering; the SignNow publish
                 // and SendGrid emails finish in the background and report back
@@ -7297,11 +7426,18 @@ const PDFViewerModal = ({
     const sentStepUnlockedRef = useRef(sentStepUnlocked);
     sentStepUnlockedRef.current = sentStepUnlocked;
 
+    /**
+     * The `sentAt` inferred from a contract row (not from a send made in this session).
+     * Compared by identity so a fresh row that is no longer sent can undo only this one.
+     */
+    const hydratedSentAtRef = useRef<Date | null>(null);
     const hydrateSentAtFromContract = useCallback(
         (contract: Record<string, unknown> | null | undefined) => {
             if (sentAtRef.current) return;
             const docSentAt = pickContractEnvelopeDocument(contract)?.sentAt;
-            setSentAt(docSentAt ? new Date(String(docSentAt)) : new Date());
+            const next = docSentAt ? new Date(String(docSentAt)) : new Date();
+            hydratedSentAtRef.current = next;
+            setSentAt(next);
         },
         [],
     );
@@ -7507,6 +7643,25 @@ const PDFViewerModal = ({
                 const awaitingSignNowMerchantEmail = Boolean(
                     signNowEmbedUrlRef.current || signNowReviewCompleteRef.current,
                 );
+                /**
+                 * A `sentAt` inferred from an older row (e.g. before a resend archived the
+                 * envelope) short-circuits every "already sent" check, hiding Review in
+                 * SignNow for good. Drop it once the fresh row shows nothing sent. A send
+                 * made in this session sets its own `sentAt` and is never undone here.
+                 */
+                if (
+                    !awaitingSignNowMerchantEmail &&
+                    sentAtRef.current &&
+                    sentAtRef.current === hydratedSentAtRef.current &&
+                    !isContractAlreadySent(c, null)
+                ) {
+                    hydratedSentAtRef.current = null;
+                    sentAtRef.current = null;
+                    sentStepUnlockedRef.current = false;
+                    contractWasSentRef.current = false;
+                    setSentAt(null);
+                    setSentStepUnlocked(false);
+                }
                 const nowSent = awaitingSignNowMerchantEmail
                     ? false
                     : sentStepUnlockedRef.current ||
@@ -8252,6 +8407,7 @@ const PDFViewerModal = ({
                 ...existingOverrides,
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: priorBlob,
                 estimatedAnnualPercentageRate: String(args.metrics.estimatedAnnualPercentageRate),
+                [DISCLOSURE_MONTHLY_REVENUES_KEY]: args.inputs.monthlyRevenues,
             };
 
             setSavingDisclosureCalculation(true);
@@ -8295,6 +8451,61 @@ const PDFViewerModal = ({
             applicationData,
             dispatch,
         ],
+    );
+
+    /**
+     * Saves the disclosure calculator's merchant monthly revenue on its own, the moment a
+     * month is edited or removed, so it is there the next time the calculator opens and
+     * survives "Regenerate Contract" (the backend keeps the key through both).
+     */
+    const saveDisclosureMonthlyRevenues = useCallback(
+        async (revenues: number[]): Promise<boolean> => {
+            const cid = effectiveContractId;
+            if (cid == null || !Number.isFinite(cid)) {
+                toast.error("Open a contract record before saving monthly revenue.");
+                return false;
+            }
+            const existingOverrides =
+                resolvedContract != null &&
+                typeof resolvedContract.contractPrefillOverrides === "object" &&
+                resolvedContract.contractPrefillOverrides != null &&
+                !Array.isArray(resolvedContract.contractPrefillOverrides)
+                    ? {
+                          ...(resolvedContract.contractPrefillOverrides as Record<string, unknown>),
+                      }
+                    : {};
+            const nextContractPrefillOverrides: Record<string, unknown> = {
+                ...existingOverrides,
+                [DISCLOSURE_MONTHLY_REVENUES_KEY]: revenues,
+            };
+            try {
+                const result = await dispatch(
+                    updateContract({
+                        id: cid,
+                        data: { contractPrefillOverrides: nextContractPrefillOverrides },
+                    }),
+                ).unwrap();
+                const payload = (result as { data?: unknown })?.data ?? result;
+                const fullSaved =
+                    (payload as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides ?? nextContractPrefillOverrides;
+                setResolvedContract((prev) =>
+                    prev ? { ...prev, contractPrefillOverrides: fullSaved ?? null } : prev,
+                );
+                return true;
+            } catch (err: unknown) {
+                const msg =
+                    typeof err === "string"
+                        ? err
+                        : String(
+                              (err as { message?: string })?.message ||
+                                  "Failed to save monthly revenue.",
+                          );
+                toast.error(msg);
+                return false;
+            }
+        },
+        [effectiveContractId, resolvedContract, dispatch],
     );
 
     const applySpaCalculation = useCallback(
@@ -9250,6 +9461,15 @@ const PDFViewerModal = ({
         ) {
             return;
         }
+        // SignNow: wait for the contract's funder. Before it resolves, refs come out in their
+        // raw catalog form and the linked list is unfiltered — persisting from that state
+        // twinned Flex / EPA (stuck pending rows) and dropped saved addenda after a regenerate.
+        if (
+            isSignNowContractUiEnabled() &&
+            (!contractPrefillLoaded || fundersLoading || !selectedFunderProfile)
+        ) {
+            return;
+        }
         const isRefinance = applicationIsRefinance(
             (applicationData as Record<string, unknown> | null) ?? null,
             (offerDecisionData as Record<string, unknown> | null) ?? null,
@@ -9303,6 +9523,8 @@ const PDFViewerModal = ({
         addendumTemplateOptions,
         addendumPickerEpoch,
         syncAddendumTemplateForApplication,
+        contractPrefillLoaded,
+        selectedFunderProfile,
     ]);
 
     const persistContractEnvelopeHistory = useCallback(
@@ -9554,7 +9776,13 @@ const PDFViewerModal = ({
                 if (docType === "addendum" && mappingRef) {
                     const opt = `bs:${mappingRef}`;
                     setSelectedAddendumOptions((prev) =>
-                        prev.includes(opt) ? prev : [...prev, opt],
+                        prev.some(
+                            (o) =>
+                                o.startsWith("bs:") &&
+                                sameAddendumPickerRef(o.slice(3), mappingRef),
+                        )
+                            ? prev
+                            : [...prev, opt],
                     );
                 }
                 setDocumentUploadMessage(
@@ -9683,6 +9911,16 @@ const PDFViewerModal = ({
             }
             return;
         }
+        // SignNow: reconcile only once the contract's funder is known. Until then every row
+        // counted as "owned" and was seeded in its raw form, which twinned Flex / EPA with
+        // their funder hex form, and a transient funder could delete saved mappings. The
+        // board shows the saved rows meanwhile.
+        if (
+            isSignNowContractUiEnabled() &&
+            (!contractPrefillLoaded || fundersLoading || !selectedFunderProfile)
+        ) {
+            return;
+        }
 
         const validRefs: string[] = [];
         const invalidRows: ContractDocumentTemplateMappingRow[] = [];
@@ -9766,7 +10004,9 @@ const PDFViewerModal = ({
                     // Preserve each optimistic Exhibit C copy; do not collapse.
                     continue;
                 }
-                if (!validRefs.some((v) => v.toLowerCase() === ref.toLowerCase())) {
+                // Same addendum in another ref form (catalog key vs funder hex) is not a
+                // second pick — pushing it built a duplicate pending row.
+                if (!validRefs.some((v) => sameAddendumPickerRef(v, ref))) {
                     validRefs.push(ref);
                 }
             }
@@ -9829,6 +10069,8 @@ const PDFViewerModal = ({
         resolveAddendumSelectionRef,
         selectedFunderAddendumOptions,
         addendumPickerEpoch,
+        contractPrefillLoaded,
+        selectedFunderProfile,
     ]);
 
     const prevActiveStepRef = useRef<ContractWizardStep>(activeStep);
@@ -13212,6 +13454,14 @@ const PDFViewerModal = ({
                                     </DialogContent>
                                 </Dialog>
 
+                                <ResendUnsignedContractDialog
+                                    open={resendUnsignedOpen}
+                                    onOpenChange={setResendUnsignedOpen}
+                                    envelopeId={sentStepPreviewEnvelopeId ?? ""}
+                                    contractLabel={selectedSentRow?.label}
+                                    onResent={() => onContractDocumentsChanged?.()}
+                                />
+
                                 <Dialog
                                     open={!!editRecordModal}
                                     onOpenChange={(open: boolean) => {
@@ -14873,6 +15123,78 @@ const PDFViewerModal = ({
                                     Add CC
                                 </Button>
                             </div>
+                            <div className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                                <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
+                                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--brand)]/12">
+                                        <User className="h-3.5 w-3.5" aria-hidden />
+                                    </span>
+                                    Agent (emailed on send and when signed)
+                                    {selectedFunder ? (
+                                        <span className="normal-case tracking-normal text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                            · from {selectedFunder}
+                                        </span>
+                                    ) : null}
+                                </span>
+                            </div>
+                            {agentEmails.length ? (
+                                <div className="flex flex-wrap gap-1.5">
+                                    {agentEmails.map((email) => (
+                                        <span
+                                            key={email}
+                                            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-amber-300/60 bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-slate-100"
+                                            title={`Agent: ${email}`}
+                                        >
+                                            <User className="h-3 w-3 shrink-0 text-amber-700 opacity-80" aria-hidden />
+                                            <span className="max-w-[220px] truncate">{email}</span>
+                                            <span className="text-[10px] font-normal uppercase tracking-wide text-amber-700/80 dark:text-amber-300/80">
+                                                {agentEmailSource === "contract" ? "Agent" : "Referring agent"}
+                                            </span>
+                                            {agentEmailSource === "contract" ? (
+                                                <button
+                                                    type="button"
+                                                    className="shrink-0 rounded p-0.5 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 disabled:pointer-events-none disabled:opacity-40"
+                                                    aria-label={`Remove agent ${email}`}
+                                                    disabled={isSavingAgentEmail || isCancellingContract}
+                                                    onClick={() => removeAgentEmail(email)}
+                                                >
+                                                    <X className="h-3.5 w-3.5" />
+                                                </button>
+                                            ) : null}
+                                        </span>
+                                    ))}
+                                </div>
+                            ) : null}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                    id="pdf-viewer-agent-email-draft"
+                                    type="email"
+                                    autoComplete="email"
+                                    placeholder="agent@company.com"
+                                    value={agentEmailDraft}
+                                    onChange={(e) => setAgentEmailDraft(e.target.value)}
+                                    className="h-9 max-w-xs bg-white dark:bg-slate-950"
+                                    disabled={isSavingAgentEmail || isCancellingContract}
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            addAgentFromDraft();
+                                        }
+                                    }}
+                                />
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-9 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                                    disabled={isSavingAgentEmail || isCancellingContract || !agentEmailDraft.trim()}
+                                    onClick={addAgentFromDraft}
+                                >
+                                    {isSavingAgentEmail ? (
+                                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+                                    ) : null}
+                                    Add Agent
+                                </Button>
+                            </div>
                             </>
                             )}
                         </div>
@@ -14923,6 +15245,17 @@ const PDFViewerModal = ({
                               * left the Sent step showing only Close / Void Contract, with no
                               * way to rebuild the package after the deal changed.
                               */}
+                            {canResendUnsignedContract ? (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="h-9 shrink-0"
+                                    onClick={() => setResendUnsignedOpen(true)}
+                                    disabled={isSending || isCancellingContract || isResendingNewContract}
+                                >
+                                    Resend unsigned contract
+                                </Button>
+                            ) : null}
                             {showResendContractOnSentStep ? (
                                 <Button
                                     type="button"
@@ -15121,6 +15454,7 @@ const PDFViewerModal = ({
                         : undefined
                 }
                 saving={savingDisclosureCalculation}
+                onSaveMonthlyRevenues={saveDisclosureMonthlyRevenues}
                 onApply={applyDisclosureCalculation}
             />
             <SpaCalculationModal

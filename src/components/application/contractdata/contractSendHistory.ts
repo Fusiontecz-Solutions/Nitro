@@ -701,6 +701,13 @@ export function isContractSendTableRowVoided(row: ContractSendTableRow): boolean
     return isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
 }
 
+/** Sent or viewed, not yet signed or voided — judged from the row's own envelope status. */
+export function isContractSendTableRowOutForSignature(row: ContractSendTableRow): boolean {
+    if (!String(row.envelopeId ?? "").trim()) return false;
+    if (isContractSendTableRowFullySigned(row) || isContractSendTableRowVoided(row)) return false;
+    return getContractSendTableRowStatusLabel(row) !== "Pending";
+}
+
 export function canVoidContractSendTableRow(
     contract: Record<string, unknown> | null | undefined,
     row: ContractSendTableRow | null | undefined,
@@ -708,8 +715,9 @@ export function canVoidContractSendTableRow(
 ): boolean {
     if (!row || !String(row.envelopeId ?? "").trim()) return false;
     if (row.rowType === "contract") {
-        if (!row.isCurrent) return false;
-        return canVoidMainContract(contract, sessionSentAt);
+        if (row.isCurrent) return canVoidMainContract(contract, sessionSentAt);
+        // Superseded send still out for signature — void it by its own envelope.
+        return isContractSendTableRowOutForSignature(row);
     }
     if (row.rowType === "ach") {
         const status = row.achStatus ?? "DRAFT";

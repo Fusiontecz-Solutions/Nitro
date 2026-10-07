@@ -211,6 +211,8 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "payment_frequency",
         // SignNow's own spelling on the disclosure page-1 payment row.
         "disclouser_pg2_frequency",
+        // Cadence beside the Estimated Term on disclosure page 2.
+        "page2_frequency",
         "Text Field 9",
     ],
     client_name: [

@@ -142,7 +142,32 @@ export function canonicalAddendumDedupKey(ref: unknown, label?: unknown): string
     }
     if (key === "epa" || key.endsWith("_epa")) return "epa";
     if (key === "monthly_fee" || key.endsWith("_monthly_fee")) return "monthly_fee";
+    // A funder's copy is often stored under its bare SignNow hex id; resolve its kind from
+    // the registered Settings name so the hex and the catalog form of the same Flex / EPA
+    // addendum collapse to one row instead of a second, never-resolving pending row.
+    const labelKind = singleInstanceKindFromLabel(knownLabelFor(ref, label));
+    if (labelKind) return labelKind;
     return key;
+}
+
+/** Single-instance addendum kind named by a Settings label (mirrors the SignNow name keys). */
+function singleInstanceKindFromLabel(label: unknown): string {
+    const slug = String(label ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    if (!slug) return "";
+    if (slug.includes("exhibit_a")) return "exhibit_a";
+    if ((slug.includes("flex") && slug.includes("addendum")) || slug === "flex" || slug.startsWith("flex_")) {
+        return "flex_addendum";
+    }
+    if (slug.includes("payoff") && slug.includes("addendum")) return "payoff_addendum";
+    if (slug.includes("monthly") && slug.includes("fee")) return "monthly_fee";
+    if (slug === "epa" || slug.startsWith("epa_") || slug.endsWith("_epa") || slug.includes("_epa_")) {
+        return "epa";
+    }
+    return "";
 }
 
 /**
