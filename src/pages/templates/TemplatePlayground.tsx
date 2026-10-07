@@ -194,7 +194,7 @@ export default function TemplatePlayground() {
 
             {funderBranded ? (
               <div className="space-y-2">
-                <Label htmlFor="tpl-funder">Funder (book)</Label>
+                <Label htmlFor="tpl-funder">Funder</Label>
                 <Select value={funderId} onValueChange={applyFunder}>
                   <SelectTrigger id="tpl-funder">
                     <SelectValue placeholder="Nitro Advance (default branding)" />

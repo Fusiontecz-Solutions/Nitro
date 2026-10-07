@@ -5185,7 +5185,7 @@ export default function ContractTab({
                         <button
                             type="button"
                             onClick={() => setEmailHistoryOpen(true)}
-                            className={`inline-flex items-center gap-2 text-sm font-medium hover:underline ${isDark ? "text-blue-300" : "text-[#2563eb]"}`}
+                            className={`inline-flex cursor-pointer items-center gap-2 text-sm font-medium hover:underline ${isDark ? "text-blue-300" : "text-[#2563eb]"}`}
                         >
                             <Mail className="h-4 w-4" aria-hidden />
                             View email recipients

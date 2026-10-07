@@ -10,7 +10,7 @@ import { renderSignedContractEmailTemplateHtml } from "./contractStatusEmailHtml
 export const SIGNED_CONTRACT_EMAIL_VARIABLES: TemplateVariable[] = [
   {
     key: "book_name",
-    label: "Book (funder) name",
+    label: "Funder name",
     placeholder: "Obsidian Capital Group",
     defaultValue: "Obsidian Capital Group",
   },

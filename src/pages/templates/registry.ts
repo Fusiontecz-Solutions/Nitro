@@ -153,7 +153,7 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
     name: "Contract Sent Email",
     category: "email",
     description:
-      "Email sent to the deal's agent when the contract goes out for signature, with the package attached. Subject: {Book}: {Merchant}: Contract Sent.",
+      "Email sent to the deal's agent when the contract goes out for signature, with the package attached. Subject: {Funder}: {Merchant}: Contract Sent.",
     variables: CONTRACT_SENT_EMAIL_VARIABLES,
     Component: ContractSentEmail,
     renderHtml: renderContractSentEmailTemplateHtml,
@@ -168,7 +168,7 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
     name: "Signed Contract Email",
     category: "email",
     description:
-      "Email sent to the inbox, CC list, signers, agent and sender once every signer completes the contract. Subject: {Book}: {Merchant}: Signed Contract.",
+      "Email sent to the inbox, CC list, signers, agent and sender once every signer completes the contract. Subject: {Funder}: {Merchant}: Signed Contract.",
     variables: SIGNED_CONTRACT_EMAIL_VARIABLES,
     Component: SignedContractEmail,
     renderHtml: renderSignedContractEmailTemplateHtml,
