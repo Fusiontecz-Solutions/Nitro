@@ -302,6 +302,14 @@ router.get('/:id/activity-logs', applicationController.getActivityLogs.bind(appl
 
 // Payment workspace: mail send history (persisted)
 router.get('/:id/contract-email-history', applicationController.getContractEmailHistory.bind(applicationController));
+router.get(
+    '/:id/contract-email-history/:emailId/content',
+    applicationController.getContractEmailContent.bind(applicationController),
+);
+router.post(
+    '/:id/contract-email-history/:emailId/resend',
+    applicationController.resendContractEmail.bind(applicationController),
+);
 router.get('/:id/payment-mail-logs',applicationController.getPaymentMailLogs.bind(applicationController));
 router.post('/:id/payment-mail-logs', applicationController.createPaymentMailLog.bind(applicationController));
 

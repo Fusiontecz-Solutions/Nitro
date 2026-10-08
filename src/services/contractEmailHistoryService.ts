@@ -1,5 +1,7 @@
+import { randomUUID } from 'crypto';
 import prisma from '../config/prismaClient';
-import { createOutboundCommunication } from './outboundCommunicationService';
+import type { MailSender } from './mailSenderIdentity';
+import { createOutboundCommunication, storeSgMessageIdOnOutbound } from './outboundCommunicationService';
 import { resolveSignedCopyParties } from './signnow/utils/signnow-signed-copy-parties';
 
 /**
@@ -58,6 +60,120 @@ async function applicationIdForEnvelope(groupId: string): Promise<string | null>
 }
 
 /**
+ * Attachments a contract email carried, stored by kind so a resend can rebuild
+ * them: the package PDF is fetched again (from its archive once signed) rather
+ * than copied into the database.
+ */
+export type ContractEmailAttachmentKind = 'brand_logo' | 'contract_pdf';
+
+/** What a resend needs besides the stored HTML body. */
+export type ContractEmailResendPayload = {
+  from?: MailSender | null;
+  replyTo?: string | null;
+  attachments: ContractEmailAttachmentKind[];
+  pdfFilename?: string | null;
+};
+
+export type TrackedMailOptions = {
+  to: string;
+  subject: string;
+  html: string;
+  from?: MailSender;
+  replyTo?: string;
+  attachments?: Array<{
+    filename?: string | false;
+    content?: Buffer | string;
+    path?: string;
+    cid?: string;
+    contentType?: string;
+    contentDisposition?: 'inline' | 'attachment';
+  }>;
+  trackingId?: string;
+};
+
+/**
+ * Send one contract email to one recipient and record it, so SendGrid's event
+ * webhook can update its status (the row id is sent as the `ocid` tracking arg)
+ * and the history can show and resend exactly what went out.
+ *
+ * The row is written before the send because the id must ride on the message.
+ * It starts as `sending` and becomes `sent` or `failed`; a webhook event that
+ * arrives first wins over the `sent` stamp. A failed send still throws.
+ */
+export async function sendTrackedContractEmail(input: {
+  groupId: string;
+  applicationId?: string | null;
+  kind: ContractEmailKind;
+  recipient: ContractEmailRecipient;
+  provider: 'sendgrid' | 'smtp';
+  mail: Omit<TrackedMailOptions, 'to' | 'trackingId'>;
+  resend: ContractEmailResendPayload;
+  send: (options: TrackedMailOptions) => Promise<unknown>;
+  /** History row this send repeats, when it is a resend. */
+  resendOf?: string | null;
+}): Promise<void> {
+  const to = String(input.recipient.email || '').trim();
+  let trackingId: string | undefined = randomUUID();
+  try {
+    const applicationId =
+      String(input.applicationId || '').trim() || (await applicationIdForEnvelope(input.groupId));
+    await createOutboundCommunication({
+      id: trackingId,
+      applicationId,
+      channel: 'EMAIL',
+      recipientType: RECIPIENT_TYPE[input.recipient.role],
+      recipient: to,
+      subject: input.mail.subject,
+      body: input.mail.html,
+      status: 'sending',
+      metadata: {
+        source: CONTRACT_EMAIL_SOURCE,
+        kind: input.kind,
+        role: input.recipient.role,
+        roleDetail: input.recipient.roleDetail || null,
+        recipientName: input.recipient.name || null,
+        groupId: input.groupId,
+        provider: input.provider,
+        resend: JSON.parse(JSON.stringify(input.resend)),
+        ...(input.resendOf ? { resendOf: input.resendOf } : {}),
+      },
+    });
+  } catch (err) {
+    // Never block the email on its log row; it just goes out untracked.
+    console.warn(`[contract-email] could not log ${input.kind} to ${to}:`, err);
+    trackingId = undefined;
+  }
+
+  let result: unknown;
+  try {
+    result = await input.send({ ...input.mail, to, ...(trackingId ? { trackingId } : {}) });
+  } catch (err) {
+    if (trackingId) {
+      const message = err instanceof Error ? err.message : String(err);
+      await prisma.outbound_communications
+        .update({
+          where: { id: trackingId },
+          data: { status: 'failed', metadata: await withMeta(trackingId, { error: message.slice(0, 500) }) },
+        })
+        .catch(() => undefined);
+    }
+    throw err;
+  }
+
+  if (!trackingId) return;
+  await prisma.outbound_communications
+    .updateMany({ where: { id: trackingId, status: 'sending' }, data: { status: 'sent' } })
+    .catch(() => undefined);
+  const messageId = String((result as { messageId?: unknown } | null)?.messageId || '').trim();
+  if (messageId) await storeSgMessageIdOnOutbound(trackingId, messageId).catch(() => undefined);
+}
+
+async function withMeta(id: string, extra: Meta): Promise<object> {
+  const row = await prisma.outbound_communications.findUnique({ where: { id }, select: { metadata: true } });
+  return { ...asMeta(row?.metadata), ...extra };
+}
+
+/**
  * Record a contract email per recipient. Best-effort: a logging failure never
  * fails the send that already happened.
  */
@@ -108,8 +224,24 @@ export type ContractEmailHistoryRow = {
   name: string | null;
   kind: ContractEmailKind;
   subject: string;
+  /** Delivery status: SendGrid webhook state for tracked mail, else `sent` / `failed`. */
   status: string;
   groupId: string | null;
+  /** `outbound_communications` id the row reads from, when it has one. */
+  outboundId: string | null;
+  provider: string | null;
+  /** True when SendGrid events update this row's status. */
+  tracked: boolean;
+  /** True when the sent HTML is stored and can be viewed. */
+  canView: boolean;
+  /** True when the history can resend this email. */
+  canResend: boolean;
+  deliveredAt: string | null;
+  openedAt: string | null;
+  openCount: number;
+  /** Bounce / drop reason or send error. */
+  failureReason: string | null;
+  resendOf: string | null;
 };
 
 type Meta = Record<string, unknown>;
@@ -150,6 +282,23 @@ async function currentPartyRoles(
   return pending;
 }
 
+/** Fields a row without its own tracked outbound record carries. */
+const UNTRACKED = {
+  outboundId: null,
+  provider: null,
+  tracked: false,
+  canView: false,
+  canResend: false,
+  deliveredAt: null,
+  openedAt: null,
+  openCount: 0,
+  failureReason: null,
+  resendOf: null,
+};
+
+const isSigningKind = (kind: ContractEmailKind) =>
+  kind === 'signing_invite' || kind === 'signing_reminder';
+
 /**
  * Signing-portal invites sent before invites were logged, read back from the
  * portal queue stored on the contract (its `emailedAt` / `remindedAt` stamps).
@@ -175,6 +324,7 @@ async function unloggedPortalInvites(
     const email = String(entry.email || '').trim();
     if (!email.includes('@')) continue;
     const base = {
+      ...UNTRACKED,
       email,
       role: 'SIGNER' as const,
       roleDetail: String(entry.role || '').trim() || null,
@@ -182,6 +332,9 @@ async function unloggedPortalInvites(
       subject,
       status: 'sent',
       groupId,
+      // The portal mints a fresh link for the signer, so it can always be resent.
+      provider: 'sendgrid',
+      canResend: true,
     };
     const emailedAt = String(entry.emailedAt || '').trim();
     if (emailedAt && !hasLogged(email, 'signing_invite')) {
@@ -195,18 +348,20 @@ async function unloggedPortalInvites(
   return rows;
 }
 
+const contractEmailRows = (applicationId: string) => ({
+  applicationId,
+  OR: [
+    { metadata: { path: ['source'], equals: CONTRACT_EMAIL_SOURCE } },
+    { metadata: { path: ['source'], equals: COMPLETION_NOTICE_SOURCE } },
+  ],
+});
+
 /** Every contract email for the application, newest first. */
 export async function listContractEmailHistory(applicationId: string): Promise<ContractEmailHistoryRow[]> {
   const rows = await prisma.outbound_communications.findMany({
-    where: {
-      applicationId,
-      OR: [
-        { metadata: { path: ['source'], equals: CONTRACT_EMAIL_SOURCE } },
-        { metadata: { path: ['source'], equals: COMPLETION_NOTICE_SOURCE } },
-      ],
-    },
+    where: contractEmailRows(applicationId),
     orderBy: { createdAt: 'desc' },
-    select: { id: true, createdAt: true, recipient: true, subject: true, status: true, metadata: true },
+    select: { id: true, createdAt: true, recipient: true, subject: true, status: true, metadata: true, body: true },
   });
 
   const partyCache = new Map<string, Promise<Map<string, ContractEmailRole>>>();
@@ -219,6 +374,10 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
     const groupId = String(meta.groupId || '').trim() || null;
 
     if (meta.source === CONTRACT_EMAIL_SOURCE) {
+      const kind = String(meta.kind || 'cc_copy') as ContractEmailKind;
+      const provider = String(meta.provider || '').trim() || null;
+      const tracking = asMeta(meta.tracking);
+      const hasPayload = Boolean(row.body) && Boolean(meta.resend);
       out.push({
         id: row.id,
         sentAt,
@@ -226,13 +385,28 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
         role: (String(meta.role || 'CC') as ContractEmailRole),
         roleDetail: String(meta.roleDetail || '').trim() || null,
         name: String(meta.recipientName || '').trim() || null,
-        kind: (String(meta.kind || 'cc_copy') as ContractEmailKind),
+        kind,
         subject,
         status,
         groupId,
+        outboundId: row.id,
+        provider,
+        tracked: hasPayload,
+        canView: Boolean(row.body),
+        // A portal signing link is re-minted on resend; anything else needs the
+        // stored HTML. SignNow's own invites are resent from SignNow.
+        canResend: isSigningKind(kind) ? provider === 'sendgrid' : hasPayload,
+        deliveredAt: String(tracking.deliveredAt || '') || null,
+        openedAt: String(tracking.openedAt || '') || null,
+        openCount: Number(tracking.openCount) || 0,
+        failureReason: String(tracking.bounceReason || meta.error || '').trim() || null,
+        resendOf: String(meta.resendOf || '').trim() || null,
       });
       continue;
     }
+
+    // Signed-copy notices now also log one tracked row per recipient.
+    if (meta.perRecipientLogged) continue;
 
     // A signed-copy notice is one row for all its recipients; split it per address.
     const recorded = asMeta(meta.partyRoles);
@@ -243,6 +417,7 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
         : new Map<string, ContractEmailRole>();
     const push = (email: string, role: ContractEmailRole, index: number) =>
       out.push({
+        ...UNTRACKED,
         id: `${row.id}-${index}`,
         sentAt,
         email,
@@ -271,4 +446,44 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
   }
 
   return out.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
+}
+
+export type ContractEmailContent = {
+  id: string;
+  email: string;
+  subject: string;
+  sentAt: string;
+  status: string;
+  from: string | null;
+  html: string;
+  attachments: string[];
+};
+
+/** The stored email behind a history row, for the history's View action. */
+export async function getContractEmailContent(
+  applicationId: string,
+  outboundId: string,
+): Promise<ContractEmailContent | null> {
+  const row = await prisma.outbound_communications.findFirst({
+    where: { id: outboundId, ...contractEmailRows(applicationId) },
+    select: { id: true, createdAt: true, recipient: true, subject: true, status: true, metadata: true, body: true },
+  });
+  if (!row?.body) return null;
+  const resend = asMeta(asMeta(row.metadata).resend);
+  const from = asMeta(resend.from);
+  const fromEmail = String(from.email || '').trim();
+  const fromName = String(from.name || '').trim();
+  const kinds = Array.isArray(resend.attachments) ? resend.attachments.map(String) : [];
+  return {
+    id: row.id,
+    email: row.recipient,
+    subject: String(row.subject || ''),
+    sentAt: row.createdAt.toISOString(),
+    status: String(row.status || 'sent'),
+    from: fromEmail ? (fromName ? `${fromName} <${fromEmail}>` : fromEmail) : null,
+    html: row.body,
+    attachments: kinds.includes('contract_pdf')
+      ? [String(resend.pdfFilename || '').trim() || 'Contract package (PDF)']
+      : [],
+  };
 }

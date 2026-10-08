@@ -93,7 +93,8 @@ import {
 import { resolveIsoApprovalEmailHtml } from '../services/applicationApprovalEmailRenderService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
 import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
-import { listContractEmailHistory } from '../services/contractEmailHistoryService';
+import { getContractEmailContent, listContractEmailHistory } from '../services/contractEmailHistoryService';
+import { ContractEmailResendError, resendContractEmail } from '../services/contractEmailResendService';
 import {
     findHistoricalSamePdfFileApplications,
     findSamePdfFileApplications,
@@ -7791,6 +7792,62 @@ class ApplicationController {
                 success: false,
                 message: 'Internal server error',
             });
+        }
+    }
+
+    /** The application a contract-email-history request is for, or the response already sent. */
+    private async contractEmailHistoryApplication(req: Request, res: Response): Promise<{ id: string } | null> {
+        const appIdStr = String(req.params.id);
+        const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(appIdStr)
+            ? { applicationId: Number(appIdStr) }
+            : { id: appIdStr };
+        const { application, forbidden } = await getApplicationForUser(whereClause, getAuthenticatedUser(req));
+        if (forbidden) {
+            res.status(403).json({
+                success: false,
+                message: 'Forbidden: you do not have access to this application',
+            });
+            return null;
+        }
+        if (!application) {
+            res.status(404).json({ success: false, message: 'Application not found' });
+            return null;
+        }
+        return application;
+    }
+
+    /** GET /:id/contract-email-history/:emailId/content — the HTML a contract email sent. */
+    async getContractEmailContent(req: Request, res: Response) {
+        try {
+            const application = await this.contractEmailHistoryApplication(req, res);
+            if (!application) return;
+            const data = await getContractEmailContent(application.id, String(req.params.emailId));
+            if (!data) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'The content of this email was not kept.',
+                });
+            }
+            return res.status(200).json({ success: true, data });
+        } catch (error: any) {
+            console.error('Get contract email content error:', error);
+            return res.status(500).json({ success: false, message: 'Internal server error' });
+        }
+    }
+
+    /** POST /:id/contract-email-history/:emailId/resend — send one history email again. */
+    async resendContractEmail(req: Request, res: Response) {
+        try {
+            const application = await this.contractEmailHistoryApplication(req, res);
+            if (!application) return;
+            const data = await resendContractEmail(application.id, String(req.params.emailId));
+            return res.status(200).json({ success: true, message: `Email resent to ${data.email}`, data });
+        } catch (error: any) {
+            if (error instanceof ContractEmailResendError) {
+                return res.status(error.status).json({ success: false, message: error.message });
+            }
+            console.error('Resend contract email error:', error);
+            return res.status(500).json({ success: false, message: 'Internal server error' });
         }
     }
 

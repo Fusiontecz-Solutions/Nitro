@@ -14,7 +14,7 @@ import { buildSigningPortalEmailHtml } from './utils/signnow-portal-email';
 import { isPortalSendInFlight, trackPortalSend } from './utils/signnow-portal-send-inflight';
 import { clearUnfinishedSentArchive } from '../docusign/utils/archive-signed-envelope-pdf';
 import { saveContractAgentEmail } from '../../utils/contractAgentEmail';
-import { logContractEmails } from '../contractEmailHistoryService';
+import { sendTrackedContractEmail } from '../contractEmailHistoryService';
 
 /**
  * CRM signing portal Ã¢â‚¬â€ contracts emailed by SendGrid instead of by SignNow.
@@ -454,27 +454,26 @@ async function emailPortalInvite(input: {
     await resolveFunderMailSender({ funderName: input.funderName }),
     { sendgridOnly: true },
   );
-  await sendSendGridMail({
-    to: email,
-    from,
-    subject: input.emailSubject || input.contractLabel,
-    html: buildSigningPortalEmailHtml({
-      recipientName: input.recipient.name || null,
-      contractLabel: input.contractLabel,
-      funderName: input.funderName || null,
-      senderEmail: input.replyToEmail || from.email,
-      signingLink,
-    }),
-    ...(input.replyToEmail ? { replyTo: input.replyToEmail } : {}),
-  });
-  void logContractEmails({
+  await sendTrackedContractEmail({
     groupId: input.envelopeId,
     kind: input.reminder ? 'signing_reminder' : 'signing_invite',
-    subject: input.emailSubject || input.contractLabel,
-    recipients: [
-      { email, role: 'SIGNER', roleDetail: input.recipient.role, name: input.recipient.name },
-    ],
+    recipient: { email, role: 'SIGNER', roleDetail: input.recipient.role, name: input.recipient.name },
     provider: 'sendgrid',
+    mail: {
+      from,
+      subject: input.emailSubject || input.contractLabel,
+      html: buildSigningPortalEmailHtml({
+        recipientName: input.recipient.name || null,
+        contractLabel: input.contractLabel,
+        funderName: input.funderName || null,
+        senderEmail: input.replyToEmail || from.email,
+        signingLink,
+      }),
+      ...(input.replyToEmail ? { replyTo: input.replyToEmail } : {}),
+    },
+    // A resend re-mints the signing link through the portal queue instead.
+    resend: { from, replyTo: input.replyToEmail, attachments: [] },
+    send: sendSendGridMail,
   });
 }
 
@@ -1307,6 +1306,37 @@ async function changePortalSigners(prepared: PreparedPortalResend): Promise<Port
   const emailed = await emailResendLinks(envelopeId, queue, [...queue.recipients]);
   console.info('[SignNow] contract signer changed and resent', { envelopeId, changed, emailed });
   return { envelopeId, emailed, changed, alreadySigned: [] };
+}
+
+/**
+ * Re-email one signer's portal link, from the contract's email history. Same
+ * checks as the contract's Resend (unsigned, sent through the portal, not just
+ * emailed), and a fresh link, since the one in the original email may expire.
+ */
+export async function resendPortalSignerLink(
+  envelopeId: string,
+  email: string,
+): Promise<PortalResendResult> {
+  const prepared = await prepareContractPortalResend({ envelopeId });
+  const target = normalizeEmail(email);
+  const row = prepared.queue.recipients.find((r) => r.email === target);
+  if (!row) throw new Conflict(`${target} is no longer a signer on this contract.`);
+  if (prepared.finished.has(target)) {
+    throw new Conflict(`${target} has already signed this contract.`);
+  }
+  const last = Date.parse(row.remindedAt || row.emailedAt || '');
+  if (Number.isFinite(last) && Date.now() - last < PORTAL_RESEND_COOLDOWN_MS) {
+    const err = new BadRequest('The signing link was just sent. Wait a minute before resending.');
+    err.status = 429;
+    throw err;
+  }
+  const emailed = await emailResendLinks(prepared.envelopeId, prepared.queue, [row]);
+  return {
+    envelopeId: prepared.envelopeId,
+    emailed,
+    changed: [],
+    alreadySigned: [...prepared.finished],
+  };
 }
 
 export type PortalResendAccepted = {

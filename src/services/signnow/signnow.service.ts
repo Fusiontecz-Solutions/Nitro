@@ -40,7 +40,7 @@ import {
   signedCopyPartyEmails,
   signedCopyPartyRoles,
 } from './utils/signnow-signed-copy-parties';
-import { logContractEmails } from '../contractEmailHistoryService';
+import { logContractEmails, sendTrackedContractEmail } from '../contractEmailHistoryService';
 import {
   buildContractEnvelopeEmailSubject,
   ensureSubjectAmountHasDollarSign,
@@ -4184,15 +4184,27 @@ export class SignNowService {
     // Each CC is its own message; delivering them one after another made the
     // caller wait on every SendGrid round trip in turn.
     const outcomes = await Promise.allSettled(
-      list.map(async (to) =>
-        sendMail({
-          from: await from,
-          to,
-          subject,
-          html: '<p>Please find the contract package attached for your records.</p>',
-          attachments,
-        }),
-      ),
+      list.map(async (to) => {
+        const sender = await from;
+        return sendTrackedContractEmail({
+          groupId,
+          kind: 'cc_copy',
+          recipient: { email: to, role: 'CC' },
+          provider: 'smtp',
+          mail: {
+            from: sender,
+            subject,
+            html: '<p>Please find the contract package attached for your records.</p>',
+            attachments,
+          },
+          resend: {
+            from: sender,
+            attachments: attachments ? ['contract_pdf'] : [],
+            pdfFilename,
+          },
+          send: sendMail,
+        });
+      }),
     );
     const emailed: string[] = [];
     outcomes.forEach((outcome, index) => {
@@ -4204,13 +4216,6 @@ export class SignNowService {
     });
     if (emailed.length) {
       console.log(`[SignNow] CC contract emailed to ${emailed.join(', ')} (group ${groupId}, subject "${subject}")`);
-      void logContractEmails({
-        groupId,
-        kind: 'cc_copy',
-        subject,
-        recipients: emailed.map((email) => ({ email, role: 'CC' as const })),
-        provider: 'smtp',
-      });
     }
 
     // Each agent gets the "Contract Sent" message, one message apiece, branded
@@ -4227,15 +4232,30 @@ export class SignNowService {
       ? [...buildBrandLogoAttachments(), ...(attachments || [])]
       : attachments;
     const agentOutcomes = await Promise.allSettled(
-      agents.map(async (to) =>
-        sendMail({
-          from: await from,
-          to,
-          subject: agentEmail!.subject,
-          html: agentEmail!.html,
-          attachments: agentAttachments,
-        }),
-      ),
+      agents.map(async (to) => {
+        const sender = await from;
+        return sendTrackedContractEmail({
+          groupId,
+          kind: 'agent_sent_notice',
+          recipient: { email: to, role: 'AGENT' },
+          provider: 'smtp',
+          mail: {
+            from: sender,
+            subject: agentEmail!.subject,
+            html: agentEmail!.html,
+            attachments: agentAttachments,
+          },
+          resend: {
+            from: sender,
+            attachments: [
+              ...(agentEmail!.usesBrandLogoAttachment ? (['brand_logo'] as const) : []),
+              ...(attachments ? (['contract_pdf'] as const) : []),
+            ],
+            pdfFilename,
+          },
+          send: sendMail,
+        });
+      }),
     );
     const agentsEmailed: string[] = [];
     agentOutcomes.forEach((outcome, index) => {
@@ -4247,13 +4267,6 @@ export class SignNowService {
     });
     if (agentsEmailed.length) {
       console.log(`[SignNow] contract-sent notice emailed to agents ${agentsEmailed.join(', ')} (group ${groupId})`);
-      void logContractEmails({
-        groupId,
-        kind: 'agent_sent_notice',
-        subject: agentEmail!.subject,
-        recipients: agentsEmailed.map((email) => ({ email, role: 'AGENT' as const })),
-        provider: 'smtp',
-      });
     }
     return { emailed, agentsEmailed };
   }

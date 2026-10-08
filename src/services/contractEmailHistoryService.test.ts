@@ -8,8 +8,14 @@ jest.mock('./signnow/utils/signnow-signed-copy-parties', () => ({
   resolveSignedCopyParties: (...args: unknown[]) => resolveSignedCopyParties(...args),
 }));
 
+const createOutboundCommunication = jest.fn(async (_input: Record<string, unknown>) => ({}));
+jest.mock('./outboundCommunicationService', () => ({
+  createOutboundCommunication: (input: Record<string, unknown>) => createOutboundCommunication(input),
+  storeSgMessageIdOnOutbound: jest.fn(async () => undefined),
+}));
+
 import prisma from '../config/prismaClient';
-import { listContractEmailHistory } from './contractEmailHistoryService';
+import { listContractEmailHistory, sendTrackedContractEmail } from './contractEmailHistoryService';
 
 const APP = 'app-1';
 const GROUP = 'group-1';
@@ -24,6 +30,7 @@ function mockRows(rows: unknown[], overrides: unknown = null) {
 beforeEach(() => {
   jest.restoreAllMocks();
   resolveSignedCopyParties.mockReset();
+  createOutboundCommunication.mockClear();
 });
 
 it('splits a signed-copy notice into one row per recipient with its role', async () => {
@@ -153,4 +160,109 @@ it('does not repeat a portal invite that is already logged', async () => {
   const rows = await listContractEmailHistory(APP);
 
   expect(rows.map((r) => r.id)).toEqual(['inv1']);
+});
+
+it('lists a tracked email with its delivery status and lets it be viewed and resent', async () => {
+  mockRows([
+    {
+      id: 'agent1',
+      createdAt: new Date('2026-10-07T09:39:00Z'),
+      recipient: 'agent@broker.com',
+      subject: 'Contract Sent',
+      status: 'opened',
+      body: '<p>Contract sent</p>',
+      metadata: {
+        source: 'contract_email',
+        kind: 'agent_sent_notice',
+        role: 'AGENT',
+        groupId: GROUP,
+        provider: 'smtp',
+        resend: { attachments: ['contract_pdf'] },
+        tracking: { deliveredAt: '2026-10-07T09:39:05Z', openedAt: '2026-10-07T09:45:00Z', openCount: 2 },
+      },
+    },
+    {
+      id: 'sn1',
+      createdAt: new Date('2026-10-07T09:38:00Z'),
+      recipient: 'owner@acme.com',
+      subject: 'Invite',
+      status: 'sent',
+      metadata: { source: 'contract_email', kind: 'signing_invite', role: 'SIGNER', groupId: GROUP, provider: 'signnow' },
+    },
+    {
+      id: 'agg1',
+      createdAt: new Date('2026-10-07T09:57:00Z'),
+      recipient: 'subs@nitroadvance.com',
+      subject: 'Signed Contract',
+      status: 'sent',
+      metadata: {
+        source: 'signnow_completion_notice',
+        groupId: GROUP,
+        recipients: ['subs@nitroadvance.com'],
+        perRecipientLogged: true,
+      },
+    },
+  ]);
+
+  const rows = await listContractEmailHistory(APP);
+
+  expect(rows.map((r) => r.id)).toEqual(['agent1', 'sn1']);
+  expect(rows[0]).toMatchObject({
+    status: 'opened',
+    tracked: true,
+    canView: true,
+    canResend: true,
+    openCount: 2,
+    deliveredAt: '2026-10-07T09:39:05Z',
+  });
+  // SignNow emailed its own invite: nothing stored, nothing to resend from here.
+  expect(rows[1]).toMatchObject({ tracked: false, canView: false, canResend: false });
+});
+
+it('sends a contract email with its log row id as the SendGrid tracking id', async () => {
+  const update = jest.spyOn(prisma.outbound_communications, 'updateMany').mockResolvedValue({ count: 1 } as never);
+  const send = jest.fn(async (_options: Record<string, unknown>) => ({}));
+
+  await sendTrackedContractEmail({
+    groupId: GROUP,
+    applicationId: APP,
+    kind: 'cc_copy',
+    recipient: { email: 'cc@funder.com', role: 'CC' },
+    provider: 'smtp',
+    mail: { subject: 'Copy', html: '<p>Copy</p>' },
+    resend: { attachments: ['contract_pdf'], pdfFilename: 'Contract.pdf' },
+    send,
+  });
+
+  const logged = createOutboundCommunication.mock.calls[0][0] as Record<string, any>;
+  expect(logged).toMatchObject({ applicationId: APP, recipient: 'cc@funder.com', body: '<p>Copy</p>', status: 'sending' });
+  expect(logged.metadata).toMatchObject({ source: 'contract_email', kind: 'cc_copy', role: 'CC' });
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: 'cc@funder.com', trackingId: logged.id }));
+  expect(update).toHaveBeenCalledWith({ where: { id: logged.id, status: 'sending' }, data: { status: 'sent' } });
+});
+
+it('marks a contract email failed when it cannot be sent', async () => {
+  jest.spyOn(prisma.outbound_communications, 'findUnique').mockResolvedValue({ metadata: { source: 'contract_email' } } as never);
+  const update = jest.spyOn(prisma.outbound_communications, 'update').mockResolvedValue({} as never);
+
+  await expect(
+    sendTrackedContractEmail({
+      groupId: GROUP,
+      applicationId: APP,
+      kind: 'agent_sent_notice',
+      recipient: { email: 'agent@broker.com', role: 'AGENT' },
+      provider: 'smtp',
+      mail: { subject: 'S', html: '<p>S</p>' },
+      resend: { attachments: [] },
+      send: async () => {
+        throw new Error('SMTP down');
+      },
+    }),
+  ).rejects.toThrow('SMTP down');
+
+  expect(update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: { status: 'failed', metadata: { source: 'contract_email', error: 'SMTP down' } },
+    }),
+  );
 });

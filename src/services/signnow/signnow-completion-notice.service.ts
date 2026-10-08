@@ -10,6 +10,11 @@ import type { MailSender } from '../mailSenderIdentity';
 import { buildBrandLogoAttachments } from '../../constants/brand';
 import { buildContractEnvelopePdfFilename } from '../../utils/contractEnvelopeEmailSubject';
 import { createOutboundCommunication } from '../outboundCommunicationService';
+import {
+  sendTrackedContractEmail,
+  type ContractEmailResendPayload,
+  type ContractEmailRole,
+} from '../contractEmailHistoryService';
 
 type MailAttachment = {
   filename?: string | false;
@@ -252,12 +257,34 @@ export async function sendSignNowCompletionNotice(
     senderError = err;
   }
 
-  const deliver = async (list: string[]): Promise<string[]> => {
+  const resend: ContractEmailResendPayload = {
+    from: from ?? null,
+    attachments: [
+      ...(branding.logoSrc.startsWith('cid:') ? (['brand_logo'] as const) : []),
+      ...(input.pdf?.length ? (['contract_pdf'] as const) : []),
+    ],
+    pdfFilename,
+  };
+  const deliver = async (
+    list: string[],
+    roleFor: (email: string) => ContractEmailRole,
+  ): Promise<string[]> => {
     const sent: string[] = [];
     for (const to of list) {
       try {
         if (senderError) throw senderError;
-        await sendMail({ to, subject, html, attachments, from });
+        // One tracked row per recipient, so the email history shows its
+        // delivery status and can resend it.
+        await sendTrackedContractEmail({
+          groupId,
+          applicationId: applicationId || null,
+          kind: 'signed_copy',
+          recipient: { email: to, role: roleFor(to) },
+          provider: 'smtp',
+          mail: { subject, html, attachments, from },
+          resend,
+          send: sendMail,
+        });
         sent.push(to);
       } catch (err) {
         console.error(`[SignNow] completion notice to ${to} failed:`, err);
@@ -266,9 +293,13 @@ export async function sendSignNowCompletionNotice(
     return sent;
   };
 
-  const emailed = await deliver(recipients);
-  const emailedCc = await deliver(ccRecipients);
-  const emailedParties = await deliver(partyRecipients);
+  const partyRole = (email: string): ContractEmailRole => {
+    const role = String(input.partyRoles?.[email.toLowerCase()] || '').toUpperCase();
+    return role === 'AGENT' || role === 'SENDER' ? role : 'SIGNER';
+  };
+  const emailed = await deliver(recipients, () => 'CONTRACTS_INBOX');
+  const emailedCc = await deliver(ccRecipients, () => 'FUNDER_CC');
+  const emailedParties = await deliver(partyRecipients, partyRole);
 
   if (emailed.length || emailedCc.length || emailedParties.length) {
     console.info('[SignNow] completion notice sent', {
@@ -293,6 +324,8 @@ export async function sendSignNowCompletionNotice(
           ccEmails: emailedCc,
           partyEmails: emailedParties,
           ...(input.partyRoles ? { partyRoles: input.partyRoles } : {}),
+          // The email history reads the per-recipient rows instead of this one.
+          perRecipientLogged: true,
         },
       });
     } catch (err) {

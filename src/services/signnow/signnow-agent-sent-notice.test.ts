@@ -25,9 +25,17 @@ const readContractAgentEmail = jest.fn();
 jest.mock('../../utils/contractAgentEmail', () => ({
   readContractAgentEmail: (...args: unknown[]) => readContractAgentEmail(...args),
 }));
-const logContractEmails = jest.fn(async (_input: Record<string, unknown>) => undefined);
+type TrackedSend = {
+  recipient: { email: string };
+  mail: Record<string, unknown>;
+  send: (options: Record<string, unknown>) => Promise<unknown>;
+};
+const sendTrackedContractEmail = jest.fn(async (input: TrackedSend) => {
+  await input.send({ ...input.mail, to: input.recipient.email });
+});
 jest.mock('../contractEmailHistoryService', () => ({
-  logContractEmails: (input: Record<string, unknown>) => logContractEmails(input),
+  logContractEmails: jest.fn(async () => undefined),
+  sendTrackedContractEmail: (input: TrackedSend) => sendTrackedContractEmail(input),
 }));
 
 import prisma from '../../config/prismaClient';
@@ -86,19 +94,19 @@ it('emails the agent the package from the funder sender, separately from the CC 
     (agentMail.attachments as Array<{ content?: Buffer }>).some((a) => a.content === PDF),
   ).toBe(true);
   // Each copy lands in the contract email history under the role it went to.
-  expect(logContractEmails).toHaveBeenCalledWith(
+  expect(sendTrackedContractEmail).toHaveBeenCalledWith(
     expect.objectContaining({
       groupId: GROUP,
       kind: 'cc_copy',
-      recipients: [{ email: 'funder@tiberianfunding.com', role: 'CC' }],
+      recipient: { email: 'funder@tiberianfunding.com', role: 'CC' },
+      resend: expect.objectContaining({ attachments: ['contract_pdf'] }),
     }),
   );
-  expect(logContractEmails).toHaveBeenCalledWith(
+  expect(sendTrackedContractEmail).toHaveBeenCalledWith(
     expect.objectContaining({
       groupId: GROUP,
       kind: 'agent_sent_notice',
-      subject: agentMail.subject,
-      recipients: [{ email: 'agent@broker.com', role: 'AGENT' }],
+      recipient: { email: 'agent@broker.com', role: 'AGENT' },
     }),
   );
 });

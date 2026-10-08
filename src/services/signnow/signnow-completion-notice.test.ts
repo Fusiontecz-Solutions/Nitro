@@ -29,6 +29,16 @@ jest.mock('../../config/nodemailer', () => ({
 jest.mock('../outboundCommunicationService', () => ({
   createOutboundCommunication: jest.fn(async () => undefined),
 }));
+// Each recipient's tracked send just delivers; its log row is covered elsewhere.
+jest.mock('../contractEmailHistoryService', () => ({
+  sendTrackedContractEmail: async (input: {
+    recipient: { email: string };
+    mail: Record<string, unknown>;
+    send: (options: Record<string, unknown>) => Promise<unknown>;
+  }) => {
+    await input.send({ ...input.mail, to: input.recipient.email });
+  },
+}));
 
 import sendMail from '../../config/nodemailer';
 import prisma from '../../config/prismaClient';
