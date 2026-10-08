@@ -5181,7 +5181,7 @@ export default function ContractTab({
                     </Table>
                 </div>
                 {contractSendTableRows.length > 0 && applicationUuid ? (
-                    <div className="mt-3">
+                    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
                         <button
                             type="button"
                             onClick={() => setEmailHistoryOpen(true)}
@@ -5190,6 +5190,10 @@ export default function ContractTab({
                             <Mail className="h-4 w-4" aria-hidden />
                             View email recipients
                         </button>
+                        <span className={`text-xs ${isDark ? "text-emerald-300" : "text-emerald-600"}`}>
+                            ← Click to see who received each email, its delivery status, and to view
+                            or resend it.
+                        </span>
                         <ContractEmailHistoryDialog
                             open={emailHistoryOpen}
                             onOpenChange={setEmailHistoryOpen}
