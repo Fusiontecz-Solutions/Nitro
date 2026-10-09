@@ -5,6 +5,7 @@ import {
   createDocuSignProfile,
   createFunder,
   getContractCcDefaults,
+  getSendGridUsage,
   getDocuSignProfile,
   getFunder,
   listDocuSignProfileOptions,
@@ -28,6 +29,9 @@ router.get('/funders', authenticateToken, listFunders);
 
 /** Contract/ACH send UI — tenant default + funder-resolved CC emails. */
 router.get('/contract-cc-defaults', authenticateToken, getContractCcDefaults);
+
+/** Super admin — SendGrid plan, credits left and today's sends (Applications page). */
+router.get('/sendgrid-usage', authenticateToken, requireSuperAdmin, getSendGridUsage);
 
 /** Admin — DocuSign account profiles */
 router.get('/docusign-accounts', authenticateToken, requireSuperAdmin, listDocuSignProfiles);

@@ -1,7 +1,7 @@
 /**
- * The deal's agent is emailed "Application sent for contract" with the package
- * PDF when the contract goes out — from the funder's sender, sharing the CC
- * job's single PDF download, and never as a duplicate bare CC copy.
+ * The deal's agents, the send-time CCs and the funder's CC are each emailed the
+ * "Contract Sent" notice with the package PDF when the contract goes out — from
+ * the funder's sender, sharing a single PDF download, never twice to one address.
  *
  * `signnow.service` reaches puppeteer through the funder/PDF helpers it imports
  * and Jest cannot parse that package's ESM build, so it is stubbed. Mail, the
@@ -99,7 +99,7 @@ it('emails the agent the package from the funder sender, separately from the CC 
       groupId: GROUP,
       kind: 'cc_copy',
       recipient: { email: 'funder@tiberianfunding.com', role: 'CC' },
-      resend: expect.objectContaining({ attachments: ['contract_pdf'] }),
+      resend: expect.objectContaining({ attachments: expect.arrayContaining(['contract_pdf']) }),
     }),
   );
   expect(sendTrackedContractEmail).toHaveBeenCalledWith(
@@ -132,7 +132,7 @@ it('emails every agent their own contract-sent notice, and none of them a CC cop
   );
   expect(byRecipient['one@broker.com']).toContain('Contract Sent');
   expect(byRecipient['two@broker.com']).toContain('Contract Sent');
-  expect(byRecipient['admin@nitroadvance.com']).not.toContain('Contract Sent');
+  expect(byRecipient['admin@nitroadvance.com']).toContain('Contract Sent');
   expect(service.downloadGroupPdf).toHaveBeenCalledTimes(1);
 });
 
@@ -157,7 +157,7 @@ it('does not email an agent who is also a signer', async () => {
   expect(result.skippedReason).toBe('no_cc_addresses');
 });
 
-it("never emails the funder's CC the unsigned package — it gets only the signed copy", async () => {
+it("emails the funder's CC the Contract Sent notice at send time", async () => {
   service.readSignedNoticeCcRecipients = jest.fn(async () => ['Funder@TiberianFunding.com']);
   const result = await signNowService.notifyCcRecipientsOnSend(
     GROUP,
@@ -167,8 +167,14 @@ it("never emails the funder's CC the unsigned package — it gets only the signe
     [],
   );
 
-  expect(result).toEqual({ emailed: ['admin@nitroadvance.com'], agentsEmailed: [] });
-  expect(sendMail.mock.calls.map(([options]) => options.to)).toEqual(['admin@nitroadvance.com']);
+  expect(result).toEqual({
+    emailed: ['funder@tiberianfunding.com', 'admin@nitroadvance.com'],
+    agentsEmailed: [],
+  });
+  for (const [options] of sendMail.mock.calls) {
+    expect(options.subject).toBe('Tiberian Funding: Acme LLC: Contract Sent');
+    expect(String(options.html)).toContain('Awaiting Signature');
+  }
   // Still remembered on the envelope for the completion notice.
   expect(service.rememberCcRecipientsForGroup).toHaveBeenCalledWith(GROUP, [
     'funder@tiberianfunding.com',
@@ -176,10 +182,27 @@ it("never emails the funder's CC the unsigned package — it gets only the signe
   ]);
 });
 
-it('queues nothing when the funder CC is the only CC and there is no agent', async () => {
+it("emails the funder's CC even when it was not typed into the send dialog", async () => {
+  service.readSignedNoticeCcRecipients = jest.fn(async () => ['funder@tiberianfunding.com']);
+  const result = await signNowService.notifyCcRecipientsOnSend(
+    GROUP,
+    [],
+    ['merchant@acme.com'],
+    'Tiberian Funding Acme LLC $25,000.00',
+    [],
+  );
+
+  expect(result).toEqual({ emailed: ['funder@tiberianfunding.com'], agentsEmailed: [] });
+  expect(sendMail.mock.calls.map(([options]) => options.to)).toEqual(['funder@tiberianfunding.com']);
+  expect(service.rememberCcRecipientsForGroup).not.toHaveBeenCalled();
+});
+
+it('queues the funder CC when it is the only recipient', async () => {
   readContractAgentEmail.mockResolvedValue({ agentEmails: [] });
   service.readSignedNoticeCcRecipients = jest.fn(async () => ['funder@tiberianfunding.com']);
-  const notify = jest.spyOn(signNowService, 'notifyCcRecipientsOnSend');
+  const notify = jest
+    .spyOn(signNowService, 'notifyCcRecipientsOnSend')
+    .mockResolvedValue({ emailed: ['funder@tiberianfunding.com'], agentsEmailed: [] });
 
   const result = await signNowService.queueCcRecipientsOnSend(
     GROUP,
@@ -189,8 +212,7 @@ it('queues nothing when the funder CC is the only CC and there is no agent', asy
   );
   await new Promise((resolve) => setImmediate(resolve));
 
-  expect(result).toEqual({ emailed: [], queued: [], skippedReason: 'funder_cc_gets_signed_copy_only' });
-  expect(notify).not.toHaveBeenCalled();
-  expect(sendMail).not.toHaveBeenCalled();
+  expect(result).toEqual({ emailed: [], queued: ['funder@tiberianfunding.com'], agentsQueued: [] });
+  expect(notify).toHaveBeenCalled();
   notify.mockRestore();
 });

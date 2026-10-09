@@ -4147,17 +4147,14 @@ export class SignNowService {
     agentEmails?: string[] | null,
   ): Promise<{ emailed: string[]; agentsEmailed?: string[]; skippedReason?: string }> {
     const { list: ccList, agents } = this.splitSendCopyRecipients(ccEmails, signerEmails, agentEmails);
-    if (!ccList.length && !agents.length) return { emailed: [], skippedReason: 'no_cc_addresses' };
 
     // Remember the list before attempting delivery. The CC addresses exist
     // nowhere but the send request body, and the completion notice — which runs
     // days later, from a webhook with no request of its own — has no other way
     // to reach the people who were copied on the unsigned package.
     if (ccList.length) await this.rememberCcRecipientsForGroup(groupId, ccList);
-    const list = await this.withoutFunderCc(groupId, ccList);
-    if (!list.length && !agents.length) {
-      return { emailed: [], skippedReason: 'funder_cc_gets_signed_copy_only' };
-    }
+    const list = await this.withFunderCc(groupId, ccList, signerEmails, agents);
+    if (!list.length && !agents.length) return { emailed: [], skippedReason: 'no_cc_addresses' };
 
     if (!isOutboundSmtpConfigured()) {
       console.warn('[SignNow] CC contract email skipped: SMTP not configured.');
@@ -4181,6 +4178,21 @@ export class SignNowService {
       : undefined;
     // Sent as the contract's funder (its stored sender identity), else the .env default.
     const from = resolveEnvelopeMailSender(groupId).then((sender) => sender ?? undefined);
+    // CCs (the funder's CC included) and agents all get the same "Contract
+    // Sent" message, one message apiece, branded with the contract's funder.
+    const sentEmail = buildAgentContractSentEmail({
+      contractLabel: subject,
+      context: await this.readContractEmailContextForGroup(groupId),
+      signerEmails,
+      attachmentName: attachments ? pdfFilename : null,
+    });
+    const sentAttachments = sentEmail.usesBrandLogoAttachment
+      ? [...buildBrandLogoAttachments(), ...(attachments || [])]
+      : attachments;
+    const sentResendAttachments = [
+      ...(sentEmail.usesBrandLogoAttachment ? (['brand_logo'] as const) : []),
+      ...(attachments ? (['contract_pdf'] as const) : []),
+    ];
     // Each CC is its own message; delivering them one after another made the
     // caller wait on every SendGrid round trip in turn.
     const outcomes = await Promise.allSettled(
@@ -4193,13 +4205,13 @@ export class SignNowService {
           provider: 'smtp',
           mail: {
             from: sender,
-            subject,
-            html: '<p>Please find the contract package attached for your records.</p>',
-            attachments,
+            subject: sentEmail.subject,
+            html: sentEmail.html,
+            attachments: sentAttachments,
           },
           resend: {
             from: sender,
-            attachments: attachments ? ['contract_pdf'] : [],
+            attachments: sentResendAttachments,
             pdfFilename,
           },
           send: sendMail,
@@ -4215,22 +4227,9 @@ export class SignNowService {
       }
     });
     if (emailed.length) {
-      console.log(`[SignNow] CC contract emailed to ${emailed.join(', ')} (group ${groupId}, subject "${subject}")`);
+      console.log(`[SignNow] contract-sent notice emailed to CC ${emailed.join(', ')} (group ${groupId}, subject "${sentEmail.subject}")`);
     }
 
-    // Each agent gets the "Contract Sent" message, one message apiece, branded
-    // with the contract's funder.
-    const agentEmail = agents.length
-      ? buildAgentContractSentEmail({
-          contractLabel: subject,
-          context: await this.readContractEmailContextForGroup(groupId),
-          signerEmails,
-          attachmentName: attachments ? pdfFilename : null,
-        })
-      : null;
-    const agentAttachments = agentEmail?.usesBrandLogoAttachment
-      ? [...buildBrandLogoAttachments(), ...(attachments || [])]
-      : attachments;
     const agentOutcomes = await Promise.allSettled(
       agents.map(async (to) => {
         const sender = await from;
@@ -4241,16 +4240,13 @@ export class SignNowService {
           provider: 'smtp',
           mail: {
             from: sender,
-            subject: agentEmail!.subject,
-            html: agentEmail!.html,
-            attachments: agentAttachments,
+            subject: sentEmail.subject,
+            html: sentEmail.html,
+            attachments: sentAttachments,
           },
           resend: {
             from: sender,
-            attachments: [
-              ...(agentEmail!.usesBrandLogoAttachment ? (['brand_logo'] as const) : []),
-              ...(attachments ? (['contract_pdf'] as const) : []),
-            ],
+            attachments: sentResendAttachments,
             pdfFilename,
           },
           send: sendMail,
@@ -4303,16 +4299,23 @@ export class SignNowService {
   }
 
   /**
-   * The send-time CC list minus the selected funder's CC. The funder receives
-   * only the signed copy (the branded completion notice); the bare unsigned
-   * package at send time is for the extra addresses typed into the send dialog.
+   * The send-time CC list plus the selected funder's CC, so the funder gets the
+   * "Contract Sent" notice too even when its address was not typed into the
+   * send dialog. Signers and agents are left out (agents get their own copy).
    */
-  private async withoutFunderCc(groupId: string, list: string[]): Promise<string[]> {
-    if (!list.length) return list;
-    const funderCc = new Set(
-      (await this.readSignedNoticeCcRecipients(groupId)).map((e) => e.toLowerCase()),
+  private async withFunderCc(
+    groupId: string,
+    list: string[],
+    signerEmails: string[] | undefined | null,
+    agents: string[],
+  ): Promise<string[]> {
+    const skip = new Set(
+      [...(signerEmails || []), ...agents, ...list].map((e) => String(e || '').trim().toLowerCase()),
     );
-    return list.filter((e) => !funderCc.has(e.toLowerCase()));
+    const funderCc = (await this.readSignedNoticeCcRecipients(groupId))
+      .map((e) => String(e || '').trim())
+      .filter((e) => e.includes('@') && !skip.has(e.toLowerCase()) && skip.add(e.toLowerCase()));
+    return [...list, ...funderCc];
   }
 
   /** The deal's agents (send panel values, else referring agent) for a sent group. */
@@ -4360,13 +4363,10 @@ export class SignNowService {
   ): Promise<{ emailed: string[]; queued: string[]; agentsQueued?: string[]; skippedReason?: string }> {
     const agentEmails = await this.readAgentEmailsForGroup(groupId);
     const { list, agents } = this.splitSendCopyRecipients(ccEmails, signerEmails, agentEmails);
-    if (!list.length && !agents.length) {
-      return { emailed: [], queued: [], skippedReason: 'no_cc_addresses' };
-    }
     if (list.length) await this.rememberCcRecipientsForGroup(groupId, list);
-    const unsignedCopyList = await this.withoutFunderCc(groupId, list);
-    if (!unsignedCopyList.length && !agents.length) {
-      return { emailed: [], queued: [], skippedReason: 'funder_cc_gets_signed_copy_only' };
+    const sentNoticeList = await this.withFunderCc(groupId, list, signerEmails, agents);
+    if (!sentNoticeList.length && !agents.length) {
+      return { emailed: [], queued: [], skippedReason: 'no_cc_addresses' };
     }
     if (!isOutboundSmtpConfigured()) {
       console.warn('[SignNow] CC contract email skipped: SMTP not configured.');
@@ -4377,7 +4377,7 @@ export class SignNowService {
         console.warn(`[SignNow] background CC email failed for ${groupId}:`, err),
       );
     });
-    return { emailed: [], queued: unsignedCopyList, agentsQueued: agents };
+    return { emailed: [], queued: sentNoticeList, agentsQueued: agents };
   }
 
   private async downloadMergedGroupPdf(

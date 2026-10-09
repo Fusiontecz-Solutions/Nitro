@@ -200,22 +200,47 @@ function cents(value: number): number {
 }
 
 /**
- * Keep the disclosure's fee and net lines on the same "$25 wire fee" choice as
- * the contract's TOTAL FEES.
+ * Fee lines checked, in order, for the fee a stale disclosure tab was saved
+ * with. Lines that can only ever hold the origination fee come first; the
+ * page-3 line 1 (a state's own itemization on NY) and the broker fee (Utah's
+ * fee paid to the broker) come last, so they are never what defines it.
+ */
+const DISCLOSURE_FEE_KEY_PRIORITY = [
+  'disclosure_origination_fee',
+  'disclosure_fees_deducted',
+  'fees_deducted',
+  'deducted_at_disbursement',
+  'total_fees',
+  'appendix_underwriting_fees',
+  'disclosure_page3_line_1',
+  'disclosure_broker_fee',
+];
+
+/**
+ * Keep the disclosure's fee and net lines on the contract's TOTAL FEES.
  *
  * The disclosure's own tab in the prefill editor saves its money lines, and the
  * CRM screen posts that tab under the CRM ids *and* under the widget names
  * (`Text Field 2`, `disclosure_recipient_funds_p3`, …). A widget-name key
- * outranks every alias when a widget resolves, so a tab saved while the box was
- * ticked kept the $25 after it was unticked: every funder's disclosure printed
- * "funds provided directly 8,975.00" beside a contract NET AMOUNT of 9,000.00.
+ * outranks every alias when a widget resolves, so a tab saved before the deal
+ * changed kept printing the old fee:
+ *  - a tab saved while the "$25 wire fee" box was ticked kept the $25 after it
+ *    was unticked ("funds provided directly 8,975.00" beside a contract NET
+ *    AMOUNT of 9,000.00);
+ *  - a tab saved before the offer was regenerated with a new origination rate
+ *    kept the old fee outright (the disclosure's "Prepaid Finance Charges:
+ *    Origination Fee" 3,025.00 beside a contract TOTAL FEES of 2,125.00).
+ * Every funder — Nitro Advance, Obsidian Capital Group, Tiberian Funding —
+ * shares these widget names, so this one pass covers all three.
  *
  * `total_fees` has already been resolved from the live offer and the deal's
- * wire-fee choice. A disclosure line that is off from it by exactly the wire fee
- * is that stale toggle: fee lines are set to TOTAL FEES and net lines move by the
- * same amount the other way. A net line only moves when it really is "advance −
- * that stale fee (− any refinance)", so a line holding the whole advance, a
- * refinance balance or a state's own itemization is never touched.
+ * wire-fee choice, and it is what the contract's first page prints. The stale
+ * fee is read from the first origination line that disagrees with it; every fee
+ * line holding that same stale fee is set to TOTAL FEES, and net lines move by
+ * the same amount the other way. A net line only moves when it really is
+ * "advance − that stale fee (− any refinance)", so a line holding the whole
+ * advance or a refinance balance is never touched, and a fee line holding a
+ * different amount (Utah's broker fee) keeps it.
  */
 export function alignDisclosureWireFeeWithTotalFees(
   values: Record<string, string>,
@@ -237,32 +262,38 @@ export function alignDisclosureWireFeeWithTotalFees(
     if (DISCLOSURE_FEE_KEYS.has(canon)) feeKeys.push(key);
     else if (DISCLOSURE_NET_KEYS.has(canon)) netKeys.push(key);
   }
+  const priority = (key: string) =>
+    DISCLOSURE_FEE_KEY_PRIORITY.indexOf(canonicalDisclosureKey(key));
+  const feeKeysByPriority = [...feeKeys].sort((a, b) => priority(a) - priority(b));
 
-  /** `staleFee − totalFees` when this line was saved under the other choice, else 0. */
+  /** `staleFee − totalFees` for a fee line saved against other terms, else 0. */
   const feeDrift = (key: string): number => {
     const fee = parseMoney(values[key]);
-    if (fee == null) return 0;
-    const delta = cents(fee - totalFees);
-    return Math.abs(delta) === wire ? delta : 0;
+    if (fee == null || !(fee > 0)) return 0;
+    // A fee at or above the advance is not a fee this deal could carry.
+    if (funded != null && funded > 0 && cents(fee + refi) >= funded) return 0;
+    return cents(fee - totalFees);
   };
-  const netDrift = (key: string): number => {
+  /** How far a net line is from "advance − TOTAL FEES (− refinance)". */
+  const netDelta = (key: string, matches: (delta: number) => boolean): number => {
     const net = parseMoney(values[key]);
     if (net == null || !(net > 0) || funded == null || !(funded > 0)) return 0;
     for (const deducted of refi > 0 ? [0, refi] : [0]) {
       const delta = cents(funded - totalFees - deducted - net);
-      if (Math.abs(delta) === wire) return delta;
+      if (delta && matches(delta)) return delta;
     }
     return 0;
   };
 
   let drift = 0;
-  for (const key of feeKeys) {
+  for (const key of feeKeysByPriority) {
     drift = feeDrift(key);
     if (drift) break;
   }
+  // No fee line posted: only the wire-fee toggle can be read from a net alone.
   if (!drift) {
     for (const key of netKeys) {
-      drift = netDrift(key);
+      drift = netDelta(key, (delta) => Math.abs(delta) === wire);
       if (drift) break;
     }
   }
@@ -273,7 +304,9 @@ export function alignDisclosureWireFeeWithTotalFees(
     if (feeDrift(key) === drift) out[key] = money(totalFees);
   }
   for (const key of netKeys) {
-    if (netDrift(key) === drift) out[key] = money((parseMoney(values[key]) as number) + drift);
+    if (netDelta(key, (delta) => delta === drift)) {
+      out[key] = money((parseMoney(values[key]) as number) + drift);
+    }
   }
   return out;
 }

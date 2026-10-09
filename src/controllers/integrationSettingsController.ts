@@ -25,6 +25,7 @@ import {
   type FunderProfileInput,
 } from '../services/funderProfileService';
 import { resolveContractCcDefaultsForApi } from '../utils/contractCcDefaults';
+import { getSendGridUsageSummary } from '../services/sendgridUsageService';
 import prisma from '../config/prismaClient';
 import { invalidateStoredTemplatePdf } from '../services/signnow/utils/signnow-template-pdf-archive';
 import { extractSignNowTemplateId } from '../services/signnow/utils/signnow-client';
@@ -220,6 +221,17 @@ export const listFunders = async (req: Request, res: Response) => {
  * Tenant platform default CC + optional funder override (resolved).
  * Used by CRM + Super Admin tenant-proxy Contract/ACH send UI.
  */
+/** SendGrid plan, remaining credits and today's send volume. `?refresh=1` skips the 60s cache. */
+export const getSendGridUsage = async (req: Request, res: Response) => {
+  try {
+    const force = String(req.query?.refresh ?? '') === '1';
+    const data = await getSendGridUsageSummary({ force });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
 export const getContractCcDefaults = async (req: Request, res: Response) => {
   try {
     const q = req.query || {};

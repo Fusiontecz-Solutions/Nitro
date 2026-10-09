@@ -344,19 +344,70 @@ describe('alignDisclosureWireFeeWithTotalFees', () => {
     expect(out['Text Field 2']).toBe('9,000.00');
   });
 
-  it('leaves a disclosure that already agrees with TOTAL FEES, or differs by another amount', () => {
-    const lines = (fee: string, net: string) => ({
+  it('leaves a disclosure that already agrees with TOTAL FEES', () => {
+    const agreeing = {
       ...unticked,
-      disclosure_broker_fee: fee,
-      disclosure_page3_line_1: fee,
-      disclosure_page3_net: net,
-      disclosure_recipient_funds: net,
-      funding_provided_direct: net,
-      disclosure_amount_financed: net,
-    });
-    const agreeing = lines('1,000.00', '9,000.00');
+      disclosure_broker_fee: '1,000.00',
+      disclosure_page3_line_1: '1,000.00',
+      disclosure_page3_net: '9,000.00',
+      disclosure_recipient_funds: '9,000.00',
+      funding_provided_direct: '9,000.00',
+      disclosure_amount_financed: '9,000.00',
+    };
     expect(alignDisclosureWireFeeWithTotalFees(agreeing)).toEqual(agreeing);
-    const stateItemized = lines('1,150.00', '8,850.00');
-    expect(alignDisclosureWireFeeWithTotalFees(stateItemized)).toEqual(stateItemized);
   });
+
+  /**
+   * Regenerated contract: the offer's origination rate moved from 10% to 7% on a
+   * $30,000 advance, the contract printed TOTAL FEES 2,125.00, and the disclosure
+   * tab saved against the old offer still printed 3,025.00 — on every funder.
+   */
+  it('replaces an origination fee saved against a superseded offer', () => {
+    const out = alignDisclosureWireFeeWithTotalFees({
+      purchase_price: '30,000.00',
+      total_fees: '2,125.00',
+      net_to_merchant: '27,875.00',
+      disclosure_origination_fee: '3,025.00',
+      disclosure_fees_deducted: '3,025.00',
+      disclosure_broker_fee_p3: '3,025.00',
+      disclosure_page3_line_1_p3: '3,025.00',
+      disclosure_page3_line_2: '0.00',
+      'Text Field 1': '30,000.00',
+      'Text Field 2': '26,975.00',
+      disclosure_recipient_funds_p3: '26,975.00',
+      disclosure_page3_net_p3: '26,975.00',
+      disclosure_page3_subtotal_p3: '30,000.00',
+    });
+    expect(out.disclosure_origination_fee).toBe('2,125.00');
+    expect(out.disclosure_fees_deducted).toBe('2,125.00');
+    expect(out.disclosure_broker_fee_p3).toBe('2,125.00');
+    expect(out.disclosure_page3_line_1_p3).toBe('2,125.00');
+    expect(out['Text Field 2']).toBe('27,875.00');
+    expect(out.disclosure_recipient_funds_p3).toBe('27,875.00');
+    expect(out.disclosure_page3_net_p3).toBe('27,875.00');
+    expect(out['Text Field 1']).toBe('30,000.00');
+    expect(out.disclosure_page3_subtotal_p3).toBe('30,000.00');
+    expect(out.net_to_merchant).toBe('27,875.00');
+  });
+
+  it("keeps a broker fee that is not the origination fee (Utah)", () => {
+    const out = alignDisclosureWireFeeWithTotalFees({
+      purchase_price: '30,000.00',
+      total_fees: '2,125.00',
+      disclosure_fees_deducted: '3,025.00',
+      disclosure_broker_fee: '600.00',
+    });
+    expect(out.disclosure_fees_deducted).toBe('2,125.00');
+    expect(out.disclosure_broker_fee).toBe('600.00');
+  });
+
+  it('ignores a fee line at or above the advance', () => {
+    const values = {
+      purchase_price: '10,000.00',
+      total_fees: '1,000.00',
+      disclosure_fees_deducted: '10,025.00',
+    };
+    expect(alignDisclosureWireFeeWithTotalFees(values)).toEqual(values);
+  });
+});
 });
