@@ -109,8 +109,8 @@ function roleDisplayLabel(role: string | null | undefined): string {
       return 'Scrubber';
     case 'UNDERWRITER':
       return 'Underwriter';
-    case 'SUPER_ADMIN':
-    case 'SUPERADMIN':
+    case 'CONTRACTS_LOG':
+    case 'CONTRACTSLOG':
       return 'Super Admin';
     case 'ADMIN':
       return 'Admin';
@@ -146,7 +146,7 @@ async function findActiveUsersByIds(ids: string[]): Promise<RecipientUser[]> {
 async function findActiveSuperAdmins(): Promise<RecipientUser[]> {
   try {
     return await prisma.user.findMany({
-      where: { role: 'SUPER_ADMIN' as any, isActive: true },
+      where: { role: 'CONTRACTS_LOG' as any, isActive: true },
       select: { id: true, email: true, firstName: true, lastName: true },
     });
   } catch (err) {
@@ -349,9 +349,9 @@ export async function notifyDealUsersOfComment(
   const actorId = String(params.createdById || '').trim();
 
   // Exclude the poster from deal-user fan-out, but never drop Super Admins.
-  // Portal ISO sessions are often mapped to a SUPER_ADMIN user by email — callers
+  // Portal ISO sessions are often mapped to a CONTRACTS_LOG user by email — callers
   // should pass createdById=null for public ISO so that Super Admin still receives
-  // a personal inbox row (bell uses personalOnly for SUPER_ADMIN).
+  // a personal inbox row (bell uses personalOnly for CONTRACTS_LOG).
   const byId = new Map<string, RecipientUser>();
   for (const r of recipients) {
     if (!r?.id) continue;

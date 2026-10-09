@@ -1,5 +1,5 @@
 /**
- * Seeds demo notifications for the first SUPER_ADMIN so the rebuilt notifications
+ * Seeds demo notifications for the first CONTRACTS_LOG so the rebuilt notifications
  * panel has data across categories / buckets / importance to exercise.
  *
  * Run: npx ts-node src/scripts/seedNotifications.ts
@@ -9,8 +9,8 @@ import prisma from '../config/prismaClient';
 import { deriveCategory } from '../services/notificationCategory';
 
 async function main() {
-    const admin = await prisma.user.findFirst({ where: { role: 'SUPER_ADMIN' } });
-    if (!admin) throw new Error('No SUPER_ADMIN user found. Bootstrap one first.');
+    const admin = await prisma.user.findFirst({ where: { role: 'CONTRACTS_LOG' } });
+    if (!admin) throw new Error('No CONTRACTS_LOG user found. Bootstrap one first.');
 
     // Dev seed: reset this user's notifications so re-runs don't pile up duplicates.
     const removed = await prisma.notification.deleteMany({ where: { recipientId: admin.id } });

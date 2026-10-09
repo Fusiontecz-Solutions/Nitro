@@ -47,7 +47,7 @@ function normalizeRole(role: string | UserRole | null | undefined): UserRole | n
         'ACCOUNTANT',
         'ACCOUNTS',
         'ADMIN',
-        'SUPER_ADMIN',
+        'CONTRACTS_LOG',
         'OPERATIONS',
     ];
 
@@ -217,7 +217,7 @@ export async function getApplicationForUser(
     const deletedAt = (application as { deletedAt?: Date | null }).deletedAt;
     if (
         deletedAt &&
-        role !== 'SUPER_ADMIN' &&
+        role !== 'CONTRACTS_LOG' &&
         role !== 'OPERATIONS'
     ) {
         return { application: null, forbidden: false };

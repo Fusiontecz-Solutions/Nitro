@@ -56,7 +56,7 @@ export const requiresActionCodeForRole = (role: string | null | undefined): bool
         .trim()
         .toUpperCase()
         .replace(/-/g, '_');
-    return normalized !== 'SUPER_ADMIN';
+    return normalized !== 'CONTRACTS_LOG';
 };
 
 /**
@@ -86,7 +86,7 @@ export async function generateApplicationActionCode(
     // response if the notification write fails.
     try {
         const superAdmins = await prisma.user.findMany({
-            where: { role: 'SUPER_ADMIN', isActive: true },
+            where: { role: 'CONTRACTS_LOG', isActive: true },
             select: { id: true },
         });
         const recipientIds = superAdmins

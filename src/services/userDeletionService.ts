@@ -19,7 +19,7 @@ async function resolveFallbackUserId(
   const admin = await tx.user.findFirst({
     where: {
       id: { not: userId },
-      role: { in: ['SUPER_ADMIN', 'ADMIN'] },
+      role: { in: ['CONTRACTS_LOG', 'ADMIN'] },
     },
     orderBy: { createdAt: 'asc' },
     select: { id: true },

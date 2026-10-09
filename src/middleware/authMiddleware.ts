@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/prismaClient';
 import { withDbRetry, isRetryableDbError } from '../utils/dbRetry';
+import { normalizeRoleValue } from '../constants/roles';
 
 // Extend Express Request type to include user
 declare global {
@@ -20,22 +21,19 @@ declare global {
 
 /**
  * Trusted Super Admin → tenant proxy principal.
- * When the SA panel forwards an actor (SCRUBBING / UNDERWRITER / SUPER_ADMIN),
+ * When the SA panel forwards an actor (SCRUBBING / UNDERWRITER / CONTRACTS_LOG),
  * we honor that role so tenant list filters (`underwriterClaim`) and role gates
  * (`requireRoles('SCRUBBING')`) behave like a native tenant login.
  * If the actor email matches a tenant User row, we use that id for claim FKs.
  */
 const SUPER_ADMIN_PROXY_SENTINEL_ID = '00000000-0000-0000-0000-000000000000';
 
-const PROXY_ACTOR_ROLES = new Set(['SUPER_ADMIN', 'SCRUBBING', 'UNDERWRITER', 'OPERATIONS', 'ADMIN']);
+const PROXY_ACTOR_ROLES = new Set(['CONTRACTS_LOG', 'SCRUBBING', 'UNDERWRITER', 'OPERATIONS', 'ADMIN']);
 
 function normalizeProxyActorRole(raw?: string | null): string {
-    const role = String(raw ?? '')
-        .trim()
-        .toUpperCase()
-        .replace(/-/g, '_');
+    const role = normalizeRoleValue(raw);
     if (PROXY_ACTOR_ROLES.has(role)) return role;
-    return 'SUPER_ADMIN';
+    return 'CONTRACTS_LOG';
 }
 
 /**

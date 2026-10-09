@@ -2,7 +2,7 @@ jest.mock('../config/prismaClient', () => ({ __esModule: true, default: {} }));
 
 import { getApplicationStageAccess } from './applicationStageAccess';
 import { roleHasPermission, PERMISSIONS } from '../constants/rolePermissions';
-import { isAppAllowedRole, isManageableRole } from '../constants/roles';
+import { isAppAllowedRole, isManageableRole, isValidRole } from '../constants/roles';
 import { buildRawMimeMessage } from './gmail/gmailMailService';
 import { buildAgentBucketWhere, buildUnderwriterBucketWhere } from './applicationWorkflowService';
 
@@ -31,8 +31,8 @@ describe('stage access for the Agent / Underwriter workflow', () => {
     });
 
     it('never locks Super Admin', () => {
-        expect(access('SUPER_ADMIN', 'Agent Approval').canEdit).toBe(true);
-        expect(access('SUPER_ADMIN', 'Contract Pending').canEdit).toBe(true);
+        expect(access('CONTRACTS_LOG', 'Agent Approval').canEdit).toBe(true);
+        expect(access('CONTRACTS_LOG', 'Contract Pending').canEdit).toBe(true);
     });
 });
 
@@ -40,7 +40,7 @@ describe('role permissions', () => {
     it('allows only the supported roles to sign in / be managed', () => {
         expect(isAppAllowedRole('agent')).toBe(true);
         expect(isAppAllowedRole('UNDERWRITER')).toBe(true);
-        expect(isAppAllowedRole('SUPER_ADMIN')).toBe(true);
+        expect(isAppAllowedRole('CONTRACTS_LOG')).toBe(true);
         expect(isAppAllowedRole('SCRUBBING')).toBe(false);
         expect(isManageableRole('OPERATIONS')).toBe(false);
     });
@@ -52,7 +52,14 @@ describe('role permissions', () => {
         expect(roleHasPermission('UNDERWRITER', PERMISSIONS.UNDERWRITING_SEND_TO_AGENT)).toBe(true);
         expect(roleHasPermission('UNDERWRITER', PERMISSIONS.APPLICATION_CREATE)).toBe(false);
         expect(roleHasPermission('UNDERWRITER', PERMISSIONS.USER_MANAGE)).toBe(false);
-        expect(roleHasPermission('SUPER_ADMIN', PERMISSIONS.USER_MANAGE)).toBe(true);
+        expect(roleHasPermission('CONTRACTS_LOG', PERMISSIONS.USER_MANAGE)).toBe(true);
+    });
+
+    it('keeps SUPER_ADMIN as a separate role from CONTRACTS_LOG', () => {
+        expect(isValidRole('SUPER_ADMIN')).toBe(true);
+        expect(isValidRole('CONTRACTS_LOG')).toBe(true);
+        expect(roleHasPermission('CONTRACTS_LOG', PERMISSIONS.CONTRACT_MANAGE)).toBe(true);
+        expect(roleHasPermission('SUPER_ADMIN', PERMISSIONS.CONTRACT_MANAGE)).toBe(false);
     });
 });
 

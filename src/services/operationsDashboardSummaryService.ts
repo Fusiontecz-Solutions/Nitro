@@ -60,7 +60,7 @@ function isSuperAdminRole(role: string | null | undefined): boolean {
         .trim()
         .toUpperCase()
         .replace(/-/g, '_');
-    return normalized === 'SUPER_ADMIN' || normalized === 'SUPERADMIN';
+    return normalized === 'CONTRACTS_LOG' || normalized === 'CONTRACTSLOG';
 }
 
 export type OperationsDashboardSummaryPayload = {
@@ -232,7 +232,7 @@ export async function listOperationsDashboardRecentCases(
         .toUpperCase()
         .replace(/-/g, '_');
     const isOperations = roleUpper === 'OPERATIONS';
-    // SUPER_ADMIN and OPERATIONS: latest Contract Signed applications.
+    // CONTRACTS_LOG and OPERATIONS: latest Contract Signed applications.
     const recentDealsWhere =
         isSuperAdmin || isOperations
             ? buildOperationsStatusFilterWhere('Contract_Signed', filterMode)

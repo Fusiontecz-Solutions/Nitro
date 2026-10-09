@@ -2,7 +2,7 @@ import prisma from "../config/prismaClient";
 
 async function main() {
   const users = await prisma.user.findMany({
-    where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } },
+    where: { role: { in: ['ADMIN', 'CONTRACTS_LOG'] } },
     orderBy: { createdAt: 'desc' },
     take: 20,
     select: {
@@ -16,7 +16,7 @@ async function main() {
   });
 
   if (users.length === 0) {
-    console.log('No ADMIN or SUPER_ADMIN users found in the database.');
+    console.log('No ADMIN or CONTRACTS_LOG users found in the database.');
     return;
   }
 

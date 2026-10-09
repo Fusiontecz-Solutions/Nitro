@@ -226,7 +226,7 @@ async function resolveStageRecipients(
 
     if (transitionAction === 'CREATED') {
         // Only notify the application's own stakeholders (referring agent, sales rep,
-        // creator). Do NOT broadcast creation to ADMIN / SUPER_ADMIN / OPERATIONS /
+        // creator). Do NOT broadcast creation to ADMIN / CONTRACTS_LOG / OPERATIONS /
         // SCRUBBING — they should not receive a "New application created" toast.
         pushStakeholders();
         return recipients;
@@ -266,7 +266,7 @@ async function resolveStageRecipients(
 
     if (opsStageTokens.has(q)) {
         recipients.push(
-            ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'SUPER_ADMIN'])),
+            ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG'])),
         );
     }
 
@@ -288,7 +288,7 @@ async function resolveStageRecipients(
     // Generic stage move: stakeholders + internal ops visibility.
     pushStakeholders();
     recipients.push(
-        ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'SUPER_ADMIN'])),
+        ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG'])),
     );
     return recipients;
 }

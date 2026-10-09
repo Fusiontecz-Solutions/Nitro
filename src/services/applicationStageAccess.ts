@@ -40,7 +40,7 @@ const normalizeRoleKey = (value: unknown): string => {
     if (!raw) return '';
     let key = raw.toUpperCase().replace(/\s+/g, '_');
     if (key === 'FINALUNDERWRITER') key = 'UNDERWRITER';
-    if (key === 'SUPERADMIN') key = 'SUPER_ADMIN';
+    if (key === 'CONTRACTSLOG') key = 'CONTRACTS_LOG';
     return key;
 };
 

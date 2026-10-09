@@ -120,7 +120,7 @@ export function resolveWorkflowScope(user: AuthenticatedUser, requested?: unknow
     const role = normalizeRoleValue(user.role);
     if (role === 'AGENT') return 'agent';
     if (role === 'UNDERWRITER') return 'underwriter';
-    if (role === 'SUPER_ADMIN' || role === 'ADMIN') {
+    if (role === 'CONTRACTS_LOG' || role === 'ADMIN') {
         return String(requested ?? '').toLowerCase() === 'underwriter' ? 'underwriter' : 'agent';
     }
     throw new WorkflowError(403, 'Your role has no workflow queue');
@@ -128,7 +128,7 @@ export function resolveWorkflowScope(user: AuthenticatedUser, requested?: unknow
 
 const isOversightRole = (user: AuthenticatedUser) => {
     const role = normalizeRoleValue(user.role);
-    return role === 'SUPER_ADMIN' || role === 'ADMIN';
+    return role === 'CONTRACTS_LOG' || role === 'ADMIN';
 };
 
 const LIST_SELECT = {

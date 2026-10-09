@@ -13,6 +13,7 @@ export const ROLES = [
   'OPERATIONS',
   'SYNDICATOR',
   'SUPER_ADMIN',
+  'CONTRACTS_LOG',
 ] as const;
 
 /** Public registration disabled — Super Admin only via bootstrap / create-user. */
@@ -20,14 +21,14 @@ export const PUBLIC_REGISTER_ROLES: readonly string[] = [];
 
 /**
  * Roles that may sign in to this app:
- *   SUPER_ADMIN  → contract workflow + user / role management
+ *   CONTRACTS_LOG → contract workflow + user / role management
  *   AGENT        → creates applications, approves underwriting, sends to ISO
  *   UNDERWRITER  → claims and underwrites incoming applications
  */
-export const APP_ALLOWED_ROLES = ['SUPER_ADMIN', 'AGENT', 'UNDERWRITER'] as const;
+export const APP_ALLOWED_ROLES = ['CONTRACTS_LOG', 'AGENT', 'UNDERWRITER'] as const;
 
 /** Roles a Super Admin may create / assign from user management. */
-export const MANAGEABLE_ROLES = ['SUPER_ADMIN', 'AGENT', 'UNDERWRITER'] as const;
+export const MANAGEABLE_ROLES = ['CONTRACTS_LOG', 'AGENT', 'UNDERWRITER'] as const;
 
 /** Workflow roles that must not reach contract / integration modules. */
 export const WORKFLOW_ROLES = ['AGENT', 'UNDERWRITER'] as const;

@@ -162,7 +162,7 @@ app.get('/health', (req: Request, res: Response) => {
 // the Super Admin proxy verifier. If it carries valid x-super-admin-proxy +
 // x-super-admin-secret headers, `req.isSuperAdminProxy` is set and downstream
 // `authenticateToken` will skip tenant JWT validation and synthesize a
-// SUPER_ADMIN principal. Regular tenant-user requests are untouched.
+// CONTRACTS_LOG principal. Regular tenant-user requests are untouched.
 app.use('/api/v1', verifySuperAdminProxy, activityLogger, router);
 
 // 404 handler

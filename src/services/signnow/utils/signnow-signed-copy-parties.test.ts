@@ -82,7 +82,7 @@ it('ignores a queue left from a different envelope', async () => {
 it('does not treat a non-agent creator as the agent', async () => {
   application.findUnique.mockResolvedValue({
     referringAgent: null,
-    createdBy: { email: 'admin@nitroadvance.com', role: 'SUPER_ADMIN' },
+    createdBy: { email: 'admin@nitroadvance.com', role: 'CONTRACTS_LOG' },
   });
   expect((await resolveSignedCopyParties(GROUP)).agentEmails).toEqual([]);
 });

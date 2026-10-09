@@ -16,7 +16,7 @@ declare global {
         actorId?: string;
         actorEmail?: string;
         actorName?: string;
-        /** SUPER_ADMIN | SCRUBBING | UNDERWRITER — from SA panel actor. */
+        /** CONTRACTS_LOG | SCRUBBING | UNDERWRITER — from SA panel actor. */
         actorRole?: string;
       };
     }

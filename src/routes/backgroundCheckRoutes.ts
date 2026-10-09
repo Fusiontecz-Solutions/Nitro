@@ -5,8 +5,8 @@ import { requireRoles } from '../middleware/requireRoles';
 
 const router = express.Router();
 
-const DECIDERS = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'SUPER_ADMIN', 'SCRUBBING', 'OPERATIONS'];
-const ADMINS = ['ADMIN', 'SUPER_ADMIN'];
+const DECIDERS = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'CONTRACTS_LOG', 'SCRUBBING', 'OPERATIONS'];
+const ADMINS = ['ADMIN', 'CONTRACTS_LOG'];
 
 router.use(authenticateToken);
 

@@ -14,8 +14,8 @@ export type CheckType = (typeof CHECK_TYPES)[number];
 const OPTIONAL_BY_DEFAULT = new Set<CheckType>(['TLO', 'DATAMERCH', 'NOTES']);
 const isOptionalByDefault = (checkType: string) => OPTIONAL_BY_DEFAULT.has(checkType as CheckType);
 
-export const DECIDER_ROLES = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
-export const OVERRIDE_ROLES = ['ADMIN', 'SUPER_ADMIN'];
+export const DECIDER_ROLES = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'CONTRACTS_LOG'];
+export const OVERRIDE_ROLES = ['ADMIN', 'CONTRACTS_LOG'];
 
 const RESULTS = ['PASS', 'FAIL', 'FLAG', 'NA'];
 const ITEM_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETE'];

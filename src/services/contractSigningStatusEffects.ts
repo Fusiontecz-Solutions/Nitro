@@ -9,7 +9,7 @@ import {
 
 const CRM_INTERNAL_NOTIFY_ROLES: Role[] = [
   'ADMIN',
-  'SUPER_ADMIN',
+  'CONTRACTS_LOG',
   'OPERATIONS',
   'SCRUBBING',
   'UNDERWRITER',

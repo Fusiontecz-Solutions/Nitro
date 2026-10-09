@@ -177,7 +177,7 @@ async function main() {
 
   const actor =
     (await prisma.user.findFirst({
-      where: { role: { in: ['SUPER_ADMIN', 'ADMIN', 'OPERATIONS'] as any } },
+      where: { role: { in: ['CONTRACTS_LOG', 'ADMIN', 'OPERATIONS'] as any } },
       select: { id: true, email: true },
       orderBy: { createdAt: 'asc' },
     })) ??

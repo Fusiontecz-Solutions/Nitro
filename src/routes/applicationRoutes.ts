@@ -96,19 +96,19 @@ router.get('/workflow/queue', applicationWorkflowController.queue.bind(applicati
 // Super Admin: historical applications import from Excel (field: `file`)
 router.post(
     '/bulk-upload-excel',
-    requireRoles('SUPER_ADMIN'),
+    requireRoles('CONTRACTS_LOG'),
     applicationExcelBulkUpload.single('file'),
     applicationController.bulkUploadApplicationsExcel.bind(applicationController),
 );
 router.post(
     '/bulk-upload-excel/start',
-    requireRoles('SUPER_ADMIN'),
+    requireRoles('CONTRACTS_LOG'),
     applicationExcelBulkUpload.single('file'),
     applicationController.startBulkUploadApplicationsExcel.bind(applicationController),
 );
 router.get(
     '/bulk-upload-excel/progress/:jobId',
-    requireRoles('SUPER_ADMIN'),
+    requireRoles('CONTRACTS_LOG'),
     applicationController.getBulkUploadApplicationsExcelProgress.bind(applicationController),
 );
 
@@ -248,35 +248,35 @@ router.post(
 router.post(
     '/:id/scrubbing-release',
     // Only Admin can take back a deal from the Scrubbing queue.
-    requireRoles('ADMIN', 'SUPER_ADMIN'),
+    requireRoles('ADMIN', 'CONTRACTS_LOG'),
     applicationController.releaseUnderwriterDeal.bind(applicationController),
 );
 
 // Super Admin / Scrubbing: assign application to a specific Underwriter (in-app notification)
 router.post(
     '/:id/assign-underwriter',
-    requireRoles('SUPER_ADMIN', 'SCRUBBING'),
+    requireRoles('CONTRACTS_LOG', 'SCRUBBING'),
     applicationController.assignApplicationToUnderwriter.bind(applicationController),
 );
 
 // Super Admin / Operations: send deal to the approving Underwriter for final approval
 router.post(
     '/:id/send-final-underwriter-approval',
-    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    requireRoles('CONTRACTS_LOG', 'OPERATIONS'),
     applicationController.sendForFinalUnderwriterApproval.bind(applicationController),
 );
 
 // Super Admin / Scrubbing: assign application to a specific Underwriter (in-app notification)
 router.post(
     '/:id/assign-underwriter',
-    requireRoles('SUPER_ADMIN', 'SCRUBBING'),
+    requireRoles('CONTRACTS_LOG', 'SCRUBBING'),
     applicationController.assignApplicationToUnderwriter.bind(applicationController),
 );
 
 // Super Admin / Operations: send Underwriter Approved deal to the approving Underwriter for final approval
 router.post(
     '/:id/send-final-underwriter-approval',
-    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    requireRoles('CONTRACTS_LOG', 'OPERATIONS'),
     applicationController.sendForFinalUnderwriterApproval.bind(applicationController),
 );
 
@@ -321,14 +321,14 @@ router.get('/:id/duplicates', applicationController.getDuplicates.bind(applicati
 // Recently Deleted: restore to previous queue/state (Super Admin / Operations)
 router.post(
     '/:id/restore',
-    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    requireRoles('CONTRACTS_LOG', 'OPERATIONS'),
     applicationController.restoreApplication.bind(applicationController),
 );
 
 // Recently Deleted: permanent removal (Super Admin / Operations)
 router.delete(
     '/:id/permanent',
-    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    requireRoles('CONTRACTS_LOG', 'OPERATIONS'),
     applicationController.permanentlyDelete.bind(applicationController),
 );
 

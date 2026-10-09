@@ -56,11 +56,11 @@ class AuthController {
 
             // Normalize role to match Prisma `Role` enum (subset allowed for public registration)
             const normalizedRole = String(role).toUpperCase().replace(/-/g, '_');
-            if (normalizedRole === 'SUPER_ADMIN') {
+            if (normalizedRole === 'CONTRACTS_LOG') {
                 return res.status(403).json({
                     success: false,
                     message:
-                        'SUPER_ADMIN cannot be created via public registration. Use POST /auth/create-user (add your API prefix if any, e.g. /api/auth/create-user) with Authorization: Bearer <token>. Only a user with role SUPER_ADMIN can assign SUPER_ADMIN. You can send the same JSON including firstName, lastName, email, password, role, and phone.',
+                        'CONTRACTS_LOG cannot be created via public registration. Use POST /auth/create-user (add your API prefix if any, e.g. /api/auth/create-user) with Authorization: Bearer <token>. Only a user with role CONTRACTS_LOG can assign CONTRACTS_LOG. You can send the same JSON including firstName, lastName, email, password, role, and phone.',
                 });
             }
             const registerAllowed = new Set<string>(PUBLIC_REGISTER_ROLES);
@@ -192,7 +192,7 @@ class AuthController {
             const actingRole = String((req as any).user?.role ?? '')
                 .toUpperCase()
                 .replace(/-/g, '_');
-            if (normalizedRole === 'SUPER_ADMIN' && actingRole !== 'SUPER_ADMIN') {
+            if (normalizedRole === 'CONTRACTS_LOG' && actingRole !== 'CONTRACTS_LOG') {
                 return res.status(403).json({
                     success: false,
                     message: 'Only Super Admin can assign the Super Admin role',
@@ -235,7 +235,7 @@ class AuthController {
                     message: `Only these roles can be assigned in this application: ${MANAGEABLE_ROLES.join(', ')}`,
                 });
             }
-            if (actingRole !== 'SUPER_ADMIN') {
+            if (actingRole !== 'CONTRACTS_LOG') {
                 return res.status(403).json({
                     success: false,
                     message: 'Only Super Admin can create users',
@@ -797,7 +797,7 @@ class AuthController {
     }
 
     /**
-     * One-time setup: creates the first SUPER_ADMIN when the database has none.
+     * One-time setup: creates the first CONTRACTS_LOG when the database has none.
      * Requires env BOOTSTRAP_SUPER_ADMIN_SECRET (min 24 chars). Send the same value in header X-Bootstrap-Secret.
      * After the first Super Admin exists, create more via POST /auth/create-user as that user.
      */
@@ -827,7 +827,7 @@ class AuthController {
             }
 
             const existingSuperCount = await prisma.user.count({
-                where: { role: 'SUPER_ADMIN' },
+                where: { role: 'CONTRACTS_LOG' },
             });
             if (existingSuperCount > 0) {
                 return res.status(409).json({
@@ -874,7 +874,7 @@ class AuthController {
                 return res.status(409).json({
                     success: false,
                     message:
-                        'That email is already registered. Use a different email or update the existing user’s role to SUPER_ADMIN in the database.',
+                        'That email is already registered. Use a different email or update the existing user’s role to CONTRACTS_LOG in the database.',
                 });
             }
 
@@ -886,7 +886,7 @@ class AuthController {
                     lastName: lTrim,
                     email: emailStr,
                     password: hashedPassword,
-                    role: 'SUPER_ADMIN',
+                    role: 'CONTRACTS_LOG',
                     isActive: true,
                     isVerified: true,
                     otp: 0,

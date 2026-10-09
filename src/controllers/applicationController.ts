@@ -692,7 +692,7 @@ const resolveWorkflowQueueTransition = (targetQueue: string, actorRole?: string 
     const isFinalUnderwriterActor =
         normalizedRole === 'UNDERWRITER' ||
         normalizedRole === 'FINALUNDERWRITER' ||
-        normalizedRole === 'SUPER_ADMIN' ||
+        normalizedRole === 'CONTRACTS_LOG' ||
         normalizedRole === 'ADMIN' ||
         normalizedRole === 'OPERATIONS';
     if (
@@ -2475,8 +2475,8 @@ class ApplicationController {
             }
 
             const canFilterByClaimAssignments =
-                authRoleUpper === 'SUPER_ADMIN' ||
-                authRoleUpper === 'SUPERADMIN' ||
+                authRoleUpper === 'CONTRACTS_LOG' ||
+                authRoleUpper === 'CONTRACTSLOG' ||
                 authRoleUpper === 'OPERATIONS';
             if (canFilterByClaimAssignments) {
                 const rawClaimedByScrubberId = req.query.claimedByUnderwriterId;
@@ -2558,8 +2558,8 @@ class ApplicationController {
                 : '';
             if (opsStatusCanonical === 'Recently_Deleted') {
                 if (
-                    authRoleUpper !== 'SUPER_ADMIN' &&
-                    authRoleUpper !== 'SUPERADMIN' &&
+                    authRoleUpper !== 'CONTRACTS_LOG' &&
+                    authRoleUpper !== 'CONTRACTSLOG' &&
                     authRoleUpper !== 'OPERATIONS'
                 ) {
                     return res.status(403).json({
@@ -3125,7 +3125,7 @@ class ApplicationController {
                 prisma.user.count({ where: { role: 'SCRUBBING' } }),
                 prisma.user.count({ where: { role: 'UNDERWRITER' } }),
                 prisma.user.count({ where: { role: 'OPERATIONS' } }),
-                prisma.user.count({ where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } } }),
+                prisma.user.count({ where: { role: { in: ['ADMIN', 'CONTRACTS_LOG'] } } }),
                 prisma.client.count(),
             ]);
             const totalSyndicators = 0;
@@ -3402,8 +3402,8 @@ class ApplicationController {
 
             const applicationInclude = APPLICATION_DETAIL_INCLUDE;
 
-            // OPERATIONS / SUPER_ADMIN can fetch any application directly, bypassing visibility filters
-            if (authUser?.role === 'OPERATIONS' || authUser?.role === 'SUPER_ADMIN') {
+            // OPERATIONS / CONTRACTS_LOG can fetch any application directly, bypassing visibility filters
+            if (authUser?.role === 'OPERATIONS' || authUser?.role === 'CONTRACTS_LOG') {
                 const applicationRecord = await prisma.application.findUnique({
                     where,
                     include: applicationInclude,
@@ -3475,8 +3475,8 @@ class ApplicationController {
             const { applicationId } = req.params;
             const authUser = getAuthenticatedUser(req);
 
-            // OPERATIONS / SUPER_ADMIN can fetch any application by numeric applicationId directly, bypassing visibility filters
-            if (authUser?.role === 'OPERATIONS' || authUser?.role === 'SUPER_ADMIN') {
+            // OPERATIONS / CONTRACTS_LOG can fetch any application by numeric applicationId directly, bypassing visibility filters
+            if (authUser?.role === 'OPERATIONS' || authUser?.role === 'CONTRACTS_LOG') {
                 const numericId = Number(applicationId);
                 if (!applicationId || Number.isNaN(numericId)) {
                     return res.status(400).json({
@@ -3846,7 +3846,7 @@ class ApplicationController {
                 if (st === 'approved') {
                     const canFuApprove = [
                         'UNDERWRITER',
-                        'SUPER_ADMIN',
+                        'CONTRACTS_LOG',
                         'ADMIN',
                         'OPERATIONS',
                     ].includes(roleUpper);
@@ -3859,7 +3859,7 @@ class ApplicationController {
                         'AGENT',
                         'SCRUBBING',
                         'ADMIN',
-                        'SUPER_ADMIN',
+                        'CONTRACTS_LOG',
                         'OPERATIONS',
                         'UNDERWRITER',
                         'ACCOUNTANT',
@@ -4020,7 +4020,7 @@ class ApplicationController {
                     .replace(/-/g, '_');
                 const canResolveIsoQuery = [
                     'UNDERWRITER',
-                    'SUPER_ADMIN',
+                    'CONTRACTS_LOG',
                     'ADMIN',
                     'OPERATIONS',
                 ].includes(roleUpper);
@@ -4730,7 +4730,7 @@ class ApplicationController {
             const roleUpper = authUser?.role
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
-            const allowedRoles = new Set(['ADMIN', 'SUPER_ADMIN']);
+            const allowedRoles = new Set(['ADMIN', 'CONTRACTS_LOG']);
             if (!allowedRoles.has(roleUpper)) {
                 return res.status(403).json({
                     success: false,
@@ -4843,8 +4843,8 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             const canAssign =
-                roleUpper === 'SUPER_ADMIN' ||
-                roleUpper === 'SUPERADMIN' ||
+                roleUpper === 'CONTRACTS_LOG' ||
+                roleUpper === 'CONTRACTSLOG' ||
                 roleUpper === 'SCRUBBING';
             if (!canAssign) {
                 return res.status(403).json({
@@ -4998,8 +4998,8 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             if (
-                roleUpper !== 'SUPER_ADMIN' &&
-                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'CONTRACTS_LOG' &&
+                roleUpper !== 'CONTRACTSLOG' &&
                 roleUpper !== 'OPERATIONS'
             ) {
                 return res.status(403).json({
@@ -5767,8 +5767,8 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             if (
-                roleUpper !== 'SUPER_ADMIN' &&
-                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'CONTRACTS_LOG' &&
+                roleUpper !== 'CONTRACTSLOG' &&
                 roleUpper !== 'OPERATIONS'
             ) {
                 return res.status(403).json({
@@ -5836,8 +5836,8 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             if (
-                roleUpper !== 'SUPER_ADMIN' &&
-                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'CONTRACTS_LOG' &&
+                roleUpper !== 'CONTRACTSLOG' &&
                 roleUpper !== 'OPERATIONS'
             ) {
                 return res.status(403).json({
@@ -8024,7 +8024,7 @@ class ApplicationController {
             const authUser = getAuthenticatedUser(req);
 
             const role = String(authUser?.role || '').toUpperCase().replace(/-/g, '_');
-            const allowedRoles = ['SCRUBBING', 'UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
+            const allowedRoles = ['SCRUBBING', 'UNDERWRITER', 'ADMIN', 'CONTRACTS_LOG'];
             if (!allowedRoles.includes(role)) {
                 return res.status(403).json({
                     success: false,
@@ -8215,7 +8215,7 @@ class ApplicationController {
     }
 
     /**
-     * SUPER_ADMIN: bulk import applications from Excel/CSV (first sheet; row 1 headers, row 2 summary skipped).
+     * CONTRACTS_LOG: bulk import applications from Excel/CSV (first sheet; row 1 headers, row 2 summary skipped).
      * Multipart field name: `file`.
      */
     async bulkUploadApplicationsExcel(req: Request, res: Response) {
@@ -8246,7 +8246,7 @@ class ApplicationController {
     }
 
     /**
-     * SUPER_ADMIN: starts bulk import as background job and returns jobId for live polling.
+     * CONTRACTS_LOG: starts bulk import as background job and returns jobId for live polling.
      * Multipart field name: `file`.
      */
     async startBulkUploadApplicationsExcel(req: Request, res: Response) {
@@ -8375,7 +8375,7 @@ class ApplicationController {
         }
     }
 
-    /** SUPER_ADMIN: poll live row-level progress for bulk import job. */
+    /** CONTRACTS_LOG: poll live row-level progress for bulk import job. */
     async getBulkUploadApplicationsExcelProgress(req: Request, res: Response) {
         cleanupExpiredBulkUploadJobs();
         const jobId = String(req.params.jobId ?? '').trim();

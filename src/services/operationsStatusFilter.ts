@@ -781,7 +781,7 @@ export type OperationsStatusFilterMode = 'legacy' | 'state' | 'queue';
  * - `legacy`: match either `currentState` (enum) or `currentQueue` (human labels) — default for non–ops-dashboard roles.
  * - `state`: OPERATIONS — match by `currentState` when the label maps to an enum; pipeline queue-only labels
  *   (e.g. Agent, Scrubbing) fall back to `currentQueue` so `/applications` matches operations dashboard stage counts.
- * - `queue`: SUPER_ADMIN — counts and lists by `currentQueue` only.
+ * - `queue`: CONTRACTS_LOG — counts and lists by `currentQueue` only.
  */
 /** Deals paused from the funding-call workflow. */
 export function onHoldMatchWhere(): Prisma.ApplicationWhereInput {
@@ -924,6 +924,6 @@ export function resolveOperationsListFilterMode(
         .toUpperCase()
         .replace(/-/g, '_');
     if (r === 'OPERATIONS') return 'state';
-    if (r === 'SUPER_ADMIN' || r === 'SUPERADMIN') return 'queue';
+    if (r === 'CONTRACTS_LOG' || r === 'CONTRACTSLOG') return 'queue';
     return 'legacy';
 }

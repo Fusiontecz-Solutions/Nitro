@@ -98,7 +98,7 @@ export const impersonateUserService = async (
     where: { id: adminId }
   });
 
-  if (!admin || (admin.role !== "ADMIN" && admin.role !== "SUPER_ADMIN")) {
+  if (!admin || (admin.role !== "ADMIN" && admin.role !== "CONTRACTS_LOG")) {
     throw new Error("Only admin can impersonate users");
   }
 
@@ -110,7 +110,7 @@ export const impersonateUserService = async (
     throw new Error("User not found");
   }
 
-  if (user.role === "ADMIN" || user.role === "SUPER_ADMIN") {
+  if (user.role === "ADMIN" || user.role === "CONTRACTS_LOG") {
     throw new Error("Cannot impersonate another admin");
   }
 

@@ -5,7 +5,7 @@ import { deleteUserCompletely } from '../services/userDeletionService';
 import * as userService from '../services/userService';
 import { isManageableRole, isValidRole, MANAGEABLE_ROLES, normalizeRoleValue } from '../constants/roles';
 
-const ADMIN_ROLES = new Set(['ADMIN', 'SUPER_ADMIN']);
+const ADMIN_ROLES = new Set(['ADMIN', 'CONTRACTS_LOG']);
 
 const isAdminActor = (req: Request): boolean =>
     ADMIN_ROLES.has(normalizeRoleValue((req as any).user?.role));
@@ -67,7 +67,7 @@ class UserController {
             const actingRole = String((req as any).user?.role ?? '')
                 .toUpperCase()
                 .replace(/-/g, '_');
-            if (normalizedRequestedRole === 'SUPER_ADMIN' && actingRole !== 'SUPER_ADMIN') {
+            if (normalizedRequestedRole === 'CONTRACTS_LOG' && actingRole !== 'CONTRACTS_LOG') {
                 return res.status(403).json({
                     success: false,
                     message: 'Only Super Admin can assign the Super Admin role',
@@ -311,7 +311,7 @@ class UserController {
                 const actingRole = String((req as any).user?.role ?? '')
                     .toUpperCase()
                     .replace(/-/g, '_');
-                if (nr === 'SUPER_ADMIN' && actingRole !== 'SUPER_ADMIN') {
+                if (nr === 'CONTRACTS_LOG' && actingRole !== 'CONTRACTS_LOG') {
                     return res.status(403).json({
                         success: false,
                         message: 'Only Super Admin can assign the Super Admin role',

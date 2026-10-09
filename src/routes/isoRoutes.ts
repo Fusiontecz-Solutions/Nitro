@@ -6,7 +6,7 @@ import { forbidRoles } from '../middleware/forbidRoles';
 import { requireRoles } from '../middleware/requireRoles';
 
 /** ISO records are managed by admins; Agents / Underwriters only read them (ISO picker). */
-const requireIsoManager = requireRoles('SUPER_ADMIN', 'ADMIN', 'OPERATIONS');
+const requireIsoManager = requireRoles('CONTRACTS_LOG', 'ADMIN', 'OPERATIONS');
 
 const router = express.Router();
 

@@ -669,7 +669,7 @@ class NotificationController {
             const skip = (pageNum - 1) * limitNum;
 
             const role = String((req as any).user?.role || '').toUpperCase();
-            const isSuperAdmin = role === 'SUPER_ADMIN' || role === 'SUPERADMIN';
+            const isSuperAdmin = role === 'CONTRACTS_LOG' || role === 'CONTRACTSLOG';
             const personalOnlyRaw = req.query.personalOnly;
             const wantsPersonalOnly =
                 personalOnlyRaw !== undefined &&
@@ -767,7 +767,7 @@ class NotificationController {
             }
 
             const role = String((req as any).user?.role || '').toUpperCase();
-            const isSuperAdmin = role === 'SUPER_ADMIN' || role === 'SUPERADMIN';
+            const isSuperAdmin = role === 'CONTRACTS_LOG' || role === 'CONTRACTSLOG';
             if (notification.recipientId !== userId && !isSuperAdmin) {
                 return res.status(403).json({ success: false, message: 'Unauthorized to mark this notification as read' });
             }
@@ -806,7 +806,7 @@ class NotificationController {
             }
 
             const role = String((req as any).user?.role || '').toUpperCase();
-            const isSuperAdmin = role === 'SUPER_ADMIN' || role === 'SUPERADMIN';
+            const isSuperAdmin = role === 'CONTRACTS_LOG' || role === 'CONTRACTSLOG';
             const allRecipientsRaw = req.query.allRecipients;
             const wantsAllRecipients =
                 allRecipientsRaw !== undefined &&
@@ -958,7 +958,7 @@ class NotificationController {
                 return res.status(401).json({ success: false, message: 'User authentication required' });
             }
             const role = String((req as any).user?.role || '').toUpperCase();
-            const isSuperAdmin = role === 'SUPER_ADMIN' || role === 'SUPERADMIN';
+            const isSuperAdmin = role === 'CONTRACTS_LOG' || role === 'CONTRACTSLOG';
             const notification = await prisma.notification.findUnique({ where: { id } });
             if (!notification) {
                 return res.status(404).json({ success: false, message: 'Notification not found' });
@@ -994,7 +994,7 @@ class NotificationController {
                 return res.status(401).json({ success: false, message: 'User authentication required' });
             }
             const role = String((req as any).user?.role || '').toUpperCase();
-            const isSuperAdmin = role === 'SUPER_ADMIN' || role === 'SUPERADMIN';
+            const isSuperAdmin = role === 'CONTRACTS_LOG' || role === 'CONTRACTSLOG';
             const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x: any) => String(x)).filter(Boolean) : [];
             if (ids.length === 0) {
                 return res.status(400).json({ success: false, message: 'ids array is required' });
