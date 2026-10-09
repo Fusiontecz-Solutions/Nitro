@@ -5,13 +5,13 @@
  */
 import { normalizeRoleKey } from "./sessionRole";
 
-export const APP_ALLOWED_ROLES = ["SUPER_ADMIN", "AGENT", "UNDERWRITER"] as const;
+export const APP_ALLOWED_ROLES = ["CONTRACTS_LOG", "AGENT", "UNDERWRITER"] as const;
 export type AppRole = (typeof APP_ALLOWED_ROLES)[number];
 
-export const MANAGEABLE_ROLES: readonly AppRole[] = ["SUPER_ADMIN", "AGENT", "UNDERWRITER"];
+export const MANAGEABLE_ROLES: readonly AppRole[] = ["CONTRACTS_LOG", "AGENT", "UNDERWRITER"];
 
 export const ROLE_LABELS: Record<AppRole, string> = {
-  SUPER_ADMIN: "Super Admin",
+  CONTRACTS_LOG: "Contracts Log",
   AGENT: "Agent",
   UNDERWRITER: "Underwriter",
 };
@@ -72,7 +72,7 @@ const WORKFLOW_ROUTE_RULES: Record<"AGENT" | "UNDERWRITER", { exact: string[]; p
 export function isPathAllowedForRole(role: string | null | undefined, pathname: string): boolean {
   const appRole = toAppRole(role);
   if (!appRole) return false;
-  if (appRole === "SUPER_ADMIN") return true;
+  if (appRole === "CONTRACTS_LOG") return true;
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname || "/";
   const rules = WORKFLOW_ROUTE_RULES[appRole];
   return rules.exact.includes(path) || rules.prefix.some((p) => path.startsWith(`${p}/`));
@@ -81,7 +81,7 @@ export function isPathAllowedForRole(role: string | null | undefined, pathname: 
 /** Settings tabs per role (`/user-setting?tab=`). */
 export function settingsTabsForRole(role: string | null | undefined): string[] {
   const appRole = toAppRole(role);
-  if (appRole === "SUPER_ADMIN") return ["profile", "email", "team", "isos", "roles", "funders", "email-plan"];
+  if (appRole === "CONTRACTS_LOG") return ["profile", "email", "team", "isos", "roles", "funders", "email-plan"];
   return ["profile", "email"];
 }
 
@@ -99,7 +99,7 @@ export const PERMISSIONS = {
 type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
 const ROLE_PERMISSIONS: Record<AppRole, readonly Permission[] | "all"> = {
-  SUPER_ADMIN: "all",
+  CONTRACTS_LOG: "all",
   AGENT: [
     PERMISSIONS.APPLICATION_CREATE,
     PERMISSIONS.AGENT_APPROVAL_ACT,

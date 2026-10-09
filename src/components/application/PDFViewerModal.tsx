@@ -3458,7 +3458,7 @@ const PDFViewerModal = ({
         Boolean(onPrepareDocuSignDraft) &&
         (requestDocsRoleKey === "UNDERWRITER" ||
             requestDocsRoleKey === "FINAL_UNDERWRITER" ||
-            requestDocsRoleKey === "SUPER_ADMIN" ||
+            requestDocsRoleKey === "CONTRACTS_LOG" ||
             requestDocsRoleKey === "OPERATIONS");
 
     const pendingDocumentRequests = useMemo(

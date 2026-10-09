@@ -7,7 +7,7 @@ import type { WorkflowScope } from "@/lib/workflowApi";
 export function useWorkflowScope(): { scope: WorkflowScope; canSwitch: boolean; setScope: (s: WorkflowScope) => void } {
   const [searchParams, setSearchParams] = useSearchParams();
   const role = toAppRole(resolveEffectiveRole(undefined));
-  const canSwitch = role === "SUPER_ADMIN";
+  const canSwitch = role === "CONTRACTS_LOG";
   const requested = searchParams.get("scope") === "underwriter" ? "underwriter" : "agent";
   const scope: WorkflowScope = role === "UNDERWRITER" ? "underwriter" : role === "AGENT" ? "agent" : requested;
   const setScope = (next: WorkflowScope) => {

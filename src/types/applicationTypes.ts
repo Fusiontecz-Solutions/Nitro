@@ -281,9 +281,9 @@ export interface GetApplicationsParams {
     underwriterPipeline?: string;
     /** Organization filter for list table. */
     organization?: string;
-    /** SUPER_ADMIN / OPERATIONS: filter by scrubbing-stage claim (`claimedByUnderwriterId`). */
+    /** CONTRACTS_LOG / OPERATIONS: filter by scrubbing-stage claim (`claimedByUnderwriterId`). */
     claimedByUnderwriterId?: string;
-    /** SUPER_ADMIN / OPERATIONS: filter by underwriter assignment. */
+    /** CONTRACTS_LOG / OPERATIONS: filter by underwriter assignment. */
     assignedUnderwriterId?: string;
 }
 

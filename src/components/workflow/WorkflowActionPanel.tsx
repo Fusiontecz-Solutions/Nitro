@@ -273,7 +273,7 @@ export default function WorkflowActionPanel({
     }
   }
 
-  if (appRole === "SUPER_ADMIN" && (inUnderwriting || inAgentApproval || isoPending)) {
+  if (appRole === "CONTRACTS_LOG" && (inUnderwriting || inAgentApproval || isoPending)) {
     banner = (
       <Banner tone="info" icon={<Clock className="size-5" />} title="Agent / Underwriter workflow">
         Agent: {agentName}

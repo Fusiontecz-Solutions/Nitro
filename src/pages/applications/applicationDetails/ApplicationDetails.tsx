@@ -128,13 +128,13 @@ const ApplicationDetails = () => {
 
     const userRole = resolveEffectiveRole(user);
     const roleKey = normalizeRoleKey(userRole);
-    const isSuperAdmin = roleKey === "SUPER_ADMIN";
+    const isSuperAdmin = roleKey === "CONTRACTS_LOG";
     const isUnderwriter = roleKey === 'SCRUBBING' || roleKey === 'UNDERWRITER';
     const isFinalUnderwriter = roleKey === 'UNDERWRITER';
     const isAgent = roleKey === 'AGENT';
     /** Operations + Super Admin use the same contract-workflow tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
-        roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
+        roleKey === "OPERATIONS" || roleKey === "CONTRACTS_LOG";
     const operationsStatusQueryRaw = searchParams.get("operationsStatus");
     const operationsEntryStatus = useMemo(
         () =>
@@ -170,7 +170,7 @@ const ApplicationDetails = () => {
      * URL `operationsStatus` wins when set to a known stage.
      * Otherwise infer from the loaded app (e.g. deep link from Operations dashboard with a hint).
      *
-     * SUPER_ADMIN / OPERATIONS use the contract-workflow strip (Overview → Contract).
+     * CONTRACTS_LOG / OPERATIONS use the contract-workflow strip (Overview → Contract).
      * OPERATIONS early tabs stay read-only via `isOperationsReadOnlyPipelineTab`.
      */
     const effectiveOperationsStatus = useMemo(() => {
@@ -178,7 +178,7 @@ const ApplicationDetails = () => {
         const trimmedOpsStatus = operationsStatusQueryRaw?.trim() ?? "";
         /** Same as Operations: browsing Applications / “all” without a stage should show the full pipeline strip. */
         const operationsOpenedWithoutStageFilter =
-            (roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN") &&
+            (roleKey === "OPERATIONS" || roleKey === "CONTRACTS_LOG") &&
             (!trimmedOpsStatus ||
                 trimmedOpsStatus.toLowerCase() ===
                 OPERATIONS_APPLICATIONS_LIST_ALL_QUERY);

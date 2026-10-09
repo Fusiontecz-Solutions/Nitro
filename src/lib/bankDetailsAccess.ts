@@ -4,7 +4,7 @@ import { normalizeRoleKey } from "@/lib/sessionRole";
 export function canManageBankDetailsOnOverview(role: string | null | undefined): boolean {
     const roleKey = normalizeRoleKey(role ?? "");
     return (
-        roleKey === "SUPER_ADMIN" ||
+        roleKey === "CONTRACTS_LOG" ||
         roleKey === "OPERATIONS" ||
         roleKey === "AGENT"
     );

@@ -191,9 +191,9 @@ export function buildApplicationsListParams(options: {
   underwriterClaim?: UnderwriterClaimParam;
   /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
   underwriterPipeline?: string;
-  /** SUPER_ADMIN / OPERATIONS: scrubbing-stage claim user id. */
+  /** CONTRACTS_LOG / OPERATIONS: scrubbing-stage claim user id. */
   scrubberFilter?: string;
-  /** SUPER_ADMIN / OPERATIONS: assigned underwriter user id. */
+  /** CONTRACTS_LOG / OPERATIONS: assigned underwriter user id. */
   underwriterFilter?: string;
   statsBucket?: string;
   sortBy?: string;

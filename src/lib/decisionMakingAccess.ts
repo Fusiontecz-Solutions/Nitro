@@ -5,8 +5,8 @@ const DECISION_MAKING_EDITOR_ROLES = new Set([
   "SCRUBBING",
   "UNDERWRITER",
   "OPERATIONS",
-  "SUPER_ADMIN",
-  "SUPERADMIN",
+  "CONTRACTS_LOG",
+  "CONTRACTSLOG",
 ]);
 
 export function canRoleEditDecisionMakingTab(

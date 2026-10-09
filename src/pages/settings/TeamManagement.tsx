@@ -55,7 +55,7 @@ async function fetchTeam(status: StatusFilter, search: string): Promise<TeamUser
 }
 
 const ROLE_PILL: Record<AppRole, string> = {
-  SUPER_ADMIN: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200",
+  CONTRACTS_LOG: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200",
   AGENT: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200",
   UNDERWRITER: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
 };
@@ -267,7 +267,7 @@ export default function TeamManagement() {
     const rows = team.data ?? [];
     return {
       ALL: rows.length,
-      SUPER_ADMIN: rows.filter((u) => toAppRole(u.role) === "SUPER_ADMIN").length,
+      CONTRACTS_LOG: rows.filter((u) => toAppRole(u.role) === "CONTRACTS_LOG").length,
       AGENT: rows.filter((u) => toAppRole(u.role) === "AGENT").length,
       UNDERWRITER: rows.filter((u) => toAppRole(u.role) === "UNDERWRITER").length,
     } as Record<RoleFilter, number>;
@@ -401,7 +401,7 @@ export default function TeamManagement() {
                         </span>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {appRole === "SUPER_ADMIN" ? "—" : u.gmailConnected ? "Connected" : "Not connected"}
+                        {appRole === "CONTRACTS_LOG" ? "—" : u.gmailConnected ? "Connected" : "Not connected"}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "—"}

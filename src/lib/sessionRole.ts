@@ -5,6 +5,7 @@ export function normalizeRoleKey(role: string): string {
   if (!r) return "";
   let key = r.toUpperCase().replace(/\s+/g, "_");
   if (key === "FINALUNDERWRITER" || key === "FINAL_UNDERWRITER") key = "UNDERWRITER";
+  if (key === "CONTRACTSLOG") key = "CONTRACTS_LOG";
   if (key === "SUPERADMIN") key = "SUPER_ADMIN";
   return key;
 }
@@ -135,5 +136,5 @@ export function resolveEffectiveRole(
 
 export function isSuperAdminRole(role?: string | null): boolean {
   const key = normalizeRoleKey(String(role ?? ""));
-  return key === "SUPER_ADMIN";
+  return key === "CONTRACTS_LOG";
 }

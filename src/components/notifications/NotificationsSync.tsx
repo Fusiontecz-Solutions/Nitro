@@ -14,7 +14,7 @@ import {
 const NotificationsSync = () => {
   const { data: loginData } = useSelector((state: RootState) => state.login);
   const userRole = resolveEffectiveRole(loginData?.user);
-  const isSuperAdmin = normalizeRoleKey(userRole) === "SUPER_ADMIN";
+  const isSuperAdmin = normalizeRoleKey(userRole) === "CONTRACTS_LOG";
 
   const inboxParams = useMemo(
     () => ({

@@ -167,7 +167,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         [loginUser]
     );
     const canEditBasicDetails =
-        normalizedRole === "AGENT" || normalizedRole === "SUPER_ADMIN";
+        normalizedRole === "AGENT" || normalizedRole === "CONTRACTS_LOG";
 
     const data = applicationData as any;
     const applicationClient = data?.client;
