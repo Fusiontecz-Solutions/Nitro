@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { EmailPlanButton } from "@/pages/settings/EmailPlanSettings";
 import { useParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
 import { store, type AppDispatch, type RootState } from "@/redux/store";
@@ -4701,7 +4702,7 @@ export default function ContractTab({
             >
                 <div className="flex flex-wrap items-end justify-between gap-6">
                     <div className="flex flex-wrap items-end gap-6">
-
+                        <EmailPlanButton />
                     </div>
                     <div className="flex items-center gap-3">
                         <Button

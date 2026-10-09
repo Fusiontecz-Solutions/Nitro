@@ -4,6 +4,7 @@ import type {
   DocuSignAccountProfileInput,
   FunderProfile,
   FunderProfileInput,
+  SendGridUsageSummary,
   SignNowTemplateLinkItem,
 } from "@/types/integrationSettingsTypes";
 
@@ -369,4 +370,13 @@ export { DEFAULT_CONTRACT_FILENAME };
 
 export async function deleteFunderProfile(id: string): Promise<void> {
   await axiosDelete(`/integration-settings/funders/${id}`);
+}
+
+/** SendGrid plan, credits left and today's sends (super admin). */
+export async function fetchSendGridUsage(refresh = false): Promise<SendGridUsageSummary> {
+  const res = await axiosGet("/integration-settings/sendgrid-usage", {
+    params: refresh ? { refresh: 1 } : undefined,
+    skipCache: true,
+  });
+  return (res as { data: { data: SendGridUsageSummary } }).data.data;
 }

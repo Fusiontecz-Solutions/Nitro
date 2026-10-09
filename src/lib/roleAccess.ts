@@ -81,7 +81,7 @@ export function isPathAllowedForRole(role: string | null | undefined, pathname: 
 /** Settings tabs per role (`/user-setting?tab=`). */
 export function settingsTabsForRole(role: string | null | undefined): string[] {
   const appRole = toAppRole(role);
-  if (appRole === "SUPER_ADMIN") return ["profile", "email", "team", "isos", "roles", "funders"];
+  if (appRole === "SUPER_ADMIN") return ["profile", "email", "team", "isos", "roles", "funders", "email-plan"];
   return ["profile", "email"];
 }
 

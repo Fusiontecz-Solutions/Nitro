@@ -131,3 +131,31 @@ export type FunderProfileInput = {
   signnowAddendumTemplates?: SignNowTemplateLinkItem[];
   signnowDisclosureTemplates?: SignNowTemplateLinkItem[];
 };
+
+/** GET /integration-settings/sendgrid-usage */
+export interface SendGridUsageSummary {
+  configured: boolean;
+  planName: string | null;
+  accountType: string | null;
+  credits: {
+    total: number | null;
+    used: number | null;
+    remaining: number | null;
+    overage: number | null;
+    resetFrequency: string | null;
+    lastReset: string | null;
+    nextReset: string | null;
+  };
+  today: {
+    date: string;
+    requests: number;
+    delivered: number;
+    opens: number;
+    clicks: number;
+    bounces: number;
+    blocks: number;
+    spamReports: number;
+  } | null;
+  warnings: string[];
+  fetchedAt: string;
+}

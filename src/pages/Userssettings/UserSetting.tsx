@@ -17,6 +17,7 @@ import FundersSettings from '@/pages/settings/FundersSettings';
 import TeamManagement from '@/pages/settings/TeamManagement';
 import IsoManagement from '@/pages/settings/IsoManagement';
 import RolePermissions from '@/pages/settings/RolePermissions';
+import EmailPlanSettings from '@/pages/settings/EmailPlanSettings';
 import GmailConnectionCard from '@/components/workflow/GmailConnectionCard';
 import { resolveEffectiveRole } from '@/lib/sessionRole';
 import { settingsTabsForRole } from '@/lib/roleAccess';
@@ -42,6 +43,7 @@ const SETTINGS_TAB_LABELS: Record<string, string> = {
   isos: 'ISOs',
   roles: 'Roles & Permissions',
   funders: 'Funders',
+  'email-plan': 'Email Plan',
 };
 
 /** Tabs are role-scoped (Agent / Underwriter: profile + email; Super Admin: everything). */
@@ -261,6 +263,12 @@ export default function UserSetting() {
             {allowedTabs.includes("funders") ? (
               <TabsContent value="funders" className="mt-0">
                 <FundersSettings />
+              </TabsContent>
+            ) : null}
+
+            {allowedTabs.includes("email-plan") ? (
+              <TabsContent value="email-plan" className="mt-0">
+                <EmailPlanSettings />
               </TabsContent>
             ) : null}
           </Tabs>
