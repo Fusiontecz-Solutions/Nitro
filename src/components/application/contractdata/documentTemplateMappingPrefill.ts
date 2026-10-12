@@ -1042,6 +1042,27 @@ function isOptionalExtraBankField(field: ContractPrefillField): boolean {
     );
 }
 
+/**
+ * Key on a saved addendum tab (`documentTemplatePrefillByMappingId[id]`) listing,
+ * comma-separated, the field ids the preparer typed by hand. Those values are
+ * what the tab shows and what SignNow prints — an offer-derived amount such as
+ * the PayOff Addendum's "Net Amount to Merchant" is no longer recomputed over
+ * them. The key matches no SignNow widget, so it never prints.
+ */
+export const LINKED_DOC_MANUAL_FIELD_IDS_KEY = "_manualFieldIds";
+
+export function parseLinkedDocManualFieldIds(
+    saved: Record<string, unknown> | null | undefined,
+): Set<string> {
+    const raw = String(saved?.[LINKED_DOC_MANUAL_FIELD_IDS_KEY] ?? "");
+    return new Set(
+        raw
+            .split(",")
+            .map((id) => id.trim())
+            .filter(Boolean),
+    );
+}
+
 function mergeFieldRows(
     allDefs: ContractPrefillField[],
     computed: ContractPrefillField[],
@@ -1049,6 +1070,7 @@ function mergeFieldRows(
 ): ContractPrefillField[] {
     const computedById = new Map(computed.map((f) => [f.id, f]));
     const saved = savedForRow ?? {};
+    const manualIds = parseLinkedDocManualFieldIds(saved);
     return allDefs.map((def) => {
         const fromSaved = saved[def.id] ?? saved[`${def.id}_p3`];
         const fromSavedTrim =
@@ -1064,8 +1086,10 @@ function mergeFieldRows(
         if (def.id === MONTHLY_FEE_PRINT_NAME_FIELD_ID && computedVal) {
             return { id: def.id, label: def.label, value: computedVal, group: def.group };
         }
-        // The live offer outranks an amount saved against a superseded one.
-        if (isOfferDerivedPrefillFieldId(def.id) && computedVal) {
+        // The live offer outranks an amount saved against a superseded one —
+        // unless the preparer typed that amount on this tab by hand.
+        const typedByHand = manualIds.has(def.id) && fromSavedTrim !== "";
+        if (isOfferDerivedPrefillFieldId(def.id) && computedVal && !typedByHand) {
             return { id: def.id, label: def.label, value: computedVal, group: def.group };
         }
         if (fromSavedTrim !== "") {
@@ -1078,6 +1102,7 @@ function mergeFieldRows(
                 return { id: def.id, label: def.label, value: computedVal, group: def.group };
             }
             if (
+                !typedByHand &&
                 savedNum === 0 &&
                 computedNum !== undefined &&
                 computedNum > 0 &&

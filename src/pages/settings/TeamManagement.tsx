@@ -23,8 +23,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { axiosGet, axiosPatch, axiosPost, axiosPut } from "@/redux/axios";
-import { resolveSessionUser } from "@/lib/sessionRole";
-import { MANAGEABLE_ROLES, ROLE_LABELS, toAppRole, type AppRole } from "@/lib/roleAccess";
+import { resolveEffectiveRole, resolveSessionUser } from "@/lib/sessionRole";
+import { isSuperAdminAppRole, MANAGEABLE_ROLES, ROLE_LABELS, toAppRole, type AppRole } from "@/lib/roleAccess";
 
 type TeamUser = {
   _id: string;
@@ -50,11 +50,12 @@ async function fetchTeam(status: StatusFilter, search: string): Promise<TeamUser
     params: { ...(status !== "all" ? { status } : {}), ...(search ? { search } : {}) },
   });
   const rows: TeamUser[] = Array.isArray(res.data?.data) ? res.data.data : [];
-  // This app manages Super Admin / Agent / Underwriter accounts only.
+  // This app manages Super Admin / Contracts Log / Agent / Underwriter accounts only.
   return rows.filter((u) => toAppRole(u.role));
 }
 
 const ROLE_PILL: Record<AppRole, string> = {
+  SUPER_ADMIN: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200",
   CONTRACTS_LOG: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200",
   AGENT: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200",
   UNDERWRITER: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
@@ -104,6 +105,10 @@ function UserDialog({
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const isSelf = Boolean(editing && editing._id === resolveSessionUser()?.id);
+  // Only a Super Admin may grant the Super Admin role (the API enforces this too).
+  const assignableRoles = isSuperAdminAppRole(resolveEffectiveRole(undefined))
+    ? MANAGEABLE_ROLES
+    : MANAGEABLE_ROLES.filter((r) => r !== "SUPER_ADMIN" || toAppRole(editing?.role) === "SUPER_ADMIN");
 
   useEffect(() => {
     if (!open) return;
@@ -198,7 +203,7 @@ function UserDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {MANAGEABLE_ROLES.map((r) => (
+                {assignableRoles.map((r) => (
                   <SelectItem key={r} value={r}>
                     {ROLE_LABELS[r]}
                   </SelectItem>
@@ -267,6 +272,7 @@ export default function TeamManagement() {
     const rows = team.data ?? [];
     return {
       ALL: rows.length,
+      SUPER_ADMIN: rows.filter((u) => toAppRole(u.role) === "SUPER_ADMIN").length,
       CONTRACTS_LOG: rows.filter((u) => toAppRole(u.role) === "CONTRACTS_LOG").length,
       AGENT: rows.filter((u) => toAppRole(u.role) === "AGENT").length,
       UNDERWRITER: rows.filter((u) => toAppRole(u.role) === "UNDERWRITER").length,

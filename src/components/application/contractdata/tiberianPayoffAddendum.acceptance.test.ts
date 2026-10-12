@@ -23,7 +23,10 @@ import {
     buildPayoffAddendumContractPrefillFields,
     buildTiberianPayoffAddendumContractPrefillFields,
 } from "./PAYOFF_ADDENDUM";
-import { getDocumentTemplatePrefillFieldRowsForEditor } from "./documentTemplateMappingPrefill";
+import {
+    getDocumentTemplatePrefillFieldRowsForEditor,
+    LINKED_DOC_MANUAL_FIELD_IDS_KEY,
+} from "./documentTemplateMappingPrefill";
 import { mapFunderSignNowTemplates } from "@/utils/signnowTemplateLink";
 
 /** Owner-filled text widgets on the live Tiberian PayOff Addendum. */
@@ -132,6 +135,46 @@ test("the editor rows for Tiberian's mapping use the Tiberian widget names", () 
     const byId = new Map(rows.map((r) => [r.id, r.value]));
     assert.equal(byId.get("addendum_p_print_title_p1"), "OWNER");
     assert.ok(String(byId.get("addendum_p_addendum_dated_p1") || "").length > 0);
+});
+
+function payoffRows(saved: Record<string, string>) {
+    return getDocumentTemplatePrefillFieldRowsForEditor({
+        templateId: SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID,
+        templateName: "PayOff Addendum (Refi)",
+        templateLayoutKey: SIGNNOW_PAYOFF_ADDENDUM_TEMPLATE_ID,
+        documentType: "addendum",
+        contract: {
+            clientLegalName: "FREE STATE CONTRACTING CO., INC.",
+            clientName: "Melissa Van Meter",
+            refinanceAmount: "19,500.00",
+            purchaseAmount: "40000",
+            purchasePrice: "60000",
+            appendixUnderwritingFees: "4000",
+            funderName: "Nitro Advance",
+            offer: { offer: 40000, totalRemit: 60000, fees: 4000, refinanceAmount: 19500 },
+        },
+        application: null,
+        savedOverridesForMapping: saved,
+    } as Parameters<typeof getDocumentTemplatePrefillFieldRowsForEditor>[0]);
+}
+const netOf = (rows: Array<{ id: string; value?: string }>) =>
+    rows.find((r) => r.id === "net_to_merchant_p1")?.value;
+
+test("a hand-typed Net Amount to Merchant reopens as saved", () => {
+    const computed = netOf(payoffRows({}));
+    assert.ok(computed, "net to merchant is computed from the deal");
+    assert.notEqual(computed, "1,000.00");
+    const rows = payoffRows({
+        net_to_merchant_p1: "1,000.00",
+        [LINKED_DOC_MANUAL_FIELD_IDS_KEY]: "net_to_merchant_p1",
+    });
+    assert.equal(netOf(rows), "1,000.00");
+    assert.equal(rows.some((r) => r.id === LINKED_DOC_MANUAL_FIELD_IDS_KEY), false);
+});
+
+test("a net saved without the hand-typed mark still follows the live offer", () => {
+    const computed = netOf(payoffRows({}));
+    assert.equal(netOf(payoffRows({ net_to_merchant_p1: "1,000.00" })), computed);
 });
 
 let failed = 0;

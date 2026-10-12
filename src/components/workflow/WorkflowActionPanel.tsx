@@ -79,7 +79,8 @@ function Banner({
 
 /**
  * Stage banner + actions for the Agent → Underwriter → Agent → ISO workflow, shown at the
- * top of Application Details for Agents, Underwriters and (read-only oversight) Super Admin.
+ * top of Application Details for Agents, Underwriters, Super Admin (acts as the Underwriter
+ * during underwriting and as the Agent at every other stage) and read-only Contracts Log oversight.
  */
 export default function WorkflowActionPanel({
   application,
@@ -116,6 +117,9 @@ export default function WorkflowActionPanel({
   const inAgentApproval = isWorkflowQueue(queue, WORKFLOW_QUEUE.AGENT_APPROVAL) || isWorkflowQueue(queue, "Agent Approval");
   const isoPending = isWorkflowQueue(queue, WORKFLOW_QUEUE.APPROVAL_SENT);
   const inContractStage = CONTRACT_STAGE_TOKENS.has(workflowToken(queue));
+  const isSuperAdmin = appRole === "SUPER_ADMIN";
+  /** Which workflow seat this viewer acts in for the current stage. */
+  const actingRole = isSuperAdmin ? (inUnderwriting ? "UNDERWRITER" : "AGENT") : appRole;
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["workflow-summary"] });
@@ -141,7 +145,7 @@ export default function WorkflowActionPanel({
   const status = <WorkflowStatusBadge queue={queue} className="ml-2 align-middle" />;
   let banner: ReactNode = null;
 
-  if (appRole === "UNDERWRITER") {
+  if (actingRole === "UNDERWRITER") {
     if (inUnderwriting && !underwriterId) {
       banner = (
         <Banner
@@ -157,12 +161,18 @@ export default function WorkflowActionPanel({
           Claim it to start underwriting. Until then the application is read-only.
         </Banner>
       );
-    } else if (inUnderwriting && underwriterId === me) {
+    } else if (inUnderwriting && (underwriterId === me || isSuperAdmin)) {
       banner = (
         <Banner
           tone="action"
           icon={needsReReview ? <Undo2 className="size-5" /> : <Pencil className="size-5" />}
-          title={needsReReview ? "Needs re-review — the Agent requested changes" : "You are underwriting this application"}
+          title={
+            needsReReview
+              ? "Needs re-review — the Agent requested changes"
+              : underwriterId === me
+                ? "You are underwriting this application"
+                : `Claimed by ${underwriterName || "another underwriter"}`
+          }
           actions={
             <Button className="gap-1.5" onClick={() => setDialog("sendToAgent")}>
               <Send className="size-4" /> Send to Agent for approval
@@ -195,7 +205,7 @@ export default function WorkflowActionPanel({
     }
   }
 
-  if (appRole === "AGENT") {
+  if (actingRole === "AGENT") {
     if (isDraft) {
       banner = (
         <Banner
@@ -283,7 +293,7 @@ export default function WorkflowActionPanel({
     );
   }
 
-  const showEmailHistory = appRole !== "UNDERWRITER" && (isoPending || inContractStage || inAgentApproval);
+  const showEmailHistory = actingRole !== "UNDERWRITER" && (isoPending || inContractStage || inAgentApproval);
 
   if (!banner && !showEmailHistory) return null;
 

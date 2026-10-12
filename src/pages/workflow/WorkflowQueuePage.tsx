@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/context/ThemeContext";
 import { resolveEffectiveRole } from "@/lib/sessionRole";
-import { roleCan, PERMISSIONS, toAppRole } from "@/lib/roleAccess";
+import { canActAsUnderwriter, roleCan, PERMISSIONS } from "@/lib/roleAccess";
 import {
   claimApplication,
   fetchWorkflowQueue,
@@ -93,7 +93,7 @@ export default function WorkflowQueuePage() {
   };
 
   const activeDef = useMemo(() => buckets.find((b) => b.key === bucket), [buckets, bucket]);
-  const canClaim = scope === "underwriter" && bucket === "incoming" && roleCan(role, PERMISSIONS.UNDERWRITING_CLAIM) && toAppRole(role) === "UNDERWRITER";
+  const canClaim = scope === "underwriter" && bucket === "incoming" && roleCan(role, PERMISSIONS.UNDERWRITING_CLAIM) && canActAsUnderwriter(role);
   const data = queue.data;
 
   if (useApplicationsPage) return <Applications />;

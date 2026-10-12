@@ -128,13 +128,16 @@ const ApplicationDetails = () => {
 
     const userRole = resolveEffectiveRole(user);
     const roleKey = normalizeRoleKey(userRole);
-    const isSuperAdmin = roleKey === "CONTRACTS_LOG";
+    /** Contracts Log access (CONTRACTS_LOG, or SUPER_ADMIN which sits above it). */
+    const isSuperAdmin = roleKey === "CONTRACTS_LOG" || roleKey === "SUPER_ADMIN";
+    /** SUPER_ADMIN also acts as the Agent (APPROVAL tab, decline). */
+    const isTopSuperAdmin = roleKey === "SUPER_ADMIN";
     const isUnderwriter = roleKey === 'SCRUBBING' || roleKey === 'UNDERWRITER';
     const isFinalUnderwriter = roleKey === 'UNDERWRITER';
     const isAgent = roleKey === 'AGENT';
     /** Operations + Super Admin use the same contract-workflow tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
-        roleKey === "OPERATIONS" || roleKey === "CONTRACTS_LOG";
+        roleKey === "OPERATIONS" || isSuperAdmin;
     const operationsStatusQueryRaw = searchParams.get("operationsStatus");
     const operationsEntryStatus = useMemo(
         () =>
@@ -178,7 +181,7 @@ const ApplicationDetails = () => {
         const trimmedOpsStatus = operationsStatusQueryRaw?.trim() ?? "";
         /** Same as Operations: browsing Applications / “all” without a stage should show the full pipeline strip. */
         const operationsOpenedWithoutStageFilter =
-            (roleKey === "OPERATIONS" || roleKey === "CONTRACTS_LOG") &&
+            (roleKey === "OPERATIONS" || isSuperAdmin) &&
             (!trimmedOpsStatus ||
                 trimmedOpsStatus.toLowerCase() ===
                 OPERATIONS_APPLICATIONS_LIST_ALL_QUERY);
@@ -231,7 +234,7 @@ const ApplicationDetails = () => {
         }
 
         // Agent: once underwriting is handed back, review the scrubbed offer (read-only) before sending to the ISO.
-        if (isAgent) {
+        if (isAgent || isTopSuperAdmin) {
             const offerReady =
                 queueNorm === 'agent review' ||
                 queueNorm === 'agent approval' ||
@@ -264,11 +267,20 @@ const ApplicationDetails = () => {
 
     const tabs = useMemo((): TabOption[] => {
         if (useOperationsPipelineTabs) {
-            return [...SUPER_ADMIN_PIPELINE_TABS];
+            const pipelineTabs: TabOption[] = [...SUPER_ADMIN_PIPELINE_TABS];
+            // Super Admin also sits in the Agent seat: review the offer before it goes to the ISO.
+            if (isTopSuperAdmin && getTabs().some((t) => t.id === "approval")) {
+                const contractIndex = pipelineTabs.findIndex((t) => t.id === "contract");
+                const approvalTab = { id: "approval", label: "APPROVAL" };
+                if (contractIndex === -1) pipelineTabs.push(approvalTab);
+                else pipelineTabs.splice(contractIndex, 0, approvalTab);
+            }
+            return pipelineTabs;
         }
         return getTabs();
     }, [
         useOperationsPipelineTabs,
+        isTopSuperAdmin,
         status,
         explicitStatus,
         queue,
@@ -951,7 +963,7 @@ const ApplicationDetails = () => {
                                         readOnly
                                         enableCreate={false}
                                         showBankStatementUpload={false}
-                                        allowDecline={isAgent && !isViewOnlyBrowse && !isStagePreview}
+                                        allowDecline={(isAgent || isTopSuperAdmin) && !isViewOnlyBrowse && !isStagePreview}
                                     />
                                     <div className="mt-6"><CommentSection readOnly={commentsReadOnly} /></div>
                             </LazyTabContent>

@@ -134,7 +134,8 @@ export function resolveEffectiveRole(
   return resolveSessionRole(loginUser);
 }
 
+/** CONTRACTS_LOG or SUPER_ADMIN (SUPER_ADMIN sits above Contracts Log). */
 export function isSuperAdminRole(role?: string | null): boolean {
   const key = normalizeRoleKey(String(role ?? ""));
-  return key === "CONTRACTS_LOG";
+  return key === "CONTRACTS_LOG" || key === "SUPER_ADMIN";
 }

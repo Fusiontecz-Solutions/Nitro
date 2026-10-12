@@ -451,7 +451,8 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
       const usePipelineTabs =
         role === "OPERATIONS" ||
         role === "CONTRACTS_LOG" ||
-        role === "CONTRACTSLOG";
+        role === "CONTRACTSLOG" ||
+        role === "SUPER_ADMIN";
       const id =
         app.applicationId != null ? String(app.applicationId) : app._id;
       const qs = new URLSearchParams();
@@ -531,7 +532,7 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
   const showReinitiateContractIsoDecisionColumn = useMemo(() => {
     const normalizedStatus = normalizeOperationsDashboardStatusParam(dashboardStateFilter);
     return (
-      (effectiveRoleKey === "CONTRACTS_LOG" || effectiveRoleKey === "OPERATIONS") &&
+      (effectiveRoleKey === "CONTRACTS_LOG" || effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS") &&
       normalizedStatus === "Reinitiate_Contract"
     );
   }, [dashboardStateFilter, effectiveRoleKey]);
@@ -539,7 +540,7 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
   const showFinalApprovalSourceColumn = useMemo(() => {
     const normalizedStatus = normalizeOperationsDashboardStatusParam(dashboardStateFilter);
     return (
-      (effectiveRoleKey === "CONTRACTS_LOG" || effectiveRoleKey === "OPERATIONS") &&
+      (effectiveRoleKey === "CONTRACTS_LOG" || effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS") &&
       normalizedStatus === "Final_Approval"
     );
   }, [dashboardStateFilter, effectiveRoleKey]);
@@ -1491,7 +1492,7 @@ const Applications = ({ mode = "default" }: ApplicationsProps) => {
 
   const userRole = resolveEffectiveRole(user);
   const roleKey = normalizeRoleKey(userRole);
-  const isSuperAdmin = roleKey === "CONTRACTS_LOG";
+  const isSuperAdmin = roleKey === "CONTRACTS_LOG" || roleKey === "SUPER_ADMIN";
   const canCreateNewApplication =
     roleKey === "AGENT" || isSuperAdmin;
   const { resolvedTheme } = useTheme();

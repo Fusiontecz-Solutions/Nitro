@@ -43,6 +43,7 @@ const NotificationDashboard = lazy(
 const WorkflowDashboard = lazy(() => import('../pages/workflow/WorkflowDashboard'));
 const WorkflowQueuePage = lazy(() => import('../pages/workflow/WorkflowQueuePage'));
 const TemplatePlayground = lazy(() => import('../pages/templates/TemplatePlayground'));
+const GmailPage = lazy(() => import('../pages/gmailModule/gmail'));
 
 const ApplicationsRouteEntry: React.FC = () => <Applications />;
 
@@ -189,6 +190,7 @@ const Routes: RouteObject[] = [
             { path: 'letter-generator', element: <Applications mode="letterGenerator" /> },
             { path: 'user-setting', element: <UserSetting /> },
             { path: 'notifications', element: <NotificationDashboard /> },
+            { path: 'gmail', element: <GmailPage /> },
             // Preview / test every built-in email + letter template
             { path: 'template/playground', element: <TemplatePlayground /> },
             { path: 'templates/playground', element: <Navigate to="/template/playground" replace /> },

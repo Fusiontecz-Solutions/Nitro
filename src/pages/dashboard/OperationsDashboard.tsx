@@ -202,7 +202,7 @@ export const OperationsDashboard = () => {
     loginData?.user?.role ||
     (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
     "";
-  const isSuperAdmin = userRole === "CONTRACTS_LOG" || userRole === "CONTRACTSLOG";
+  const isSuperAdmin = userRole === "CONTRACTS_LOG" || userRole === "CONTRACTSLOG" || userRole === "SUPER_ADMIN";
   const isOperationsUser = userRole.toUpperCase() === "OPERATIONS";
   const {
     summaryCounts,

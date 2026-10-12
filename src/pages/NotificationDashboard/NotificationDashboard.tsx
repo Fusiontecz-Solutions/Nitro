@@ -44,7 +44,7 @@ export default function NotificationDashboard() {
 
     const { data: loginData } = useSelector((s: RootState) => s.login);
     const role = loginData?.user?.role || localStorage.getItem("role") || "";
-    const isSuperAdmin = role === "CONTRACTS_LOG" || role === "CONTRACTSLOG";
+    const isSuperAdmin = role === "CONTRACTS_LOG" || role === "CONTRACTSLOG" || role === "SUPER_ADMIN";
 
     const { data: notifications, loading } = useSelector((s: RootState) => s.notifications);
 

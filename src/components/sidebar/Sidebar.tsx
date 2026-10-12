@@ -14,8 +14,10 @@ import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import Inbox from "@mui/icons-material/Inbox";
 import AssignmentInd from "@mui/icons-material/AssignmentInd";
 import Replay from "@mui/icons-material/Replay";
+import Email from "@mui/icons-material/Email";
+import SpaceDashboard from "@mui/icons-material/SpaceDashboard";
 import { resolveEffectiveRole } from "@/lib/sessionRole";
-import { isAgentRole, isUnderwriterRole, isWorkflowRole } from "@/lib/roleAccess";
+import { isAgentRole, isSuperAdminAppRole, isUnderwriterRole, isWorkflowRole } from "@/lib/roleAccess";
 import { useQuery } from "@tanstack/react-query";
 import { fetchWorkflowSummary, type WorkflowScope } from "@/lib/workflowApi";
 import {
@@ -32,20 +34,14 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, useLocation, useSearchParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { logout } from "@/redux/actions/authActions";
-import { clearApplicationStats, clearApplicationDetail } from "@/redux/slices/applicationSlice";
-import { resetOperationsDashboard } from "@/redux/slices/operationsDashboardSlice";
 import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashboardActions";
-import { toast } from "react-toastify";
+import { useLogout } from "@/hooks/useLogout";
 import { APP_SHORT_ICON_SRC, APP_SHORT_ICON_DARK_SRC, resolveAppLogoSrc } from "@/constants/appLogo";
 import { useTheme } from "@/context/ThemeContext";
-import { useEffect, useMemo, useState, type ComponentType } from "react";
-import { clearCrmCacheOnLogout } from "@/lib/crmCache";
-import { clearAllPersistentCaches } from "@/lib/persistentCache/clearAllPersistentCaches";
-import { clearHttpGetCache } from "@/lib/httpGetCache";
+import { useEffect, useMemo, type ComponentType } from "react";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
@@ -206,16 +202,68 @@ const underwriterSections: SidebarNavSection[] = [
   workflowSettingsSection,
 ];
 
+/**
+ * Super Admin: everything Contracts Log has, plus both workflow seats (Agent + Underwriter,
+ * via `?scope=`) and Super Admin-only modules (Gmail workspace).
+ */
+const superAdminSections: SidebarNavSection[] = [
+  {
+    title: "MAIN",
+    items: [
+      { label: "Dashboard", url: "/", icon: Dashboard },
+      { label: "Notifications", url: "/notifications", icon: Notifications },
+      { label: "Clients", url: "/clients", icon: People },
+      { label: "Letters", url: "/letter-generator", icon: MailOutline },
+      { label: "New Application", url: "/create-applications", icon: AddCircleOutline },
+    ],
+  },
+  sidebarSections[1],
+  {
+    title: "AGENT WORKFLOW",
+    items: [
+      { label: "Agent Dashboard", url: "/workflow-dashboard?scope=agent", icon: SpaceDashboard },
+      { label: "All Applications", url: "/pipeline?scope=agent&bucket=all", icon: InsertDriveFileIcon },
+      { label: "Awaiting Approval", url: "/pipeline?scope=agent&bucket=awaiting_my_approval", icon: FactCheck },
+      { label: "Sent to ISO", url: "/pipeline?scope=agent&bucket=sent_to_iso", icon: MailOutline },
+      { label: "Contract Pending", url: "/pipeline?scope=agent&bucket=contract_pending", icon: Article },
+    ],
+  },
+  {
+    title: "UNDERWRITING",
+    items: [
+      { label: "Underwriter Dashboard", url: "/workflow-dashboard?scope=underwriter", icon: SpaceDashboard },
+      { label: "Incoming", url: "/pipeline?scope=underwriter&bucket=incoming", icon: Inbox },
+      { label: "Claimed", url: "/pipeline?scope=underwriter&bucket=my_claimed", icon: AssignmentInd },
+      { label: "Needs Re-Review", url: "/pipeline?scope=underwriter&bucket=needs_re_review", icon: Replay },
+      { label: "Sent to Agent", url: "/pipeline?scope=underwriter&bucket=sent_to_agent", icon: FactCheck },
+      { label: "Completed", url: "/pipeline?scope=underwriter&bucket=completed", icon: Article },
+    ],
+  },
+  {
+    title: "COMMUNICATIONS",
+    items: [{ label: "Gmail", url: "/gmail", icon: Email }],
+  },
+  {
+    title: "SETTINGS",
+    items: [
+      { label: "Settings", url: "/user-setting", icon: Settings },
+      { label: "Email", url: "/user-setting?tab=email", icon: MailOutline },
+      { label: "Team & Roles", url: "/user-setting?tab=team", icon: ManageAccounts },
+    ],
+  },
+];
+
 function sectionsForRole(role: string): SidebarNavSection[] {
+  if (isSuperAdminAppRole(role)) return superAdminSections;
   if (isAgentRole(role)) return agentSections;
   if (isUnderwriterRole(role)) return underwriterSections;
   return sidebarSections;
 }
 
-/** `/pipeline?bucket=` and `?scope=` links: active only for the matching query value. */
+/** `/pipeline` and `/workflow-dashboard` links with `?bucket=` / `?scope=`: active only for the matching query value. */
 function isPipelineHrefActive(pathname: string, searchParams: URLSearchParams, href: string): boolean {
   const target = parseNavHref(href);
-  if (pathname !== "/pipeline") return false;
+  if (pathname !== target.pathname) return false;
   for (const key of ["bucket", "scope"]) {
     const wanted = target.searchParams.get(key);
     if (wanted && (searchParams.get(key) || (key === "scope" ? "agent" : "")) !== wanted) return false;
@@ -303,6 +351,10 @@ function isNavItemActive(
     return pathname === "/clients" || pathname.startsWith("/create-clients");
   }
 
+  if (item.url === "/gmail") {
+    return pathname === "/gmail";
+  }
+
   if (item.url === "/notifications") {
     return pathname === "/notifications" || pathname.startsWith("/notifications/");
   }
@@ -318,7 +370,7 @@ function isNavItemActive(
     );
   }
 
-  if (item.url.startsWith("/pipeline")) {
+  if (item.url.startsWith("/pipeline") || item.url.startsWith("/workflow-dashboard")) {
     return isPipelineHrefActive(pathname, searchParams, item.url);
   }
 
@@ -367,7 +419,6 @@ const Sidebar = () => {
   const isDark = resolvedTheme === "dark";
   const isCollapsed = state === "collapsed";
   const dispatch: AppDispatch = useDispatch();
-  const navigate = useNavigate();
 
   const { data: notifications } = useSelector(
     (state: RootState) => state.notifications,
@@ -392,24 +443,30 @@ const Sidebar = () => {
 
   const sessionRole = resolveEffectiveRole(undefined);
   const workflowViewer = isWorkflowRole(sessionRole);
+  const superAdmin = isSuperAdminAppRole(sessionRole);
   const navSections = useMemo(() => sectionsForRole(sessionRole), [sessionRole]);
 
   // Agent / Underwriter queue badges (same query + cache key as the dashboard, all-time range).
-  const workflowScope: WorkflowScope = isUnderwriterRole(sessionRole) ? "underwriter" : "agent";
-  const workflowSummary = useQuery({
-    queryKey: ["workflow-summary", workflowScope, "", ""],
-    queryFn: () => fetchWorkflowSummary(workflowScope, { startDate: "", endDate: "" }),
-    enabled: workflowViewer,
+  // Super Admin sees both workflows, so it loads both scopes.
+  const summaryQuery = (scope: WorkflowScope, enabled: boolean) => ({
+    queryKey: ["workflow-summary", scope, "", ""],
+    queryFn: () => fetchWorkflowSummary(scope, { startDate: "", endDate: "" }),
+    enabled,
     staleTime: 15_000,
     // Socket / focus refreshes come from PipelineCountsSync; this is the fallback poll.
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });
+  const agentSummary = useQuery(summaryQuery("agent", superAdmin || isAgentRole(sessionRole)));
+  const underwriterSummary = useQuery(summaryQuery("underwriter", superAdmin || isUnderwriterRole(sessionRole)));
   const workflowBucketCount = (url: string): number | null => {
-    if (!workflowViewer || !workflowSummary.data || !url.startsWith("/pipeline?")) return null;
-    const bucket = new URLSearchParams(url.split("?")[1]).get("bucket");
+    if ((!workflowViewer && !superAdmin) || !url.startsWith("/pipeline?")) return null;
+    const params = new URLSearchParams(url.split("?")[1]);
+    const bucket = params.get("bucket");
     if (!bucket) return null;
-    const n = workflowSummary.data.counts?.[bucket];
+    const scope = params.get("scope") ?? (isUnderwriterRole(sessionRole) ? "underwriter" : "agent");
+    const summary = scope === "underwriter" ? underwriterSummary.data : agentSummary.data;
+    const n = summary?.counts?.[bucket];
     return typeof n === "number" ? n : null;
   };
 
@@ -420,24 +477,7 @@ const Sidebar = () => {
     void dispatch(fetchOperationsDashboardSummary());
   }, [dispatch, lastSummaryFetchedAt, workflowViewer]);
 
-  const [loggingOut, setLoggingOut] = useState(false);
-
-  const handleLogout = () => {
-    if (loggingOut) return;
-    setLoggingOut(true);
-    void dispatch(logout());
-    dispatch(clearApplicationStats());
-    dispatch(clearApplicationDetail());
-    dispatch(resetOperationsDashboard());
-    clearCrmCacheOnLogout();
-    clearHttpGetCache();
-    void clearAllPersistentCaches();
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    localStorage.removeItem("role");
-    toast.success("Logged out");
-    navigate("/login", { replace: true });
-  };
+  const { loggingOut, handleLogout } = useLogout();
 
   const sidebarShell = isDark
     ? "bg-background border-r border-border"

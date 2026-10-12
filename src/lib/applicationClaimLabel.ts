@@ -71,7 +71,7 @@ export function mapUsersToClaimFilterOptions(
 /** Super Admin / Operations — scrubbers and underwriters must not see colleagues' claims on shared lists. */
 export function canViewApplicationClaimAssignments(roleKey: string): boolean {
   const key = roleKey.trim().toUpperCase().replace(/\s+/g, "_");
-  return key === "CONTRACTS_LOG" || key === "OPERATIONS";
+  return key === "CONTRACTS_LOG" || key === "SUPER_ADMIN" || key === "OPERATIONS";
 }
 
 /** Approved offer amount on application lists (ops/admin + scrubbing). */

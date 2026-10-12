@@ -6,7 +6,7 @@ export function isPaymentsRoute(pathname: string): boolean {
 
 function isOpsOrSuperAdminRole(normalizedRole: string): boolean {
   return (
-    normalizedRole === "OPERATIONS" || normalizedRole === "CONTRACTS_LOG"
+    normalizedRole === "OPERATIONS" || normalizedRole === "CONTRACTS_LOG" || normalizedRole === "SUPER_ADMIN"
   );
 }
 

@@ -5,6 +5,7 @@ export function canManageBankDetailsOnOverview(role: string | null | undefined):
     const roleKey = normalizeRoleKey(role ?? "");
     return (
         roleKey === "CONTRACTS_LOG" ||
+        roleKey === "SUPER_ADMIN" ||
         roleKey === "OPERATIONS" ||
         roleKey === "AGENT"
     );

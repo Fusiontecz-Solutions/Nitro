@@ -82,6 +82,8 @@ import {
     LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
     LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID,
     stripDocumentTemplateBlobFromPrefillOverrides,
+    LINKED_DOC_MANUAL_FIELD_IDS_KEY,
+    parseLinkedDocManualFieldIds,
 } from "./documentTemplateMappingPrefill";
 import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
@@ -1818,6 +1820,15 @@ export function ContractPrefillEditForm({
     const valuesRef = useRef(values);
     valuesRef.current = values;
     const [addendumFieldValues, setAddendumFieldValues] = useState<Record<string, string>>({});
+    /**
+     * Addendum tab fields typed by hand in this session. Saved onto the tab as
+     * `_manualFieldIds`, so a typed amount (the PayOff Addendum's "Net Amount to
+     * Merchant") reopens — and reaches SignNow — as typed instead of re-derived.
+     */
+    const addendumManualIdsRef = useRef<Set<string>>(new Set());
+    /** "Reload from application" drops the saved hand-typed marks until the next save. */
+    const [ignoreSavedAddendumManualIds, setIgnoreSavedAddendumManualIds] = useState(false);
+    const pendingAddendumReloadRef = useRef(false);
     const [disclosureFieldValues, setDisclosureFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -1993,9 +2004,21 @@ export function ContractPrefillEditForm({
         exhibitCDealLegalName,
     ]);
 
+    useEffect(() => {
+        if (!open) return;
+        addendumManualIdsRef.current = new Set();
+        pendingAddendumReloadRef.current = false;
+        setIgnoreSavedAddendumManualIds(false);
+    }, [open]);
+
     const addendumEditorRows = useMemo(() => {
         if (!linkedAddendumMapping?.id) return [];
-        const saved = documentTemplatePrefillByMappingId[linkedAddendumMapping.id] ?? {};
+        const savedRaw = documentTemplatePrefillByMappingId[linkedAddendumMapping.id] ?? {};
+        const saved = ignoreSavedAddendumManualIds
+            ? Object.fromEntries(
+                  Object.entries(savedRaw).filter(([k]) => k !== LINKED_DOC_MANUAL_FIELD_IDS_KEY),
+              )
+            : savedRaw;
         return getDocumentTemplatePrefillFieldRowsForEditor({
             templateId:
                 linkedAddendumMapping.template?.templateId ??
@@ -2027,6 +2050,7 @@ export function ContractPrefillEditForm({
         applicationData,
         agreementDateForDefaults,
         strippedMainPrefillOverrides,
+        ignoreSavedAddendumManualIds,
     ]);
 
     const visibleAddendumEditorRows = useMemo(
@@ -2434,6 +2458,14 @@ export function ContractPrefillEditForm({
     resetAddendumFromSourcesRef.current = resetAddendumFromSources;
     const resetDisclosureFromSourcesRef = useRef(resetDisclosureFromSources);
     resetDisclosureFromSourcesRef.current = resetDisclosureFromSources;
+
+    // "Reload from application": re-seed the addendum once its rows no longer
+    // carry the saved hand-typed marks.
+    useEffect(() => {
+        if (!pendingAddendumReloadRef.current || !ignoreSavedAddendumManualIds) return;
+        pendingAddendumReloadRef.current = false;
+        resetAddendumFromSources();
+    }, [ignoreSavedAddendumManualIds, resetAddendumFromSources]);
 
     const offerDecisionSyncKey = useMemo(() => {
         const root =
@@ -2916,6 +2948,19 @@ export function ContractPrefillEditForm({
                     addendumValues.purchase_price = remainingBalance;
                     addendumValues.balance_transfer_purchase_price = remainingBalance;
                 }
+                const manualIds = new Set<string>([
+                    ...(ignoreSavedAddendumManualIds
+                        ? []
+                        : parseLinkedDocManualFieldIds(existingBlob[linkedAddendumMapping.id])),
+                    ...addendumManualIdsRef.current,
+                ]);
+                const keptManualIds = [...manualIds].filter((id) =>
+                    String(addendumValues[id] ?? "").trim(),
+                );
+                delete addendumValues[LINKED_DOC_MANUAL_FIELD_IDS_KEY];
+                if (keptManualIds.length) {
+                    addendumValues[LINKED_DOC_MANUAL_FIELD_IDS_KEY] = keptManualIds.join(",");
+                }
                 nextBlob[linkedAddendumMapping.id] = addendumValues;
             }
             if (
@@ -3281,12 +3326,18 @@ export function ContractPrefillEditForm({
             }
             const nextMain = { ...valuesRef.current, ...updates };
             setValues(nextMain);
-            setAddendumFieldValues((linked) =>
-                overlayLinkedDocFieldsFromMain(linked, linkedAddendumMainSource(nextMain), {
+            setAddendumFieldValues((linked) => {
+                const next = overlayLinkedDocFieldsFromMain(linked, linkedAddendumMainSource(nextMain), {
                     typed: { key: key as ContractPrefillFormFieldKey, value: v },
                     knownIds: addendumEditorRows.map((r) => String(r.id)),
-                }),
-            );
+                });
+                // A value typed on the main form and mirrored onto the addendum is
+                // just as hand-entered there.
+                for (const [id, val] of Object.entries(next)) {
+                    if (val !== linked[id]) addendumManualIdsRef.current.add(id);
+                }
+                return next;
+            });
             setSaveError(null);
             setFieldErrors((prev) => {
                 if (!prev[key] && !mirrorKeys?.some((k) => prev[k])) return prev;
@@ -3478,6 +3529,7 @@ export function ContractPrefillEditForm({
                                             rowId: string,
                                             nextValue: string,
                                         ) => {
+                                            addendumManualIdsRef.current.add(rowId);
                                             setAddendumFieldValues((prev) => ({
                                                 ...prev,
                                                 [rowId]: nextValue,
@@ -3930,6 +3982,14 @@ export function ContractPrefillEditForm({
                                     dirtyFieldKeysRef.current = new Set();
                                     fieldEditedAtRef.current = new Map();
                                     resetFromSources({ forceLiveOfferMoney: true });
+                                    // Hand-typed addendum amounts go back to the live values too.
+                                    addendumManualIdsRef.current = new Set();
+                                    if (ignoreSavedAddendumManualIds) {
+                                        resetAddendumFromSourcesRef.current();
+                                    } else {
+                                        pendingAddendumReloadRef.current = true;
+                                        setIgnoreSavedAddendumManualIds(true);
+                                    }
                                 }}
                                 disabled={saving}
                             >

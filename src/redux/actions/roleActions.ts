@@ -17,6 +17,7 @@ const ROLE_TAB_LABELS: Record<string, string> = {
   ACCOUNTS: 'Accounts',
   ADMIN: 'Admin',
   OPERATIONS: 'Operations',
+  SUPER_ADMIN: 'Super Admin',
   CONTRACTS_LOG: 'Contracts Log',
 };
 

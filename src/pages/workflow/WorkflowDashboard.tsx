@@ -35,7 +35,7 @@ import {
 import { cn, formatCurrency, formatDate, formatInt } from "@/lib/utils";
 import { useTheme } from "@/context/ThemeContext";
 import { resolveEffectiveRole } from "@/lib/sessionRole";
-import { PERMISSIONS, roleCan, WORKFLOW_QUEUE_PATH } from "@/lib/roleAccess";
+import { isSuperAdminAppRole, PERMISSIONS, roleCan, WORKFLOW_QUEUE_PATH } from "@/lib/roleAccess";
 import {
   fetchWorkflowSummary,
   type WorkflowListItem,
@@ -190,6 +190,8 @@ export default function WorkflowDashboard() {
   const isDark = resolvedTheme === "dark";
   const { scope, canSwitch, setScope } = useWorkflowScope();
   const role = resolveEffectiveRole(undefined);
+  /** Super Admin switches scope like oversight but also acts in both seats. */
+  const actsInWorkflow = !canSwitch || isSuperAdminAppRole(role);
 
   // Queues are "what is on my plate", so the default window is all time.
   const [dateRange, setDateRange] = useState<DashboardDateRangeValue>({ startDate: "", endDate: "" });
@@ -274,7 +276,7 @@ export default function WorkflowDashboard() {
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-[22px] font-semibold tracking-tight text-foreground">
-          {canSwitch ? "Workflow oversight" : scope === "agent" ? "Agent Dashboard" : "Underwriter Dashboard"}
+          {!actsInWorkflow ? "Workflow oversight" : scope === "agent" ? "Agent Dashboard" : "Underwriter Dashboard"}
         </h1>
         <div className="flex flex-wrap items-center gap-3">
           {canSwitch ? (
@@ -294,13 +296,13 @@ export default function WorkflowDashboard() {
               ))}
             </div>
           ) : null}
-          {scope === "agent" && roleCan(role, PERMISSIONS.APPLICATION_CREATE) && !canSwitch ? (
+          {scope === "agent" && roleCan(role, PERMISSIONS.APPLICATION_CREATE) && actsInWorkflow ? (
             <Button variant="outline" className={brandButtonClass} onClick={() => navigate("/create-applications")}>
               <Plus className="size-4" />
               <span className="text-sm font-semibold">New Application</span>
             </Button>
           ) : null}
-          {scope === "underwriter" && !canSwitch ? (
+          {scope === "underwriter" && actsInWorkflow ? (
             <Button variant="outline" className={brandButtonClass} onClick={() => openBucket("incoming")}>
               <span className="text-sm font-semibold">View Incoming Queue</span>
             </Button>
@@ -316,7 +318,7 @@ export default function WorkflowDashboard() {
         </p>
       ) : null}
 
-      {!canSwitch && actionCount > 0 ? (
+      {actsInWorkflow && actionCount > 0 ? (
         <button
           type="button"
           onClick={() => openBucket(actionBucket)}

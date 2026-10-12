@@ -3459,6 +3459,7 @@ const PDFViewerModal = ({
         (requestDocsRoleKey === "UNDERWRITER" ||
             requestDocsRoleKey === "FINAL_UNDERWRITER" ||
             requestDocsRoleKey === "CONTRACTS_LOG" ||
+            requestDocsRoleKey === "SUPER_ADMIN" ||
             requestDocsRoleKey === "OPERATIONS");
 
     const pendingDocumentRequests = useMemo(
