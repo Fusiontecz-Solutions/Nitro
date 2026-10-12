@@ -65,7 +65,7 @@ export async function createApplicationActivityLog(input: CreateApplicationActiv
     data: {
       applicationId,
       userId,
-      userRole: roleValue && ['AGENT', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'ADMIN', 'CONTRACTS_LOG'].includes(roleValue)
+      userRole: roleValue && ['AGENT', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN'].includes(roleValue)
         ? (roleValue as Role)
         : null,
       actionType,
@@ -97,7 +97,7 @@ export async function getApplicationActivityLogsForUser(applicationId: string, u
 
   // Basic access check: elevated roles see everything; agents see only owned applications
   const role = (user?.role ?? '').toString().trim().toUpperCase().replace(/-/g, '_');
-  const isElevated = ['ADMIN', 'CONTRACTS_LOG', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS'].includes(role);
+  const isElevated = ['ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS'].includes(role);
   const isAgent = role === 'AGENT';
 
   if (!user || (!isElevated && !(isAgent && (application.referringAgentId === user.id || application.createdById === user.id)))) {

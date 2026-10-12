@@ -163,6 +163,7 @@ import {
   persistIncludeWireFeePreference,
   resolveIncludeWireFee,
   readIncludeWireFeeFromOverrides,
+  readSavedOfferPrefillFromOverrides,
   resolveOfferDerivedContractValues,
   type ContractOfferPrefillSource,
 } from '../contractOfferValueSync';
@@ -771,15 +772,20 @@ export function signNowDocumentPrefillValues(
     documentTabValues as SignNowDocumentTabValues[],
     documentName,
   );
-  // A tab saved under the other "$25 wire fee" choice must not undo the
-  // contract's TOTAL FEES on the disclosure (see the helper).
-  if (!tabs) return { ...base, values: alignDisclosureWireFeeWithTotalFees(base.values) };
-  // A disclosure tab saved from a calculation that ran without inputs holds
-  // 0.00 placeholders; they must not bury the deal's real amounts.
-  const merged = alignDisclosureWireFeeWithTotalFees({
-    ...base.values,
+  // The package-wide disclosure lines follow the contract's TOTAL FEES (see the helper).
+  const aligned = alignDisclosureWireFeeWithTotalFees(base.values);
+  if (!tabs) return { ...base, values: aligned };
+  /**
+   * What the preparer saved on this document's tab prints exactly as saved. It
+   * used to go through the TOTAL FEES alignment too, which re-derived a saved
+   * PayOff Addendum "Net Amount to Merchant" of 36,000.00 into 35,975.00. A
+   * disclosure tab saved from a calculation that ran without inputs holds 0.00
+   * placeholders; those still must not bury the deal's real amounts.
+   */
+  const merged = {
+    ...aligned,
     ...dropZeroDisclosurePlaceholders(tabs, base.values),
-  });
+  };
   // Only an isolated copy prints its own entity's DBA; a tab saved on any other
   // document must not bring an Exhibit C copy's DBA back in.
   return { ...base, values: base.isolated ? merged : withoutExhibitCCopyDbas(merged, entities) };
@@ -9099,6 +9105,7 @@ export class SignNowService {
         offerSource: {
           values: derived,
           includeWireFee: readIncludeWireFeeFromOverrides(contract.contractPrefillOverrides),
+          saved: readSavedOfferPrefillFromOverrides(contract.contractPrefillOverrides),
         },
       };
     } catch (err) {

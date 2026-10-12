@@ -135,3 +135,17 @@ describe('the Tiberian Flex Addendum tab reaching SignNow', () => {
     expect(resolveSignNowPrefillValue('net_funds_provided_1', tabs || {})).toBe('25,000.00');
   });
 });
+
+describe('the editor hand-typed marker', () => {
+  it('never reaches SignNow as a widget value', () => {
+    const entries = buildSignNowDocumentTabValues(
+      [{ id: 'm1', template: { name: 'PayOff Addendum (Refi)', type: 'addendum' } }],
+      {
+        documentTemplatePrefillByMappingId: {
+          m1: { net_to_merchant_p1: '1,000.00', _manualFieldIds: 'net_to_merchant_p1' },
+        },
+      },
+    );
+    expect(entries[0].values).toEqual({ net_to_merchant_p1: '1,000.00' });
+  });
+});

@@ -33,6 +33,7 @@ import opencorporatesRoutes from './opencorporatesRoutes';
 import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
 import notificationRoutes from './notificationRoutes';
 import gmailRoutes, { googleOAuthCallbackRouter } from './gmailRoutes';
+import paymentTemplateRoutes from './paymentTemplateRoutes';
 import { denyAgentWrites, denyWorkflowRoles } from '../middleware/denyWorkflowRoles';
 
 /**
@@ -74,5 +75,7 @@ router.use('/notifications', notificationRoutes);
 // Per-user Gmail connection (Agent ISO approval mail). Callback is public; identity is in signed state.
 router.use('/google', googleOAuthCallbackRouter);
 router.use('/gmail', gmailRoutes);
+// Email / letter / contract templates (Gmail workspace compose + "New template").
+router.use('/payment-templates', paymentTemplateRoutes);
 
 export default router;

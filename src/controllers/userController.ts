@@ -3,12 +3,23 @@ import type { Role } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { deleteUserCompletely } from '../services/userDeletionService';
 import * as userService from '../services/userService';
-import { isManageableRole, isValidRole, MANAGEABLE_ROLES, normalizeRoleValue } from '../constants/roles';
+import {
+    hasContractsLogAccess,
+    isManageableRole,
+    isSuperAdminRole,
+    isValidRole,
+    MANAGEABLE_ROLES,
+    normalizeRoleValue,
+} from '../constants/roles';
 
-const ADMIN_ROLES = new Set(['ADMIN', 'CONTRACTS_LOG']);
+const ADMIN_ROLES = new Set(['ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN']);
 
 const isAdminActor = (req: Request): boolean =>
     ADMIN_ROLES.has(normalizeRoleValue((req as any).user?.role));
+
+/** Only a SUPER_ADMIN may change, deactivate or delete another SUPER_ADMIN. */
+const canManageTarget = (req: Request, target: { role: unknown }): boolean =>
+    !isSuperAdminRole(target.role) || isSuperAdminRole((req as any).user?.role);
 
 /** Fields any signed-in user may change on their own profile. */
 const SELF_EDITABLE_USER_FIELDS = new Set(['firstName', 'lastName', 'phone', 'profilePicture']);
@@ -67,10 +78,16 @@ class UserController {
             const actingRole = String((req as any).user?.role ?? '')
                 .toUpperCase()
                 .replace(/-/g, '_');
-            if (normalizedRequestedRole === 'CONTRACTS_LOG' && actingRole !== 'CONTRACTS_LOG') {
+            if (normalizedRequestedRole === 'SUPER_ADMIN' && !isSuperAdminRole(actingRole)) {
                 return res.status(403).json({
                     success: false,
                     message: 'Only Super Admin can assign the Super Admin role',
+                });
+            }
+            if (normalizedRequestedRole === 'CONTRACTS_LOG' && !hasContractsLogAccess(actingRole)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only Super Admin or Contracts Log can assign the Contracts Log role',
                 });
             }
             if (!isManageableRole(normalizedRequestedRole)) {
@@ -278,6 +295,13 @@ class UserController {
                 });
             }
 
+            if (!canManageTarget(req, user)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only Super Admin can change a Super Admin account',
+                });
+            }
+
             if (adminActor && actorId === id) {
                 const demotingSelf =
                     role !== undefined && normalizeRoleValue(role) !== normalizeRoleValue(user.role);
@@ -311,10 +335,16 @@ class UserController {
                 const actingRole = String((req as any).user?.role ?? '')
                     .toUpperCase()
                     .replace(/-/g, '_');
-                if (nr === 'CONTRACTS_LOG' && actingRole !== 'CONTRACTS_LOG') {
+                if (nr === 'SUPER_ADMIN' && !isSuperAdminRole(actingRole)) {
                     return res.status(403).json({
                         success: false,
                         message: 'Only Super Admin can assign the Super Admin role',
+                    });
+                }
+                if (nr === 'CONTRACTS_LOG' && !hasContractsLogAccess(actingRole)) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'Only Super Admin or Contracts Log can assign the Contracts Log role',
                     });
                 }
                 // Keep legacy roles as-is, but new assignments must be supported by this app.
@@ -375,6 +405,12 @@ class UserController {
                     message: 'User not found',
                 });
             }
+            if (!canManageTarget(req, existing)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only Super Admin can delete a Super Admin account',
+                });
+            }
 
             const actingUserId = (req as any).user?.id as string | undefined;
             await deleteUserCompletely(id, actingUserId);
@@ -425,6 +461,12 @@ class UserController {
                 return res.status(400).json({
                     success: false,
                     message: 'You cannot deactivate your own account',
+                });
+            }
+            if (!canManageTarget(req, user)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only Super Admin can deactivate a Super Admin account',
                 });
             }
 

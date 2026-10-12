@@ -129,7 +129,7 @@ import {
     isAgentIsoSendableQueue,
     normalizeWorkflowToken,
 } from '../constants/applicationWorkflow';
-import { normalizeRoleValue } from '../constants/roles';
+import { hasContractsLogAccess, isSuperAdminRole, normalizeRoleValue } from '../constants/roles';
 import { notifyNewInUnderwriterPool } from '../services/applicationWorkflowService';
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
 import { fetchPaginatedApplicationsForList } from '../services/applicationListSort';
@@ -692,7 +692,7 @@ const resolveWorkflowQueueTransition = (targetQueue: string, actorRole?: string 
     const isFinalUnderwriterActor =
         normalizedRole === 'UNDERWRITER' ||
         normalizedRole === 'FINALUNDERWRITER' ||
-        normalizedRole === 'CONTRACTS_LOG' ||
+        hasContractsLogAccess(normalizedRole) ||
         normalizedRole === 'ADMIN' ||
         normalizedRole === 'OPERATIONS';
     if (
@@ -2475,8 +2475,7 @@ class ApplicationController {
             }
 
             const canFilterByClaimAssignments =
-                authRoleUpper === 'CONTRACTS_LOG' ||
-                authRoleUpper === 'CONTRACTSLOG' ||
+                hasContractsLogAccess(authRoleUpper) ||
                 authRoleUpper === 'OPERATIONS';
             if (canFilterByClaimAssignments) {
                 const rawClaimedByScrubberId = req.query.claimedByUnderwriterId;
@@ -2558,8 +2557,7 @@ class ApplicationController {
                 : '';
             if (opsStatusCanonical === 'Recently_Deleted') {
                 if (
-                    authRoleUpper !== 'CONTRACTS_LOG' &&
-                    authRoleUpper !== 'CONTRACTSLOG' &&
+                    !hasContractsLogAccess(authRoleUpper) &&
                     authRoleUpper !== 'OPERATIONS'
                 ) {
                     return res.status(403).json({
@@ -3125,7 +3123,7 @@ class ApplicationController {
                 prisma.user.count({ where: { role: 'SCRUBBING' } }),
                 prisma.user.count({ where: { role: 'UNDERWRITER' } }),
                 prisma.user.count({ where: { role: 'OPERATIONS' } }),
-                prisma.user.count({ where: { role: { in: ['ADMIN', 'CONTRACTS_LOG'] } } }),
+                prisma.user.count({ where: { role: { in: ['ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN'] } } }),
                 prisma.client.count(),
             ]);
             const totalSyndicators = 0;
@@ -3402,8 +3400,8 @@ class ApplicationController {
 
             const applicationInclude = APPLICATION_DETAIL_INCLUDE;
 
-            // OPERATIONS / CONTRACTS_LOG can fetch any application directly, bypassing visibility filters
-            if (authUser?.role === 'OPERATIONS' || authUser?.role === 'CONTRACTS_LOG') {
+            // OPERATIONS / CONTRACTS_LOG / SUPER_ADMIN can fetch any application directly, bypassing visibility filters
+            if (authUser?.role === 'OPERATIONS' || hasContractsLogAccess(authUser?.role)) {
                 const applicationRecord = await prisma.application.findUnique({
                     where,
                     include: applicationInclude,
@@ -3475,8 +3473,8 @@ class ApplicationController {
             const { applicationId } = req.params;
             const authUser = getAuthenticatedUser(req);
 
-            // OPERATIONS / CONTRACTS_LOG can fetch any application by numeric applicationId directly, bypassing visibility filters
-            if (authUser?.role === 'OPERATIONS' || authUser?.role === 'CONTRACTS_LOG') {
+            // OPERATIONS / CONTRACTS_LOG / SUPER_ADMIN can fetch any application by numeric applicationId directly, bypassing visibility filters
+            if (authUser?.role === 'OPERATIONS' || hasContractsLogAccess(authUser?.role)) {
                 const numericId = Number(applicationId);
                 if (!applicationId || Number.isNaN(numericId)) {
                     return res.status(400).json({
@@ -3847,6 +3845,7 @@ class ApplicationController {
                     const canFuApprove = [
                         'UNDERWRITER',
                         'CONTRACTS_LOG',
+                        'SUPER_ADMIN',
                         'ADMIN',
                         'OPERATIONS',
                     ].includes(roleUpper);
@@ -3860,6 +3859,7 @@ class ApplicationController {
                         'SCRUBBING',
                         'ADMIN',
                         'CONTRACTS_LOG',
+                        'SUPER_ADMIN',
                         'OPERATIONS',
                         'UNDERWRITER',
                         'ACCOUNTANT',
@@ -4021,6 +4021,7 @@ class ApplicationController {
                 const canResolveIsoQuery = [
                     'UNDERWRITER',
                     'CONTRACTS_LOG',
+                    'SUPER_ADMIN',
                     'ADMIN',
                     'OPERATIONS',
                 ].includes(roleUpper);
@@ -4599,7 +4600,7 @@ class ApplicationController {
             const { id } = req.params;
             const authUser = getAuthenticatedUser(req);
             const roleUpper = authUser?.role ? String(authUser.role).toUpperCase().replace(/-/g, '_') : '';
-            if (roleUpper !== 'UNDERWRITER') {
+            if (roleUpper !== 'UNDERWRITER' && !isSuperAdminRole(roleUpper)) {
                 return res.status(403).json({
                     success: false,
                     message: 'Only underwriters can claim deals',
@@ -4730,7 +4731,7 @@ class ApplicationController {
             const roleUpper = authUser?.role
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
-            const allowedRoles = new Set(['ADMIN', 'CONTRACTS_LOG']);
+            const allowedRoles = new Set(['ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN']);
             if (!allowedRoles.has(roleUpper)) {
                 return res.status(403).json({
                     success: false,
@@ -4843,8 +4844,7 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             const canAssign =
-                roleUpper === 'CONTRACTS_LOG' ||
-                roleUpper === 'CONTRACTSLOG' ||
+                hasContractsLogAccess(roleUpper) ||
                 roleUpper === 'SCRUBBING';
             if (!canAssign) {
                 return res.status(403).json({
@@ -4998,8 +4998,7 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             if (
-                roleUpper !== 'CONTRACTS_LOG' &&
-                roleUpper !== 'CONTRACTSLOG' &&
+                !hasContractsLogAccess(roleUpper) &&
                 roleUpper !== 'OPERATIONS'
             ) {
                 return res.status(403).json({
@@ -5767,8 +5766,7 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             if (
-                roleUpper !== 'CONTRACTS_LOG' &&
-                roleUpper !== 'CONTRACTSLOG' &&
+                !hasContractsLogAccess(roleUpper) &&
                 roleUpper !== 'OPERATIONS'
             ) {
                 return res.status(403).json({
@@ -5836,8 +5834,7 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
             if (
-                roleUpper !== 'CONTRACTS_LOG' &&
-                roleUpper !== 'CONTRACTSLOG' &&
+                !hasContractsLogAccess(roleUpper) &&
                 roleUpper !== 'OPERATIONS'
             ) {
                 return res.status(403).json({
@@ -8024,7 +8021,7 @@ class ApplicationController {
             const authUser = getAuthenticatedUser(req);
 
             const role = String(authUser?.role || '').toUpperCase().replace(/-/g, '_');
-            const allowedRoles = ['SCRUBBING', 'UNDERWRITER', 'ADMIN', 'CONTRACTS_LOG'];
+            const allowedRoles = ['SCRUBBING', 'UNDERWRITER', 'ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN'];
             if (!allowedRoles.includes(role)) {
                 return res.status(403).json({
                     success: false,

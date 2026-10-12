@@ -242,7 +242,8 @@ router.post(
 );
 router.post(
     '/:id/underwriter-claim',
-    requireRoles('UNDERWRITER'),
+    // SUPER_ADMIN can take the Underwriter seat (claims are assigned to them).
+    requireRoles('UNDERWRITER', 'SUPER_ADMIN'),
     applicationController.claimFinalUnderwriterDeal.bind(applicationController),
 );
 router.post(

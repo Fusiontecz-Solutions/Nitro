@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import { isAppAllowedRole, isValidRole, ROLES } from '../constants/roles';
+import { hasContractsLogAccess, isAppAllowedRole, isValidRole, ROLES } from '../constants/roles';
 import type { Role } from '@prisma/client';
 
 const SALT_ROUNDS = 10;
@@ -98,7 +98,7 @@ export const impersonateUserService = async (
     where: { id: adminId }
   });
 
-  if (!admin || (admin.role !== "ADMIN" && admin.role !== "CONTRACTS_LOG")) {
+  if (!admin || (admin.role !== "ADMIN" && !hasContractsLogAccess(admin.role))) {
     throw new Error("Only admin can impersonate users");
   }
 
@@ -110,7 +110,7 @@ export const impersonateUserService = async (
     throw new Error("User not found");
   }
 
-  if (user.role === "ADMIN" || user.role === "CONTRACTS_LOG") {
+  if (user.role === "ADMIN" || hasContractsLogAccess(user.role)) {
     throw new Error("Cannot impersonate another admin");
   }
 

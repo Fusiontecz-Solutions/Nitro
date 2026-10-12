@@ -52,6 +52,7 @@ model User {
   verificationTokens         VerificationToken[]
   outbound_communications    outbound_communications[]
   ownedEmailThreads          ApplicationEmailThread[]
+  paymentTemplates           PaymentTemplate[]
 }
 
 model AccessToken {

@@ -46,6 +46,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
 const ALL_PERMISSIONS = Object.values(PERMISSIONS) as Permission[];
 
 export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
+    SUPER_ADMIN: ALL_PERMISSIONS,
     CONTRACTS_LOG: ALL_PERMISSIONS,
     AGENT: [
         PERMISSIONS.DASHBOARD_VIEW,

@@ -2,6 +2,24 @@ import express, { type Request, type Response } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { requirePermission } from '../middleware/requirePermission';
 import { PERMISSIONS } from '../constants/rolePermissions';
+import { requireSuperAdminOnly } from '../middleware/requireSuperAdmin';
+import {
+    deleteMailboxDraft,
+    findMailboxDraft,
+    getLabels,
+    getMailboxAttachment,
+    getMailboxThread,
+    listMailbox,
+    markMailboxInCrm,
+    modifyMailbox,
+    patchLabel,
+    postLabel,
+    removeLabel,
+    saveMailboxDraft,
+    sendMailbox,
+    trashMailbox,
+    untrashMailbox,
+} from '../controllers/gmailMailbox.controller';
 import {
     buildGmailConnectUrl,
     completeGmailConnect,
@@ -15,6 +33,7 @@ import {
  *   GET    /gmail/connect-url      → { url }   start OAuth for the signed-in user
  *   GET    /gmail/me               → connection status
  *   DELETE /gmail/connection       → revoke + clear
+ *   /gmail/mailbox/*               → Gmail workspace page (Super Admin only)
  */
 export const googleOAuthCallbackRouter = express.Router();
 
@@ -54,5 +73,28 @@ gmailRouter.delete('/connection', async (req: Request, res: Response) => {
         return res.status(500).json({ success: false, message: 'Internal server error' });
     }
 });
+
+/**
+ * Gmail workspace page: labels, star, archive, trash, threads, reply/forward,
+ * drafts and "Send to CRM". Always acts on the signed-in user's own mailbox.
+ */
+const mailboxRouter = express.Router();
+mailboxRouter.use(requireSuperAdminOnly);
+mailboxRouter.get('/labels', getLabels);
+mailboxRouter.post('/labels', postLabel);
+mailboxRouter.patch('/labels/:labelId', patchLabel);
+mailboxRouter.delete('/labels/:labelId', removeLabel);
+mailboxRouter.post('/list', listMailbox);
+mailboxRouter.get('/threads/:threadId', getMailboxThread);
+mailboxRouter.post('/modify', modifyMailbox);
+mailboxRouter.post('/trash', trashMailbox);
+mailboxRouter.post('/untrash', untrashMailbox);
+mailboxRouter.post('/in-crm', markMailboxInCrm);
+mailboxRouter.get('/messages/:messageId/attachments/:attachmentId', getMailboxAttachment);
+mailboxRouter.post('/send', sendMailbox);
+mailboxRouter.post('/drafts', saveMailboxDraft);
+mailboxRouter.delete('/drafts/:draftId', deleteMailboxDraft);
+mailboxRouter.get('/drafts/by-message/:messageId', findMailboxDraft);
+gmailRouter.use('/mailbox', mailboxRouter);
 
 export default gmailRouter;

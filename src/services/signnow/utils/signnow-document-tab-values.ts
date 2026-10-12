@@ -35,6 +35,9 @@ export type SignNowDocumentTabValues = {
   values: Record<string, string>;
 };
 
+/** The prefill editor's list of hand-typed field ids on a saved tab. */
+export const LINKED_DOC_MANUAL_FIELD_IDS_KEY = '_manualFieldIds';
+
 type MappingRowLike = {
   id?: unknown;
   template?: { layoutKey?: string | null; name?: string | null; type?: string | null } | null;
@@ -94,6 +97,8 @@ export function buildSignNowDocumentTabValues(
     if (!saved) continue;
     const values: Record<string, string> = {};
     for (const [key, raw] of Object.entries(saved)) {
+      // Editor bookkeeping (which fields were typed by hand), not a widget value.
+      if (key === LINKED_DOC_MANUAL_FIELD_IDS_KEY) continue;
       const value = String(raw ?? '').trim();
       if (value) values[key] = value;
     }

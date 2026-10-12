@@ -1,3 +1,4 @@
+import { hasContractsLogAccess } from '../constants/roles';
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import {
@@ -60,7 +61,7 @@ function isSuperAdminRole(role: string | null | undefined): boolean {
         .trim()
         .toUpperCase()
         .replace(/-/g, '_');
-    return normalized === 'CONTRACTS_LOG' || normalized === 'CONTRACTSLOG';
+    return hasContractsLogAccess(normalized);
 }
 
 export type OperationsDashboardSummaryPayload = {

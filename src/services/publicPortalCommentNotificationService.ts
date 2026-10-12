@@ -109,9 +109,11 @@ function roleDisplayLabel(role: string | null | undefined): string {
       return 'Scrubber';
     case 'UNDERWRITER':
       return 'Underwriter';
+    case 'SUPER_ADMIN':
+      return 'Super Admin';
     case 'CONTRACTS_LOG':
     case 'CONTRACTSLOG':
-      return 'Super Admin';
+      return 'Contracts Log';
     case 'ADMIN':
       return 'Admin';
     case 'OPERATIONS':
@@ -146,7 +148,7 @@ async function findActiveUsersByIds(ids: string[]): Promise<RecipientUser[]> {
 async function findActiveSuperAdmins(): Promise<RecipientUser[]> {
   try {
     return await prisma.user.findMany({
-      where: { role: 'CONTRACTS_LOG' as any, isActive: true },
+      where: { role: { in: ['CONTRACTS_LOG', 'SUPER_ADMIN'] as any }, isActive: true },
       select: { id: true, email: true, firstName: true, lastName: true },
     });
   } catch (err) {

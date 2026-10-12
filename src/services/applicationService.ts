@@ -48,6 +48,7 @@ function normalizeRole(role: string | UserRole | null | undefined): UserRole | n
         'ACCOUNTS',
         'ADMIN',
         'CONTRACTS_LOG',
+        'SUPER_ADMIN',
         'OPERATIONS',
     ];
 
@@ -218,6 +219,7 @@ export async function getApplicationForUser(
     if (
         deletedAt &&
         role !== 'CONTRACTS_LOG' &&
+        role !== 'SUPER_ADMIN' &&
         role !== 'OPERATIONS'
     ) {
         return { application: null, forbidden: false };

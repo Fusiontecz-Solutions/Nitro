@@ -16,12 +16,17 @@ import {
 } from '../../config/gmail';
 import { resolveCrmFrontendBaseUrl } from '../../utils/crmFrontendUrl';
 
+const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+
 export const GMAIL_OAUTH_SCOPES = [
     'openid',
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/gmail.send',
     // Read access is needed to fetch the Message-ID of sent mail (threading) and the ISO's replies.
     'https://www.googleapis.com/auth/gmail.readonly',
+    // Gmail workspace page: labels / star / archive / trash (modify) and drafts (compose).
+    GMAIL_MODIFY_SCOPE,
+    'https://www.googleapis.com/auth/gmail.compose',
 ];
 
 const STATE_PURPOSE = 'gmail_connect';
@@ -138,6 +143,11 @@ export interface GmailConnectionStatus {
     gmailEmail: string | null;
     connectedAt: Date | null;
     needsReconnect: boolean;
+    /**
+     * Whether the grant covers the Gmail workspace page (modify scope). Null when not probed.
+     * Mailboxes connected before the page existed only have send/readonly and must reconnect.
+     */
+    mailboxAccess: boolean | null;
 }
 
 export async function getGmailConnectionStatus(userId: string, probe = false): Promise<GmailConnectionStatus> {
@@ -147,8 +157,18 @@ export async function getGmailConnectionStatus(userId: string, probe = false): P
     });
     const connected = Boolean(user?.googleRefreshToken);
     let needsReconnect = false;
+    let mailboxAccess: boolean | null = null;
     if (connected && probe) {
-        needsReconnect = !(await getGmailAccessTokenForUser(userId).catch(() => null));
+        const accessToken = await getGmailAccessTokenForUser(userId).catch(() => null);
+        needsReconnect = !accessToken;
+        if (accessToken) {
+            try {
+                const info = await createOAuth2Client().getTokenInfo(accessToken);
+                mailboxAccess = (info.scopes ?? []).includes(GMAIL_MODIFY_SCOPE);
+            } catch (err) {
+                console.warn('[gmail-connect] token scope lookup failed:', (err as Error)?.message);
+            }
+        }
     }
     return {
         configured: isGoogleOAuthConfigured(),
@@ -156,6 +176,7 @@ export async function getGmailConnectionStatus(userId: string, probe = false): P
         gmailEmail: user?.googleEmail ?? null,
         connectedAt: user?.googleConnectedAt ?? null,
         needsReconnect,
+        mailboxAccess,
     };
 }
 

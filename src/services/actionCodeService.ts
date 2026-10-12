@@ -1,3 +1,4 @@
+import { hasContractsLogAccess } from '../constants/roles';
 import prisma from '../config/prismaClient';
 
 /**
@@ -56,7 +57,7 @@ export const requiresActionCodeForRole = (role: string | null | undefined): bool
         .trim()
         .toUpperCase()
         .replace(/-/g, '_');
-    return normalized !== 'CONTRACTS_LOG';
+    return !hasContractsLogAccess(normalized);
 };
 
 /**
@@ -86,7 +87,7 @@ export async function generateApplicationActionCode(
     // response if the notification write fails.
     try {
         const superAdmins = await prisma.user.findMany({
-            where: { role: 'CONTRACTS_LOG', isActive: true },
+            where: { role: { in: ['CONTRACTS_LOG', 'SUPER_ADMIN'] }, isActive: true },
             select: { id: true },
         });
         const recipientIds = superAdmins

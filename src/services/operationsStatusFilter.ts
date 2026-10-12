@@ -1,3 +1,4 @@
+import { hasContractsLogAccess } from '../constants/roles';
 import type { Prisma } from '@prisma/client';
 import { awaitingNewContractReinitiationWhere } from './contractReinitiationService';
 
@@ -924,6 +925,6 @@ export function resolveOperationsListFilterMode(
         .toUpperCase()
         .replace(/-/g, '_');
     if (r === 'OPERATIONS') return 'state';
-    if (r === 'CONTRACTS_LOG' || r === 'CONTRACTSLOG') return 'queue';
+    if (hasContractsLogAccess(r)) return 'queue';
     return 'legacy';
 }

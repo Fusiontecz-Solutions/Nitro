@@ -8,6 +8,8 @@ import type { Request, Response, NextFunction } from 'express';
  */
 export function requireRoles(...allowedRoles: string[]) {
     const allowed = new Set(allowedRoles);
+    // SUPER_ADMIN sits above CONTRACTS_LOG, so it passes every CONTRACTS_LOG gate.
+    if (allowed.has('CONTRACTS_LOG')) allowed.add('SUPER_ADMIN');
 
     return (req: Request, res: Response, next: NextFunction): void => {
         if (!req.user) {

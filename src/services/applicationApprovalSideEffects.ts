@@ -31,6 +31,7 @@ import type { ApprovalSideEffectPayload } from './business/applicationApprovalSe
 const CRM_INTERNAL_NOTIFY_ROLES = [
     'ADMIN',
     'CONTRACTS_LOG',
+    'SUPER_ADMIN',
     'OPERATIONS',
     'SCRUBBING',
     'UNDERWRITER',
@@ -339,7 +340,7 @@ export async function processApplicationApprovalSideEffects(
             const operationsIds = new Set(operationNotifications.map((r) => r.id));
             const contractStageRecipients = dedupeById([
                 ...internalUsers
-                    .filter((u) => String(u.role || '').toUpperCase() === 'CONTRACTS_LOG')
+                    .filter((u) => ['CONTRACTS_LOG', 'SUPER_ADMIN'].includes(String(u.role || '').toUpperCase()))
                     .map((u) => ({
                         id: String(u.id),
                         email: u.email ? String(u.email) : null,

@@ -451,7 +451,7 @@ export async function assertApplicationMailLogAccess(applicationId: string, user
   }
 
   const role = (user?.role ?? '').toString().trim().toUpperCase().replace(/-/g, '_');
-  const isElevated = ['ADMIN', 'CONTRACTS_LOG', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'OPERATIONS'].includes(
+  const isElevated = ['ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'OPERATIONS'].includes(
     role,
   );
   const isAgent = role === 'AGENT';

@@ -308,11 +308,60 @@ export async function persistIncludeWireFeePreference(
   }
 }
 
+/**
+ * Money values saved in the CRM's "Verify contract prefill" editor
+ * (`Contract.contractPrefillOverrides`). What the preparer saved there is what
+ * the SignNow review and the sent contract print, so these outrank the figures
+ * re-derived from the offer.
+ */
+export type SavedOfferPrefillValues = {
+  purchaseAmount?: number;
+  purchasePrice?: number;
+  remittance?: string;
+  frequency?: string;
+  appendixUnderwritingFees?: string;
+  refinanceAmount?: number;
+  /** Only set when the preparer entered it by hand (`_manualNetToMerchant`). */
+  netToMerchant?: string;
+};
+
 export type ContractOfferPrefillSource = {
   values: OfferDerivedContractValues | null;
   /** Whether the deal's $25 wire fee is switched on. */
   includeWireFee: boolean;
+  saved?: SavedOfferPrefillValues;
 };
+
+function savedMoney(value: unknown): number | undefined {
+  const text = String(value ?? '').replace(/[$,\s]/g, '');
+  if (!text) return undefined;
+  const n = Number(text);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** The money values the prefill editor saved, from `contractPrefillOverrides`. */
+export function readSavedOfferPrefillFromOverrides(overrides: unknown): SavedOfferPrefillValues {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return {};
+  const o = overrides as Record<string, unknown>;
+  const out: SavedOfferPrefillValues = {};
+  const purchaseAmount = savedMoney(o.purchaseAmount);
+  if (purchaseAmount != null) out.purchaseAmount = purchaseAmount;
+  const purchasePrice = savedMoney(o.purchasePrice);
+  if (purchasePrice != null) out.purchasePrice = purchasePrice;
+  const remittance = savedMoney(o.remittance);
+  if (remittance != null) out.remittance = String(remittance);
+  const frequency = sanitizePaymentFrequencyForPersist(o.frequency);
+  if (frequency) out.frequency = frequency;
+  const fees = savedMoney(o.appendixUnderwritingFees);
+  if (fees != null) out.appendixUnderwritingFees = String(fees);
+  const refinance = savedMoney(o.refinanceAmount);
+  if (refinance != null) out.refinanceAmount = refinance;
+  const net = savedMoney(o.netToMerchant);
+  if (net != null && resolveIncludeWireFee(o._manualNetToMerchant ?? 'false')) {
+    out.netToMerchant = String(net);
+  }
+  return out;
+}
 
 /**
  * The live offer's derived values for a contract, for callers that need to layer them
@@ -353,6 +402,7 @@ export async function loadOfferDerivedValuesForContract(target: {
     return {
       values: resolveOfferDerivedContractValues(contract?.offer),
       includeWireFee: readIncludeWireFeeFromOverrides(contract?.contractPrefillOverrides),
+      saved: readSavedOfferPrefillFromOverrides(contract?.contractPrefillOverrides),
     };
   } catch (err) {
     console.warn('[contractOfferValueSync] could not load live offer values', {

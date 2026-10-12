@@ -28,6 +28,35 @@ function parseMoney(value: string | undefined): number | null {
 }
 
 /**
+ * The offer's derived values with what the preparer saved in the prefill editor
+ * laid over them. Saving there also writes the offer, but a figure the offer
+ * cannot hold exactly (a hand-entered fee, a rounded remittance) must still
+ * reach SignNow as saved rather than be re-derived.
+ */
+function withSavedPrefillValues(
+  source: ContractOfferPrefillSource | null | undefined,
+): ContractOfferPrefillSource | null | undefined {
+  const saved = source?.saved;
+  if (!source?.values || !saved) return source;
+  const values = { ...source.values };
+  if (saved.purchaseAmount != null) {
+    values.approvedAmount = saved.purchaseAmount;
+    values.purchaseAmount = String(saved.purchaseAmount);
+  }
+  if (saved.purchasePrice != null) {
+    values.totalAmount = saved.purchasePrice;
+    values.purchasePrice = String(saved.purchasePrice);
+  }
+  if (saved.remittance) values.remittance = saved.remittance;
+  if (saved.frequency) values.frequency = saved.frequency;
+  if (saved.appendixUnderwritingFees) {
+    values.appendixUnderwritingFees = saved.appendixUnderwritingFees;
+  }
+  if (saved.refinanceAmount != null) values.refinanceAmount = saved.refinanceAmount;
+  return { ...source, values };
+}
+
+/**
  * Build the override map for a package's prefill values.
  *
  * `current` is read only as a floor for the state disclosure's money row; the deal's ACH
@@ -39,9 +68,10 @@ function parseMoney(value: string | undefined): number | null {
  * `purchaseAmount` contract columns.
  */
 export function buildOfferPrefillOverrides(
-  source: ContractOfferPrefillSource | null | undefined,
+  offerSource: ContractOfferPrefillSource | null | undefined,
   current: Record<string, string> = {},
 ): Record<string, string> {
+  const source = withSavedPrefillValues(offerSource);
   const derived = source?.values;
   if (!derived) return {};
   const wireFee = source?.includeWireFee === false ? 0 : CONTRACT_WIRE_FEE_USD;
@@ -124,6 +154,9 @@ export function buildOfferPrefillOverrides(
       put('net_to_merchant', money(funded - totalFees));
     }
   }
+  // A net the preparer typed into the prefill editor prints as typed.
+  const manualNet = parseMoney(source?.saved?.netToMerchant);
+  if (manualNet != null && manualNet > 0) put('net_to_merchant', money(manualNet));
 
   /**
    * The state disclosure's own money row. Unlike everything above it, these are
@@ -174,12 +207,12 @@ const DISCLOSURE_NET_KEYS = new Set([
   'disbursement_amount',
   'text field 2',
   /**
-   * The same net under the contract's own id and the disclosure calculator's
-   * other aliases. An addendum's saved tab (the PayOff Addendum's
-   * `net_to_merchant_p1`) printed 17,975.00 beside a contract NET AMOUNT of
-   * 18,000.00 because only the disclosure's own names were re-aligned.
+   * The disclosure calculator's other aliases for the same net. `net_to_merchant`
+   * is deliberately not here: `buildOfferPrefillOverrides` already sets it from
+   * the live TOTAL FEES, or to the net the preparer typed into the prefill
+   * editor, and a typed net must print as typed (36,000.00 was being moved to
+   * 35,975.00 as if it were a stale wire-fee choice).
    */
-  'net_to_merchant',
   'netfundprovided',
   'amountfinanced',
   'total_amount_of_fund_provided',

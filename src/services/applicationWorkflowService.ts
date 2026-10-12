@@ -21,7 +21,7 @@ import {
     type AgentBucket,
     type UnderwriterBucket,
 } from '../constants/applicationWorkflow';
-import { normalizeRoleValue } from '../constants/roles';
+import { hasContractsLogAccess, normalizeRoleValue } from '../constants/roles';
 import { createApplicationActivityLog } from './applicationActivityLogService';
 import type { AuthenticatedUser } from './applicationService';
 import { scheduleWorkflowNotification } from './applicationStageNotificationService';
@@ -120,7 +120,7 @@ export function resolveWorkflowScope(user: AuthenticatedUser, requested?: unknow
     const role = normalizeRoleValue(user.role);
     if (role === 'AGENT') return 'agent';
     if (role === 'UNDERWRITER') return 'underwriter';
-    if (role === 'CONTRACTS_LOG' || role === 'ADMIN') {
+    if (hasContractsLogAccess(role) || role === 'ADMIN') {
         return String(requested ?? '').toLowerCase() === 'underwriter' ? 'underwriter' : 'agent';
     }
     throw new WorkflowError(403, 'Your role has no workflow queue');
@@ -128,7 +128,7 @@ export function resolveWorkflowScope(user: AuthenticatedUser, requested?: unknow
 
 const isOversightRole = (user: AuthenticatedUser) => {
     const role = normalizeRoleValue(user.role);
-    return role === 'CONTRACTS_LOG' || role === 'ADMIN';
+    return hasContractsLogAccess(role) || role === 'ADMIN';
 };
 
 const LIST_SELECT = {

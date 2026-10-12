@@ -266,7 +266,7 @@ async function resolveStageRecipients(
 
     if (opsStageTokens.has(q)) {
         recipients.push(
-            ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG'])),
+            ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN'])),
         );
     }
 
@@ -288,7 +288,7 @@ async function resolveStageRecipients(
     // Generic stage move: stakeholders + internal ops visibility.
     pushStakeholders();
     recipients.push(
-        ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG'])),
+        ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN'])),
     );
     return recipients;
 }

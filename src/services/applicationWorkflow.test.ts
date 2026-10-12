@@ -2,7 +2,13 @@ jest.mock('../config/prismaClient', () => ({ __esModule: true, default: {} }));
 
 import { getApplicationStageAccess } from './applicationStageAccess';
 import { roleHasPermission, PERMISSIONS } from '../constants/rolePermissions';
-import { isAppAllowedRole, isManageableRole, isValidRole } from '../constants/roles';
+import {
+    hasContractsLogAccess,
+    isAppAllowedRole,
+    isManageableRole,
+    isSuperAdminRole,
+    isValidRole,
+} from '../constants/roles';
 import { buildRawMimeMessage } from './gmail/gmailMailService';
 import { buildAgentBucketWhere, buildUnderwriterBucketWhere } from './applicationWorkflowService';
 
@@ -55,11 +61,17 @@ describe('role permissions', () => {
         expect(roleHasPermission('CONTRACTS_LOG', PERMISSIONS.USER_MANAGE)).toBe(true);
     });
 
-    it('keeps SUPER_ADMIN as a separate role from CONTRACTS_LOG', () => {
+    it('keeps SUPER_ADMIN as a separate role that sits above CONTRACTS_LOG', () => {
         expect(isValidRole('SUPER_ADMIN')).toBe(true);
         expect(isValidRole('CONTRACTS_LOG')).toBe(true);
+        expect(isAppAllowedRole('SUPER_ADMIN')).toBe(true);
+        expect(isManageableRole('SUPER_ADMIN')).toBe(true);
         expect(roleHasPermission('CONTRACTS_LOG', PERMISSIONS.CONTRACT_MANAGE)).toBe(true);
-        expect(roleHasPermission('SUPER_ADMIN', PERMISSIONS.CONTRACT_MANAGE)).toBe(false);
+        expect(roleHasPermission('SUPER_ADMIN', PERMISSIONS.CONTRACT_MANAGE)).toBe(true);
+        expect(hasContractsLogAccess('SUPER_ADMIN')).toBe(true);
+        expect(hasContractsLogAccess('CONTRACTS_LOG')).toBe(true);
+        expect(isSuperAdminRole('SUPER_ADMIN')).toBe(true);
+        expect(isSuperAdminRole('CONTRACTS_LOG')).toBe(false);
     });
 });
 

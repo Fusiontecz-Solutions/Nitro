@@ -2,7 +2,10 @@ import {
   alignDisclosureWireFeeWithTotalFees,
   buildOfferPrefillOverrides,
 } from './signnow-offer-values';
-import { resolveOfferDerivedContractValues } from '../../contractOfferValueSync';
+import {
+  readSavedOfferPrefillFromOverrides,
+  resolveOfferDerivedContractValues,
+} from '../../contractOfferValueSync';
 import { resolveSignNowPrefillValue } from './signnow-field-map';
 
 /** The re-scrubbed deal from the bug report: $1,000 @ 1.499 raised to $2,000 @ 1.499. */
@@ -319,7 +322,7 @@ describe('alignDisclosureWireFeeWithTotalFees', () => {
     expect(out.disclosure_page3_subtotal_p3).toBe('10,000.00');
   });
 
-  it('corrects an addendum tab that saved the contract net under the stale toggle', () => {
+  it('leaves a hand-entered net to merchant alone while correcting stale disclosure lines', () => {
     const out = alignDisclosureWireFeeWithTotalFees({
       purchase_price: '20,000.00',
       total_fees: '2,000.00',
@@ -328,7 +331,7 @@ describe('alignDisclosureWireFeeWithTotalFees', () => {
       total_fees_p1: '2,025.00',
       amountFinanced: '17,975.00',
     });
-    expect(out.net_to_merchant_p1).toBe('18,000.00');
+    expect(out.net_to_merchant_p1).toBe('17,975.00');
     expect(out.total_fees_p1).toBe('2,000.00');
     expect(out.amountFinanced).toBe('18,000.00');
     expect(out.net_to_merchant).toBe('18,000.00');
@@ -410,4 +413,54 @@ describe('alignDisclosureWireFeeWithTotalFees', () => {
     expect(alignDisclosureWireFeeWithTotalFees(values)).toEqual(values);
   });
 });
+
+describe('values saved in the Verify contract prefill editor', () => {
+  const REFI_OFFER = {
+    offer: 40000,
+    totalRemit: 60000,
+    term: '70',
+    frequency: 'Daily',
+    repayPerPeriod: 857.14,
+    fees: 10,
+    refinanceAmount: 19500,
+  };
+
+  it('prints a hand-entered net to merchant instead of re-deriving it', () => {
+    const saved = readSavedOfferPrefillFromOverrides({
+      netToMerchant: '36,000.00',
+      _manualNetToMerchant: true,
+    });
+    const overrides = buildOfferPrefillOverrides(
+      { ...source(REFI_OFFER, true), saved },
+      {},
+    );
+    expect(overrides.net_to_merchant).toBe('36,000.00');
+    // A net the alignment pass must not mistake for a stale wire-fee choice.
+    expect(
+      alignDisclosureWireFeeWithTotalFees({ ...overrides, disclosure_origination_fee: '4,000.00' })
+        .net_to_merchant,
+    ).toBe('36,000.00');
+  });
+
+  it('ignores a saved net that was never entered by hand', () => {
+    const saved = readSavedOfferPrefillFromOverrides({ netToMerchant: '36,000.00' });
+    const overrides = buildOfferPrefillOverrides({ ...source(REFI_OFFER, true), saved }, {});
+    expect(overrides.net_to_merchant).toBe('35,975.00');
+  });
+
+  it('uses the saved offer amounts, remittance and fee over the offer row', () => {
+    const saved = readSavedOfferPrefillFromOverrides({
+      purchaseAmount: '45,000',
+      purchasePrice: '63,000.00',
+      remittance: '900.00',
+      appendixUnderwritingFees: '3,000.00',
+    });
+    const overrides = buildOfferPrefillOverrides({ ...source(REFI_OFFER, false), saved }, {});
+    expect(overrides.purchase_price).toBe('45,000.00');
+    expect(overrides.purchased_amount).toBe('63,000.00');
+    expect(overrides.remittance).toBe('900.00');
+    expect(overrides.appendix_underwriting_fees).toBe('3,000.00');
+    expect(overrides.total_fees).toBe('3,000.00');
+    expect(overrides.net_to_merchant).toBe('42,000.00');
+  });
 });
