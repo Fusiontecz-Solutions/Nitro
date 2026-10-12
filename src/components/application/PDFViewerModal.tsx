@@ -6072,7 +6072,13 @@ const PDFViewerModal = ({
                     ?.message ||
                 (error as Error)?.message ||
                 "Could not email the signing link.";
-            toast.error(String(message));
+            // 402 = SendGrid has no email credits left; keep it up until dismissed.
+            const outOfCredits =
+                (error as { response?: { status?: number } })?.response?.status === 402;
+            toast.error(
+                String(message),
+                outOfCredits ? { toastId: "sendgrid-credits-exhausted", autoClose: false } : undefined,
+            );
         } finally {
             sendingLockRef.current = false;
             setIsSendingViaSendGrid(false);

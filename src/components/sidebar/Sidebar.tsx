@@ -15,6 +15,7 @@ import Inbox from "@mui/icons-material/Inbox";
 import AssignmentInd from "@mui/icons-material/AssignmentInd";
 import Replay from "@mui/icons-material/Replay";
 import Email from "@mui/icons-material/Email";
+import History from "@mui/icons-material/History";
 import SpaceDashboard from "@mui/icons-material/SpaceDashboard";
 import { resolveEffectiveRole } from "@/lib/sessionRole";
 import { isAgentRole, isSuperAdminAppRole, isUnderwriterRole, isWorkflowRole } from "@/lib/roleAccess";
@@ -241,7 +242,10 @@ const superAdminSections: SidebarNavSection[] = [
   },
   {
     title: "COMMUNICATIONS",
-    items: [{ label: "Gmail", url: "/gmail", icon: Email }],
+    items: [
+      { label: "Gmail", url: "/gmail", icon: Email },
+      { label: "Activity Logs", url: "/activity-logs", icon: History },
+    ],
   },
   {
     title: "SETTINGS",

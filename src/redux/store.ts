@@ -129,6 +129,7 @@ import {
 } from './slices/contractSlice';
 import isoReducer from './slices/isoSlice';
 import gmailReducer from './slices/gmailSlice';
+import activityLogReducer from './slices/activityLogSlice';
 import { operationsDashboardSlice } from './slices/operationsDashboardSlice';
 import { operationsDashboardPersistMiddleware } from './middleware/operationsDashboardPersistMiddleware';
 import { backgroundCheckSlice } from './slices/backgroundCheckSlice';
@@ -259,6 +260,7 @@ export const store = configureStore({
         deleteUploadedContractDocument: deleteUploadedContractDocumentSlice.reducer,
         iso: isoReducer,
         gmail: gmailReducer,
+        activityLogs: activityLogReducer,
         operationsDashboard: operationsDashboardSlice.reducer,
         backgroundCheck: backgroundCheckSlice.reducer,
     },

@@ -46,7 +46,7 @@ export const canActAsUnderwriter = (role: string | null | undefined) =>
   isUnderwriterRole(role) || isSuperAdminAppRole(role);
 
 /** Routes only a SUPER_ADMIN may open. */
-const SUPER_ADMIN_ONLY_PATHS = ["/gmail"];
+const SUPER_ADMIN_ONLY_PATHS = ["/gmail", "/activity-logs"];
 
 /** Queue page each workflow role lands on from the sidebar ("Applications"). */
 export const WORKFLOW_QUEUE_PATH = "/pipeline";

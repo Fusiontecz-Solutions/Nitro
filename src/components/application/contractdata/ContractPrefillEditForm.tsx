@@ -811,6 +811,8 @@ function overlayLinkedDocFieldsFromMain(
         emptyOnly?: boolean;
         typed?: { key: ContractPrefillFormFieldKey; value: string };
         knownIds?: string[];
+        /** Hand-typed tab fields: never overwritten from the main form. */
+        skipIds?: ReadonlySet<string>;
     },
 ): Record<string, string> {
     const next = { ...linked };
@@ -833,6 +835,7 @@ function overlayLinkedDocFieldsFromMain(
         if (!source) continue;
         for (const id of ids) {
             if (!matcher.match(id)) continue;
+            if (options?.skipIds?.has(id)) continue;
             if (emptyOnly && String(next[id] ?? "").trim()) continue;
             next[id] = source;
         }
@@ -2881,6 +2884,42 @@ export function ContractPrefillEditForm({
         toast.success(`Synced ${syncedLabels.join(", ")} to every stage.`);
     };
 
+    /**
+     * Save-time "Sync to all" for what was edited in this session: a shared value
+     * (bank, EIN, DBA, phone, Owner 1 address, …) changed on one stage reaches every
+     * other copy that was not itself edited. Without it, editing the funding bank
+     * left the ACH account-holder copy on its old number, and that is the copy the
+     * account-holder page prints. Copies edited separately keep their own values.
+     */
+    const levelEditedSharedValues = (
+        current: Record<keyof BuildContractPrefillFieldsArgs, string>,
+    ): Record<keyof BuildContractPrefillFieldsArgs, string> => {
+        const next = { ...current };
+        const edited = fieldEditedAtRef.current;
+        for (const group of PREFILL_SYNC_GROUPS) {
+            let sourceKey: keyof BuildContractPrefillFieldsArgs | null = null;
+            let sourceAt = -1;
+            for (const k of group.keys) {
+                const at = edited.get(k);
+                if (at == null || at <= sourceAt) continue;
+                sourceAt = at;
+                sourceKey = k;
+            }
+            if (!sourceKey) continue;
+            const value = String(current[sourceKey] ?? "").trim();
+            if (!value) continue;
+            for (const k of group.keys) {
+                if (edited.has(k)) continue;
+                if ((activeOwnerCount < 2 && owner2KeySet.has(k)) ||
+                    (activeGuarantorCount < 2 && guarantor2KeySet.has(k))) {
+                    continue;
+                }
+                next[k] = value;
+            }
+        }
+        return next;
+    };
+
     const handleSave = async () => {
         setSaveError(null);
         setSaveErrorSections([]);
@@ -2908,11 +2947,12 @@ export function ContractPrefillEditForm({
         setSaveErrorSections([]);
         setSaving(true);
         try {
+            const leveled = levelEditedSharedValues(values);
             // An Exhibit C (2)/(3)/… DBA is another business's: it must never be
             // saved as the deal's own DBA (column + overrides) — see
             // `withoutExhibitCCopyDbas`.
             const aliased = withoutExhibitCCopyDbas(
-                copySharedPrefillAliases({ ...values }),
+                copySharedPrefillAliases({ ...leveled }),
                 exhibitCEntities,
                 [values.legalName],
             ) as Record<keyof BuildContractPrefillFieldsArgs, string>;
@@ -2930,12 +2970,21 @@ export function ContractPrefillEditForm({
                     : {};
             const nextBlob = { ...existingBlob };
             if (linkedAddendumMapping?.id && addendumEditorRows.length > 0) {
+                const manualIds = new Set<string>([
+                    ...(ignoreSavedAddendumManualIds
+                        ? []
+                        : parseLinkedDocManualFieldIds(existingBlob[linkedAddendumMapping.id])),
+                    ...addendumManualIdsRef.current,
+                ]);
+                // Fields the tab only copied from the main form follow the main form's
+                // current value, so a bank / name / DBA edited on any stage reaches this
+                // addendum too. Only what was typed on the tab itself keeps its value.
                 const addendumValues = overlayLinkedDocFieldsFromMain(
                     { ...addendumFieldValues },
                     linkedAddendumMainSource(aliased),
                     {
-                        emptyOnly: true,
                         knownIds: addendumEditorRows.map((r) => String(r.id)),
+                        skipIds: manualIds,
                     },
                 );
                 const remainingBalance =
@@ -2948,12 +2997,6 @@ export function ContractPrefillEditForm({
                     addendumValues.purchase_price = remainingBalance;
                     addendumValues.balance_transfer_purchase_price = remainingBalance;
                 }
-                const manualIds = new Set<string>([
-                    ...(ignoreSavedAddendumManualIds
-                        ? []
-                        : parseLinkedDocManualFieldIds(existingBlob[linkedAddendumMapping.id])),
-                    ...addendumManualIdsRef.current,
-                ]);
                 const keptManualIds = [...manualIds].filter((id) =>
                     String(addendumValues[id] ?? "").trim(),
                 );

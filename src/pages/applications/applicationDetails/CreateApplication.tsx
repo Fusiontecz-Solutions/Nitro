@@ -66,7 +66,7 @@ import {
 } from '@/components/application/RefinanceDealSelectModal'
 import { cn, formatNumberUS, formatNumberUSForInput, parseNumberUS } from '@/lib/utils'
 import { UsCurrencyInput } from '@/components/ui/us-currency-input'
-import { resolveEffectiveRole, resolveSessionUser } from '@/lib/sessionRole'
+import { normalizeRoleKey, resolveEffectiveRole, resolveSessionUser } from '@/lib/sessionRole'
 import { isAgentRole, isWorkflowRole, WORKFLOW_QUEUE_PATH } from '@/lib/roleAccess'
 import ApplicationWorkflowFields from '@/components/workflow/ApplicationWorkflowFields'
 import {
@@ -247,6 +247,8 @@ const CreateApplication = () => {
     const submitModeRef = useRef<'submit' | 'draft'>('submit')
     const sessionRoleKey = resolveEffectiveRole(undefined)
     const isAgentUser = isAgentRole(sessionRoleKey)
+    /** PDF auto-create is restricted to the Contracts Log role. */
+    const canAutoCreateFromPdf = normalizeRoleKey(sessionRoleKey) === 'CONTRACTS_LOG'
     /** Where "back" / "done" go: workflow roles use their queue, Super Admin the Applications list. */
     const listPath = isWorkflowRole(sessionRoleKey) ? WORKFLOW_QUEUE_PATH : '/applications'
     // Determine if we're in edit mode
@@ -827,8 +829,8 @@ const CreateApplication = () => {
                         </CardContent>
                     </Card>
 
-                    {/* PDF auto-create bypasses the Agent → Underwriter intake, so it is Super Admin only. */}
-                    {!isEditMode && !isWorkflowRole(sessionRoleKey) ? (
+                    {/* PDF auto-create bypasses the Agent → Underwriter intake, so it is Contracts Log only. */}
+                    {!isEditMode && canAutoCreateFromPdf ? (
                         <AutoCreateFromPdfPanel
                             isDark={isDark}
                             loading={isAutoCreatingClient}

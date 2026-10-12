@@ -119,7 +119,13 @@ export function ResendUnsignedContractDialog({
             onResent?.();
             onOpenChange(false);
         } catch (error) {
-            toast.error(errorMessage(error, "Could not resend the contract."));
+            // 402 = SendGrid has no email credits left; keep it up until dismissed.
+            const outOfCredits =
+                (error as { response?: { status?: number } })?.response?.status === 402;
+            toast.error(
+                errorMessage(error, "Could not resend the contract."),
+                outOfCredits ? { toastId: "sendgrid-credits-exhausted", autoClose: false } : undefined,
+            );
         } finally {
             setSubmitting(false);
         }

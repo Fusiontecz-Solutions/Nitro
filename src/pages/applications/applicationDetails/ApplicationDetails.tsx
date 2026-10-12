@@ -53,7 +53,11 @@ import {
 } from "@/constants/operationsPipelineTabs";
 import { useTabAccess } from "@/hooks/useTabAccess.ts";
 import FinalUnderwriterApplicationSummary from "@/components/application/FinalUnderwriterApplicationSummary";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import ApplicationSheetActivityLog from "@/components/application/ApplicationSheetActivityLog";
+import ApplicationSheetMailLog from "@/components/application/ApplicationSheetMailLog";
+import { ChevronLeft, ChevronRight, ScrollText, Mail } from "lucide-react";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
@@ -71,6 +75,8 @@ const ApplicationDetails = () => {
     const [searchParams] = useSearchParams();
     const [sendingToUnderwriter, setSendingToUnderwriter] = useState(false);
     const [agentSentToUnderwriter, setAgentSentToUnderwriter] = useState(false);
+    const [auditLogOpen, setAuditLogOpen] = useState(false);
+    const [mailLogOpen, setMailLogOpen] = useState(false);
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
 
@@ -101,6 +107,7 @@ const ApplicationDetails = () => {
     const currentState = (applicationData as any)?.currentState as string | undefined;
     const statsCurrentState = (applicationData as any)?.statsCurrentState as string | undefined;
     const applicationUuid = (applicationData as any)?._id ?? (applicationData as any)?.id ?? null;
+    /** Same id the preview sheet uses for `/applications/:id/activity-logs`. */
     const activityLogApplicationId =
         applicationUuid != null ? String(applicationUuid) : "";
 
@@ -229,7 +236,7 @@ const ApplicationDetails = () => {
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
                 { id: "background-check", label: "BACKGROUND CHECK" },
-                { id: "decision-making", label: "SCRUBBING" },
+                { id: "decision-making", label: "UNDERWRITER" },
             ];
         }
 
@@ -267,15 +274,15 @@ const ApplicationDetails = () => {
 
     const tabs = useMemo((): TabOption[] => {
         if (useOperationsPipelineTabs) {
-            const pipelineTabs: TabOption[] = [...SUPER_ADMIN_PIPELINE_TABS];
-            // Super Admin also sits in the Agent seat: review the offer before it goes to the ISO.
-            if (isTopSuperAdmin && getTabs().some((t) => t.id === "approval")) {
-                const contractIndex = pipelineTabs.findIndex((t) => t.id === "contract");
-                const approvalTab = { id: "approval", label: "APPROVAL" };
-                if (contractIndex === -1) pipelineTabs.push(approvalTab);
-                else pipelineTabs.splice(contractIndex, 0, approvalTab);
+            // Super Admin also sits in the Agent seat. The Create Offer tab already holds the full
+            // editable workspace (with Decline), so it is labelled UNDERWRITER instead of adding a
+            // separate, read-only Approval tab.
+            if (isTopSuperAdmin) {
+                return SUPER_ADMIN_PIPELINE_TABS.map((t) =>
+                    t.id === "decision-making" ? { ...t, label: "UNDERWRITER" } : t,
+                );
             }
-            return pipelineTabs;
+            return [...SUPER_ADMIN_PIPELINE_TABS];
         }
         return getTabs();
     }, [
@@ -695,8 +702,57 @@ const ApplicationDetails = () => {
         }
     };
 
+    /** Mail log / Activity log panels are Super Admin only (CONTRACTS_LOG does not see them). */
+    const showDealLogs = isTopSuperAdmin && Boolean(activityLogApplicationId);
 
+    // Close both panels when navigating to another deal so they never show a stale application.
+    useEffect(() => {
+        setMailLogOpen(false);
+        setAuditLogOpen(false);
+    }, [applicationId]);
 
+    const externalLinksRow = showDealLogs ? (
+        <div className="flex items-center gap-6 flex-wrap">
+            <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                    setMailLogOpen((open) => !open);
+                    if (!mailLogOpen) setAuditLogOpen(false);
+                }}
+                aria-expanded={mailLogOpen}
+                aria-haspopup="dialog"
+                aria-pressed={mailLogOpen}
+                className="group shrink-0 gap-2 rounded-full border border-cyan-700/25 bg-gradient-to-b from-cyan-500/[0.08] to-cyan-500/[0.03] px-4 py-2 text-sm font-semibold text-cyan-900 shadow-sm transition-all hover:border-cyan-700/40 hover:from-cyan-500/15 hover:to-cyan-500/08 hover:shadow-md active:scale-[0.98] dark:border-cyan-400/35 dark:from-cyan-400/15 dark:to-cyan-400/5 dark:text-cyan-100"
+            >
+                <Mail
+                    className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
+                    aria-hidden
+                />
+                Mail log
+            </Button>
+            <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                    setAuditLogOpen((open) => !open);
+                    if (!auditLogOpen) setMailLogOpen(false);
+                }}
+                aria-expanded={auditLogOpen}
+                aria-haspopup="dialog"
+                aria-pressed={auditLogOpen}
+                className="group shrink-0 gap-2 rounded-full border border-[var(--brand)]/30 bg-gradient-to-b from-[var(--brand)]/[0.1] to-[var(--brand)]/[0.04] px-4 py-2 text-sm font-semibold text-[var(--brand)] shadow-sm transition-all hover:border-[var(--brand)]/45 hover:from-[var(--brand)]/15 hover:to-[var(--brand)]/08 hover:shadow-md active:scale-[0.98] dark:border-primary/35 dark:from-primary/20 dark:to-primary/8 dark:text-foreground dark:hover:border-primary/50"
+            >
+                <ScrollText
+                    className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
+                    aria-hidden
+                />
+                Activity log
+            </Button>
+        </div>
+    ) : null;
 
     return (
         <div
@@ -765,6 +821,9 @@ const ApplicationDetails = () => {
                                 })}
                             </TabsList>
                             </HorizontalScrollFade>
+                            {externalLinksRow ? (
+                                <div className="shrink-0">{externalLinksRow}</div>
+                            ) : null}
                         </div>
                         {/* Row 2: Application Summary (same five-column layout as all roles) */}
                         <FinalUnderwriterApplicationSummary
@@ -901,6 +960,9 @@ const ApplicationDetails = () => {
                                 })}
                             </TabsList>
                             </HorizontalScrollFade>
+                            {externalLinksRow ? (
+                                <div className="shrink-0">{externalLinksRow}</div>
+                            ) : null}
                         </div>
 
                         {canRenderTabContent ? (
@@ -948,12 +1010,25 @@ const ApplicationDetails = () => {
 
                             <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
-                                    {/* Agents review the underwriter's offer; they never edit it. */}
-                                    <BankAnalysis
-                                        readOnly={pipelineStageReadOnly || isAgent}
-                                        enableCreate={!pipelineStageReadOnly && !isAgent}
-                                        showBankStatementUpload={false}
-                                    />
+                                    {isSuperAdmin ? (
+                                        <>
+                                            {/* Contracts Log / Super Admin see the full Underwriter workspace:
+                                                Offer + Leverage, Credits Trend, Bank Analysis, Positions, Additional Info. */}
+                                            <ScrubbingWorkspace
+                                                readOnly={pipelineStageReadOnly}
+                                                enableCreate={!pipelineStageReadOnly}
+                                                showBankStatementUpload={false}
+                                            />
+                                            <div className="mt-6"><CommentSection isUnderwriter readOnly={commentsReadOnly} /></div>
+                                        </>
+                                    ) : (
+                                        /* Agents review the underwriter's offer; they never edit it. */
+                                        <BankAnalysis
+                                            readOnly={pipelineStageReadOnly || isAgent}
+                                            enableCreate={!pipelineStageReadOnly && !isAgent}
+                                            showBankStatementUpload={false}
+                                        />
+                                    )}
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="approval" className="mt-6">
@@ -1008,6 +1083,38 @@ const ApplicationDetails = () => {
                     </Tabs>
                 )}
             </div>
+
+            {showDealLogs ? (
+                <>
+                    <Dialog open={mailLogOpen} onOpenChange={setMailLogOpen}>
+                        <DialogContent
+                            aria-label="Mail log"
+                            className="flex max-h-[90vh] w-[min(96vw,72rem)] max-w-[72rem] flex-col gap-0 overflow-hidden p-0 sm:rounded-xl"
+                        >
+                            <ApplicationSheetMailLog
+                                applicationId={activityLogApplicationId}
+                                active={mailLogOpen}
+                                className="max-h-[90vh] min-h-0 flex-1"
+                                headerClassName="shrink-0 px-6 pb-3 pt-6 pr-12"
+                            />
+                        </DialogContent>
+                    </Dialog>
+                    <Sheet open={auditLogOpen} onOpenChange={setAuditLogOpen}>
+                        <SheetContent
+                            side="right"
+                            aria-label="Activity log"
+                            overlayClassName="bg-black/15"
+                            className="z-[9999] flex h-full w-full max-w-full flex-col gap-0 overflow-hidden border-l p-0 sm:w-[50vw] sm:max-w-[50vw]"
+                        >
+                            <ApplicationSheetActivityLog
+                                applicationId={activityLogApplicationId}
+                                className="min-h-0 flex-1"
+                                headerClassName="shrink-0 pr-14 pt-10"
+                            />
+                        </SheetContent>
+                    </Sheet>
+                </>
+            ) : null}
         </div>
     );
 };

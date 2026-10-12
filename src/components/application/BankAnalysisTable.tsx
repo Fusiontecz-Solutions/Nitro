@@ -1670,14 +1670,14 @@ const BankAnalysisTable = ({
                             <div
                               className={
                                 rowLocked
-                                  ? "flex h-9 w-full items-center justify-start px-3 text-[13px] text-slate-700 select-none dark:text-slate-200"
-                                  : "flex h-9 w-full items-center justify-start rounded-md border border-slate-200 bg-slate-50 px-3 text-[13px] text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200"
+                                  ? "flex h-9 w-full items-center justify-start whitespace-nowrap px-3 text-[13px] text-slate-700 select-none dark:text-slate-200"
+                                  : "flex h-9 w-full items-center justify-start whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-3 text-[13px] text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200"
                               }
                             >
                               {isInitialLoading ? "Loading..." : `$ ${formatNumberUS(currentNetCredit)}`}
                             </div>
                             {trend !== "none" && (
-                              <span className="inline-flex items-center justify-center">
+                              <span className="inline-flex shrink-0 items-center justify-center">
                                 {trend === "up" ? (
                                   <ArrowUpRight className="h-3 w-3 text-emerald-500" />
                                 ) : (

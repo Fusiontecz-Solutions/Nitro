@@ -17,6 +17,7 @@ const getPageTitle = (pathname: string): string => {
     if (pathname.startsWith('/application-details')) return 'Application';
     if (pathname.startsWith('/notifications')) return 'Notifications';
     if (pathname.startsWith('/gmail')) return 'Gmail Workspace';
+    if (pathname.startsWith('/activity-logs')) return 'Activity Logs';
     if (pathname.startsWith('/user-setting') || pathname.startsWith('/settings')) return 'Settings';
     if (pathname.includes('terms-offer')) return 'Create Offer';
     return 'Contract Workflow';
