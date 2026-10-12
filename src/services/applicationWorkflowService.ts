@@ -534,6 +534,10 @@ export async function sendToAgentApproval(
         message: `Underwriting is complete for ${businessLabel(app)}. Review it and send it to the ISO for approval.${note ? ` Note: ${note}` : ''}`,
         actorId: user.id,
         importance: 'high',
+        oversight: {
+            title: `Underwriter sent application #${app.applicationId} to the Agent`,
+            message: `${actorName || 'The Underwriter'} completed underwriting for ${businessLabel(app)} and sent it to the Agent for approval.${note ? ` Note: ${note}` : ''}`,
+        },
     });
 }
 
@@ -580,6 +584,10 @@ export async function returnToUnderwriter(
             message: `${businessLabel(app)} was returned to underwriting: ${note.trim()}`,
             actorId: user.id,
             importance: 'high',
+            oversight: {
+                title: `Agent returned application #${app.applicationId} to underwriting`,
+                message: `${actorName || 'The Agent'} returned ${businessLabel(app)} to the Underwriter: ${note.trim()}`,
+            },
         });
     } else {
         notifyNewInUnderwriterPool(app, user.id);

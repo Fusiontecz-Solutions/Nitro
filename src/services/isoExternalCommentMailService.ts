@@ -3,14 +3,13 @@
  * "Reply in portal" CTA to the public status/comments page. ISO replies posted
  * there come back as `ISO Comment` rows on the deal.
  *
- * Prefers replying on the deal's ISO approval Gmail thread (so the ISO keeps one
- * conversation); falls back to SendGrid/SMTP.
+ * Sent through Gmail on the deal's ISO thread (same conversation as the approval /
+ * offer / decline emails), so the ISO sees staff replies in one chain.
  */
 import prisma from '../config/prismaClient';
-import sendMail, { isOutboundSmtpConfigured, isSendGridConfigured } from '../config/nodemailer';
+import sendMail, { isOutboundMailConfigured } from '../config/nodemailer';
 import { BRAND_EMAIL_LOGO_SRC, buildBrandLogoAttachments } from '../constants/brand';
 import { resolveEmailBrandDisplayName } from '../constants/emailBrand';
-import { canSendFromUserGmail, getIsoApprovalThread, sendIsoApprovalOnThread } from './isoApprovalThreadService';
 import { resolvePublicApplicationStatusPortalUrl } from './publicApplicationStatusPortalUrlService';
 
 function escapeHtml(value: string): string {
@@ -24,7 +23,7 @@ function escapeHtml(value: string): string {
 
 function buildExternalCommentIsoEmailHtml(params: {
     brandName: string;
-    /** Omitted for Gmail sends — inline CID images need SendGrid/SMTP attachments. */
+    /** Inline CID logo (sent as an attachment alongside the message). */
     logoSrc?: string;
     businessName: string;
     actorName: string;
@@ -70,7 +69,7 @@ ${escapeHtml(commentBody)}
 
 export type ExternalCommentIsoMailResult = {
     sent: boolean;
-    via?: 'gmail' | 'sendgrid' | 'smtp';
+    via?: 'gmail' | 'smtp';
     to?: string;
     skippedReason?: string;
 };
@@ -83,6 +82,8 @@ export async function sendExternalCommentToIsoEmail(params: {
     applicationId: string;
     commentBody: string;
     actorName?: string | null;
+    /** Staff user who wrote the comment (their Gmail starts the thread if none exists yet). */
+    actorUserId?: string | null;
 }): Promise<ExternalCommentIsoMailResult> {
     const applicationId = String(params.applicationId || '').trim();
     const commentBody = String(params.commentBody || '').trim();
@@ -116,35 +117,20 @@ export async function sendExternalCommentToIsoEmail(params: {
         const subject = `${brandName}: New comment${businessName ? ` for ${businessName}` : ''}`;
         const htmlParams = { brandName, businessName, actorName, commentBody, portalUrl };
 
-        const thread = await getIsoApprovalThread(application.id);
-        if (thread?.ownerUserId && (await canSendFromUserGmail(thread.ownerUserId))) {
-            try {
-                await sendIsoApprovalOnThread({
-                    applicationId: application.id,
-                    senderUserId: thread.ownerUserId,
-                    to: isoEmail,
-                    subject,
-                    html: buildExternalCommentIsoEmailHtml(htmlParams),
-                });
-                return { sent: true, via: 'gmail', to: isoEmail };
-            } catch (gmailErr) {
-                console.warn('[external-comment-iso-mail] Gmail thread send failed, falling back:', gmailErr);
-            }
-        }
-
-        if (!isSendGridConfigured() && !isOutboundSmtpConfigured()) {
-            console.warn('[external-comment-iso-mail] no Gmail thread and no SMTP/SendGrid', applicationId);
+        if (!isOutboundMailConfigured()) {
+            console.warn('[external-comment-iso-mail] no mail transport configured', applicationId);
             return { sent: false, skippedReason: 'no-mail-transport' };
         }
 
-        await sendMail({
+        const result = await sendMail({
             to: isoEmail,
             subject,
             html: buildExternalCommentIsoEmailHtml({ ...htmlParams, logoSrc: BRAND_EMAIL_LOGO_SRC }),
             attachments: buildBrandLogoAttachments(),
-            categories: ['external-comment-iso'],
+            threadApplicationId: application.id,
+            threadSenderUserId: params.actorUserId ?? null,
         });
-        return { sent: true, via: isSendGridConfigured() ? 'sendgrid' : 'smtp', to: isoEmail };
+        return { sent: true, via: result.gmailMessageId ? 'gmail' : 'smtp', to: isoEmail };
     } catch (error) {
         console.error('[external-comment-iso-mail] send failed:', applicationId, error);
         return { sent: false, skippedReason: 'send-failed' };

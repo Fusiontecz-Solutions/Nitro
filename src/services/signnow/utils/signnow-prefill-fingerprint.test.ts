@@ -21,6 +21,30 @@ describe('buildSignNowPrefillFingerprint', () => {
     expect(a).toBe(b);
   });
 
+  it('changes when only a saved addendum / disclosure tab value changes', () => {
+    const tab = (account: string) =>
+      buildSignNowPrefillFingerprint({
+        packageFingerprint: PACKAGE,
+        values: { net_to_merchant: '38,000.00' },
+        contractPrefillOverrides: {
+          legalName: 'ignored here',
+          documentTemplatePrefillByMappingId: { m1: { account_number_p1_ach: account } },
+        },
+      });
+    expect(tab('123456789')).not.toBe(tab('12345678'));
+  });
+
+  it('keeps the old fingerprint for a contract with no per-document values', () => {
+    const values = { net_to_merchant: '38,000.00' };
+    expect(
+      buildSignNowPrefillFingerprint({
+        packageFingerprint: PACKAGE,
+        values,
+        contractPrefillOverrides: { legalName: 'A', documentTemplatePrefillByMappingId: null },
+      }),
+    ).toBe(buildSignNowPrefillFingerprint({ packageFingerprint: PACKAGE, values }));
+  });
+
   it('changes when a contract value changes', () => {
     const withWireFee = buildSignNowPrefillFingerprint({
       packageFingerprint: PACKAGE,

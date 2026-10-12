@@ -105,7 +105,7 @@ export async function sendTrackedContractEmail(input: {
   applicationId?: string | null;
   kind: ContractEmailKind;
   recipient: ContractEmailRecipient;
-  provider: 'sendgrid' | 'smtp';
+  provider: 'gmail' | 'sendgrid' | 'smtp';
   mail: Omit<TrackedMailOptions, 'to' | 'trackingId'>;
   resend: ContractEmailResendPayload;
   send: (options: TrackedMailOptions) => Promise<unknown>;
@@ -183,7 +183,7 @@ export async function logContractEmails(input: {
   kind: ContractEmailKind;
   subject: string;
   recipients: ContractEmailRecipient[];
-  provider?: 'sendgrid' | 'smtp' | 'signnow';
+  provider?: 'gmail' | 'sendgrid' | 'smtp' | 'signnow';
 }): Promise<void> {
   const recipients = input.recipients.filter((r) => String(r.email || '').includes('@'));
   if (!recipients.length) return;
@@ -333,7 +333,7 @@ async function unloggedPortalInvites(
       status: 'sent',
       groupId,
       // The portal mints a fresh link for the signer, so it can always be resent.
-      provider: 'sendgrid',
+      provider: 'gmail',
       canResend: true,
     };
     const emailedAt = String(entry.emailedAt || '').trim();
@@ -395,7 +395,8 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
         canView: Boolean(row.body),
         // A portal signing link is re-minted on resend; anything else needs the
         // stored HTML. SignNow's own invites are resent from SignNow.
-        canResend: isSigningKind(kind) ? provider === 'sendgrid' : hasPayload,
+        // Portal invites were sent by SendGrid before the Gmail switch; both are re-mintable.
+        canResend: isSigningKind(kind) ? provider === 'gmail' || provider === 'sendgrid' : hasPayload,
         deliveredAt: String(tracking.deliveredAt || '') || null,
         openedAt: String(tracking.openedAt || '') || null,
         openCount: Number(tracking.openCount) || 0,

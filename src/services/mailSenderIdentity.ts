@@ -47,7 +47,12 @@ function sameEmail(a: string | null | undefined, b: string | null | undefined): 
 
 /** Name explicitly paired with the `.env` default sender, if any. */
 function envDefaultSenderName(): string | null {
-  return process.env.SENDGRID_FROM_NAME?.trim() || process.env.MAIL_FROM_NAME?.trim() || null;
+  return (
+    process.env.GMAIL_SENDER_NAME?.trim() ||
+    process.env.SENDGRID_FROM_NAME?.trim() ||
+    process.env.MAIL_FROM_NAME?.trim() ||
+    null
+  );
 }
 
 /**
@@ -56,10 +61,13 @@ function envDefaultSenderName(): string | null {
  * SendGrid sender and never an SMTP login address left over in `.env`.
  */
 export function resolveDefaultSenderRaw(options?: { sendgridOnly?: boolean }): string | undefined {
+  // Gmail is the only transport now (SendGrid disabled): the Gmail sender mailbox is the default.
+  const gmailSender = process.env.GMAIL_SENDER_EMAIL?.trim();
   if (options?.sendgridOnly) {
-    return process.env.SENDGRID_FROM_EMAIL?.trim() || process.env.SENDGRID_AUTH_USER?.trim();
+    return gmailSender || process.env.SENDGRID_FROM_EMAIL?.trim() || process.env.SENDGRID_AUTH_USER?.trim();
   }
   return (
+    gmailSender ||
     process.env.SMTP_FROM?.trim() ||
     process.env.MAIL_FROM?.trim() ||
     process.env.SENDGRID_FROM_EMAIL?.trim() ||

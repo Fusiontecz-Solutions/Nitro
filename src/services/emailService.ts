@@ -1,6 +1,6 @@
 import sendMail, {
+    isOutboundMailConfigured,
     isOutboundSmtpConfigured,
-    isSendGridConfigured,
     sendSendGridMail,
 } from '../config/nodemailer';
 import {
@@ -10,6 +10,7 @@ import {
     buildBrandLogoAttachments,
 } from '../constants/brand';
 import { buildHtmlPdfMailAttachment } from './emailHtmlPdfAttachment.service';
+import { getApplicationEmailThread } from './applicationEmailThreadService';
 import {
     buildIsoApprovalEmailPackage,
     resolveIsoApprovalEmailSubject,
@@ -188,6 +189,13 @@ export interface ApplicationApprovalEmailParams {
     bannerLogoUrl?: string;
     /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
     trackingId?: string;
+    /**
+     * Deal id — the email goes out on the deal's ISO Gmail thread (same conversation
+     * as every other approval / offer / decline / document-request email).
+     */
+    applicationId?: string;
+    /** Acting CRM user (their connected Gmail starts a new thread when available). */
+    senderUserId?: string | null;
 }
 
 export const buildApplicationApprovalEmailHtml = ({
@@ -314,6 +322,13 @@ export interface ApplicationRejectionEmailParams {
     /** Fully-rendered, branded rejection email HTML (built by the caller). */
     html?: string;
     trackingId?: string;
+    /**
+     * Deal id — the email goes out on the deal's ISO Gmail thread (same conversation
+     * as every other approval / offer / decline / document-request email).
+     */
+    applicationId?: string;
+    /** Acting CRM user (their connected Gmail starts a new thread when available). */
+    senderUserId?: string | null;
     /** Threading hints (accepted for API compatibility; delivery is best-effort). */
     inReplyTo?: string | null;
     references?: string | string[] | null;
@@ -336,6 +351,8 @@ export async function sendApplicationRejectionEmail({
     subject,
     html,
     trackingId,
+    applicationId,
+    senderUserId,
 }: ApplicationRejectionEmailParams): Promise<{
     sent: boolean;
     emailedTo: string[];
@@ -373,6 +390,8 @@ export async function sendApplicationRejectionEmail({
             ],
             trackingId,
             categories: ['application-rejection'],
+            threadApplicationId: applicationId,
+            threadSenderUserId: senderUserId,
         });
         return {
             sent: true,
@@ -411,6 +430,8 @@ export async function sendApplicationApprovalEmail({
     html: customHtml,
     subject: customSubject,
     trackingId,
+    applicationId,
+    senderUserId,
 }: ApplicationApprovalEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
     const ccList = normalizeCcRecipients(cc);
@@ -451,12 +472,82 @@ export async function sendApplicationApprovalEmail({
             attachments: pdfAttachment ? [pdfAttachment] : undefined,
             trackingId,
             categories: ['application-approval'],
+            threadApplicationId: applicationId,
+            threadSenderUserId: senderUserId,
         });
         return { sent: true, sgMessageId: response?.messageId };
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Application approval email send failed:', { to: toTrimmed, error });
         return { sent: false };
+    }
+}
+
+export interface IsoOfferDecisionThreadEmailParams {
+    applicationId: string;
+    to: string;
+    cc?: string[];
+    decision: 'approved' | 'declined';
+    isoName?: string;
+    businessName?: string;
+    applicationNumber?: string | number;
+    /** Optional reason shown on a decline. */
+    reason?: string;
+    actorName?: string;
+}
+
+const escapeThreadHtml = (value: unknown): string =>
+    String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+/**
+ * Short status update posted on the deal's existing ISO Gmail thread when the
+ * offer is approved / declined, so the decision shows up in the same conversation
+ * as the approval email. Skipped when the deal has no thread yet (never starts a
+ * new conversation just for the status line).
+ */
+export async function sendIsoOfferDecisionThreadEmail(
+    params: IsoOfferDecisionThreadEmailParams,
+): Promise<{ sent: boolean; skippedReason?: string; gmailThreadId?: string }> {
+    const to = String(params.to || '').trim();
+    if (!to) return { sent: false, skippedReason: 'no-recipient' };
+    const thread = await getApplicationEmailThread(params.applicationId);
+    if (!thread?.gmailThreadId) return { sent: false, skippedReason: 'no-thread' };
+
+    const approved = params.decision === 'approved';
+    const business = String(params.businessName || '').trim();
+    const appLabel = params.applicationNumber != null && params.applicationNumber !== '' ? `#${params.applicationNumber}` : '';
+    const dealLabel = [business, appLabel].filter(Boolean).join(' ') || 'this application';
+    const actor = String(params.actorName || '').trim();
+    const reason = String(params.reason || '').trim();
+    const html = `
+<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#1f2937;max-width:640px;">
+  <p style="margin:0 0 12px;">Hi ${escapeThreadHtml(params.isoName || 'Team')},</p>
+  <p style="margin:0 0 12px;">
+    ${approved
+        ? `The offer for <strong>${escapeThreadHtml(dealLabel)}</strong> has been <strong>approved</strong>${actor ? ` by ${escapeThreadHtml(actor)}` : ''}. Our team will move the deal to the contract stage and follow up on this thread.`
+        : `The offer for <strong>${escapeThreadHtml(dealLabel)}</strong> has been <strong>declined</strong>${actor ? ` by ${escapeThreadHtml(actor)}` : ''}.`}
+  </p>
+  ${reason ? `<p style="margin:0 0 12px;"><strong>Reason:</strong> ${escapeThreadHtml(reason)}</p>` : ''}
+  <p style="margin:16px 0 0;font-size:13px;color:#6b7280;">Reply to this email if you have any questions.</p>
+  <p style="margin:20px 0 0;font-size:12px;color:#9ca3af;">— ${escapeThreadHtml(BRAND_DISPLAY_NAME)}</p>
+</div>`.trim();
+
+    try {
+        const result = await sendMail({
+            to,
+            cc: normalizeCcRecipients(params.cc).length ? normalizeCcRecipients(params.cc) : undefined,
+            subject: `Offer ${approved ? 'approved' : 'declined'} — ${dealLabel}`,
+            html,
+            threadApplicationId: params.applicationId,
+        });
+        return { sent: true, gmailThreadId: result.gmailThreadId };
+    } catch (error) {
+        console.error('[email] ISO offer decision thread update failed:', { applicationId: params.applicationId, error });
+        return { sent: false, skippedReason: 'send-failed' };
     }
 }
 
@@ -744,6 +835,13 @@ export interface ApplicationOfferUpdatedEmailParams {
     bannerLogoUrl?: string;
     /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
     trackingId?: string;
+    /**
+     * Deal id — the email goes out on the deal's ISO Gmail thread (same conversation
+     * as every other approval / offer / decline / document-request email).
+     */
+    applicationId?: string;
+    /** Acting CRM user (their connected Gmail starts a new thread when available). */
+    senderUserId?: string | null;
 }
 
 export const buildApplicationOfferUpdatedEmailHtml = ({
@@ -870,6 +968,8 @@ export async function sendApplicationOfferUpdatedEmail({
     html: customHtml,
     subject: customSubject,
     trackingId,
+    applicationId,
+    senderUserId,
 }: ApplicationOfferUpdatedEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
     const ccList = normalizeCcRecipients(cc);
@@ -910,6 +1010,8 @@ export async function sendApplicationOfferUpdatedEmail({
             attachments: pdfAttachment ? [pdfAttachment] : undefined,
             trackingId,
             categories: ['offer-updated'],
+            threadApplicationId: applicationId,
+            threadSenderUserId: senderUserId,
         });
         return { sent: true, sgMessageId: response?.messageId };
     } catch (error) {
@@ -1635,6 +1737,13 @@ export interface DocumentRequestEmailParams {
     subject?: string;
     /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
     trackingId?: string;
+    /**
+     * Deal id — the email goes out on the deal's ISO Gmail thread (same conversation
+     * as every other approval / offer / decline / document-request email).
+     */
+    applicationId?: string;
+    /** Acting CRM user (their connected Gmail starts a new thread when available). */
+    senderUserId?: string | null;
 }
 
 function formatDocumentRequestList(
@@ -1674,15 +1783,17 @@ export async function sendDocumentRequestEmail({
     html: customHtml,
     subject: customSubject,
     trackingId,
+    applicationId,
+    senderUserId,
 }: DocumentRequestEmailParams): Promise<DocumentRequestEmailResult> {
     const recipients = [...new Set((to || []).map((e) => String(e || '').trim()).filter(Boolean))];
     if (!recipients.length) {
         console.warn('[email] Document request skipped: no recipients');
         return { sent: false, error: 'No email recipients' };
     }
-    if (!isSendGridConfigured()) {
+    if (!isOutboundMailConfigured()) {
         const message =
-            'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.';
+            'Email is not configured. Set GMAIL_SENDER_EMAIL with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET on the server.';
         console.warn(`[email] Document request skipped: ${message}`);
         return { sent: false, error: message };
     }
@@ -1743,20 +1854,18 @@ export async function sendDocumentRequestEmail({
             attachments: buildBrandLogoAttachments(),
             trackingId,
             categories: ['document-request'],
+            threadApplicationId: applicationId,
+            threadSenderUserId: senderUserId,
         });
-        console.info('[email] Document request sent via SendGrid', {
+        console.info('[email] Document request sent via Gmail', {
             to: recipients,
             cc: ccList.length ? ccList : undefined,
         });
         return { sent: true, sgMessageId: response?.messageId };
     } catch (error: unknown) {
-        let message =
-            error instanceof Error ? error.message : 'SendGrid failed to deliver the document request email';
-        if (/maximum credits exceeded/i.test(message)) {
-            message =
-                'SendGrid email credits exceeded. Add credits to your SendGrid account or contact your administrator.';
-        }
-        console.error('Document request email send failed (SendGrid):', { to: recipients, error });
+        const message =
+            error instanceof Error ? error.message : 'Gmail failed to deliver the document request email';
+        console.error('Document request email send failed (Gmail):', { to: recipients, error });
         return { sent: false, error: message };
     }
 }

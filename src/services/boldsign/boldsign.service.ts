@@ -1185,7 +1185,7 @@ export class BoldSignService {
 
     if (!isOutboundSmtpConfigured()) {
       console.warn(
-        '[BoldSign] CC prefilled PDF email skipped: outbound SMTP/SendGrid is not configured (set SENDGRID_API_KEY or SMTP credentials).',
+        '[BoldSign] CC prefilled PDF email skipped: outbound mail is not configured (set GMAIL_SENDER_EMAIL with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).',
       );
       return { emailed: [] };
     }

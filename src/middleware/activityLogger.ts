@@ -38,6 +38,7 @@ function deriveAction(method: string): string {
 function deriveEntity(path: string): string {
   const parts = path.replace(/^\/api\/v1\/?/, '').split('/').filter(Boolean);
   if (parts.length === 0) return 'System';
+  if (parts[0] === 'docusign') return 'SignNow';
   const segment = parts[0].replace(/-/g, ' ');
   return segment.charAt(0).toUpperCase() + segment.slice(1);
 }

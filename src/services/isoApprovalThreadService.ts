@@ -10,6 +10,7 @@
 import prisma from '../config/prismaClient';
 import { ISO_APPROVAL_THREAD_PURPOSE } from '../constants/applicationWorkflow';
 import { GmailNotConnectedError, getGmailAccessTokenForUser } from './gmail/gmailOAuthService';
+import { getSystemGmailMailbox } from '../config/gmailApiMailer';
 import {
     getGmailMessageHeaders,
     getGmailThreadMessages,
@@ -151,10 +152,16 @@ export async function getIsoApprovalThreadHistory(applicationId: string): Promis
         updatedAt: thread.updatedAt,
     };
 
-    if (!thread.ownerUserId) {
-        return { thread: summary, messages: null, messagesUnavailableReason: 'The mailbox owner no longer exists.' };
-    }
-    const accessToken = await getGmailAccessTokenForUser(thread.ownerUserId).catch(() => null);
+    // Threads sent from the server-wide Gmail sender have no owning CRM user.
+    const accessToken = thread.ownerUserId
+        ? await getGmailAccessTokenForUser(thread.ownerUserId).catch(() => null)
+        : await getSystemGmailMailbox()
+              .then((mailbox) =>
+                  mailbox && (!thread.mailboxEmail || mailbox.email === thread.mailboxEmail.toLowerCase())
+                      ? mailbox.accessToken
+                      : null,
+              )
+              .catch(() => null);
     if (!accessToken) {
         return {
             thread: summary,

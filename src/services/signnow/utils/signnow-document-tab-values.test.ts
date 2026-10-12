@@ -147,5 +147,6 @@ describe('the editor hand-typed marker', () => {
       },
     );
     expect(entries[0].values).toEqual({ net_to_merchant_p1: '1,000.00' });
+    expect(entries[0].manualFieldIds).toEqual(['net_to_merchant_p1']);
   });
 });

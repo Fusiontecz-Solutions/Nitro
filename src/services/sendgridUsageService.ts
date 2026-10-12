@@ -36,6 +36,9 @@ export type SendGridUsageSummary = {
   fetchedAt: string;
 };
 
+/** SendGrid is switched off: every CRM email is sent through the Gmail API. */
+const SENDGRID_DISABLED = true as boolean;
+
 let cache: { at: number; value: SendGridUsageSummary } | null = null;
 let inflight: Promise<SendGridUsageSummary> | null = null;
 
@@ -136,7 +139,8 @@ async function fetchUsage(apiKey: string): Promise<SendGridUsageSummary> {
 export async function getSendGridUsageSummary(options?: {
   force?: boolean;
 }): Promise<SendGridUsageSummary> {
-  const apiKey = process.env.SENDGRID_API_KEY?.trim();
+  // SendGrid disabled — all mail goes through Gmail, so there is no SendGrid plan to report.
+  const apiKey = SENDGRID_DISABLED ? undefined : process.env.SENDGRID_API_KEY?.trim();
   if (!apiKey) {
     return {
       configured: false,
@@ -152,7 +156,7 @@ export async function getSendGridUsageSummary(options?: {
         nextReset: null,
       },
       today: null,
-      warnings: ['SENDGRID_API_KEY is not set'],
+      warnings: [SENDGRID_DISABLED ? 'SendGrid is disabled — email is sent through Gmail' : 'SENDGRID_API_KEY is not set'],
       fetchedAt: new Date().toISOString(),
     };
   }
@@ -171,4 +175,30 @@ export async function getSendGridUsageSummary(options?: {
       inflight = null;
     });
   return inflight;
+}
+
+export const SENDGRID_CREDITS_EXHAUSTED_MESSAGE =
+  'SendGrid email credits are used up, so the contract was not sent. ' +
+  'Add credits or upgrade the SendGrid plan, then send again.';
+
+/**
+ * True only when SendGrid reports no credits left on a plan that cannot go
+ * into overage. Unknown balances (missing key scope, SendGrid down) answer
+ * false so a usage-API hiccup never blocks a send.
+ */
+export async function isSendGridOutOfCredits(): Promise<boolean> {
+  const exhausted = (summary: SendGridUsageSummary) => {
+    const remaining = summary.credits.remaining;
+    if (!summary.configured || remaining === null) return false;
+    if (summary.accountType?.toLowerCase() === 'paid') return false;
+    return remaining <= 0;
+  };
+  try {
+    if (!exhausted(await getSendGridUsageSummary())) return false;
+    // The cached balance may predate a top-up or the daily reset; confirm live.
+    return exhausted(await getSendGridUsageSummary({ force: true }));
+  } catch (err) {
+    console.warn('[SendGrid] credit check failed; allowing the send', err);
+    return false;
+  }
 }

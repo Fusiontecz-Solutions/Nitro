@@ -4,6 +4,33 @@ import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFrequency';
+import {
+  loadApplicationNotificationRecord,
+  scheduleApplicationAmountNotification,
+} from '../services/applicationStageNotificationService';
+
+/** Fire-and-forget: tell the deal team + Super Admins the approved amount changed. */
+const notifyTermsOfferAmount = (
+  req: Request,
+  applicationUuid: string,
+  previousAmount: number | null,
+  newAmount: number,
+) => {
+  if (previousAmount === newAmount) return;
+  void loadApplicationNotificationRecord(applicationUuid)
+    .then((record) => {
+      if (!record) return;
+      scheduleApplicationAmountNotification({
+        application: record,
+        label: 'Approved amount',
+        previousAmount,
+        newAmount,
+        actorId: (req as any).user?.id ?? null,
+        actorName: (req as any).user?.name ?? null,
+      });
+    })
+    .catch((err) => console.error('TermsOffer: amount notification failed', err));
+};
 
 const mapTermsOfferToApi = (offer: any) => {
   if (!offer) return offer;
@@ -209,6 +236,8 @@ class TermsOfferController {
           createdById: createdBy || null,
         },
       });
+
+      notifyTermsOfferAmount(req, applicationExists.id, null, newTermsOffer.approvedAmount);
 
       return res.status(201).json({
         success: true,
@@ -509,6 +538,8 @@ class TermsOfferController {
         where: { id },
         data,
       });
+
+      notifyTermsOfferAmount(req, updated.applicationId, existing.approvedAmount, updated.approvedAmount);
 
       return res.status(200).json({
         success: true,

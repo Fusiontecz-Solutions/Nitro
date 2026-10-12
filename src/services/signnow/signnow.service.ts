@@ -154,7 +154,8 @@ import {
 import {
   buildSignNowDocumentTabValues,
   parseDocumentTemplatePrefillBlob,
-  pickSignNowDocumentTabValues,
+  pickSignNowDocumentTabEntry,
+  tabValuesOverLiveValues,
   type SignNowDocumentTabValues,
 } from './utils/signnow-document-tab-values';
 import { EXHIBIT_C_ENTITIES_PREFILL_KEY } from '../contractKycPrefillMapper';
@@ -768,13 +769,16 @@ export function signNowDocumentPrefillValues(
   documentTabValues: readonly SignNowDocumentTabValues[] = [],
 ): { values: Record<string, string>; entityIndex: number | null; isolated: boolean } {
   const base = exhibitCDocumentPrefillValues(values, entities, documentName);
-  const tabs = pickSignNowDocumentTabValues(
+  const tab = pickSignNowDocumentTabEntry(
     documentTabValues as SignNowDocumentTabValues[],
     documentName,
   );
   // The package-wide disclosure lines follow the contract's TOTAL FEES (see the helper).
   const aligned = alignDisclosureWireFeeWithTotalFees(base.values);
-  if (!tabs) return { ...base, values: aligned };
+  if (!tab) return { ...base, values: aligned };
+  // A name / address / email the tab only copied from the deal gives way to the
+  // live CRM value, so a corrected deal reaches every document on regenerate.
+  const tabs = tabValuesOverLiveValues(tab, base.values);
   /**
    * What the preparer saved on this document's tab prints exactly as saved. It
    * used to go through the TOTAL FEES alignment too, which re-derived a saved
@@ -2509,10 +2513,6 @@ export class SignNowService {
       });
     }
     applyMerchantSignerPrefill(values, signers);
-    const prefillFingerprint = buildSignNowPrefillFingerprint({
-      packageFingerprint,
-      values,
-    });
 
     const contractIdNum = Number(options.contractId);
     // Exhibit C mapping rows survive on the contract after a workflow that no
@@ -2569,6 +2569,18 @@ export class SignNowService {
             },
           )
         : null;
+
+    // Each addendum / disclosure tab and Exhibit C entity prints over `values` on its
+    // own document. Fingerprinting `values` alone let a group be reused after only
+    // those changed, still showing the values baked onto the page by the last send.
+    const [prefillContractRow] = contractPrefillReadPromise
+      ? await contractPrefillReadPromise
+      : [null];
+    const prefillFingerprint = buildSignNowPrefillFingerprint({
+      packageFingerprint,
+      values,
+      contractPrefillOverrides: prefillContractRow?.contractPrefillOverrides,
+    });
 
     const ensured = await measureSignNowStep(
       'ensure-review-group',

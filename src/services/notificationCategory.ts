@@ -28,6 +28,7 @@ const TYPE_TO_CATEGORY: Record<string, NotificationCategory> = {
     application_approved: 'approvals',
     application_rejected: 'approvals',
     application_created: 'approvals',
+    application_amount_update: 'approvals',
     new_application: 'approvals',
     document_request: 'approvals',
     document_received: 'approvals',

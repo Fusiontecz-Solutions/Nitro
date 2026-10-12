@@ -7,6 +7,11 @@ import {
 import type { ApplicationFieldChange } from './applicationUpdateActivityLog';
 import { markActivityLogged } from './outboundCommunicationService';
 import type { AuthenticatedUser } from './applicationService';
+import {
+  SIGNNOW_LEGACY_ROUTE_RESOURCE,
+  describeSignNowEndpoint,
+  signNowChangeSummary,
+} from '../utils/signNowActivityLabel';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -270,6 +275,26 @@ async function buildRouteActivityPlan(
   if (!applicationId) return null;
 
   const status = await loadApplicationStatus(applicationId);
+
+  // `/docusign/*` is the legacy mount of the SignNow contract API — label it as SignNow.
+  if (resource === SIGNNOW_LEGACY_ROUTE_RESOURCE) {
+    const endpoint = parts[1] ?? '';
+    const phrase = describeSignNowEndpoint(endpoint, verb);
+    return {
+      applicationId,
+      description: `${actorPrefix} ${phrase}.`,
+      subAction: `SIGNNOW_${endpoint.replace(/-/g, '_').toUpperCase() || method}`,
+      details: {
+        category: 'CONTRACT',
+        resource: 'signnow',
+        endpoint,
+        method,
+        changeSummary: signNowChangeSummary(phrase),
+      },
+      ...status,
+    };
+  }
+
   const resourceLabel = resource.replace(/-/g, ' ');
   const sub = subActionFromPath(path);
   const details: Record<string, unknown> = { resource, method };

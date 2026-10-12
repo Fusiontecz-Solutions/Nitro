@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 
-import { isSendGridConfigured } from '../config/nodemailer';
+import { isOutboundMailConfigured } from '../config/nodemailer';
 
 import { sendTrackedPaymentTemplateMail } from '../services/paymentMailSendService';
 
@@ -9,7 +9,7 @@ import { sendTrackedPaymentTemplateMail } from '../services/paymentMailSendServi
 
  * POST /api/mail/send
 
- * Send payment template emails via SendGrid only (not Gmail OAuth or Gmail SMTP).
+ * Send payment template emails through the Gmail sender mailbox (SendGrid disabled).
 
  * When `applicationId` + deal metadata are supplied, the send is tracked end-to-end
 
@@ -21,7 +21,7 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
 
     try {
 
-        if (!isSendGridConfigured()) {
+        if (!isOutboundMailConfigured()) {
 
             res.status(503).json({
 
@@ -29,7 +29,7 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
 
                 message:
 
-                    'Payment letters require SendGrid. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server (connected Gmail is not used).',
+                    'Email is not configured. Set GMAIL_SENDER_EMAIL with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET on the server.',
 
             });
 
@@ -159,15 +159,11 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
         console.error('Payment mail send error:', error);
 
         const message = error?.message || 'Failed to send email';
-        const creditsExceeded = /credits exceeded/i.test(message);
-
-        res.status(creditsExceeded ? 402 : 500).json({
+        res.status(500).json({
 
             success: false,
 
-            message: creditsExceeded
-                ? 'SendGrid email credits exceeded. Add credits or upgrade your SendGrid plan, then try again.'
-                : message,
+            message,
 
         });
 

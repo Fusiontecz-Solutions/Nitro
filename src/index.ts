@@ -12,7 +12,7 @@ import { testRedisConnection } from './config/redis';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
 import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
 import { activityLogger } from './middleware/activityLogger';
-import { describeDefaultMailSender, isSendGridConfigured } from './config/nodemailer';
+import { describeDefaultMailSender } from './config/nodemailer';
 import { startSignNowContractStatusJob } from './cron-job/signNowContractStatusJob';
 
 process.on('uncaughtException', (err) => {
@@ -136,13 +136,14 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 cloudinaryConnect();
 void describeDefaultMailSender().then((sender) =>
   console.log(
-    `[mail] Default outbound sender: ${sender} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
+    `[mail] Default outbound sender: ${sender} (SendGrid: disabled)`,
   ),
 );
-const sendgridWebhookBase = process.env.SENDGRID_WEBHOOK_URL?.trim().replace(/\/$/, '');
-if (sendgridWebhookBase) {
-  console.log(`[mail] SendGrid event webhook (configure in SendGrid dashboard): ${sendgridWebhookBase}/sendgrid/webhook`);
-}
+// SendGrid disabled — all mail goes through Gmail; the SendGrid event webhook is no longer mounted.
+// const sendgridWebhookBase = process.env.SENDGRID_WEBHOOK_URL?.trim().replace(/\/$/, '');
+// if (sendgridWebhookBase) {
+//   console.log(`[mail] SendGrid event webhook (configure in SendGrid dashboard): ${sendgridWebhookBase}/sendgrid/webhook`);
+// }
 // Test Redis connection, then start workers only when Redis is reachable.
 void testRedisConnection()
   .catch(console.error)

@@ -25,6 +25,8 @@ import {
   knownLayoutKeyFromSettingsName,
   slugifyTemplateName,
 } from './signnow-addendum-templates';
+import { isSignNowDbaWidget, resolveSignNowPrefillValue } from './signnow-field-map';
+import { isApplicationDerivedPrefillKey } from '../../../utils/applicationDerivedPrefillKey';
 
 export type SignNowDocumentTabValues = {
   mappingId: string;
@@ -33,6 +35,8 @@ export type SignNowDocumentTabValues = {
   /** Known layout key (`flex_addendum`, `exhibit_a`, …) when one is resolvable. */
   layoutKey: string;
   values: Record<string, string>;
+  /** Fields the preparer typed by hand on this tab (the editor's `_manualFieldIds`). */
+  manualFieldIds?: string[];
 };
 
 /** The prefill editor's list of hand-typed field ids on a saved tab. */
@@ -96,6 +100,10 @@ export function buildSignNowDocumentTabValues(
     const saved = blob[mappingId];
     if (!saved) continue;
     const values: Record<string, string> = {};
+    const manualFieldIds = String(saved[LINKED_DOC_MANUAL_FIELD_IDS_KEY] ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
     for (const [key, raw] of Object.entries(saved)) {
       // Editor bookkeeping (which fields were typed by hand), not a widget value.
       if (key === LINKED_DOC_MANUAL_FIELD_IDS_KEY) continue;
@@ -112,6 +120,7 @@ export function buildSignNowDocumentTabValues(
       templateName,
       layoutKey: resolveLayoutKey(row?.template),
       values,
+      ...(manualFieldIds.length ? { manualFieldIds } : {}),
     });
   }
   return out;
@@ -138,6 +147,14 @@ export function pickSignNowDocumentTabValues(
   entries: SignNowDocumentTabValues[],
   documentName: unknown,
 ): Record<string, string> | null {
+  return pickSignNowDocumentTabEntry(entries, documentName)?.values ?? null;
+}
+
+/** {@link pickSignNowDocumentTabValues}, keeping the whole saved tab (hand-typed marks too). */
+export function pickSignNowDocumentTabEntry(
+  entries: SignNowDocumentTabValues[],
+  documentName: unknown,
+): SignNowDocumentTabValues | null {
   if (!entries.length) return null;
   const name = baseDocumentName(documentName);
   if (!name) return null;
@@ -147,13 +164,57 @@ export function pickSignNowDocumentTabValues(
   const exact = entries.find(
     (entry) => entry.templateName && slugifyTemplateName(entry.templateName) === slug,
   );
-  if (exact) return exact.values;
+  if (exact) return exact;
 
   for (const type of ['addendum', 'disclosure'] as const) {
     const layoutKey = knownLayoutKeyFromSettingsName(name, type);
     if (!layoutKey) continue;
     const match = entries.find((entry) => entry.layoutKey === layoutKey);
-    if (match) return match.values;
+    if (match) return match;
   }
   return null;
+}
+
+function isHandTypedTabField(key: string, manualFieldIds: ReadonlySet<string>): boolean {
+  if (manualFieldIds.has(key)) return true;
+  // The editor marks the field id; the tab may store it under a page-suffixed widget name.
+  const unsuffixed = key.replace(/_p\d+$/i, '');
+  return unsuffixed !== key && manualFieldIds.has(unsuffixed);
+}
+
+/**
+ * The saved tab values that still apply on top of the live package-wide map.
+ *
+ * The prefill editor saves every field on a tab, not just the ones typed there, so
+ * a tab saved once carries a snapshot of the business name, address, owners,
+ * emails and bank details as they were at that save. Layered over the live map,
+ * that snapshot kept printing the old name / address on the addendums and the
+ * disclosure after the deal was corrected and the contract regenerated.
+ *
+ * A copied identity value (see `isApplicationDerivedPrefillKey`) now gives way to
+ * the CRM whenever the CRM resolves that widget to something; the widget is left to
+ * the per-document resolver, which knows each document's rules. A DBA line is always
+ * the CRM's (it is cleared when the CRM has none). Everything typed by hand, and
+ * every value that exists only on the document (installments, payoff amounts,
+ * fees), still prints exactly as saved.
+ */
+export function tabValuesOverLiveValues(
+  tab: Pick<SignNowDocumentTabValues, 'values' | 'manualFieldIds'>,
+  liveValues: Record<string, string>,
+): Record<string, string> {
+  const manual = new Set(tab.manualFieldIds ?? []);
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(tab.values)) {
+    if (!isHandTypedTabField(key, manual)) {
+      if (isSignNowDbaWidget(key)) continue;
+      if (
+        isApplicationDerivedPrefillKey(key) &&
+        String(resolveSignNowPrefillValue(key, liveValues) ?? '').trim()
+      ) {
+        continue;
+      }
+    }
+    out[key] = value;
+  }
+  return out;
 }

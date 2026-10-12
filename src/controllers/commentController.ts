@@ -237,6 +237,7 @@ class CommentController {
           applicationId: application.id,
           commentBody: content.trim(),
           actorName,
+          actorUserId: userId || null,
         });
       }
 

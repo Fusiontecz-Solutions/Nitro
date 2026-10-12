@@ -55,3 +55,64 @@ describe('saved document tab values reach SignNow as saved', () => {
     expect(values.disclosure_page3_net_p3).toBe('16,500.00');
   });
 });
+
+/**
+ * The editor saves every field on a tab, so a tab saved before the deal was
+ * corrected holds the old business name / address. Regenerating must print the
+ * corrected deal, not that snapshot.
+ */
+describe('a corrected deal outranks identity values a tab only copied', () => {
+  const LIVE: Record<string, string> = {
+    ...PACKAGE,
+    legal_name: 'NEW NAME LLC',
+    business_address: '2 New St',
+    business_address_city: 'Austin',
+    doing_business_as: '',
+  };
+  const staleTab = (extra: Record<string, string> = {}, manualFieldIds?: string[]) =>
+    payoffTab({
+      legal_name_p1: 'OLD NAME LLC',
+      business_address_p1: '1 Old Rd, Dallas',
+      doing_business_as_p1: 'OLD DBA',
+      net_to_merchant_p1: '36,000.00',
+      ...extra,
+    }).map((tab) => ({ ...tab, ...(manualFieldIds ? { manualFieldIds } : {}) }));
+
+  it('prints the live name and address instead of the saved copy', () => {
+    const { values } = signNowDocumentPrefillValues(LIVE, [], 'PayOff Addendum (Refi)', staleTab());
+    expect(values.legal_name_p1).toBeUndefined();
+    expect(values.business_address_p1).toBeUndefined();
+    expect(values.legal_name).toBe('NEW NAME LLC');
+  });
+
+  it('drops a DBA the tab copied, so a cleared DBA stays cleared', () => {
+    const { values } = signNowDocumentPrefillValues(LIVE, [], 'PayOff Addendum (Refi)', staleTab());
+    expect(values.doing_business_as_p1).toBeUndefined();
+  });
+
+  it('still prints document-only amounts as saved', () => {
+    const { values } = signNowDocumentPrefillValues(LIVE, [], 'PayOff Addendum (Refi)', staleTab());
+    expect(values.net_to_merchant_p1).toBe('36,000.00');
+  });
+
+  it('keeps an identity value the preparer typed by hand on the tab', () => {
+    const { values } = signNowDocumentPrefillValues(
+      LIVE,
+      [],
+      'PayOff Addendum (Refi)',
+      staleTab({}, ['legal_name']),
+    );
+    expect(values.legal_name_p1).toBe('OLD NAME LLC');
+    expect(values.business_address_p1).toBeUndefined();
+  });
+
+  it('keeps a copied value the live deal has nothing for', () => {
+    const { values } = signNowDocumentPrefillValues(
+      { ...PACKAGE },
+      [],
+      'PayOff Addendum (Refi)',
+      staleTab(),
+    );
+    expect(values.legal_name_p1).toBe('OLD NAME LLC');
+  });
+});

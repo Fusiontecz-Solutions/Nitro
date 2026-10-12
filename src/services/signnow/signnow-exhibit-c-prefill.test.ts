@@ -211,11 +211,21 @@ describe('signNowDocumentPrefillValues', () => {
       TABS,
     );
     expect(values.installment_day_1_p1).toBe('1');
-    // What was typed against the document wins over the package-wide value.
-    expect(values.client_name).toBe('TAB OVERRIDE');
+    // A name the tab only copied from the deal gives way to the live deal…
+    expect(values.client_name).toBe('MARY IRVIN');
     // …and the rest of the deal still travels with it.
     expect(values.ach_bank_name).toBe('CHASE');
     expect(MERCHANT_VALUES.client_name).toBe('MARY IRVIN');
+  });
+
+  it('keeps a name typed by hand on the document tab over the package value', () => {
+    const { values } = signNowDocumentPrefillValues(
+      MERCHANT_VALUES,
+      [],
+      'Flex addendum - Nitro Advance',
+      [{ ...TABS[0], manualFieldIds: ['client_name'] }],
+    );
+    expect(values.client_name).toBe('TAB OVERRIDE');
   });
 
   it('prints the first Exhibit C own address, never the deal business address', () => {

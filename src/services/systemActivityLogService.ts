@@ -2,6 +2,8 @@ import type { Request } from 'express';
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from './applicationService';
+import { sanitizeAuditDescription } from '../utils/auditDescription';
+import { rebrandDocuSignDescription, rebrandDocuSignText } from '../utils/signNowActivityLabel';
 import {
   createApplicationActivityLog,
   type ApplicationActivityActionType,
@@ -358,11 +360,11 @@ export async function getSystemActivityLogs(params: GetSystemActivityLogsParams)
           }
         : null,
       action,
-      entity: String(meta.entity ?? log.Application?.dealDisplayName ?? 'Application'),
+      entity: rebrandDocuSignText(String(meta.entity ?? log.Application?.dealDisplayName ?? 'Application')),
       entityId: String(meta.entityId ?? log.applicationId ?? ''),
       applicationId: log.applicationId,
       applicationNumericId: log.Application?.applicationId ?? null,
-      description: log.actionDescription,
+      description: sanitizeAuditDescription(rebrandDocuSignDescription(log.actionDescription)),
       category,
       channel: meta.channel ?? null,
       recipientName: meta.recipientName ?? meta.recipient ?? null,
@@ -484,7 +486,7 @@ export async function getSystemActivityLogContent(logId: string) {
 
   return {
     viewType: 'activity_only',
-    description: log.actionDescription,
+    description: sanitizeAuditDescription(rebrandDocuSignDescription(log.actionDescription)),
     metadata: meta,
     createdAt: log.createdAt?.toISOString(),
   };

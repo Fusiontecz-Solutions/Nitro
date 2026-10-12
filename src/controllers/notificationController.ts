@@ -516,6 +516,8 @@ class NotificationController {
                     html: resolvedEmailHtml,
                     subject: resolvedEmailSubject,
                     trackingId,
+                    applicationId: String(app.id),
+                    senderUserId: createdBy ?? null,
                 });
                 emailSent = emailResult.sent;
                 emailError = emailResult.error;
@@ -526,7 +528,7 @@ class NotificationController {
                         try {
                             await storeSgMessageIdOnOutbound(trackingId, emailResult.sgMessageId);
                         } catch (metaErr) {
-                            console.error('Failed to store SendGrid message id for document request email:', metaErr);
+                            console.error('Failed to store message id for document request email:', metaErr);
                         }
                     }
                 }

@@ -1,5 +1,9 @@
 import prisma from '../config/prismaClient';
-import { sendApplicationApprovalEmail, sendOperationsIsoApprovalAlertEmail } from './emailService';
+import {
+    sendApplicationApprovalEmail,
+    sendIsoOfferDecisionThreadEmail,
+    sendOperationsIsoApprovalAlertEmail,
+} from './emailService';
 import {
     buildPublicApprovalPortalUrl,
     resolveCrmFrontendBaseUrl,
@@ -467,6 +471,10 @@ export async function processApplicationApprovalSideEffects(
                             companyName: businessName || clientName,
                             viewApplicationUrl,
                             calculateApprovalUrl,
+                            // Only the ISO's copy goes on the deal's ISO Gmail thread.
+                            ...(isoEmail && r.to.toLowerCase() === isoEmail.toLowerCase()
+                                ? { applicationId: application.id, senderUserId: payload.actorId ?? null }
+                                : {}),
                         })
                     )
                 );
@@ -478,6 +486,22 @@ export async function processApplicationApprovalSideEffects(
                         failures
                     );
                 }
+            }
+        }
+
+        if (isIsoActor && isoEmail) {
+            // ISO accepted the offer in the portal → confirm on the same Gmail thread.
+            const threadUpdate = await sendIsoOfferDecisionThreadEmail({
+                applicationId: application.id,
+                to: isoEmail,
+                decision: 'approved',
+                isoName: isoName || undefined,
+                businessName: businessName || clientName,
+                applicationNumber,
+                actorName: isoApproverName,
+            });
+            if (!threadUpdate.sent) {
+                console.info('[approvalSideEffects] ISO thread update skipped:', threadUpdate.skippedReason);
             }
         }
 

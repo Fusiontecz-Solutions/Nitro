@@ -19,7 +19,8 @@ jest.mock('../../config/nodemailer', () => ({
   __esModule: true,
   default: jest.fn(async () => undefined),
   sendSendGridMail: jest.fn(async () => undefined),
-  isSendGridConfigured: () => true,
+  isSendGridConfigured: () => false,
+  isOutboundMailConfigured: () => true,
 }));
 jest.mock('../funderProfileService', () => ({
   resolveFunderMailSender: async () => null,

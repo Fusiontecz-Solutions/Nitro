@@ -1,5 +1,6 @@
 import type { ApplicationActivityLog, User } from '@prisma/client';
 import { sanitizeAuditDescription } from '../utils/auditDescription';
+import { rebrandDocuSignDescription, rebrandDocuSignMetadata } from '../utils/signNowActivityLabel';
 
 type LogWithUser = ApplicationActivityLog & {
   User?: Pick<User, 'id' | 'firstName' | 'lastName' | 'email' | 'role'> | null;
@@ -74,10 +75,10 @@ export function mapApplicationActivityLogEntry(log: LogWithUser) {
     userRole: log.userRole,
     actionType: log.actionType,
     action: isCommunication ? 'SEND' : log.actionType,
-    actionDescription: sanitizeAuditDescription(log.actionDescription),
+    actionDescription: sanitizeAuditDescription(rebrandDocuSignDescription(log.actionDescription)),
     previousStatus: log.previousStatus,
     currentStatus: log.currentStatus,
-    metadata: log.metadata,
+    metadata: rebrandDocuSignMetadata(log.metadata),
     category,
     channel:
       (meta.channel as string | undefined) ??

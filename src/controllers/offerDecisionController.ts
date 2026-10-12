@@ -15,6 +15,11 @@ import { sanitizePaymentFrequencyForPersist } from '../utils/sanitizePaymentFreq
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
 import { syncContractValuesFromOfferDecision } from '../services/contractOfferValueSync';
 import { isPreIsoApprovalQueue } from '../constants/applicationWorkflow';
+import {
+  loadApplicationNotificationRecord,
+  scheduleApplicationAmountNotification,
+  scheduleApplicationStageNotification,
+} from '../services/applicationStageNotificationService';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -269,6 +274,33 @@ class OfferDecisionController {
 
       const previousStatus =
         `${app.currentQueue ?? ''} / ${app.currentState ?? ''}`.trim();
+
+      void loadApplicationNotificationRecord(app.id)
+        .then((record) => {
+          if (!record) return;
+          if (movedToContractPending) {
+            scheduleApplicationStageNotification({
+              application: record,
+              previousQueue: app.currentQueue,
+              previousState: app.currentState,
+              actorId: authUser?.id ?? null,
+              actorName,
+              actorRole: authUser?.role ?? null,
+              transitionAction: 'QUEUE_CHANGED',
+            });
+          }
+          if (decisionNorm === 'approved') {
+            scheduleApplicationAmountNotification({
+              application: record,
+              label: 'Offer amount',
+              previousAmount: priorOfferDecision?.offer ?? null,
+              newAmount: result.offer,
+              actorId: authUser?.id ?? null,
+              actorName,
+            });
+          }
+        })
+        .catch((err) => console.error('OfferDecision upsert: notification failed', err));
 
       setImmediate(() => {
         void (async () => {

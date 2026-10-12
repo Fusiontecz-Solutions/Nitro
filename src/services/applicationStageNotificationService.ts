@@ -39,6 +39,8 @@ export interface ApplicationNotificationRecord {
     referringAgentId?: string | null;
     salesRepresentativeId?: string | null;
     createdById?: string | null;
+    assignedUnderwriterId?: string | null;
+    approvedByUnderwriterId?: string | null;
     client?: {
         businessName?: string | null;
         ownerFirstName?: string | null;
@@ -67,6 +69,18 @@ export interface StageNotificationContext {
     messageOverride?: string;
     type?: string;
     importance?: 'low' | 'normal' | 'high' | 'urgent';
+}
+
+/**
+ * Roles with full CRM oversight (see `hasContractsLogAccess`). Every application
+ * notification is mirrored to them so the Super Admin inbox carries all deal activity.
+ */
+export const SUPER_ADMIN_NOTIFY_ROLES = ['SUPER_ADMIN', 'CONTRACTS_LOG'] as const;
+
+/** Copy shown to Super Admins when the direct copy is addressed to someone else ("ready for your approval"). */
+export interface OversightCopy {
+    title?: string;
+    message?: string;
 }
 
 const normalizeToken = (value: unknown): string =>
@@ -218,7 +232,13 @@ async function resolveStageRecipients(
     const q = normalizeToken(newQueue);
 
     const pushStakeholders = () => {
-        const ids = [app.referringAgentId, app.salesRepresentativeId, app.createdById].filter(Boolean);
+        const ids = [
+            app.referringAgentId,
+            app.salesRepresentativeId,
+            app.createdById,
+            app.assignedUnderwriterId,
+            app.approvedByUnderwriterId,
+        ].filter(Boolean);
         for (const id of ids) {
             recipients.push({ id: String(id), email: null, name: '' });
         }
@@ -266,7 +286,7 @@ async function resolveStageRecipients(
 
     if (opsStageTokens.has(q)) {
         recipients.push(
-            ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN'])),
+            ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN'])),
         );
     }
 
@@ -288,7 +308,7 @@ async function resolveStageRecipients(
     // Generic stage move: stakeholders + internal ops visibility.
     pushStakeholders();
     recipients.push(
-        ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN'])),
+        ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN'])),
     );
     return recipients;
 }
@@ -304,13 +324,27 @@ async function createAndPushNotifications(
         importance?: 'low' | 'normal' | 'high' | 'urgent';
     },
     application?: ApplicationNotificationRecord | null,
-    options?: { includeActor?: boolean },
+    options?: {
+        includeActor?: boolean;
+        /** Mirror to Super Admins (default true). */
+        includeSuperAdmins?: boolean;
+        oversight?: OversightCopy;
+    },
 ): Promise<void> {
     const actorId = base.createdById ? String(base.createdById) : '';
-    const filtered = dedupeById(recipients).filter(
+    const direct = dedupeById(recipients).filter(
         (r) => r.id && (options?.includeActor || r.id !== actorId),
     );
+    const directIds = new Set(direct.map((r) => r.id));
+    const oversightRecipients =
+        options?.includeSuperAdmins === false
+            ? []
+            : (await findActiveUsersByRoles([...SUPER_ADMIN_NOTIFY_ROLES])).filter(
+                  (r) => r.id && r.id !== actorId && !directIds.has(r.id),
+              );
+    const filtered = [...direct, ...oversightRecipients];
     if (!filtered.length) return;
+    const isOversight = (index: number) => index >= direct.length;
 
     // Notification.createdById is optional — never write Super Admin proxy / orphan UUIDs.
     let safeCreatedById: string | null = null;
@@ -325,11 +359,11 @@ async function createAndPushNotifications(
     const triage = notificationTriageDefaults(base.type, application ?? undefined);
 
     const created = await Promise.allSettled(
-        filtered.map((r) =>
+        filtered.map((r, index) =>
             prisma.notification.create({
                 data: {
-                    title: base.title,
-                    message: base.message,
+                    title: (isOversight(index) && options?.oversight?.title) || base.title,
+                    message: (isOversight(index) && options?.oversight?.message) || base.message,
                     type: base.type,
                     recipientId: r.id,
                     applicationId: base.applicationId,
@@ -466,6 +500,12 @@ export async function notifyAdminAssignedApplicationToUnderwriter(args: {
             importance: 'high',
         },
         app,
+        {
+            oversight: {
+                title: `Application${appRef} assigned to an Underwriter`,
+                message: `${actor || 'An admin'} assigned application${appRef} for ${client} to an Underwriter.`,
+            },
+        },
     );
 }
 
@@ -480,11 +520,14 @@ export function scheduleWorkflowNotification(args: {
     message: string;
     actorId?: string | null;
     importance?: 'low' | 'normal' | 'high' | 'urgent';
+    /** Super Admin wording when the direct copy is addressed to the recipient ("your approval"). */
+    oversight?: OversightCopy;
 }): void {
     const recipients = [...new Set(args.recipientIds.map((id) => String(id ?? '').trim()).filter(Boolean))].map(
         (id) => ({ id, email: null, name: '' }),
     );
-    if (!args.application?.id || !recipients.length) return;
+    // No direct recipients is fine — Super Admins still receive the oversight copy.
+    if (!args.application?.id) return;
     setImmediate(() => {
         void createAndPushNotifications(
             recipients,
@@ -497,6 +540,7 @@ export function scheduleWorkflowNotification(args: {
                 importance: args.importance ?? 'normal',
             },
             args.application,
+            { oversight: args.oversight },
         ).catch((err) => console.error('[workflowNotification] failed:', err));
     });
 }
@@ -553,8 +597,19 @@ export async function notifyApplicationStageChange(ctx: StageNotificationContext
             importance,
         },
         app,
-        { includeActor: ctx.transitionAction === 'CREATED' },
+        {
+            includeActor: ctx.transitionAction === 'CREATED',
+            oversight: buildOversightCopy(ctx, title),
+        },
     );
+}
+
+/** Third-person wording for Super Admins when the direct copy is first-person ("You created..."). */
+function buildOversightCopy(ctx: StageNotificationContext, directTitle: string): OversightCopy | undefined {
+    if (ctx.transitionAction !== 'CREATED' || !directTitle.startsWith('You ')) return undefined;
+    const appNum = ctx.application.applicationId;
+    const actor = String(ctx.actorName || '').trim() || 'A user';
+    return { title: `${actor} created application${appNum ? ` #${appNum}` : ''}` };
 }
 
 export async function notifyApplicationRejected(args: {
@@ -624,4 +679,104 @@ export async function notifyOperationsFundingCallApprovedForDisbursement(args: {
         },
         app,
     );
+}
+
+const formatMoney = (value: unknown): string => {
+    const n = Number(value);
+    if (value === null || value === undefined || value === '' || !Number.isFinite(n)) return '-';
+    return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+};
+
+/** Users who work this deal: its Agent / creator, sales rep and the Underwriter(s) on it. */
+export function dealTeamRecipientIds(app: ApplicationNotificationRecord): string[] {
+    return [
+        app.referringAgentId,
+        app.createdById,
+        app.salesRepresentativeId,
+        app.assignedUnderwriterId,
+        app.approvedByUnderwriterId,
+    ]
+        .map((id) => String(id ?? '').trim())
+        .filter(Boolean);
+}
+
+export interface AmountChangeContext {
+    application: ApplicationNotificationRecord;
+    /** Human label, e.g. "Requested amount", "Offer amount". */
+    label: string;
+    previousAmount: unknown;
+    newAmount: unknown;
+    actorId?: string | null;
+    actorName?: string | null;
+}
+
+const toAmount = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * A deal amount changed (requested amount, offer / funded amount, terms offer).
+ * Goes to the deal team (Agent + Underwriter) and every Super Admin; the actor is skipped.
+ */
+export async function notifyApplicationAmountChanged(ctx: AmountChangeContext): Promise<void> {
+    const app = ctx.application;
+    if (!app?.id) return;
+    const prev = toAmount(ctx.previousAmount);
+    const next = toAmount(ctx.newAmount);
+    if (next === null || prev === next) return;
+
+    const appRef = app.applicationId ? ` #${app.applicationId}` : '';
+    const actor = String(ctx.actorName || '').trim();
+    const by = actor ? ` Updated by ${actor}.` : '';
+
+    await createAndPushNotifications(
+        dealTeamRecipientIds(app).map((id) => ({ id, email: null, name: '' })),
+        {
+            title: `${ctx.label} ${prev === null ? 'set' : 'updated'} on application${appRef}`,
+            message:
+                prev === null
+                    ? `${ctx.label} for ${clientNameOf(app)} set to ${formatMoney(next)}.${by}`
+                    : `${ctx.label} for ${clientNameOf(app)} changed from ${formatMoney(prev)} to ${formatMoney(next)}.${by}`,
+            type: 'application_amount_update',
+            applicationId: app.id,
+            createdById: ctx.actorId ? String(ctx.actorId) : null,
+            importance: 'high',
+        },
+        app,
+    );
+}
+
+/** Fire-and-forget wrapper — never throws to callers. */
+export function scheduleApplicationAmountNotification(ctx: AmountChangeContext): void {
+    setImmediate(() => {
+        void notifyApplicationAmountChanged(ctx).catch((err) => {
+            console.error('[amountNotification] failed:', err);
+        });
+    });
+}
+
+/** Load the fields notification recipients / copy need, by application UUID. */
+export async function loadApplicationNotificationRecord(
+    applicationUuid: string,
+): Promise<ApplicationNotificationRecord | null> {
+    if (!applicationUuid) return null;
+    return prisma.application
+        .findUnique({
+            where: { id: applicationUuid },
+            select: {
+                id: true,
+                applicationId: true,
+                currentQueue: true,
+                currentState: true,
+                referringAgentId: true,
+                salesRepresentativeId: true,
+                createdById: true,
+                assignedUnderwriterId: true,
+                approvedByUnderwriterId: true,
+                client: { select: { businessName: true, ownerFirstName: true, ownerLastName: true } },
+            },
+        })
+        .catch(() => null);
 }

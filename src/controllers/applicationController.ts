@@ -164,6 +164,10 @@ import {
     scheduleApplicationStageNotification,
     notifyApplicationRejected,
     notifyAdminAssignedApplicationToUnderwriter,
+    scheduleWorkflowNotification,
+    scheduleApplicationAmountNotification,
+    loadApplicationNotificationRecord,
+    dealTeamRecipientIds,
 } from '../services/applicationStageNotificationService';
 import { syncContractDocumentsOntoApplication } from '../services/applicationDocumentMirrorService';
 
@@ -4158,6 +4162,18 @@ class ApplicationController {
                 });
             }
 
+            if (data.loanAmount !== undefined && Number(application.loanAmount ?? NaN) !== Number(updatedRecord.loanAmount ?? NaN)) {
+                const authUserForNotif = getAuthenticatedUser(req);
+                scheduleApplicationAmountNotification({
+                    application: { ...(updatedRecord as any), client: (application as any).client ?? null },
+                    label: 'Requested amount',
+                    previousAmount: application.loanAmount,
+                    newAmount: updatedRecord.loanAmount,
+                    actorId: authUserForNotif?.id || null,
+                    actorName: (req as any).user?.name || '',
+                });
+            }
+
             void recordApplicationUpdateActivityLog({
                 req,
                 before: application as any,
@@ -4708,6 +4724,20 @@ class ApplicationController {
                 console.error('Failed to log underwriter claim:', logErr);
             }
 
+            {
+                const actorName = String((req as any).user?.name || '').trim() || 'An Underwriter';
+                const appRef = refreshed.applicationId ? ` #${refreshed.applicationId}` : '';
+                const business = (refreshed as any).client?.businessName || `application${appRef}`;
+                scheduleWorkflowNotification({
+                    application: refreshed as any,
+                    recipientIds: [refreshed.referringAgentId || refreshed.createdById],
+                    title: `Underwriter picked up application${appRef}`,
+                    message: `${actorName} claimed ${business} and started underwriting.`,
+                    actorId: userId,
+                    importance: 'normal',
+                });
+            }
+
             invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
@@ -5211,6 +5241,27 @@ class ApplicationController {
                 console.error('Failed to create activity log for state update:', logError);
             }
 
+            scheduleApplicationStageNotification({
+                application: {
+                    id: applicationRecord.id,
+                    applicationId: applicationRecord.applicationId,
+                    currentQueue: applicationRecord.currentQueue,
+                    currentState: applicationRecord.currentState,
+                    referringAgentId: applicationRecord.referringAgentId,
+                    salesRepresentativeId: applicationRecord.salesRepresentativeId,
+                    createdById: applicationRecord.createdById,
+                    assignedUnderwriterId: applicationRecord.assignedUnderwriterId,
+                    approvedByUnderwriterId: applicationRecord.approvedByUnderwriterId,
+                    client: applicationRecord.client,
+                },
+                previousQueue: applicationRecord.currentQueue,
+                previousState,
+                actorId: authUser?.id ?? null,
+                actorName: (req as any).user?.name || null,
+                actorRole: authUser?.role ?? null,
+                transitionAction: 'QUEUE_CHANGED',
+            });
+
             invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
@@ -5603,6 +5654,8 @@ class ApplicationController {
                         subject: clientEmailSubject,
                         freshSubject: properRejectionSubject,
                         trackingId,
+                        applicationId: applicationRecord.id,
+                        senderUserId: authUser?.id ?? null,
                     });
 
                     if (rejectionEmailDelivery.sent && rejectionEmailDelivery.sgMessageId) {
@@ -5613,7 +5666,7 @@ class ApplicationController {
                             );
                         } catch (metaErr) {
                             console.error(
-                                'Failed to store SendGrid message id for rejection email:',
+                                'Failed to store message id for rejection email:',
                                 metaErr,
                             );
                         }
@@ -7106,7 +7159,7 @@ class ApplicationController {
                 });
             }
 
-            // Transport: ISO approval emails always go out through the system mailer (SendGrid / SMTP).
+            // Transport: ISO approval emails go out through Gmail on the deal's ISO thread.
 
             const client: any = (application as any).client;
             let iso: any = (application as any).iso;
@@ -7312,6 +7365,8 @@ class ApplicationController {
                             html: emailHtml,
                             subject: emailSubject,
                             trackingId,
+                            applicationId: String(fallbackId),
+                            senderUserId: authUser?.id ?? null,
                         })
                         : await sendApplicationApprovalEmail({
                             to,
@@ -7323,6 +7378,8 @@ class ApplicationController {
                             html: emailHtml,
                             subject: emailSubject,
                             trackingId,
+                            applicationId: String(fallbackId),
+                            senderUserId: authUser?.id ?? null,
                         });
                     return {
                         to,
@@ -7344,7 +7401,7 @@ class ApplicationController {
                 return res.status(502).json({
                     success: false,
                     message:
-                        'Could not deliver approval notification email. Check: (1) DISABLE_CLIENT_APPLICATION_EMAILS is not true, (2) SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS, (3) recipient spam folder.',
+                        'Could not deliver approval notification email. Check: (1) DISABLE_CLIENT_APPLICATION_EMAILS is not true, (2) GMAIL_SENDER_EMAIL + GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (Gmail API) and that the sender mailbox is connected, (3) recipient spam folder.',
                     data: { attempted: deliveryResults },
                 });
             }
@@ -7399,7 +7456,7 @@ class ApplicationController {
                 try {
                     await storeSgMessageIdOnOutbound(trackingId, deliveredSgMessageId);
                 } catch (metaErr) {
-                    console.error('Failed to store SendGrid message id for approval email:', metaErr);
+                    console.error('Failed to store message id for approval email:', metaErr);
                 }
             }
 
@@ -7425,6 +7482,22 @@ class ApplicationController {
                         ...(underwriterApprovalPatch ?? {}),
                     },
                 });
+
+                const sentRecord = await loadApplicationNotificationRecord(String(fallbackId));
+                if (sentRecord) {
+                    const appRef = sentRecord.applicationId ? ` #${sentRecord.applicationId}` : '';
+                    const actorName = String((req as any).user?.name || '').trim();
+                    scheduleWorkflowNotification({
+                        application: sentRecord,
+                        recipientIds: dealTeamRecipientIds(sentRecord),
+                        title: resend
+                            ? `Updated offer sent to ISO for application${appRef}`
+                            : `Application${appRef} sent to ISO for approval`,
+                        message: `${actorName || 'The Agent'} sent the ${resend ? 'updated offer' : 'approval'} for ${sentRecord.client?.businessName || `application${appRef}`} to ${isoName || 'the ISO'}. It is now in Approval Sent.`,
+                        actorId: authUser?.id ?? null,
+                        importance: 'high',
+                    });
+                }
             } catch (stageErr) {
                 console.error(
                     'Send approval email: failed to set application to Approval Sent:',

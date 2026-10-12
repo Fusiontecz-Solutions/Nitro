@@ -15,6 +15,7 @@ import {
   mapContractRecordForApi,
   decryptSensitiveField,
 } from '../utils/fieldEncryption';
+import { levelChangedSharedPrefillAliases } from '../utils/sharedPrefillAliases';
 import contractKycDocumentExtractService from './contractKycDocumentExtractService';
 import {
   EXHIBIT_C_ENTITIES_PREFILL_KEY,
@@ -2274,8 +2275,12 @@ class ContractService {
           existingMeta?.contractPrefillOverrides,
           data.contractPrefillOverrides,
         ) ?? data.contractPrefillOverrides;
+      // A bank / EIN / DBA / phone / address edited on one stage reaches its other
+      // copies, so every document prints the edit whichever copy it reads.
+      const leveled =
+        levelChangedSharedPrefillAliases(existingMeta?.contractPrefillOverrides, merged) ?? merged;
       updateData.contractPrefillOverrides = decryptEncryptedStringsInJson(
-        merged,
+        leveled,
       ) as Prisma.InputJsonValue;
     }
 

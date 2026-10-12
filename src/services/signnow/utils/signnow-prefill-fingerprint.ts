@@ -41,7 +41,39 @@ export type SignNowPrefillFingerprintSource = {
   packageFingerprint: string;
   /** Flattened CRM prefill values actually sent to SignNow. */
   values: Record<string, string> | null | undefined;
+  /**
+   * The contract's `contractPrefillOverrides`, for the values saved per document
+   * (each addendum / disclosure tab, the Exhibit C entities). They are layered over
+   * `values` document by document, so they must gate reuse as well.
+   */
+  contractPrefillOverrides?: unknown;
 };
+
+/** Override keys whose contents are printed on individual documents only. */
+const DOCUMENT_SCOPED_OVERRIDE_KEYS = ['documentTemplatePrefillByMappingId', 'exhibitCEntities'];
+
+function stableJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = stableJson((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value == null ? '' : String(value).trim();
+}
+
+function documentScopedValues(overrides: unknown): Record<string, unknown> | null {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return null;
+  const out: Record<string, unknown> = {};
+  for (const key of DOCUMENT_SCOPED_OVERRIDE_KEYS) {
+    const value = (overrides as Record<string, unknown>)[key];
+    if (value == null || value === '') continue;
+    out[key] = stableJson(value);
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 /**
  * Version of the CRM-value → widget mapping in `signnow-field-map.ts`.
@@ -58,10 +90,13 @@ export const SIGNNOW_PREFILL_MAPPING_VERSION = '2026-10-05.monthly-fee-print-nam
 export function buildSignNowPrefillFingerprint(
   input: SignNowPrefillFingerprintSource,
 ): string {
+  const documents = documentScopedValues(input.contractPrefillOverrides);
   const payload = {
     mapping: SIGNNOW_PREFILL_MAPPING_VERSION,
     package: String(input.packageFingerprint || '').trim().toLowerCase(),
     values: canonicalizeValues(input.values),
+    // Left out when empty, so a package with no per-document values keeps its fingerprint.
+    ...(documents ? { documents } : {}),
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }

@@ -1,5 +1,5 @@
 import prisma from '../../config/prismaClient';
-import { sendSendGridMail, isSendGridConfigured } from '../../config/nodemailer';
+import { sendSendGridMail, isOutboundMailConfigured } from '../../config/nodemailer';
 import { resolveFunderMailSender } from '../funderProfileService';
 import { resolveMailSender } from '../mailSenderIdentity';
 import { resolveCrmFrontendBaseUrl } from '../../utils/crmFrontendUrl';
@@ -15,6 +15,11 @@ import { isPortalSendInFlight, trackPortalSend } from './utils/signnow-portal-se
 import { clearUnfinishedSentArchive } from '../docusign/utils/archive-signed-envelope-pdf';
 import { saveContractAgentEmail } from '../../utils/contractAgentEmail';
 import { sendTrackedContractEmail } from '../contractEmailHistoryService';
+// SendGrid disabled — contract emails go through Gmail, so there are no credits to check.
+// import {
+//   isSendGridOutOfCredits,
+//   SENDGRID_CREDITS_EXHAUSTED_MESSAGE,
+// } from '../sendgridUsageService';
 
 /**
  * CRM signing portal Ã¢â‚¬â€ contracts emailed by SendGrid instead of by SignNow.
@@ -458,7 +463,7 @@ async function emailPortalInvite(input: {
     groupId: input.envelopeId,
     kind: input.reminder ? 'signing_reminder' : 'signing_invite',
     recipient: { email, role: 'SIGNER', roleDetail: input.recipient.role, name: input.recipient.name },
-    provider: 'sendgrid',
+    provider: 'gmail',
     mail: {
       from,
       subject: input.emailSubject || input.contractLabel,
@@ -706,6 +711,18 @@ export type PortalSendInput = {
   agentEmails?: string[] | string | null;
 };
 
+/**
+ * Refuse the send up front when SendGrid has no credits left: the request is
+ * answered before any email goes out, so otherwise the user saw "being sent"
+ * and only learned later, over the socket, that nothing was delivered.
+ */
+// async function assertSendGridHasCredits(): Promise<void> {
+//   if (!(await isSendGridOutOfCredits())) return;
+//   const err = new BadRequest(SENDGRID_CREDITS_EXHAUSTED_MESSAGE);
+//   err.status = 402;
+//   throw err;
+// }
+
 type PreparedPortalSend = {
   input: PortalSendInput;
   envelopeId: string;
@@ -722,13 +739,14 @@ type PreparedPortalSend = {
 async function prepareContractPortalSend(input: PortalSendInput): Promise<PreparedPortalSend> {
   const envelopeId = String(input.envelopeId || '').trim();
   if (!envelopeId) throw new BadRequest('Missing contract id.');
-  if (!isSendGridConfigured()) {
+  if (!isOutboundMailConfigured()) {
     const err = new BadRequest(
-      'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
+      'Email is not configured. Set GMAIL_SENDER_EMAIL with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET on the server.',
     );
     err.status = 503;
     throw err;
   }
+  // await assertSendGridHasCredits(); // SendGrid disabled
   const recipients = (input.recipients || []).filter((r) => normalizeEmail(r.email).includes('@'));
   if (!recipients.length) {
     throw new BadRequest('No merchant signer email to send the contract to.');
@@ -1101,13 +1119,14 @@ function rolesForQueue(queue: PortalQueue): PortalQueueRole[] {
 async function prepareContractPortalResend(input: PortalResendInput): Promise<PreparedPortalResend> {
   const envelopeId = String(input.envelopeId || '').trim();
   if (!envelopeId) throw new BadRequest('Missing contract id.');
-  if (!isSendGridConfigured()) {
+  if (!isOutboundMailConfigured()) {
     const err = new BadRequest(
-      'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
+      'Email is not configured. Set GMAIL_SENDER_EMAIL with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET on the server.',
     );
     err.status = 503;
     throw err;
   }
+  // await assertSendGridHasCredits(); // SendGrid disabled
   if (!resolveCrmFrontendBaseUrl()) {
     throw new BadRequest('No CRM frontend URL is configured for signing-portal links.');
   }
