@@ -343,3 +343,56 @@ export function alignDisclosureWireFeeWithTotalFees(
   }
   return out;
 }
+
+/**
+ * Lines that print the cash the merchant actually receives. On a refinance that
+ * is advance − fees − payoff; `disclosure_page3_net` / the amount financed keep
+ * the payoff (it is paid on the merchant's behalf), and the state templates'
+ * "funds disbursed" boxes print net-after-fees by design, so neither is listed.
+ */
+const DISCLOSURE_RECIPIENT_CASH_KEYS = new Set([
+  'disclosure_recipient_funds',
+  'funding_provided_direct',
+  'text field 2',
+  'netfundprovided',
+]);
+
+/**
+ * Take the refinance payoff out of a recipient-funds line still saved as
+ * "advance − fees".
+ *
+ * The CRM saves the disclosure tab and the contract's net when the deal is
+ * prepared. Entering the refi balance afterwards refreshed the itemization's
+ * line 4 (a 0.00 there counts as a placeholder) but left line 1, "Amount Given
+ * Directly to You", on the pre-refi net — $25,000 − $1,250 = 23,750.00 beside a
+ * $14,625 payoff, instead of 9,125.00. Only a line exactly equal to
+ * advance − TOTAL FEES moves, so a hand-entered figure is never rewritten.
+ */
+export function alignDisclosureRecipientFundsWithRefinance(
+  values: Record<string, string>,
+): Record<string, string> {
+  const refi = cents(
+    parseMoney(values.disclosure_page3_line_2) ??
+      parseMoney(values.disclosure_page3_line_2_p3) ??
+      parseMoney(values.refinance_amount) ??
+      0,
+  );
+  if (!(refi > 0)) return values;
+  const funded = parseMoney(
+    values.purchase_price || values.approved_amount || values.funding_provided,
+  );
+  const totalFees = parseMoney(values.total_fees);
+  if (funded == null || !(funded > 0) || totalFees == null || !(totalFees >= 0)) return values;
+  const preRefiNet = cents(funded - totalFees);
+  const cash = cents(preRefiNet - refi);
+  if (!(cash > 0)) return values;
+  let out: Record<string, string> | null = null;
+  for (const [key, value] of Object.entries(values)) {
+    if (!DISCLOSURE_RECIPIENT_CASH_KEYS.has(canonicalDisclosureKey(key))) continue;
+    const n = parseMoney(value);
+    if (n == null || cents(n) !== preRefiNet) continue;
+    out ??= { ...values };
+    out[key] = money(cash);
+  }
+  return out ?? values;
+}

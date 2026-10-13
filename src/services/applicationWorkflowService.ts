@@ -63,11 +63,12 @@ const underwriterTouchedWhere = (userId: string): Prisma.ApplicationWhereInput =
 const SCRUBBING_QUEUES = [CANONICAL_WORKFLOW_QUEUES.SCRUBBING, 'Underwriting'] as const;
 
 /**
- * Agent "All Applications": only deals the Agent created that sit in Scrubbing.
+ * Agent "All Applications": only deals the Agent created that sit in Scrubbing or the
+ * Underwriter pool (Gmail auto-created deals start there).
  * Shared by the workflow queue and GET /applications (which backs the same page).
  */
 export function buildAgentAllApplicationsWhere(userId: string): Prisma.ApplicationWhereInput {
-    return { AND: [{ createdById: userId }, queueIn(SCRUBBING_QUEUES)] };
+    return { AND: [{ createdById: userId }, queueIn([...SCRUBBING_QUEUES, WORKFLOW_QUEUE.UNDERWRITER])] };
 }
 
 /** `userId` null = Super Admin oversight (no ownership filter). */

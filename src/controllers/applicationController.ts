@@ -64,6 +64,7 @@ import {
     resolveOperationsListFilterMode,
     dashboardStateQueueAliases,
     isContractedOpsKey,
+    contractsLogApplicationScopeWhere,
 } from '../services/operationsStatusFilter';
 import {
     buildApplicationStatsBucketWhere,
@@ -2585,6 +2586,34 @@ class ApplicationController {
                     });
                 }
             }
+
+            // Contracts Log works contract-stage deals plus the ones they created themselves (any stage);
+            // other Agent / Underwriter / pre-ISO rows stay hidden.
+            // Recently Deleted keeps its own scope so soft-deleted deals from any stage stay restorable.
+            if (
+                authRoleUpper === 'CONTRACTS_LOG' &&
+                authUser?.id &&
+                opsStatusCanonical !== 'Recently_Deleted'
+            ) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                where = {
+                    ...where,
+                    AND: [
+                        ...existingAnd,
+                        {
+                            OR: [
+                                contractsLogApplicationScopeWhere(),
+                                { createdById: authUser.id },
+                            ],
+                        },
+                    ],
+                };
+            }
+
             where = applySoftDeleteListScope(where, operationsStatusParam);
 
             const listInclude: Prisma.ApplicationInclude = useLitePayload

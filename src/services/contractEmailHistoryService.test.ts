@@ -241,6 +241,48 @@ it('sends a contract email with its log row id as the SendGrid tracking id', asy
   expect(update).toHaveBeenCalledWith({ where: { id: logged.id, status: 'sending' }, data: { status: 'sent' } });
 });
 
+it("passes the group's deal to the mailer so it goes out on the funder's provider", async () => {
+  jest.spyOn(prisma.document, 'findFirst').mockResolvedValue({ applicationId: APP } as never);
+  jest.spyOn(prisma.outbound_communications, 'updateMany').mockResolvedValue({ count: 1 } as never);
+  const send = jest.fn(async (_options: Record<string, unknown>) => ({}));
+
+  await sendTrackedContractEmail({
+    groupId: GROUP,
+    kind: 'agent_sent_notice',
+    recipient: { email: 'agent@broker.com', role: 'AGENT' },
+    provider: 'smtp',
+    mail: { subject: 'S', html: '<p>S</p>' },
+    resend: { attachments: [] },
+    send,
+  });
+
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: 'agent@broker.com', applicationId: APP }));
+});
+
+it('sends Contract Sent notices through SendGrid only, and logs them as SendGrid', async () => {
+  jest.spyOn(prisma.outbound_communications, 'updateMany').mockResolvedValue({ count: 1 } as never);
+  const send = jest.fn(async (_options: Record<string, unknown>) => ({}));
+  const base = {
+    groupId: GROUP,
+    applicationId: APP,
+    provider: 'smtp' as const,
+    mail: { subject: 'S', html: '<p>S</p>' },
+    resend: { attachments: [] },
+    send,
+  };
+
+  await sendTrackedContractEmail({ ...base, kind: 'agent_sent_notice', recipient: { email: 'a@broker.com', role: 'AGENT' } });
+  await sendTrackedContractEmail({ ...base, kind: 'cc_copy', recipient: { email: 'cc@funder.com', role: 'CC' } });
+  await sendTrackedContractEmail({ ...base, kind: 'signed_copy', recipient: { email: 'o@acme.com', role: 'SIGNER' } });
+
+  expect(send.mock.calls.map(([options]) => options.sendgridOnly)).toEqual([true, true, undefined]);
+  expect(createOutboundCommunication.mock.calls.map(([row]) => (row as any).metadata.provider)).toEqual([
+    'sendgrid',
+    'sendgrid',
+    'smtp',
+  ]);
+});
+
 it('marks a contract email failed when it cannot be sent', async () => {
   jest.spyOn(prisma.outbound_communications, 'findUnique').mockResolvedValue({ metadata: { source: 'contract_email' } } as never);
   const update = jest.spyOn(prisma.outbound_communications, 'update').mockResolvedValue({} as never);

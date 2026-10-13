@@ -14,6 +14,7 @@ import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
 import { activityLogger } from './middleware/activityLogger';
 import { describeDefaultMailSender } from './config/nodemailer';
 import { startSignNowContractStatusJob } from './cron-job/signNowContractStatusJob';
+import { startGmailAutoCreateCronJob } from './cron-job/gmailAutoCreateCronJob';
 
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err);
@@ -201,6 +202,8 @@ void (async () => {
     // Moves signed SignNow contracts to Contract Signed and chases missing CC
     // notices without anyone clicking the contract's refresh button.
     startSignNowContractStatusJob();
+    // Turns deal emails (application PDF + statements) in connected Gmail inboxes into applications.
+    startGmailAutoCreateCronJob();
   });
 })();
 

@@ -755,6 +755,17 @@ export function contractedCombinedMatchWhere(): Prisma.ApplicationWhereInput {
     });
 }
 
+/**
+ * CONTRACTS_LOG list scope: only deals that reached the contract workflow
+ * (pending → generated → sent → signed, plus cancelled / reinitiate). Pre-contract
+ * stages (Agent, Underwriter, Agent Review, Approval Sent) stay hidden.
+ */
+export function contractsLogApplicationScopeWhere(): Prisma.ApplicationWhereInput {
+    return {
+        OR: [contractedCombinedMatchWhere(), reinitiateContractMatchWhere()],
+    };
+}
+
 /** DB `currentState` may store Prisma enum strings, API labels, or legacy spellings. */
 function expandStoredCurrentStateValues(mappedState: ApplicationState): string[] {
     const out = new Set<string>([mappedState]);

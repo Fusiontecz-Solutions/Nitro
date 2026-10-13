@@ -128,6 +128,7 @@ import {
   clearExhibitCCopyLabels,
   nameExhibitCCopyFieldsForReview,
   mergeCommittedSignNowTexts,
+  collectOwnerReviewEdits,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
   signNowPrefillTextPayload,
@@ -170,6 +171,7 @@ import {
 } from '../contractOfferValueSync';
 import {
   alignDisclosureWireFeeWithTotalFees,
+  alignDisclosureRecipientFundsWithRefinance,
   buildOfferPrefillOverrides,
 } from './utils/signnow-offer-values';
 import {
@@ -774,7 +776,9 @@ export function signNowDocumentPrefillValues(
     documentName,
   );
   // The package-wide disclosure lines follow the contract's TOTAL FEES (see the helper).
-  const aligned = alignDisclosureWireFeeWithTotalFees(base.values);
+  const aligned = alignDisclosureRecipientFundsWithRefinance(
+    alignDisclosureWireFeeWithTotalFees(base.values),
+  );
   if (!tab) return { ...base, values: aligned };
   // A name / address / email the tab only copied from the deal gives way to the
   // live CRM value, so a corrected deal reaches every document on regenerate.
@@ -786,10 +790,12 @@ export function signNowDocumentPrefillValues(
    * disclosure tab saved from a calculation that ran without inputs holds 0.00
    * placeholders; those still must not bury the deal's real amounts.
    */
-  const merged = {
+  // A tab saved before the refi balance was entered still nets only the fees
+  // out of "Amount Given Directly to You" — the one saved figure that is moved.
+  const merged = alignDisclosureRecipientFundsWithRefinance({
     ...aligned,
     ...dropZeroDisclosurePlaceholders(tabs, base.values),
-  };
+  });
   // Only an isolated copy prints its own entity's DBA; a tab saved on any other
   // document must not bring an Exhibit C copy's DBA back in.
   return { ...base, values: base.isolated ? merged : withoutExhibitCCopyDbas(merged, entities) };
@@ -4220,7 +4226,7 @@ export class SignNowService {
           groupId,
           kind: 'cc_copy',
           recipient: { email: to, role: 'CC' },
-          provider: 'smtp',
+          provider: 'sendgrid',
           mail: {
             from: sender,
             subject: sentEmail.subject,
@@ -4255,7 +4261,7 @@ export class SignNowService {
           groupId,
           kind: 'agent_sent_notice',
           recipient: { email: to, role: 'AGENT' },
-          provider: 'smtp',
+          provider: 'sendgrid',
           mail: {
             from: sender,
             subject: sentEmail.subject,
@@ -6233,6 +6239,18 @@ export class SignNowService {
       'Recipient 1';
     const ownerRole =
       roles.find((role) => isPreparerRole(role, nitroStyle)) || 'Owner';
+    // What the preparer corrected by hand in the Owner Review prints as corrected,
+    // not as re-derived from the CRM (see `collectOwnerReviewEdits`).
+    const ownerReviewEdits = exposeToMerchant
+      ? collectOwnerReviewEdits(remote)
+      : new Map<string, string>();
+    if (ownerReviewEdits.size) {
+      console.info('[SignNow] keeping values edited in Owner Review', {
+        documentId,
+        documentName,
+        fields: [...ownerReviewEdits.keys()],
+      });
+    }
     const fields: Record<string, unknown>[] = [];
     const roleCounts: Record<string, number> = {};
     let applied = 0;
@@ -6262,7 +6280,10 @@ export class SignNowService {
         type === 'datetime' ||
         isRemittanceStartDateField(fieldName);
       const resolvedIsMoney = /^\$?-?\d[\d,]*\.\d{2}$/.test(String(resolved || '').trim());
-      const crmValue = formatSignNowPrefillValue(
+      const reviewEdit = ownerReviewEdits.get(
+        stripExhibitCCopyFieldName(fieldName).trim().toLowerCase(),
+      );
+      const crmValue = reviewEdit ?? formatSignNowPrefillValue(
         isDateWidget
           ? (!resolvedIsMoney ? resolved : '') ||
               resolveSignNowPrefillValue('agreement_date', values, prefillOpts) ||

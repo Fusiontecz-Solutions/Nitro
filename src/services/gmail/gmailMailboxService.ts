@@ -348,6 +348,36 @@ export async function getThread(accessToken: string, threadId: string) {
     return { id: data.id, messages: data.messages ?? [] };
 }
 
+/** One page of message ids matching a Gmail search (no per-message fetch). */
+export async function listMessageIds(
+    accessToken: string,
+    opts: { q?: string; labelIds?: string[]; maxResults?: number; pageToken?: string },
+): Promise<{ ids: string[]; nextPageToken?: string }> {
+    const data = await gmailRequest<{ messages?: Array<{ id: string }>; nextPageToken?: string }>(accessToken, {
+        method: 'GET',
+        url: `${GMAIL_BASE_URL}/messages`,
+        params: {
+            q: opts.q || undefined,
+            labelIds: opts.labelIds?.length ? opts.labelIds : undefined,
+            maxResults: Math.min(Math.max(1, opts.maxResults ?? LIST_DEFAULT_LIMIT), 500),
+            pageToken: opts.pageToken || undefined,
+        },
+    });
+    return {
+        ids: (data.messages ?? []).map((m) => String(m.id)).filter(Boolean),
+        nextPageToken: data.nextPageToken || undefined,
+    };
+}
+
+/** Raw Gmail message resource (`format=full`: headers, MIME tree, attachment ids). */
+export async function getMessageFull(accessToken: string, messageId: string): Promise<any> {
+    return gmailRequest(accessToken, {
+        method: 'GET',
+        url: `${GMAIL_BASE_URL}/messages/${encodeURIComponent(messageId)}`,
+        params: { format: 'full' },
+    });
+}
+
 /* ================================
    Modify / trash
 ================================ */

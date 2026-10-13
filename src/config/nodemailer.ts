@@ -199,6 +199,12 @@ export interface SendMailOptions {
     funderProfileId?: string | null;
     funderName?: string | null;
     /**
+     * Send through SendGrid only — never the funder's / server Gmail mailbox or
+     * Gmail SMTP, which would replace the sender's address with the mailbox's.
+     * A SendGrid failure is thrown, not retried on another provider.
+     */
+    sendgridOnly?: boolean;
+    /**
      * Durable idempotency key (one physical email). Deal emails get an automatic
      * key; pass `false` to opt out (e.g. an intentional identical resend).
      */
@@ -490,7 +496,7 @@ async function deliver(options: Prepared): Promise<SendMailResult> {
         console.warn('[mail] funder lookup failed, sending as no-funder mail:', (error as Error)?.message);
     }
 
-    const routes = planMailRoutes(funder);
+    const routes: MailRoute[] = options.sendgridOnly ? ['sendgrid'] : planMailRoutes(funder);
     let lastError: unknown = null;
     for (const [index, route] of routes.entries()) {
         try {

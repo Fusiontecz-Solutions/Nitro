@@ -92,7 +92,15 @@ export type TrackedMailOptions = {
   /** Deal / funder the email belongs to — picks the funder's provider (SendGrid or its Gmail). */
   applicationId?: string | null;
   funderName?: string | null;
+  sendgridOnly?: boolean;
 };
+
+/**
+ * "Contract Sent" notices (CC and agent copies, and their resends) go out only
+ * through SendGrid with the funder's verified sender. Gmail rewrites the From
+ * address to its own mailbox, so the funder's name arrived on a Nitro address.
+ */
+const SENDGRID_ONLY_KINDS: ReadonlySet<ContractEmailKind> = new Set(['cc_copy', 'agent_sent_notice']);
 
 /**
  * Send one contract email to one recipient and record it, so SendGrid's event
@@ -117,9 +125,14 @@ export async function sendTrackedContractEmail(input: {
 }): Promise<void> {
   const to = String(input.recipient.email || '').trim();
   let trackingId: string | undefined = randomUUID();
+  // The deal is also what routes the send to its funder's provider. Without it
+  // the mailer treats this as no-funder mail and sends from the server Gmail
+  // mailbox, which keeps the funder's display name but not its address.
+  let applicationId: string | null = String(input.applicationId || '').trim() || null;
+  const sendgridOnly = input.mail.sendgridOnly ?? SENDGRID_ONLY_KINDS.has(input.kind);
+  const provider = sendgridOnly ? 'sendgrid' : input.provider;
   try {
-    const applicationId =
-      String(input.applicationId || '').trim() || (await applicationIdForEnvelope(input.groupId));
+    applicationId = applicationId || (await applicationIdForEnvelope(input.groupId));
     await createOutboundCommunication({
       id: trackingId,
       applicationId,
@@ -136,7 +149,7 @@ export async function sendTrackedContractEmail(input: {
         roleDetail: input.recipient.roleDetail || null,
         recipientName: input.recipient.name || null,
         groupId: input.groupId,
-        provider: input.provider,
+        provider,
         resend: JSON.parse(JSON.stringify(input.resend)),
         ...(input.resendOf ? { resendOf: input.resendOf } : {}),
       },
@@ -152,7 +165,8 @@ export async function sendTrackedContractEmail(input: {
     result = await input.send({
       ...input.mail,
       to,
-      applicationId: input.mail.applicationId ?? input.applicationId ?? null,
+      applicationId: input.mail.applicationId ?? applicationId,
+      ...(sendgridOnly ? { sendgridOnly: true } : {}),
       ...(trackingId ? { trackingId } : {}),
     });
   } catch (err) {

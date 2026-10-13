@@ -3,6 +3,7 @@ import path from 'path';
 import { DocumentProcessorServiceClient } from '@google-cloud/documentai';
 import type { google } from '@google-cloud/documentai/build/protos/protos';
 import { BACKEND_PACKAGE_ROOT } from '../../config/loadEnv';
+import { processDocumentPossiblyChunked } from './processDocumentChunked';
 
 type Document = google.cloud.documentai.v1.IDocument;
 type ProcessRequest = google.cloud.documentai.v1.IProcessRequest;
@@ -60,21 +61,23 @@ export async function processDocumentWithProcessor(
 
   const client = getDocumentAiClient();
   const name = resolveDocumentAiProcessorName(processorId);
-  const request: ProcessRequest = {
-    name,
-    rawDocument: {
-      content: buffer.toString('base64'),
-      mimeType,
-    },
-  };
-
-  const startedAt = Date.now();
-  const [result] = await client.processDocument(request);
-  console.log(
-    `[documentAi] processDocument ${buffer.length}b mime=${mimeType} in ${Date.now() - startedAt}ms`,
-  );
-  if (!result.document) {
-    throw new Error('Document AI returned no document payload');
-  }
-  return result.document;
+  // PDFs over the processor's online page limit are split into shards and merged.
+  return (await processDocumentPossiblyChunked(buffer, mimeType, async (content, mt) => {
+    const request: ProcessRequest = {
+      name,
+      rawDocument: {
+        content: content.toString('base64'),
+        mimeType: mt,
+      },
+    };
+    const startedAt = Date.now();
+    const [result] = await client.processDocument(request);
+    console.log(
+      `[documentAi] processDocument ${content.length}b mime=${mt} in ${Date.now() - startedAt}ms`,
+    );
+    if (!result.document) {
+      throw new Error('Document AI returned no document payload');
+    }
+    return result.document;
+  })) as Document;
 }

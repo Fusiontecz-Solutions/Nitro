@@ -810,3 +810,76 @@ export function mergeCommittedSignNowTexts(
   }
   return out;
 }
+
+/** Roles the preparer reviews a package under (see `isPreparerRole`). */
+const REVIEW_ROLE_RE = /^(owner|approver|me)$|fill out|preparer|sender|verifier/i;
+
+function fieldAttrs(field: Record<string, unknown>): Record<string, unknown> {
+  let attrs = field.json_attributes;
+  if (typeof attrs === 'string') {
+    try {
+      attrs = JSON.parse(attrs);
+    } catch {
+      attrs = {};
+    }
+  }
+  return attrs && typeof attrs === 'object' ? (attrs as Record<string, unknown>) : {};
+}
+
+/**
+ * Values the preparer changed by hand in the Owner Review, keyed by lower-cased
+ * widget name.
+ *
+ * Review writes the CRM values as each Owner widget's `prefilled_text`; what the
+ * preparer types over them is committed by SignNow as a page text element when
+ * they click Finish — linked back through the widget's `element_id`, and placed
+ * on the widget's own spot. The merchant send then re-resolved every widget from
+ * the CRM, and the stamp of the edit sat on a spot the send owns, so it was
+ * dropped: a refinance itemization corrected in Review ("Amount Given Directly
+ * to You" 9,125.00) went out with the CRM's figure instead.
+ *
+ * Only an Owner widget whose committed text differs from what Review prefilled
+ * counts. A merchant publish moves every filled widget off the Owner role and
+ * bakes it, so a resend never mistakes an earlier bake's stamp for an edit.
+ */
+export function collectOwnerReviewEdits(remote: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  const root = (remote || {}) as Record<string, unknown>;
+  const texts = collectCommittedSignNowTexts(remote);
+  if (!texts.length) return out;
+  const byId = new Map(texts.filter((t) => t.id).map((t) => [t.id, t]));
+  for (const container of ['fields', 'fillable_fields']) {
+    const rows = Array.isArray(root[container]) ? (root[container] as unknown[]) : [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      const field = row as Record<string, unknown>;
+      const attrs = fieldAttrs(field);
+      const type = String(field.type || attrs.type || '').toLowerCase();
+      if (NON_TEXT_TYPES.has(type)) continue;
+      const role = String(field.role || attrs.role || attrs.role_name || '').trim();
+      if (!REVIEW_ROLE_RE.test(role)) continue;
+      const name = stripExhibitCCopyFieldName(
+        String(attrs.name || field.name || field.field_name || '').trim(),
+      ).toLowerCase();
+      if (!name || out.has(name)) continue;
+      const elementId = String(field.element_id ?? '').trim();
+      const committed =
+        (elementId && byId.get(elementId)) ||
+        texts.find((t) =>
+          isSameSignNowTextSpot(
+            {
+              page_number: field.page_number ?? attrs.page_number,
+              x: field.x ?? attrs.x,
+              y: field.y ?? attrs.y,
+            },
+            t,
+          ),
+        );
+      if (!committed) continue;
+      const prefilled = String(attrs.prefilled_text ?? field.prefilled_text ?? '').trim();
+      if (committed.data === prefilled) continue;
+      out.set(name, committed.data);
+    }
+  }
+  return out;
+}

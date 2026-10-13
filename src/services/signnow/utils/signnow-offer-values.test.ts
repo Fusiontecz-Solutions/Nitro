@@ -1,4 +1,5 @@
 import {
+  alignDisclosureRecipientFundsWithRefinance,
   alignDisclosureWireFeeWithTotalFees,
   buildOfferPrefillOverrides,
 } from './signnow-offer-values';
@@ -462,5 +463,46 @@ describe('values saved in the Verify contract prefill editor', () => {
     expect(overrides.appendix_underwriting_fees).toBe('3,000.00');
     expect(overrides.total_fees).toBe('3,000.00');
     expect(overrides.net_to_merchant).toBe('42,000.00');
+  });
+});
+
+describe('alignDisclosureRecipientFundsWithRefinance', () => {
+  const deal = {
+    purchase_price: '25,000.00',
+    total_fees: '1,250.00',
+    disclosure_page3_line_2: '14,625.00',
+  };
+
+  it('takes the payoff out of a recipient-funds line saved before the refi', () => {
+    const out = alignDisclosureRecipientFundsWithRefinance({
+      ...deal,
+      disclosure_recipient_funds: '23,750.00',
+      disclosure_recipient_funds_p3: '23,750.00',
+      funding_provided_direct: '23,750.00',
+      'Text Field 2': '23,750.00',
+      disclosure_page3_net_p3: '23,750.00',
+      total_amount_of_fund_disbursed: '23,750.00',
+    });
+    expect(out.disclosure_recipient_funds).toBe('9,125.00');
+    expect(out.disclosure_recipient_funds_p3).toBe('9,125.00');
+    expect(out.funding_provided_direct).toBe('9,125.00');
+    expect(out['Text Field 2']).toBe('9,125.00');
+    // Amount financed keeps the payoff; state "funds disbursed" boxes stay net-after-fees.
+    expect(out.disclosure_page3_net_p3).toBe('23,750.00');
+    expect(out.total_amount_of_fund_disbursed).toBe('23,750.00');
+  });
+
+  it('leaves a hand-entered or already-correct figure alone', () => {
+    const values = {
+      ...deal,
+      disclosure_recipient_funds_p3: '9,125.00',
+      funding_provided_direct: '9,000.00',
+    };
+    expect(alignDisclosureRecipientFundsWithRefinance(values)).toBe(values);
+  });
+
+  it('does nothing on a deal without a refinance', () => {
+    const values = { ...deal, disclosure_page3_line_2: '0.00', disclosure_recipient_funds: '23,750.00' };
+    expect(alignDisclosureRecipientFundsWithRefinance(values)).toBe(values);
   });
 });

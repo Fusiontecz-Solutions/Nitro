@@ -1,4 +1,5 @@
 import {
+  collectOwnerReviewEdits,
   applyContractFillableFont,
   applySignNowFieldStyle,
   applySignNowSignatureFieldFont,
@@ -1001,5 +1002,57 @@ describe('signature / initials face', () => {
     expect(hasSignNowSignatureFieldFont(stripped)).toBe(false);
     // The original is not mutated.
     expect(fields[0].font).toBe('Times New Roman');
+  });
+});
+
+describe('collectOwnerReviewEdits', () => {
+  const ownerField = (name: string, prefilled: string, extra: Record<string, unknown> = {}) => ({
+    type: 'text',
+    role: 'Owner',
+    page_number: 2,
+    x: 400,
+    y: 120,
+    json_attributes: { name, prefilled_text: prefilled },
+    ...extra,
+  });
+
+  it('returns the value the preparer typed over a prefilled Owner widget', () => {
+    const edits = collectOwnerReviewEdits({
+      fields: [ownerField('disclosure_recipient_funds_p3', '23,750.00', { element_id: 't1' })],
+      texts: [{ id: 't1', page_number: 2, x: 400, y: 120, data: '9,125.00' }],
+    });
+    expect(edits.get('disclosure_recipient_funds_p3')).toBe('9,125.00');
+  });
+
+  it('matches a committed text on the widget spot when no element id links them', () => {
+    const edits = collectOwnerReviewEdits({
+      fields: [ownerField('disclosure_page3_line_2_p3', '0.00')],
+      texts: [{ id: 't9', page_number: 2, x: 402, y: 121, data: '14,625.00' }],
+    });
+    expect(edits.get('disclosure_page3_line_2_p3')).toBe('14,625.00');
+  });
+
+  it('ignores a widget Review left as prefilled', () => {
+    const edits = collectOwnerReviewEdits({
+      fields: [ownerField('disclosure_page3_net_p3', '23,750.00', { element_id: 't1' })],
+      texts: [{ id: 't1', page_number: 2, x: 400, y: 120, data: '23,750.00' }],
+    });
+    expect(edits.size).toBe(0);
+  });
+
+  it('ignores merchant widgets and an earlier bake stamp', () => {
+    const edits = collectOwnerReviewEdits({
+      fields: [ownerField('client_name_p1', 'ACME', { role: 'Recipient 1' })],
+      texts: [{ id: 't1', page_number: 2, x: 400, y: 120, data: 'OLD ACME' }],
+    });
+    expect(edits.size).toBe(0);
+  });
+
+  it('keys an Exhibit C copy widget by its original name', () => {
+    const edits = collectOwnerReviewEdits({
+      fields: [ownerField('ach_bank_name_p1__copy2', 'Chase', { element_id: 't1' })],
+      texts: [{ id: 't1', page_number: 2, x: 400, y: 120, data: 'Wells Fargo' }],
+    });
+    expect(edits.get('ach_bank_name_p1')).toBe('Wells Fargo');
   });
 });

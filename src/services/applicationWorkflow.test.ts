@@ -113,12 +113,14 @@ describe('workflow queue buckets', () => {
         expect(where).toContain('Agent Approval');
     });
 
-    it('limits Agent All Applications to deals the Agent created in Scrubbing', () => {
+    it('limits Agent All Applications to deals the Agent created in Scrubbing or the Underwriter pool', () => {
         const where = json(buildAgentBucketWhere('all', 'agent-1'));
         expect(where).toContain('"createdById":"agent-1"');
         expect(where).not.toContain('referringAgentId');
         expect(where).toContain('Scrubbing');
         expect(where).toContain('Underwriting');
+        expect(where).toContain('"equals":"Underwriter"');
+        expect(where).not.toContain('Agent Review');
     });
 
     it('keeps Super Admin oversight of All Applications unscoped by stage', () => {

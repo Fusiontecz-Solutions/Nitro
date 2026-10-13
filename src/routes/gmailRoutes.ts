@@ -27,6 +27,13 @@ import {
     getGmailConnectionStatus,
 } from '../services/gmail/gmailOAuthService';
 import { completeFunderGmailConnect, isFunderGmailState } from '../services/gmail/funderGmailOAuthService';
+import {
+    getGmailHealth,
+    getMyGmailAutoCreate,
+    runMyGmailAutoCreate,
+    setGmailAutoCreateForUser,
+    setMyGmailAutoCreate,
+} from '../controllers/gmailAutoCreate.controller';
 
 /**
  * Per-user Gmail connection.
@@ -35,6 +42,8 @@ import { completeFunderGmailConnect, isFunderGmailState } from '../services/gmai
  *   GET    /gmail/connect-url      → { url }   start OAuth for the signed-in user
  *   GET    /gmail/me               → connection status
  *   DELETE /gmail/connection       → revoke + clear
+ *   /gmail/auto-create[/run]       → own mailbox PDF→deal auto-create switch / run now
+ *   /gmail/health                  → every mailbox's health (admins / Super Admin gateway)
  *   /gmail/mailbox/*               → Gmail workspace page (Super Admin + Agent)
  */
 export const googleOAuthCallbackRouter = express.Router();
@@ -48,6 +57,9 @@ googleOAuthCallbackRouter.get('/callback', async (req: Request, res: Response) =
 });
 
 const gmailRouter = express.Router();
+// Book-wide mailbox health (admins / Super Admin gateway) — registered before the EMAIL_CONNECT gate.
+gmailRouter.get('/health', authenticateToken, getGmailHealth);
+gmailRouter.patch('/health/mailboxes/:userId/auto-create', authenticateToken, setGmailAutoCreateForUser);
 gmailRouter.use(authenticateToken, requirePermission(PERMISSIONS.EMAIL_CONNECT));
 
 gmailRouter.get('/connect-url', (req: Request, res: Response) => {
@@ -78,6 +90,11 @@ gmailRouter.delete('/connection', async (req: Request, res: Response) => {
         return res.status(500).json({ success: false, message: 'Internal server error' });
     }
 });
+
+/** Auto-create deals from this user's own inbox (cron does this every minute). */
+gmailRouter.get('/auto-create', getMyGmailAutoCreate);
+gmailRouter.patch('/auto-create', setMyGmailAutoCreate);
+gmailRouter.post('/auto-create/run', runMyGmailAutoCreate);
 
 /**
  * Gmail workspace page: labels, star, archive, trash, threads, reply/forward,

@@ -28,6 +28,11 @@ model User {
   /// Gmail address connected via Google OAuth (Agent ISO approval mail is sent from this mailbox).
   googleEmail                String?
   googleConnectedAt          DateTime?
+  /// Gmail cron turns PDF deal emails in this mailbox into applications owned by this user.
+  gmailAutoCreateEnabled     Boolean                       @default(true)
+  /// Last time auto-create was switched on; the cron only scans mail received after it.
+  gmailAutoCreateEnabledAt   DateTime?
+  gmailAutoCreateLedger      GmailAutoCreateLedger[]
   accessTokens               AccessToken[]
   underwriterApprovedApps    Application[]                 @relation("ApplicationApprovedByUnderwriter")
   underwriterAssignedApps    Application[]                 @relation("ApplicationAssignedUnderwriter")
@@ -280,6 +285,7 @@ model Application {
   outbound_communications         outbound_communications[]
   emailThreads                    ApplicationEmailThread[]
   mailSendClaims                  MailSendClaim[]
+  gmailAutoCreateLedger           GmailAutoCreateLedger[]
 
   @@index([isoId])
   @@index([dealId])

@@ -13,6 +13,7 @@ import { scheduleApplicationStageNotification } from './applicationStageNotifica
 import { allocateNextDealId, withAllocatedDealId } from './nextDealIdService';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 import { gmailAutoCreateMessageNote } from './pdfFileDedupeService';
+import { WORKFLOW_QUEUE, WORKFLOW_STATE } from '../constants/applicationWorkflow';
 
 export type UserRole = Role;
 
@@ -294,14 +295,25 @@ export type ExistingClientMatchReason =
     | 'business_name_owner_name'
     | 'business_name_owner_name_client_owner';
 
+/** Clients an Agent owns: created by them or assigned to them. */
+function clientOwnedByWhere(userId: string): PrismaTypes.ClientWhereInput {
+    return { OR: [{ createdById: userId }, { assignedToId: userId }] };
+}
+
 /**
  * Resolve an existing Client for PDF auto-create flows.
  * Matches by EIN, business name + email, owner SSN (flat + ClientOwner rows), then business + owner name.
+ * With `ownerUserId`, only that user's own clients are candidates (Agent mailbox auto-create must
+ * never attach a deal to — or merge PDF data into — another Agent's client).
  */
 export async function findExistingClientFromPdfExtract(
     business: Record<string, unknown>,
     owner: Record<string, unknown>,
+    ownerUserId?: string | null,
 ): Promise<{ client: any; matchedBy: ExistingClientMatchReason } | null> {
+    const ownerScope: PrismaTypes.ClientWhereInput = ownerUserId
+        ? { AND: [clientOwnedByWhere(ownerUserId)] }
+        : {};
     const einNorm = normalizeEin(
         (business.business_ein_number ??
             business.ein_number ??
@@ -338,6 +350,7 @@ export async function findExistingClientFromPdfExtract(
                     { businessEinNumber: formattedEin },
                     { businessEinNumber: { endsWith: einNorm } },
                 ],
+                ...ownerScope,
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -351,6 +364,7 @@ export async function findExistingClientFromPdfExtract(
             where: {
                 businessName: { equals: businessNameNorm, mode: 'insensitive' },
                 businessEmail: { equals: businessEmailNorm, mode: 'insensitive' },
+                ...ownerScope,
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -370,6 +384,7 @@ export async function findExistingClientFromPdfExtract(
                     ...(ownerSsnNorm ? [{ ownerSsn: ownerSsnNorm }] : []),
                     ...(ssnLast4 ? [{ ownerSsn: { endsWith: ssnLast4 } }] : []),
                 ],
+                ...ownerScope,
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -385,6 +400,7 @@ export async function findExistingClientFromPdfExtract(
                     ...(ownerSsnNorm ? [{ ssn: ownerSsnNorm }] : []),
                     ...(ssnLast4 ? [{ ssn: { endsWith: ssnLast4 } }] : []),
                 ],
+                ...(ownerUserId ? { client: ownerScope } : {}),
             },
             include: { client: true },
             orderBy: { createdAt: 'desc' },
@@ -400,6 +416,7 @@ export async function findExistingClientFromPdfExtract(
                 businessName: { equals: businessNameNorm, mode: 'insensitive' },
                 ownerFirstName: { equals: ownerFirstNorm, mode: 'insensitive' },
                 ownerLastName: { equals: ownerLastNorm, mode: 'insensitive' },
+                ...ownerScope,
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -413,6 +430,7 @@ export async function findExistingClientFromPdfExtract(
                 lastName: { equals: ownerLastNorm, mode: 'insensitive' },
                 client: {
                     businessName: { equals: businessNameNorm, mode: 'insensitive' },
+                    ...ownerScope,
                 },
             },
             include: { client: true },
@@ -523,6 +541,13 @@ export interface CreatePdfApplicationOptions {
     /** Manual create / OPERATIONS bypass. */
     applicationType?: string | null;
     /**
+     * Gmail auto-create from an Agent's mailbox: reuse only clients this user owns, and assign a
+     * newly created client to them, so the deal stays private to that Agent.
+     */
+    restrictClientToOwnerId?: string | null;
+    /** Gmail auto-create: start in the Underwriter pool instead of New / Draft. */
+    startInUnderwriterPool?: boolean;
+    /**
      * When true, skip scheduling Cloudinary attach of the application PDF.
      * Used by multi-file auto-create so KYC uploads are not rate-limited against it.
      */
@@ -567,6 +592,9 @@ export function assertReadyToCreateNewClientFromPdf(parsedData: unknown, clientR
 const PDF_EMAIL_AUTO_CREATE_QUEUE = 'New';
 /** PDF auto-create starts in New (same as a manual create). */
 const PDF_EMAIL_AUTO_CREATE_STATE = 'Draft';
+/** Gmail auto-create goes straight to the Underwriter pool, like an Agent's submitted deal. */
+const GMAIL_AUTO_CREATE_QUEUE = WORKFLOW_QUEUE.UNDERWRITER;
+const GMAIL_AUTO_CREATE_STATE = WORKFLOW_STATE.IN_PROGRESS;
 
 const applicationCreateInclude = {
     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -594,8 +622,12 @@ export async function createClientAndApplicationFromPDFBuffer(
             commissionPercentageFromIso = Number(isoRecord.commissionPercentage ?? 0);
         }
     }
-    const agentCreationQueue = PDF_EMAIL_AUTO_CREATE_QUEUE;
-    const agentCreationState = PDF_EMAIL_AUTO_CREATE_STATE;
+    const agentCreationQueue = options?.startInUnderwriterPool
+        ? GMAIL_AUTO_CREATE_QUEUE
+        : PDF_EMAIL_AUTO_CREATE_QUEUE;
+    const agentCreationState = options?.startInUnderwriterPool
+        ? GMAIL_AUTO_CREATE_STATE
+        : PDF_EMAIL_AUTO_CREATE_STATE;
     const resolvedApplicationType =
         String(options?.applicationType || '').trim() === 'Bypass' ? 'Bypass' : 'New';
     const gmailMessageId = String(options?.gmailMessageId || '').trim();
@@ -646,7 +678,8 @@ export async function createClientAndApplicationFromPDFBuffer(
         annualRevenue != null ? Math.round((annualRevenue / 12) * 100) / 100 : null;
 
     // 3️⃣ Try to find existing client (EIN, business+email, SSN, business+owner name)
-    const existingMatch = await findExistingClientFromPdfExtract(business, owner);
+    const clientOwnerId = String(options?.restrictClientToOwnerId || '').trim() || null;
+    const existingMatch = await findExistingClientFromPdfExtract(business, owner, clientOwnerId);
     let clientRecord: any | null = existingMatch?.client ?? null;
     let existingClient = Boolean(clientRecord);
 
@@ -755,6 +788,7 @@ export async function createClientAndApplicationFromPDFBuffer(
                 ownerState: owner.owner_state || null,
                 ownerZipCode: owner.owner_zip_code || null,
                 createdById: userId,
+                assignedToId: clientOwnerId,
                 // Persist owner 1 from application PDF so later DL sync can merge (not replace).
                 owners: {
                     create: [
@@ -833,6 +867,8 @@ export const GMAIL_SUBJECT_FALLBACK_OWNER_LAST = 'none';
 export interface CreateGmailSubjectFallbackOptions {
     isoId?: string | null;
     gmailMessageId?: string | null;
+    /** Assign the new client to this user (Agent mailbox auto-create). */
+    restrictClientToOwnerId?: string | null;
 }
 
 /**
@@ -876,6 +912,7 @@ export async function createApplicationFromGmailSubjectFallback(
                 ownerLastName: GMAIL_SUBJECT_FALLBACK_OWNER_LAST,
                 notes,
                 createdById: userId,
+                assignedToId: String(options?.restrictClientToOwnerId || '').trim() || null,
             },
         });
 
@@ -889,8 +926,8 @@ export async function createApplicationFromGmailSubjectFallback(
                 isoId: isoId || null,
                 commissionPercentage: commissionPercentageFromIso,
                 createdById: userId,
-                currentQueue: PDF_EMAIL_AUTO_CREATE_QUEUE,
-                currentState: PDF_EMAIL_AUTO_CREATE_STATE,
+                currentQueue: GMAIL_AUTO_CREATE_QUEUE,
+                currentState: GMAIL_AUTO_CREATE_STATE,
                 note: gmailMessageId ? gmailAutoCreateMessageNote(gmailMessageId) : '',
                 dealId,
             }),

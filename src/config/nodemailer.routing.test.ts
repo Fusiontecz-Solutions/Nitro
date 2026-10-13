@@ -115,6 +115,24 @@ describe('provider selection', () => {
         expect(sendViaSendGrid).not.toHaveBeenCalled();
     });
 
+    it('sends a SendGrid-only email through SendGrid even when the funder is on Gmail', async () => {
+        resolveMailFunder.mockResolvedValue(funder('gmail'));
+        const result = await sendMail({ to: 'iso@x.com', subject: 's', html: 'h', from: TIBERIAN_SENDER, applicationId: 'app-1', sendgridOnly: true });
+        expect(result.provider).toBe('sendgrid');
+        expect(sendViaSendGrid.mock.calls[0][0]).toMatchObject({ from: TIBERIAN_SENDER });
+        expect(getFunderGmailMailboxForSend).not.toHaveBeenCalled();
+        expect(sendViaGmailApi).not.toHaveBeenCalled();
+    });
+
+    it('never falls back to Gmail for a SendGrid-only email', async () => {
+        sendGridConfigured = false;
+        resolveMailFunder.mockResolvedValue(null);
+        await expect(
+            sendMail({ to: 'iso@x.com', subject: 's', html: 'h', from: TIBERIAN_SENDER, sendgridOnly: true }),
+        ).rejects.toThrow('SendGrid is not configured');
+        expect(sendViaGmailApi).not.toHaveBeenCalled();
+    });
+
     it('lets an explicit funder override the deal lookup', async () => {
         resolveMailFunder.mockResolvedValue(funder('sendgrid'));
         await sendMail({ to: 'a@x.com', subject: 's', html: 'h', funderName: 'Tiberian', applicationId: 'app-1' });
