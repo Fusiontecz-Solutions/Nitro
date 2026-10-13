@@ -41,6 +41,8 @@ export type FunderProfile = {
   sendgridFromEmail?: string | null;
   /** Display name of that SendGrid sender identity (e.g. "Tiberian Funding"). */
   sendgridFromName?: string | null;
+  /** Outbound provider for this funder's mail: SendGrid (default) or its connected Gmail. */
+  mailProvider?: FunderMailProvider;
   addressLine1?: string | null;
   addressCity?: string | null;
   addressState?: string | null;
@@ -103,6 +105,8 @@ export type FunderProfileInput = {
   defaultCcEmail?: string;
   sendgridFromEmail?: string;
   sendgridFromName?: string;
+  /** Server accepts "gmail" only while the funder's Gmail is connected and verified. */
+  mailProvider?: FunderMailProvider;
   addressLine1?: string;
   addressCity?: string;
   addressState?: string;
@@ -158,4 +162,29 @@ export interface SendGridUsageSummary {
   } | null;
   warnings: string[];
   fetchedAt: string;
+}
+
+export type FunderMailProvider = "sendgrid" | "gmail";
+
+/** GET /integration-settings/funders/:id/gmail — never contains tokens. */
+export interface FunderGmailStatus {
+  configured: boolean;
+  funderProfileId: string;
+  mailProvider: FunderMailProvider | string;
+  status: "connected" | "needs_reconnect" | "disconnected" | string;
+  connected: boolean;
+  needsReconnect: boolean;
+  /** True when Gmail may be selected as this funder's provider. */
+  canUseGmail: boolean;
+  gmailEmail: string | null;
+  sendAsEmail: string | null;
+  senderEmail: string | null;
+  senderMatchesMailbox: boolean | null;
+  verifiedAt: string | null;
+  connectedAt: string | null;
+  connectedBy: string | null;
+  lastUsedAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  verified?: boolean;
 }

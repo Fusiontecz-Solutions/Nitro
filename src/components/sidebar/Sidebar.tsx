@@ -179,6 +179,10 @@ const agentSections: SidebarNavSection[] = [
       { label: "Contract Pending", url: "/pipeline?bucket=contract_pending", icon: Article },
     ],
   },
+  {
+    title: "COMMUNICATIONS",
+    items: [{ label: "Gmail", url: "/gmail", icon: Email }],
+  },
   workflowSettingsSection,
 ];
 

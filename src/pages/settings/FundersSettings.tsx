@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { toast } from "react-toastify";
 import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -29,7 +30,20 @@ function DetailRow({ label, value }: { label: string; value?: string | null | nu
   );
 }
 
+/** Reasons the funder Gmail OAuth callback can return (`?funderGmail=error&reason=`). */
+const FUNDER_GMAIL_ERRORS: Record<string, string> = {
+  invalid_state: "The Gmail connection link expired. Start again from the funder.",
+  access_denied: "Google access was not granted.",
+  missing_scopes: "Allow both Gmail permissions (send and read) on Google's consent screen.",
+  no_refresh_token: "Google did not return offline access. Remove the app from the Google account's permissions and try again.",
+  account_mismatch: "The Google account and Gmail mailbox did not match. Try again.",
+  email_not_verified: "That Google account's email address is not verified.",
+  forbidden: "You are not allowed to manage funder mailboxes.",
+  funder_not_found: "That funder no longer exists.",
+};
+
 export default function FundersSettings() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState<FunderProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -50,6 +64,27 @@ export default function FundersSettings() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Back from Google's consent screen: report the result and reopen that funder.
+  useEffect(() => {
+    const outcome = searchParams.get("funderGmail");
+    if (!outcome || loading) return;
+    const funderId = searchParams.get("funderId");
+    if (outcome === "connected") {
+      toast.success("Gmail connected. You can now switch this funder's provider to Gmail.");
+    } else {
+      const reason = searchParams.get("reason") || "";
+      toast.error(FUNDER_GMAIL_ERRORS[reason] || `Gmail connection failed (${reason || "unknown error"}).`);
+    }
+    const funder = funderId ? rows.find((row) => row.id === funderId) : undefined;
+    if (funder) {
+      setEditing(funder);
+      setModalOpen(true);
+    }
+    const next = new URLSearchParams(searchParams);
+    ["funderGmail", "funderId", "reason"].forEach((key) => next.delete(key));
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, loading, rows]);
 
   const handleSave = async (
     payload: FunderProfileInput,

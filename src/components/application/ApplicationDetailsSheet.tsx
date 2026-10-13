@@ -30,6 +30,7 @@ import {
 import { getClientByClientId } from "@/redux/actions/clientActions"
 import { getApplicationByApplicationId } from "@/redux/actions/applicationActions"
 import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch"
+import { letterApplicationIdFromApp } from "@/pages/templates/types"
 
 type ApplicationDetailsSheetProps = {
   application: Application | null
@@ -234,6 +235,7 @@ export default function ApplicationDetailsSheet({
   const clientName = getClientNameFromApplication(application.client)
   const appId = String(application.applicationId ?? application._id)
   const applicationId = String(application._id)
+  const dealIdDisplay = letterApplicationIdFromApp(application) || appId
 
 
   const business: Client["business"] | null = clientData?.business ?? null
@@ -261,7 +263,7 @@ export default function ApplicationDetailsSheet({
             </h2>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span className="font-medium">Deal ID:</span>
-              <code className="bg-muted px-2 py-0.5 rounded text-[12px]">{appId}</code>
+              <code className="bg-muted px-2 py-0.5 rounded text-[12px]">{dealIdDisplay}</code>
             </div>
           </div>
 

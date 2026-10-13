@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
+  FunderMailProvider,
   FunderProfile,
   FunderProfileInput,
   SignNowTemplateLinkItem,
@@ -21,6 +22,7 @@ import type {
 import type { FunderProfileFiles } from "@/redux/actions/integrationSettingsActions";
 import { DEFAULT_LETTER_EMAIL_BRANDING } from "@/pages/templates/letterEmailBranding";
 import ShareFunderTemplatesDialog from "./ShareFunderTemplatesDialog";
+import FunderGmailSection from "./FunderGmailSection";
 import {
   funderTemplateIdentity,
   type FunderTemplateKind,
@@ -269,6 +271,7 @@ export default function FunderProfileModal({
   const [defaultCcEmail, setDefaultCcEmail] = useState("");
   const [sendgridFromEmail, setSendgridFromEmail] = useState("");
   const [sendgridFromName, setSendgridFromName] = useState("");
+  const [mailProvider, setMailProvider] = useState<FunderMailProvider>("sendgrid");
   const [isActive, setIsActive] = useState(true);
   const [contractLink, setContractLink] = useState("");
   const [addendums, setAddendums] = useState<LinkRow[]>([]);
@@ -299,6 +302,7 @@ export default function FunderProfileModal({
     setDefaultCcEmail(initial?.defaultCcEmail ?? "");
     setSendgridFromEmail(initial?.sendgridFromEmail ?? "");
     setSendgridFromName(initial?.sendgridFromName ?? "");
+    setMailProvider(initial?.mailProvider === "gmail" ? "gmail" : "sendgrid");
     setIsActive(initial?.isActive !== false);
     setContractLink(initial?.signnowContractTemplateLink ?? "");
     setAddendums(toRows(initial?.signnowAddendumTemplates));
@@ -455,6 +459,8 @@ export default function FunderProfileModal({
       defaultCcEmail: defaultCcEmail.trim() || "",
       sendgridFromEmail: trimmedSendgridFrom,
       sendgridFromName: trimmedSendgridName,
+      // Only an existing funder can have a Gmail mailbox; the server re-checks Gmail is verified.
+      ...(initial ? { mailProvider } : {}),
       isActive,
       signnowContractTemplateLink: contractLink.trim() || null,
       signnowAddendumTemplates: cleanRows(addendums),
@@ -549,6 +555,12 @@ export default function FunderProfileModal({
                   server default (SENDGRID_FROM_EMAIL / SENDGRID_FROM_NAME).
                 </p>
               </div>
+
+              <FunderGmailSection
+                funderId={initial?.id ?? null}
+                mailProvider={mailProvider}
+                onMailProviderChange={setMailProvider}
+              />
 
               <label className="flex items-center gap-2 text-sm">
                 <input

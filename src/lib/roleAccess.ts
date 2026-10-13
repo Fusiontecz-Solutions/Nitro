@@ -45,8 +45,11 @@ export const canActAsAgent = (role: string | null | undefined) => isAgentRole(ro
 export const canActAsUnderwriter = (role: string | null | undefined) =>
   isUnderwriterRole(role) || isSuperAdminAppRole(role);
 
-/** Routes only a SUPER_ADMIN may open. */
-const SUPER_ADMIN_ONLY_PATHS = ["/gmail", "/activity-logs"];
+/** Routes only a SUPER_ADMIN may open (Agents additionally get `/gmail` via WORKFLOW_ROUTE_RULES). */
+const SUPER_ADMIN_ONLY_PATHS = ["/activity-logs"];
+
+/** Gmail workspace: SUPER_ADMIN and AGENT only (backend mailbox routes enforce the same). */
+const GMAIL_PATH = "/gmail";
 
 /** Queue page each workflow role lands on from the sidebar ("Applications"). */
 export const WORKFLOW_QUEUE_PATH = "/pipeline";
@@ -58,7 +61,7 @@ export const WORKFLOW_QUEUE_PATH = "/pipeline";
  */
 const WORKFLOW_ROUTE_RULES: Record<"AGENT" | "UNDERWRITER", { exact: string[]; prefix: string[] }> = {
   AGENT: {
-    exact: ["/", "/pipeline", "/create-applications", "/notifications", "/user-setting", "/template/playground"],
+    exact: ["/", "/pipeline", "/create-applications", "/notifications", "/user-setting", "/template/playground", GMAIL_PATH],
     // `/create-applications/:id` = edit an own draft before submitting it to underwriting.
     prefix: [
       "/applications",
@@ -96,7 +99,7 @@ export function isPathAllowedForRole(role: string | null | undefined, pathname: 
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname || "/";
   if (appRole === "SUPER_ADMIN") return true;
   if (SUPER_ADMIN_ONLY_PATHS.some((p) => path === p || path.startsWith(`${p}/`))) return false;
-  if (appRole === "CONTRACTS_LOG") return true;
+  if (appRole === "CONTRACTS_LOG") return path !== GMAIL_PATH && !path.startsWith(`${GMAIL_PATH}/`);
   const rules = WORKFLOW_ROUTE_RULES[appRole];
   return rules.exact.includes(path) || rules.prefix.some((p) => path.startsWith(`${p}/`));
 }
