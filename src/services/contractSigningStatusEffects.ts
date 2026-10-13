@@ -6,6 +6,7 @@ import {
   createApplicationActivityLog,
   type ApplicationActivityActionType,
 } from './applicationActivityLogService';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 const CRM_INTERNAL_NOTIFY_ROLES: Role[] = [
   'ADMIN',
@@ -297,16 +298,18 @@ export async function handleContractSigningStatusTransition(
     select: {
       id: true,
       applicationId: true,
+      dealId: true,
       currentQueue: true,
       currentState: true,
     },
   });
   if (!application) return;
 
-  const appNumber =
+  const appNumber = resolveApplicationDisplayNumber(application) || applicationId;
+  const routeNumber =
     application.applicationId != null && String(application.applicationId).trim() !== ''
       ? String(application.applicationId)
-      : applicationId;
+      : '';
 
   const docLabel = String(input.documentName || 'Contract').trim() || 'Contract';
   const stageLabel = STAGE_LABEL[next] ?? next;
@@ -317,10 +320,7 @@ export async function handleContractSigningStatusTransition(
   const title = `Contract ${stageLabel}`;
   const message = `Application #${appNumber} — ${docLabel}: ${stageSubtitle} (${stageLabel}).`;
 
-  const actionUrl =
-    appNumber && appNumber !== applicationId
-      ? `/application-details/${appNumber}`
-      : `/application-details/${applicationId}`;
+  const actionUrl = `/application-details/${routeNumber || applicationId}`;
 
   try {
     await emitContractSigningStatusRealtime({
@@ -412,12 +412,14 @@ export async function notifyContractFullySigned(input: ContractFullySignedInput)
     select: {
       id: true,
       applicationId: true,
+      dealId: true,
       client: { select: { businessName: true, ownerFirstName: true, ownerLastName: true } },
     },
   });
   if (!application) return;
 
-  const appNumber =
+  const appNumber = resolveApplicationDisplayNumber(application);
+  const routeNumber =
     application.applicationId != null && String(application.applicationId).trim() !== ''
       ? String(application.applicationId)
       : '';
@@ -442,7 +444,7 @@ export async function notifyContractFullySigned(input: ContractFullySignedInput)
       createdById: null,
       importance: 'high',
       actionUrl: deriveActionUrl({
-        applicationNumber: appNumber || null,
+        applicationNumber: routeNumber || null,
         applicationUuid: applicationId,
       }),
     },

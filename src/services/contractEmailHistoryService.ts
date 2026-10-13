@@ -89,6 +89,9 @@ export type TrackedMailOptions = {
     contentDisposition?: 'inline' | 'attachment';
   }>;
   trackingId?: string;
+  /** Deal / funder the email belongs to — picks the funder's provider (SendGrid or its Gmail). */
+  applicationId?: string | null;
+  funderName?: string | null;
 };
 
 /**
@@ -146,7 +149,12 @@ export async function sendTrackedContractEmail(input: {
 
   let result: unknown;
   try {
-    result = await input.send({ ...input.mail, to, ...(trackingId ? { trackingId } : {}) });
+    result = await input.send({
+      ...input.mail,
+      to,
+      applicationId: input.mail.applicationId ?? input.applicationId ?? null,
+      ...(trackingId ? { trackingId } : {}),
+    });
   } catch (err) {
     if (trackingId) {
       const message = err instanceof Error ? err.message : String(err);

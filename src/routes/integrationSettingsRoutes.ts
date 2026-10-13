@@ -21,6 +21,12 @@ import {
   updateDocuSignProfile,
   updateFunder,
 } from '../controllers/integrationSettingsController';
+import {
+  connectFunderGmail,
+  disconnectFunderGmailHandler,
+  getFunderGmail,
+  verifyFunderGmail,
+} from '../controllers/funderGmail.controller';
 
 const router = Router();
 
@@ -52,6 +58,12 @@ router.post('/funders', authenticateToken, requireSuperAdmin, createFunder);
 router.patch('/funders/:id', authenticateToken, requireSuperAdmin, updateFunder);
 router.delete('/funders/:id', authenticateToken, requireSuperAdmin, removeFunder);
 router.get('/funders/:id/documents', authenticateToken, requireSuperAdmin, listFunderDocuments);
+
+/** Super admin — funder Gmail mailbox (OAuth callback is the shared GET /google/callback). */
+router.get('/funders/:id/gmail', authenticateToken, requireSuperAdmin, getFunderGmail);
+router.post('/funders/:id/gmail/connect', authenticateToken, requireSuperAdmin, connectFunderGmail);
+router.post('/funders/:id/gmail/verify', authenticateToken, requireSuperAdmin, verifyFunderGmail);
+router.delete('/funders/:id/gmail', authenticateToken, requireSuperAdmin, disconnectFunderGmailHandler);
 router.post('/funders/:id/disclosures', authenticateToken, requireSuperAdmin, uploadFunderDisclosure);
 router.post('/funders/:id/addendums', authenticateToken, requireSuperAdmin, uploadFunderAddendum);
 router.post(

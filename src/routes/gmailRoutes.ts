@@ -2,7 +2,7 @@ import express, { type Request, type Response } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { requirePermission } from '../middleware/requirePermission';
 import { PERMISSIONS } from '../constants/rolePermissions';
-import { requireSuperAdminOnly } from '../middleware/requireSuperAdmin';
+import { requireSuperAdminOrAgent } from '../middleware/requireSuperAdmin';
 import {
     deleteMailboxDraft,
     findMailboxDraft,
@@ -26,19 +26,24 @@ import {
     disconnectGmail,
     getGmailConnectionStatus,
 } from '../services/gmail/gmailOAuthService';
+import { completeFunderGmailConnect, isFunderGmailState } from '../services/gmail/funderGmailOAuthService';
 
 /**
  * Per-user Gmail connection.
- *   GET    /google/callback        (public — Google redirects here; identity comes from signed `state`)
+ *   GET    /google/callback        (public — Google redirects here; identity comes from signed `state`;
+ *                                   also completes funder connections, state purpose `funder_gmail_connect`)
  *   GET    /gmail/connect-url      → { url }   start OAuth for the signed-in user
  *   GET    /gmail/me               → connection status
  *   DELETE /gmail/connection       → revoke + clear
- *   /gmail/mailbox/*               → Gmail workspace page (Super Admin only)
+ *   /gmail/mailbox/*               → Gmail workspace page (Super Admin + Agent)
  */
 export const googleOAuthCallbackRouter = express.Router();
 
 googleOAuthCallbackRouter.get('/callback', async (req: Request, res: Response) => {
-    const redirectTo = await completeGmailConnect(req.query.code, req.query.state, req.query.error);
+    // One registered redirect URI for every Google connection; the signed state picks the flow.
+    const redirectTo = isFunderGmailState(req.query.state)
+        ? await completeFunderGmailConnect(req.query.code, req.query.state, req.query.error)
+        : await completeGmailConnect(req.query.code, req.query.state, req.query.error);
     return res.redirect(302, redirectTo);
 });
 
@@ -79,7 +84,7 @@ gmailRouter.delete('/connection', async (req: Request, res: Response) => {
  * drafts and "Send to CRM". Always acts on the signed-in user's own mailbox.
  */
 const mailboxRouter = express.Router();
-mailboxRouter.use(requireSuperAdminOnly);
+mailboxRouter.use(requireSuperAdminOrAgent);
 mailboxRouter.get('/labels', getLabels);
 mailboxRouter.post('/labels', postLabel);
 mailboxRouter.patch('/labels/:labelId', patchLabel);

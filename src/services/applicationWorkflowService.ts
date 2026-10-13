@@ -22,10 +22,12 @@ import {
     type UnderwriterBucket,
 } from '../constants/applicationWorkflow';
 import { hasContractsLogAccess, normalizeRoleValue } from '../constants/roles';
+import { CANONICAL_WORKFLOW_QUEUES } from '../utils/workflowQueueStorage';
 import { createApplicationActivityLog } from './applicationActivityLogService';
 import type { AuthenticatedUser } from './applicationService';
 import { scheduleWorkflowNotification } from './applicationStageNotificationService';
 import { invalidateAllApplicationStatsCache } from './applicationStatsCache';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 export class WorkflowError extends Error {
     constructor(
@@ -57,9 +59,24 @@ const underwriterTouchedWhere = (userId: string): Prisma.ApplicationWhereInput =
     OR: [{ assignedUnderwriterId: userId }, { approvedByUnderwriterId: userId }],
 });
 
+/** Scrubbing stage, including the legacy `Underwriting` label on older rows. */
+const SCRUBBING_QUEUES = [CANONICAL_WORKFLOW_QUEUES.SCRUBBING, 'Underwriting'] as const;
+
+/**
+ * Agent "All Applications": only deals the Agent created that sit in Scrubbing.
+ * Shared by the workflow queue and GET /applications (which backs the same page).
+ */
+export function buildAgentAllApplicationsWhere(userId: string): Prisma.ApplicationWhereInput {
+    return { AND: [{ createdById: userId }, queueIn(SCRUBBING_QUEUES)] };
+}
+
 /** `userId` null = Super Admin oversight (no ownership filter). */
 export function buildAgentBucketWhere(bucket: AgentBucket, userId: string | null): Prisma.ApplicationWhereInput {
     const and: Prisma.ApplicationWhereInput[] = [LIVE];
+    if (userId && bucket === 'all') {
+        and.push(buildAgentAllApplicationsWhere(userId));
+        return { AND: and };
+    }
     if (userId) and.push(agentOwnershipWhere(userId));
     else and.push({ OR: [{ referringAgent: { role: 'AGENT' } }, { createdBy: { role: 'AGENT' } }] });
     switch (bucket) {
@@ -330,6 +347,7 @@ export async function getWorkflowSummary(
 type TransitionApp = {
     id: string;
     applicationId: number;
+    dealId: string | null;
     currentQueue: string;
     currentState: string;
     isoId: string | null;
@@ -344,6 +362,7 @@ type TransitionApp = {
 const TRANSITION_SELECT = {
     id: true,
     applicationId: true,
+    dealId: true,
     currentQueue: true,
     currentState: true,
     isoId: true,
@@ -369,7 +388,7 @@ const isAgentOwner = (app: TransitionApp, userId: string) =>
 
 const agentRecipientId = (app: TransitionApp) => app.referringAgentId || app.createdById;
 
-const businessLabel = (app: TransitionApp) => app.client?.businessName || `application #${app.applicationId}`;
+const businessLabel = (app: TransitionApp) => app.client?.businessName || `application #${resolveApplicationDisplayNumber(app)}`;
 
 async function logTransition(args: {
     app: TransitionApp;
@@ -459,7 +478,7 @@ export function notifyNewInUnderwriterPool(
                 application: { id: app.id, applicationId: app.applicationId, client: app.client },
                 recipientIds: ids,
                 title: 'New application ready for underwriting',
-                message: `${app.client?.businessName || `Application #${app.applicationId}`} is waiting to be claimed.`,
+                message: `${app.client?.businessName || `Application #${resolveApplicationDisplayNumber(app)}`} is waiting to be claimed.`,
                 actorId,
                 importance: 'high',
             }),
@@ -535,7 +554,7 @@ export async function sendToAgentApproval(
         actorId: user.id,
         importance: 'high',
         oversight: {
-            title: `Underwriter sent application #${app.applicationId} to the Agent`,
+            title: `Underwriter sent application #${resolveApplicationDisplayNumber(app)} to the Agent`,
             message: `${actorName || 'The Underwriter'} completed underwriting for ${businessLabel(app)} and sent it to the Agent for approval.${note ? ` Note: ${note}` : ''}`,
         },
     });
@@ -585,7 +604,7 @@ export async function returnToUnderwriter(
             actorId: user.id,
             importance: 'high',
             oversight: {
-                title: `Agent returned application #${app.applicationId} to underwriting`,
+                title: `Agent returned application #${resolveApplicationDisplayNumber(app)} to underwriting`,
                 message: `${actorName || 'The Agent'} returned ${businessLabel(app)} to the Underwriter: ${note.trim()}`,
             },
         });

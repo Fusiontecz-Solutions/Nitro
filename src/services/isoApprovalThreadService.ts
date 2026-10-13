@@ -11,6 +11,7 @@ import prisma from '../config/prismaClient';
 import { ISO_APPROVAL_THREAD_PURPOSE } from '../constants/applicationWorkflow';
 import { GmailNotConnectedError, getGmailAccessTokenForUser } from './gmail/gmailOAuthService';
 import { getSystemGmailMailbox } from '../config/gmailApiMailer';
+import { getFunderGmailMailboxForSend } from './gmail/funderGmailOAuthService';
 import {
     getGmailMessageHeaders,
     getGmailThreadMessages,
@@ -84,7 +85,7 @@ export async function sendIsoApprovalOnThread(
         cc: input.cc,
         subject,
         html: input.html,
-        threadId: continueThread ? existing!.gmailThreadId : undefined,
+        threadId: continueThread ? existing!.gmailThreadId ?? undefined : undefined,
         inReplyTo,
         references,
         attachments: input.attachments,
@@ -127,8 +128,11 @@ export async function sendIsoApprovalOnThread(
 
 export interface IsoApprovalThreadHistory {
     thread: {
-        gmailThreadId: string;
+        /** Null when the chain so far went out over SendGrid (no Gmail thread to read). */
+        gmailThreadId: string | null;
         mailboxEmail: string | null;
+        ownerFunderMailboxId: string | null;
+        lastProvider: string | null;
         subject: string | null;
         counterpartEmail: string | null;
         ownerUserId: string | null;
@@ -146,14 +150,27 @@ export async function getIsoApprovalThreadHistory(applicationId: string): Promis
     const summary = {
         gmailThreadId: thread.gmailThreadId,
         mailboxEmail: thread.mailboxEmail,
+        ownerFunderMailboxId: thread.ownerFunderMailboxId,
+        lastProvider: thread.lastProvider,
         subject: thread.subject,
         counterpartEmail: thread.counterpartEmail,
         ownerUserId: thread.ownerUserId,
         updatedAt: thread.updatedAt,
     };
 
-    // Threads sent from the server-wide Gmail sender have no owning CRM user.
-    const accessToken = thread.ownerUserId
+    if (!thread.gmailThreadId) {
+        return {
+            thread: summary,
+            messages: null,
+            messagesUnavailableReason: 'This conversation was sent through SendGrid — replies arrive in the funder sender inbox.',
+        };
+    }
+    const gmailThreadId = thread.gmailThreadId;
+
+    // Funder-owned threads read through the funder mailbox; server-wide sender threads have no owner.
+    const accessToken = thread.ownerFunderMailboxId
+        ? await funderMailboxToken(thread.ownerFunderMailboxId, thread.mailboxEmail)
+        : thread.ownerUserId
         ? await getGmailAccessTokenForUser(thread.ownerUserId).catch(() => null)
         : await getSystemGmailMailbox()
               .then((mailbox) =>
@@ -170,9 +187,23 @@ export async function getIsoApprovalThreadHistory(applicationId: string): Promis
         };
     }
     try {
-        const messages = await getGmailThreadMessages(accessToken, thread.gmailThreadId, thread.mailboxEmail);
+        const messages = await getGmailThreadMessages(accessToken, gmailThreadId, thread.mailboxEmail);
         return { thread: summary, messages, messagesUnavailableReason: null };
     } catch (err) {
         return { thread: summary, messages: null, messagesUnavailableReason: (err as Error)?.message || 'Gmail error' };
+    }
+}
+
+/** Access token of the funder mailbox that owns a thread, when it is still the same Google account. */
+async function funderMailboxToken(funderMailboxId: string, threadMailboxEmail: string | null): Promise<string | null> {
+    try {
+        const row = await prisma.funderMailbox.findUnique({ where: { id: funderMailboxId }, select: { funderProfileId: true } });
+        if (!row) return null;
+        const mailbox = await getFunderGmailMailboxForSend(row.funderProfileId);
+        if (!mailbox) return null;
+        if (threadMailboxEmail && mailbox.email !== threadMailboxEmail.trim().toLowerCase()) return null;
+        return mailbox.accessToken;
+    } catch {
+        return null;
     }
 }

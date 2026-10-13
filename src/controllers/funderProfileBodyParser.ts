@@ -86,6 +86,10 @@ export function parseFunderProfileBody(
       body.sendgridFromName !== undefined && body.sendgridFromName !== null
         ? String(body.sendgridFromName).trim() || null
         : undefined,
+    mailProvider:
+      body.mailProvider !== undefined && body.mailProvider !== null && String(body.mailProvider).trim()
+        ? String(body.mailProvider).trim().toLowerCase()
+        : undefined,
     addressLine1:
       body.addressLine1 !== undefined && body.addressLine1 !== null
         ? String(body.addressLine1).trim() || null

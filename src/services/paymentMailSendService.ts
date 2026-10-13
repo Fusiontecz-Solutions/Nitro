@@ -150,6 +150,8 @@ export async function sendTrackedPaymentTemplateMail(
       // The application's funder sender identity; the .env default sender when it has none.
       from:
         (await resolveFunderMailSender({ applicationId: access.application.id })) ?? undefined,
+      // Routes through the funder's provider (SendGrid by default, or its connected Gmail).
+      applicationId: access.application.id,
       trackingId,
       categories: ['payment-template'],
       ...(mailAttachments.length ? { attachments: mailAttachments } : {}),

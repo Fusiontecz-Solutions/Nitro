@@ -466,6 +466,7 @@ async function emailPortalInvite(input: {
     provider: 'gmail',
     mail: {
       from,
+      funderName: input.funderName || null,
       subject: input.emailSubject || input.contractLabel,
       html: buildSigningPortalEmailHtml({
         recipientName: input.recipient.name || null,

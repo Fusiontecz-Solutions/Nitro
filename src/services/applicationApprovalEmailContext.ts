@@ -1,6 +1,7 @@
 import prisma from '../config/prismaClient';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { resolveIsoApprovalPortalUrl } from './isoApprovalPortalUrlService';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 /**
  * Resolves the merge fields / recipient for the ISO-facing approval (or updated-offer)
@@ -153,7 +154,7 @@ export async function resolveApplicationApprovalEmailContext(
         companyName,
         viewApplicationUrl,
         calculateApprovalUrl,
-        applicationNumber: numericAppId ?? undefined,
+        applicationNumber: resolveApplicationDisplayNumber(application) || undefined,
         merchantName,
         merchantEmail,
         merchantPhone,

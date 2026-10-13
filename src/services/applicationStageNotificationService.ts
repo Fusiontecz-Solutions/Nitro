@@ -9,6 +9,7 @@ import {
     deriveCategory,
     notificationTriageDefaults,
 } from './notificationCategory';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 const NOTIFICATION_INCLUDE = {
     recipient: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -34,6 +35,7 @@ interface RecipientUser {
 export interface ApplicationNotificationRecord {
     id: string;
     applicationId?: number | null;
+    dealId?: string | null;
     currentQueue?: string | null;
     currentState?: string | null;
     referringAgentId?: string | null;
@@ -727,7 +729,8 @@ export async function notifyApplicationAmountChanged(ctx: AmountChangeContext): 
     const next = toAmount(ctx.newAmount);
     if (next === null || prev === next) return;
 
-    const appRef = app.applicationId ? ` #${app.applicationId}` : '';
+    const appNumber = resolveApplicationDisplayNumber(app);
+    const appRef = appNumber ? ` #${appNumber}` : '';
     const actor = String(ctx.actorName || '').trim();
     const by = actor ? ` Updated by ${actor}.` : '';
 
@@ -768,6 +771,7 @@ export async function loadApplicationNotificationRecord(
             select: {
                 id: true,
                 applicationId: true,
+                dealId: true,
                 currentQueue: true,
                 currentState: true,
                 referringAgentId: true,

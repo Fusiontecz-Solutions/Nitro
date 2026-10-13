@@ -22,6 +22,22 @@ export function isGoogleOAuthConfigured(): boolean {
   );
 }
 
+/**
+ * The OAuth client every refresh token is minted by. Stored next to each token so
+ * a client switch (new GOOGLE_CLIENT_ID) shows "reconnect needed" instead of
+ * failing sends with invalid_client.
+ */
+export function getGoogleOAuthClientId(): string {
+  return String(process.env.GOOGLE_CLIENT_ID || '').trim();
+}
+
+/** True when a token minted by `storedClientId` can be refreshed with the current client. */
+export function isTokenFromCurrentClient(storedClientId: string | null | undefined): boolean {
+  const stored = String(storedClientId || '').trim();
+  // Tokens stored before the client id was tracked are assumed to be from the current client.
+  return !stored || stored === getGoogleOAuthClientId();
+}
+
 /** Create a fresh OAuth2 client — never share instances across users or cron ticks. */
 export function createOAuth2Client() {
   return new google.auth.OAuth2(

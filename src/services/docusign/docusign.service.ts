@@ -146,6 +146,7 @@ import {
   isDocumentFullySignedStatus,
   isSignedPhaseArchiveUrl,
 } from './utils/archive-signed-envelope-pdf';
+import { resolveApplicationDisplayNumber } from '../../utils/applicationDisplayNumber';
 
 /** Contract signing status labels for notifications */
 const CONTRACT_STATUS_LABELS: Record<string, string> = {
@@ -3015,6 +3016,7 @@ export class DocusignService {
         select: {
           id: true,
           applicationId: true,
+          dealId: true,
           referringAgentId: true,
           salesRepresentativeId: true,
           client: {
@@ -3036,7 +3038,7 @@ export class DocusignService {
         application.client?.businessName ||
         `${application.client?.ownerFirstName || ''} ${application.client?.ownerLastName || ''}`.trim() ||
         'Client';
-      const appIdNumber = application.applicationId || 'N/A';
+      const appIdNumber = resolveApplicationDisplayNumber(application) || 'N/A';
 
       const statusLabel = getContractStatusLabel(newStatus);
       const title = statusLabel;

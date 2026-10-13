@@ -7,6 +7,7 @@ import {
   type MailSender,
 } from './mailSenderIdentity';
 import uploadService from './uploadService';
+import { assertFunderMailProviderAllowed } from './gmail/funderGmailOAuthService';
 import {
   DEFAULT_FUNDER_CONTRACT_FILENAME,
   DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY,
@@ -73,6 +74,8 @@ export type FunderProfileInput = {
   defaultCcEmail?: string | null;
   sendgridFromEmail?: string | null;
   sendgridFromName?: string | null;
+  /** sendgrid (default) | gmail — gmail requires a connected, verified FunderMailbox. */
+  mailProvider?: string;
   addressLine1?: string | null;
   addressCity?: string | null;
   addressState?: string | null;
@@ -185,6 +188,7 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
     defaultCcEmail: row.defaultCcEmail != null ? String(row.defaultCcEmail) : null,
     sendgridFromEmail: row.sendgridFromEmail != null ? String(row.sendgridFromEmail) : null,
     sendgridFromName: row.sendgridFromName != null ? String(row.sendgridFromName) : null,
+    mailProvider: row.mailProvider != null ? String(row.mailProvider) : 'sendgrid',
     addressLine1: row.addressLine1 != null ? String(row.addressLine1) : null,
     addressCity: row.addressCity != null ? String(row.addressCity) : null,
     addressState: row.addressState != null ? String(row.addressState) : null,
@@ -1162,6 +1166,8 @@ export async function uploadFunderLetterLogo(funderId: string, file: UploadedFil
 
 export async function createFunderProfile(input: FunderProfileInput) {
   assertSendGridSenderComplete(input.sendgridFromEmail, input.sendgridFromName);
+  // A new funder has no mailbox yet, so only the default provider is accepted.
+  if (input.mailProvider !== undefined) await assertFunderMailProviderAllowed(null, input.mailProvider);
   const contractDefaults = defaultContractFields(input);
   const row = await prisma.funderProfile.create({
     data: {
@@ -1325,6 +1331,9 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
     input.sendgridFromEmail !== undefined ? input.sendgridFromEmail : existing.sendgridFromEmail,
     input.sendgridFromName !== undefined ? input.sendgridFromName : existing.sendgridFromName,
   );
+  if (input.mailProvider !== undefined && input.mailProvider !== existing.mailProvider) {
+    data.mailProvider = await assertFunderMailProviderAllowed(id, input.mailProvider);
+  }
   if (input.addressLine1 !== undefined) {
     data.addressLine1 = input.addressLine1 ? String(input.addressLine1).trim() : null;
   }

@@ -21,6 +21,7 @@ import {
 import { notifyApplicationStageChange } from '../services/applicationStageNotificationService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
 import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 const NOTIFICATION_BUCKETS = ['inbox', 'todo', 'follow_up', 'snoozed', 'done'] as const;
 const NOTIFICATION_IMPORTANCE = ['urgent', 'high', 'normal', 'low'] as const;
@@ -336,7 +337,7 @@ class NotificationController {
                 client?.businessName ||
                 `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
                 'Unknown Client';
-            const applicationIdNumber = app.applicationId || 'N/A';
+            const applicationIdNumber = resolveApplicationDisplayNumber(app) || 'N/A';
 
             const primaryIsoEmail = isIsoEmailRequest ? String(isoEmail || '').trim() : '';
             const extraToEmails = Array.isArray(additionalToEmails)

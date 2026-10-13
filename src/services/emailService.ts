@@ -10,7 +10,7 @@ import {
     buildBrandLogoAttachments,
 } from '../constants/brand';
 import { buildHtmlPdfMailAttachment } from './emailHtmlPdfAttachment.service';
-import { getApplicationEmailThread } from './applicationEmailThreadService';
+import { getApplicationEmailThread, hasApplicationEmailChain } from './applicationEmailThreadService';
 import {
     buildIsoApprovalEmailPackage,
     resolveIsoApprovalEmailSubject,
@@ -515,7 +515,8 @@ export async function sendIsoOfferDecisionThreadEmail(
     const to = String(params.to || '').trim();
     if (!to) return { sent: false, skippedReason: 'no-recipient' };
     const thread = await getApplicationEmailThread(params.applicationId);
-    if (!thread?.gmailThreadId) return { sent: false, skippedReason: 'no-thread' };
+    // A chain may be a Gmail thread or (funder on SendGrid) Message-ID headers only.
+    if (!hasApplicationEmailChain(thread)) return { sent: false, skippedReason: 'no-thread' };
 
     const approved = params.decision === 'approved';
     const business = String(params.businessName || '').trim();

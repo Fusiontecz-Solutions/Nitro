@@ -9,6 +9,7 @@ import {
   deriveActionUrl,
   notificationTriageDefaults,
 } from './notificationCategory';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 type RecipientUser = {
   id: string;
@@ -331,6 +332,7 @@ export async function notifyDealUsersOfComment(
     select: {
       id: true,
       applicationId: true,
+      dealId: true,
       currentQueue: true,
       currentState: true,
       client: {
@@ -378,7 +380,7 @@ export async function notifyDealUsersOfComment(
     application.client?.businessName ||
     `${application.client?.ownerFirstName || ''} ${application.client?.ownerLastName || ''}`.trim() ||
     'Client';
-  const appNumber = application.applicationId ?? 'N/A';
+  const appNumber = resolveApplicationDisplayNumber(application) || 'N/A';
 
   const actorLabel = await resolveActorLabel({
     commentType: params.commentType,

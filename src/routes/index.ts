@@ -26,7 +26,7 @@ import contractRoutes from './contractRoutes';
 import isoRoutes from './isoRoutes';
 import mailRoutes from './mailRoutes';
 import integrationSettingsRoutes from './integrationSettingsRoutes';
-// import sendgridWebhookRoutes from './sendgridWebhookRoutes'; // SendGrid disabled — mail goes through Gmail
+import sendgridWebhookRoutes from './sendgridWebhookRoutes';
 import activityLogRoutes from './activityLogRoutes';
 import signnowWebhookRoutes from './signnowWebhookRoutes';
 import backgroundCheckRoutes from './backgroundCheckRoutes';
@@ -65,7 +65,7 @@ router.use('/boldsign', denyWorkflowRoles, boldsignRoutes);
 router.use('/offer-decisions', denyAgentWrites, offerDecisionRoutes);
 router.use('/contract', denyWorkflowRoles, contractRoutes);
 router.use('/iso', isoRoutes);
-// router.use('/sendgrid', sendgridWebhookRoutes); // SendGrid disabled — mail goes through Gmail
+router.use('/sendgrid', sendgridWebhookRoutes);
 router.use('/activity-logs', activityLogRoutes);
 router.use('/signnow', denyWorkflowRoles, signnowWebhookRoutes);
 router.use('/mail', denyWorkflowRoles, mailRoutes);
@@ -74,7 +74,7 @@ router.use('/background-checks', backgroundCheckRoutes);
 router.use('/opencorporates', opencorporatesRoutes);
 router.use('/background-check-report', backgroundCheckReportRoutes);
 router.use('/notifications', notificationRoutes);
-// Per-user Gmail connection (Agent ISO approval mail). Callback is public; identity is in signed state.
+// Per-user and per-funder Gmail connection. Callback is public; identity + flow are in the signed state.
 router.use('/google', googleOAuthCallbackRouter);
 router.use('/gmail', gmailRoutes);
 // Email / letter / contract templates (Gmail workspace compose + "New template").

@@ -11,10 +11,13 @@ import prisma from '../../config/prismaClient';
 import {
     createOAuth2Client,
     getAccessTokenForRefreshToken,
+    getGoogleOAuthClientId,
     invalidateAccessTokenCache,
     isGoogleOAuthConfigured,
+    isTokenFromCurrentClient,
 } from '../../config/gmail';
 import { resolveCrmFrontendBaseUrl } from '../../utils/crmFrontendUrl';
+import { decryptRefreshToken, encryptRefreshToken, isEncryptedToken } from './gmailTokenCrypto';
 
 const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 
@@ -32,6 +35,22 @@ export const GMAIL_OAUTH_SCOPES = [
 const STATE_PURPOSE = 'gmail_connect';
 const STATE_TTL = '15m';
 
+/**
+ * Google OAuth `state` purposes sharing GET /api/v1/google/callback. Each flow
+ * signs its own purpose so a state minted for one can never complete another.
+ */
+export const OAUTH_STATE_PURPOSES = { userGmail: STATE_PURPOSE, funderGmail: 'funder_gmail_connect' } as const;
+
+/** Purpose of a signed callback state, or null when it is missing / forged / expired. */
+export function readOAuthStatePurpose(state: unknown): string | null {
+    try {
+        const decoded = jwt.verify(String(state ?? ''), jwtSecret()) as { p?: string };
+        return typeof decoded?.p === 'string' ? decoded.p : null;
+    } catch {
+        return null;
+    }
+}
+
 export class GmailNotConnectedError extends Error {
     readonly code = 'GMAIL_NOT_CONNECTED';
     constructor(message = 'Connect your Gmail account before sending this email.') {
@@ -41,18 +60,33 @@ export class GmailNotConnectedError extends Error {
 
 const tokenCacheKey = (userId: string) => `user:${userId}`;
 
-const jwtSecret = (): string => {
+function jwtSecret(): string {
     const secret = process.env.JWT_SECRET;
     if (!secret) throw new Error('JWT_SECRET is not configured');
     return secret;
-};
+}
 
 /** Only allow in-app return paths (open-redirect safe). */
-const safeReturnPath = (raw: unknown): string => {
+export function safeReturnPath(raw: unknown, fallback = '/user-setting?tab=email'): string {
     const path = String(raw ?? '').trim();
-    if (!path.startsWith('/') || path.startsWith('//')) return '/user-setting?tab=email';
+    if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) return fallback;
     return path;
-};
+}
+
+/** Sign a short-lived callback state for one OAuth purpose. */
+export function signOAuthState(payload: Record<string, unknown> & { p: string }): string {
+    return jwt.sign(payload, jwtSecret(), { expiresIn: STATE_TTL });
+}
+
+/** Verify a callback state minted for `purpose`; null when invalid, expired or for another flow. */
+export function verifyOAuthState<T extends Record<string, unknown>>(state: unknown, purpose: string): (T & { p: string }) | null {
+    try {
+        const decoded = jwt.verify(String(state ?? ''), jwtSecret()) as T & { p?: string };
+        return decoded?.p === purpose ? (decoded as T & { p: string }) : null;
+    } catch {
+        return null;
+    }
+}
 
 export function buildGmailConnectUrl(userId: string, returnPath?: string): string {
     if (!isGoogleOAuthConfigured()) {
@@ -72,9 +106,9 @@ export function buildGmailConnectUrl(userId: string, returnPath?: string): strin
     });
 }
 
-function frontendRedirect(returnPath: string, params: Record<string, string>): string {
+export function frontendRedirect(returnPath: string, params: Record<string, string>): string {
     const base = (resolveCrmFrontendBaseUrl() || '').replace(/\/+$/, '');
-    const [path, query = ''] = safeReturnPath(returnPath).split('?');
+    const [path, query = ''] = safeReturnPath(returnPath, '/').split('?');
     const search = new URLSearchParams(query);
     for (const [k, v] of Object.entries(params)) search.set(k, v);
     return `${base}${path}?${search.toString()}`;
@@ -124,7 +158,8 @@ export async function completeGmailConnect(code: unknown, state: unknown, oauthE
         await prisma.user.update({
             where: { id: userId },
             data: {
-                googleRefreshToken: refreshToken,
+                googleRefreshToken: encryptRefreshToken(refreshToken),
+                googleOAuthClientId: getGoogleOAuthClientId() || null,
                 googleEmail: googleEmail || null,
                 googleConnectedAt: new Date(),
             },
@@ -153,12 +188,12 @@ export interface GmailConnectionStatus {
 export async function getGmailConnectionStatus(userId: string, probe = false): Promise<GmailConnectionStatus> {
     const user = await prisma.user.findUnique({
         where: { id: userId },
-        select: { googleRefreshToken: true, googleEmail: true, googleConnectedAt: true },
+        select: { googleRefreshToken: true, googleOAuthClientId: true, googleEmail: true, googleConnectedAt: true },
     });
     const connected = Boolean(user?.googleRefreshToken);
-    let needsReconnect = false;
+    let needsReconnect = connected && !isTokenFromCurrentClient(user?.googleOAuthClientId);
     let mailboxAccess: boolean | null = null;
-    if (connected && probe) {
+    if (connected && probe && !needsReconnect) {
         const accessToken = await getGmailAccessTokenForUser(userId).catch(() => null);
         needsReconnect = !accessToken;
         if (accessToken) {
@@ -180,10 +215,44 @@ export async function getGmailConnectionStatus(userId: string, probe = false): P
     };
 }
 
+/**
+ * Revoking any token revokes the whole Google grant (account + OAuth client), so a
+ * mailbox connected both as a user and as a funder must not be revoked while the
+ * other connection still uses it — clear the local copy only.
+ */
+export async function isGoogleGrantSharedElsewhere(
+    email: string | null | undefined,
+    exclude: { userId?: string; funderMailboxId?: string },
+): Promise<boolean> {
+    const address = String(email ?? '').trim();
+    if (!address) return false;
+    const [userCount, funderCount] = await Promise.all([
+        prisma.user.count({
+            where: {
+                googleRefreshToken: { not: null },
+                googleEmail: { equals: address, mode: 'insensitive' },
+                ...(exclude.userId ? { id: { not: exclude.userId } } : {}),
+            },
+        }),
+        prisma.funderMailbox.count({
+            where: {
+                refreshTokenEnc: { not: null },
+                email: { equals: address, mode: 'insensitive' },
+                ...(exclude.funderMailboxId ? { id: { not: exclude.funderMailboxId } } : {}),
+            },
+        }),
+    ]);
+    return userCount + funderCount > 0;
+}
+
 export async function disconnectGmail(userId: string): Promise<void> {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { googleRefreshToken: true } });
-    const token = String(user?.googleRefreshToken ?? '').trim();
-    if (token) {
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { googleRefreshToken: true, googleEmail: true },
+    });
+    const token = decryptRefreshToken(user?.googleRefreshToken);
+    const shared = token ? await isGoogleGrantSharedElsewhere(user?.googleEmail, { userId }) : false;
+    if (token && !shared) {
         try {
             await createOAuth2Client().revokeToken(token);
         } catch (err) {
@@ -193,15 +262,34 @@ export async function disconnectGmail(userId: string): Promise<void> {
     }
     await prisma.user.update({
         where: { id: userId },
-        data: { googleRefreshToken: null, googleEmail: null, googleConnectedAt: null },
+        data: { googleRefreshToken: null, googleOAuthClientId: null, googleEmail: null, googleConnectedAt: null },
     });
     invalidateAccessTokenCache(tokenCacheKey(userId));
 }
 
 /** Short-lived access token for a user's mailbox, or null when not connected / revoked. */
 export async function getGmailAccessTokenForUser(userId: string): Promise<string | null> {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { googleRefreshToken: true } });
-    const refreshToken = String(user?.googleRefreshToken ?? '').trim();
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { googleRefreshToken: true, googleOAuthClientId: true },
+    });
+    const stored = String(user?.googleRefreshToken ?? '').trim();
+    if (!stored || !isTokenFromCurrentClient(user?.googleOAuthClientId)) return null;
+    const refreshToken = decryptRefreshToken(stored);
     if (!refreshToken) return null;
+    if (!isEncryptedToken(stored)) await encryptLegacyUserToken(userId, stored, refreshToken);
     return getAccessTokenForRefreshToken(refreshToken, tokenCacheKey(userId));
+}
+
+/** Re-save a legacy plain-text token encrypted (only if it has not changed meanwhile). */
+async function encryptLegacyUserToken(userId: string, stored: string, plain: string): Promise<void> {
+    try {
+        await prisma.user.updateMany({
+            where: { id: userId, googleRefreshToken: stored },
+            data: { googleRefreshToken: encryptRefreshToken(plain) },
+        });
+    } catch (err) {
+        // FIELD_ENCRYPTION_KEY missing etc. — keep sending; the backfill script reports it.
+        console.warn('[gmail-connect] could not encrypt legacy refresh token for user', userId, (err as Error)?.message);
+    }
 }

@@ -9,7 +9,7 @@ import { sendTrackedPaymentTemplateMail } from '../services/paymentMailSendServi
 
  * POST /api/mail/send
 
- * Send payment template emails through the Gmail sender mailbox (SendGrid disabled).
+ * Send payment template emails through the funder's provider (SendGrid by default, or the funder's Gmail).
 
  * When `applicationId` + deal metadata are supplied, the send is tracked end-to-end
 
@@ -29,7 +29,7 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
 
                 message:
 
-                    'Email is not configured. Set GMAIL_SENDER_EMAIL with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET on the server.',
+                    'Email is not configured. Set SENDGRID_API_KEY + SENDGRID_FROM_EMAIL (or GMAIL_SENDER_EMAIL with GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET) on the server.',
 
             });
 
@@ -159,7 +159,9 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
         console.error('Payment mail send error:', error);
 
         const message = error?.message || 'Failed to send email';
-        res.status(500).json({
+        const creditsExceeded = /credits exceeded/i.test(message);
+
+        res.status(creditsExceeded ? 402 : 500).json({
 
             success: false,
 

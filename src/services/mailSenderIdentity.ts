@@ -46,7 +46,10 @@ function sameEmail(a: string | null | undefined, b: string | null | undefined): 
 }
 
 /** Name explicitly paired with the `.env` default sender, if any. */
-function envDefaultSenderName(): string | null {
+function envDefaultSenderName(options?: { sendgridOnly?: boolean }): string | null {
+  if (options?.sendgridOnly) {
+    return process.env.SENDGRID_FROM_NAME?.trim() || process.env.MAIL_FROM_NAME?.trim() || null;
+  }
   return (
     process.env.GMAIL_SENDER_NAME?.trim() ||
     process.env.SENDGRID_FROM_NAME?.trim() ||
@@ -61,11 +64,12 @@ function envDefaultSenderName(): string | null {
  * SendGrid sender and never an SMTP login address left over in `.env`.
  */
 export function resolveDefaultSenderRaw(options?: { sendgridOnly?: boolean }): string | undefined {
-  // Gmail is the only transport now (SendGrid disabled): the Gmail sender mailbox is the default.
-  const gmailSender = process.env.GMAIL_SENDER_EMAIL?.trim();
+  // SendGrid sends must use the verified SendGrid sender, never the Gmail mailbox address.
   if (options?.sendgridOnly) {
-    return gmailSender || process.env.SENDGRID_FROM_EMAIL?.trim() || process.env.SENDGRID_AUTH_USER?.trim();
+    return process.env.SENDGRID_FROM_EMAIL?.trim() || process.env.SENDGRID_AUTH_USER?.trim();
   }
+  // Untargeted Gmail sends: the server Gmail mailbox is the default.
+  const gmailSender = process.env.GMAIL_SENDER_EMAIL?.trim();
   return (
     gmailSender ||
     process.env.SMTP_FROM?.trim() ||
@@ -134,7 +138,7 @@ export async function resolveMailSender(
   if (name) return { email, name };
 
   const defaultRaw = resolveDefaultSenderRaw(options);
-  const envName = envDefaultSenderName();
+  const envName = envDefaultSenderName(options);
   if (envName && defaultRaw && sameEmail(parseMailSender(defaultRaw).email, email)) {
     return { email, name: envName };
   }

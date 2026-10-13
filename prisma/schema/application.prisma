@@ -20,7 +20,11 @@ model User {
   docusignBaseUri            String?
   docusignRefreshToken       String?
   docusignTokenExpiry        DateTime?
+  /// Google OAuth refresh token, AES-256-GCM encrypted (`enc:v1:`, utils/fieldEncryption).
+  /// Legacy plain-text values are re-encrypted on read and by `npm run encrypt:gmail-tokens`.
   googleRefreshToken         String?
+  /// GOOGLE_CLIENT_ID that minted googleRefreshToken (a client switch requires reconnect).
+  googleOAuthClientId        String?
   /// Gmail address connected via Google OAuth (Agent ISO approval mail is sent from this mailbox).
   googleEmail                String?
   googleConnectedAt          DateTime?
@@ -53,6 +57,7 @@ model User {
   outbound_communications    outbound_communications[]
   ownedEmailThreads          ApplicationEmailThread[]
   paymentTemplates           PaymentTemplate[]
+  connectedFunderMailboxes   FunderMailbox[]
 }
 
 model AccessToken {
@@ -274,6 +279,7 @@ model Application {
   termsOffers                     TermsOffer[]
   outbound_communications         outbound_communications[]
   emailThreads                    ApplicationEmailThread[]
+  mailSendClaims                  MailSendClaim[]
 
   @@index([isoId])
   @@index([dealId])
@@ -857,8 +863,13 @@ model ApplicationEmailThread {
   purpose          String      @db.VarChar(32)
   /// User whose connected Gmail mailbox owns the thread.
   ownerUserId      String?     @db.Uuid
+  /// Funder mailbox that owns the Gmail thread (funders on the Gmail provider).
+  ownerFunderMailboxId String?  @db.Uuid
   mailboxEmail     String?
-  gmailThreadId    String
+  /// Null when the chain so far went out over SendGrid (Message-ID headers only).
+  gmailThreadId    String?
+  /// Provider of the latest message on the chain: gmail | sendgrid | smtp.
+  lastProvider     String?
   /// RFC 5322 Message-ID of the latest message we sent (used for In-Reply-To).
   lastMessageId    String?
   /// Accumulated References header for threading.
@@ -869,7 +880,9 @@ model ApplicationEmailThread {
   updatedAt        DateTime    @updatedAt
   application      Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   owner            User?       @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerFunderMailbox FunderMailbox? @relation(fields: [ownerFunderMailboxId], references: [id], onDelete: SetNull)
 
   @@unique([applicationId, purpose])
   @@index([gmailThreadId])
+  @@index([ownerFunderMailboxId])
 }

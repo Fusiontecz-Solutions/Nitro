@@ -3,6 +3,7 @@ import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { sendOperationsDisbursementReadyEmail } from './emailService';
 import { emitToUser } from '../socket';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 export const FUNDING_CALL_DISBURSEMENT_NOTIFICATION_TYPE = 'funding_call_disbursement_ready';
 
@@ -136,7 +137,7 @@ export async function notifyOperationsDisbursementReady(options: {
             (application as any).client?.businessName ||
             `${(application as any).client?.ownerFirstName || ''} ${(application as any).client?.ownerLastName || ''}`.trim() ||
             'Client';
-        const appIdNumber = application.applicationId ?? '';
+        const appIdNumber = resolveApplicationDisplayNumber(application);
         const appLabel = appIdNumber ? ` #${appIdNumber}` : '';
 
         const title = `Funding call complete — proceed with disbursement`;

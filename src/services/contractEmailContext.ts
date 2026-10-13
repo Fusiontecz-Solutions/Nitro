@@ -5,6 +5,7 @@ import {
   resolveFunderEmailBranding,
   type FunderEmailBranding,
 } from './emailTemplates/funderEmailBranding';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 /**
  * Deal details shared by the contract status emails ("Contract Sent" to the
@@ -56,6 +57,7 @@ export async function loadContractEmailContext(applicationId: string): Promise<C
         where: { id: applicationId },
         select: {
           applicationId: true,
+          dealId: true,
           dealDisplayName: true,
           client: { select: { businessName: true } },
         },
@@ -73,7 +75,7 @@ export async function loadContractEmailContext(applicationId: string): Promise<C
         },
       }),
     ]);
-    context.applicationNumber = String(app?.applicationId || '').trim();
+    context.applicationNumber = resolveApplicationDisplayNumber(app);
     context.merchantName =
       String(
         app?.client?.businessName ||

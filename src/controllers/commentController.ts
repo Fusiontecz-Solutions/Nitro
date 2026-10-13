@@ -9,6 +9,7 @@ import {
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import { notifyDealUsersOfComment } from '../services/publicPortalCommentNotificationService';
 import { sendExternalCommentToIsoEmail } from '../services/isoExternalCommentMailService';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 const applicationAccessDeniedMessage =
   'Forbidden: you do not have access to this application';
@@ -20,6 +21,7 @@ const applicationCommentAccessSelect = {
   assignedUnderwriterId: true,
   clientId: true,
   applicationId: true,
+  dealId: true,
 } as const;
 
 type ApplicationCommentAccessRow = {
@@ -29,6 +31,7 @@ type ApplicationCommentAccessRow = {
   assignedUnderwriterId?: string | null;
   clientId: string;
   applicationId: number;
+  dealId?: string | null;
 };
 
 async function requireApplicationAccessById(
@@ -283,7 +286,7 @@ class CommentController {
               clientRecord?.businessName ||
               `${clientRecord?.ownerFirstName || ''} ${clientRecord?.ownerLastName || ''}`.trim() ||
               'Client';
-            const appNumber = application.applicationId ?? 'N/A';
+            const appNumber = resolveApplicationDisplayNumber(application) || 'N/A';
 
             const recipientUsers = await prisma.user.findMany({
               where: { id: { in: Array.from(finalUwRecipients) } },

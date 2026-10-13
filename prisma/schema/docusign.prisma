@@ -132,6 +132,9 @@ model FunderProfile {
   /// Display name of that verified SendGrid sender identity (e.g. "Tiberian Funding").
   /// Required whenever sendgridFromEmail is set — never derived from the SendGrid account name.
   sendgridFromName         String?
+  /// Outbound provider for this funder's deal mail: sendgrid (default) | gmail.
+  /// 'gmail' is only accepted while the funder's FunderMailbox is connected and verified.
+  mailProvider             String                  @default("sendgrid")
   addressLine1             String?
   addressCity              String?
   addressState             String?
@@ -175,6 +178,7 @@ model FunderProfile {
   createdAt                DateTime                @default(now())
   updatedAt                DateTime                @updatedAt
   docusignAccountProfile   DocuSignAccountProfile? @relation(fields: [docusignAccountProfileId], references: [id], onDelete: SetNull)
+  mailbox                  FunderMailbox?
 
   @@index([docusignAccountProfileId])
   @@index([isActive])

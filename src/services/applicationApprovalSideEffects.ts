@@ -13,6 +13,7 @@ import { emitToUser } from '../socket';
 import { deriveCategory, deriveActionUrl } from './notificationCategory';
 // Type-only to avoid a runtime cycle (applicationApprovalService -> queue -> worker -> here).
 import type { ApprovalSideEffectPayload } from './business/applicationApprovalService';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 /* ============================================================================
  * Application approval side-effects
@@ -268,10 +269,7 @@ export async function processApplicationApprovalSideEffects(
     const actorType = String(payload.actorType ?? '').trim().toUpperCase();
     const isIsoActor = actorType === 'ISO';
     const isoApproverName = String(payload.actorName ?? '').trim() || String(iso?.name ?? '').trim() || 'ISO';
-    const applicationNumber =
-        application.applicationId != null && String(application.applicationId).trim() !== ''
-            ? String(application.applicationId)
-            : applicationId;
+    const applicationNumber = resolveApplicationDisplayNumber(application) || applicationId;
 
     /* ----------------------------- Notifications ----------------------------- */
     try {

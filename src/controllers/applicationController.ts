@@ -130,7 +130,7 @@ import {
     normalizeWorkflowToken,
 } from '../constants/applicationWorkflow';
 import { hasContractsLogAccess, isSuperAdminRole, normalizeRoleValue } from '../constants/roles';
-import { notifyNewInUnderwriterPool } from '../services/applicationWorkflowService';
+import { buildAgentAllApplicationsWhere, notifyNewInUnderwriterPool } from '../services/applicationWorkflowService';
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
 import { fetchPaginatedApplicationsForList } from '../services/applicationListSort';
 import { buildApplicationListSearchWhere } from '../services/applicationListSearch';
@@ -170,6 +170,7 @@ import {
     dealTeamRecipientIds,
 } from '../services/applicationStageNotificationService';
 import { syncContractDocumentsOntoApplication } from '../services/applicationDocumentMirrorService';
+import { resolveApplicationDisplayNumber } from '../utils/applicationDisplayNumber';
 
 type ApplicationState =
     | 'DRAFT'
@@ -2553,6 +2554,19 @@ class ApplicationController {
                 };
             }
 
+            // Agents only see deals they created that sit in Scrubbing.
+            if (authRoleUpper === 'AGENT' && authUser?.id) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                where = {
+                    ...where,
+                    AND: [...existingAnd, buildAgentAllApplicationsWhere(authUser.id)],
+                };
+            }
+
             const operationsStatusParam = operationsStatus
                 ? String(operationsStatus)
                 : undefined;
@@ -4422,7 +4436,7 @@ class ApplicationController {
                         (applicationRecord as any)?.client?.businessName ||
                         `${(applicationRecord as any)?.client?.ownerFirstName || ''} ${(applicationRecord as any)?.client?.ownerLastName || ''}`.trim() ||
                         'Client';
-                    const appIdNumber = (applicationRecord as any)?.applicationId ?? '';
+                    const appIdNumber = resolveApplicationDisplayNumber(applicationRecord as any);
 
                     const underwriters = await prisma.user.findMany({
                         where: { role: 'SCRUBBING', isActive: true },
@@ -4726,7 +4740,8 @@ class ApplicationController {
 
             {
                 const actorName = String((req as any).user?.name || '').trim() || 'An Underwriter';
-                const appRef = refreshed.applicationId ? ` #${refreshed.applicationId}` : '';
+                const appNumber = resolveApplicationDisplayNumber(refreshed);
+                const appRef = appNumber ? ` #${appNumber}` : '';
                 const business = (refreshed as any).client?.businessName || `application${appRef}`;
                 scheduleWorkflowNotification({
                     application: refreshed as any,
@@ -7200,7 +7215,7 @@ class ApplicationController {
             const { merchantEmail, merchantPhone } = resolveMerchantContactForOfferEmail(client);
             const latestTermsOffer = (application as any).termsOffers?.[0] ?? null;
             const offerDecision = (application as any).OfferDecision ?? null;
-            const offerApplicationNumber = (application as any).applicationId ?? undefined;
+            const offerApplicationNumber = resolveApplicationDisplayNumber(application as any) || undefined;
             const offerApprovedAmount =
                 latestTermsOffer?.approvedAmount != null
                     ? Number(latestTermsOffer.approvedAmount)
@@ -7485,7 +7500,8 @@ class ApplicationController {
 
                 const sentRecord = await loadApplicationNotificationRecord(String(fallbackId));
                 if (sentRecord) {
-                    const appRef = sentRecord.applicationId ? ` #${sentRecord.applicationId}` : '';
+                    const sentAppNumber = resolveApplicationDisplayNumber(sentRecord);
+                    const appRef = sentAppNumber ? ` #${sentAppNumber}` : '';
                     const actorName = String((req as any).user?.name || '').trim();
                     scheduleWorkflowNotification({
                         application: sentRecord,

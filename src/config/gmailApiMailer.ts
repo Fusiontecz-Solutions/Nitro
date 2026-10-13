@@ -1,8 +1,9 @@
 /**
- * Server-wide Gmail API mailer (replaces SendGrid — adapted from Katan
- * `config/gmailApiMailer.ts`).
+ * Gmail API mailer (adapted from Katan `config/gmailApiMailer.ts`). Used for mail
+ * with no funder yet (server mailbox below) and for funders on the Gmail provider
+ * (their FunderMailbox token). Funder mail defaults to SendGrid — see config/nodemailer.
  *
- * Every outbound CRM email goes out from one Google mailbox:
+ * The server mailbox:
  *   GMAIL_SENDER_EMAIL          — the mailbox address (also the From address)
  *   GMAIL_SENDER_REFRESH_TOKEN  — optional; otherwise the refresh token of the CRM
  *                                 user who connected that mailbox (Settings → Email)
@@ -19,6 +20,7 @@ import axios from 'axios';
 import prisma from './prismaClient';
 import { getAccessTokenForRefreshToken, invalidateAccessTokenCache, isGoogleOAuthConfigured } from './gmail';
 import { getGmailAccessTokenForUser } from '../services/gmail/gmailOAuthService';
+import { MailDeliveryError, classifyHttpFailure } from '../services/mail/mailErrors';
 
 const GMAIL_SEND_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
 const SYSTEM_TOKEN_CACHE_KEY = 'gmail-system-sender';
@@ -35,8 +37,12 @@ export function isGmailApiMailerConfigured(): boolean {
 export interface GmailMailbox {
     email: string;
     accessToken: string;
-    /** CRM user whose connection backs the mailbox; null for the env refresh token. */
+    /** CRM user whose connection backs the mailbox; null for the env refresh token / a funder mailbox. */
     userId: string | null;
+    /** Set when the mailbox is a funder's FunderMailbox. */
+    funderMailboxId?: string | null;
+    /** From address when it differs from `email` (verified Gmail Send-as alias). */
+    fromEmail?: string | null;
 }
 
 /** Access token for the server-wide sender mailbox, or null when unavailable. */
@@ -134,7 +140,18 @@ export async function buildGmailRawMessage(
 const gmailErrorMessage = (error: any): string =>
     error?.response?.data?.error?.message || error?.message || 'Gmail send failed';
 
-/** Send one message through the Gmail API. Throws on failure. */
+/** Gmail failure with its delivery classification (see services/mail/mailErrors). */
+const gmailSendError = (error: any): MailDeliveryError =>
+    new MailDeliveryError(gmailErrorMessage(error), {
+        kind: classifyHttpFailure(error),
+        provider: 'gmail',
+        status: error?.response?.status,
+    });
+
+/**
+ * Send one message through the Gmail API. Throws {@link MailDeliveryError}:
+ * `not_sent` for 4xx / pre-request failures, `ambiguous` for 5xx / timeouts.
+ */
 export async function sendViaGmailApi(
     options: GmailApiSendOptions,
     retryWithFreshToken?: () => Promise<string | null>,
@@ -155,16 +172,17 @@ export async function sendViaGmailApi(
         response = await post(options.accessToken);
     } catch (error: any) {
         // A cached token may have been revoked/expired early — retry once with a fresh one.
+        // A 401 means Gmail rejected the request, so a single retry cannot duplicate the email.
         if (error?.response?.status === 401 && retryWithFreshToken) {
             const fresh = await retryWithFreshToken().catch(() => null);
-            if (!fresh) throw new Error(gmailErrorMessage(error));
+            if (!fresh) throw gmailSendError(error);
             try {
                 response = await post(fresh);
             } catch (retryError) {
-                throw new Error(gmailErrorMessage(retryError));
+                throw gmailSendError(retryError);
             }
         } else {
-            throw new Error(gmailErrorMessage(error));
+            throw gmailSendError(error);
         }
     }
 

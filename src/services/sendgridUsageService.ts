@@ -36,9 +36,6 @@ export type SendGridUsageSummary = {
   fetchedAt: string;
 };
 
-/** SendGrid is switched off: every CRM email is sent through the Gmail API. */
-const SENDGRID_DISABLED = true as boolean;
-
 let cache: { at: number; value: SendGridUsageSummary } | null = null;
 let inflight: Promise<SendGridUsageSummary> | null = null;
 
@@ -139,8 +136,7 @@ async function fetchUsage(apiKey: string): Promise<SendGridUsageSummary> {
 export async function getSendGridUsageSummary(options?: {
   force?: boolean;
 }): Promise<SendGridUsageSummary> {
-  // SendGrid disabled — all mail goes through Gmail, so there is no SendGrid plan to report.
-  const apiKey = SENDGRID_DISABLED ? undefined : process.env.SENDGRID_API_KEY?.trim();
+  const apiKey = process.env.SENDGRID_API_KEY?.trim();
   if (!apiKey) {
     return {
       configured: false,
@@ -156,7 +152,7 @@ export async function getSendGridUsageSummary(options?: {
         nextReset: null,
       },
       today: null,
-      warnings: [SENDGRID_DISABLED ? 'SendGrid is disabled — email is sent through Gmail' : 'SENDGRID_API_KEY is not set'],
+      warnings: ['SENDGRID_API_KEY is not set'],
       fetchedAt: new Date().toISOString(),
     };
   }

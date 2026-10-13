@@ -34,7 +34,13 @@ jest.mock('./gmail/gmailMailService', () => ({
     getGmailMessageHeaders: (...args: unknown[]) => getGmailMessageHeaders(...args),
 }));
 
-import { appendReference, buildReplySubject, sendOnApplicationThread } from './applicationEmailThreadService';
+import {
+    appendReference,
+    buildReplySubject,
+    hasApplicationEmailChain,
+    sendOnApplicationChainExternal,
+    sendOnApplicationThread,
+} from './applicationEmailThreadService';
 
 describe('sendOnApplicationThread', () => {
     beforeEach(() => {
@@ -112,6 +118,135 @@ describe('sendOnApplicationThread', () => {
         ]);
         expect(sendViaGmailApi.mock.calls[0][0].threadId).toBeUndefined();
         expect(sendViaGmailApi.mock.calls[1][0]).toMatchObject({ threadId: 'T9', inReplyTo: '<g1@mail.gmail.com>' });
+    });
+});
+
+describe('funder mailboxes and SendGrid chains', () => {
+    const funderMailbox = {
+        email: 'deals@tiberian.test',
+        fromEmail: 'funding@tiberian.test',
+        accessToken: 'ftok',
+        userId: null,
+        funderMailboxId: 'mb1',
+    };
+
+    beforeEach(() => {
+        threads.clear();
+        sendViaGmailApi.mockReset();
+        getGmailMessageHeaders.mockReset();
+        getGmailMessageHeaders.mockImplementation(async (_t: string, id: string) => ({
+            messageId: `<${id}@mail.gmail.com>`,
+            references: '',
+            subject: '',
+        }));
+    });
+
+    it('takes a server-mailbox thread over by headers, then continues its own Gmail thread', async () => {
+        // Approval went out before a funder was chosen (server mailbox, thread T1).
+        threads.set('app-3', {
+            applicationId: 'app-3',
+            ownerUserId: null,
+            ownerFunderMailboxId: null,
+            mailboxEmail: 'deals@nitro.test',
+            gmailThreadId: 'T1',
+            lastMessageId: '<a1@mail.gmail.com>',
+            references: null,
+            subject: 'Application Approved — Acme',
+        });
+        sendViaGmailApi.mockResolvedValueOnce({ gmailMessageId: 'f1', gmailThreadId: 'FT1', rfcMessageId: '<l@x>', accepted: [] });
+
+        await sendOnApplicationThread({ applicationId: 'app-3', to: 'iso@x.com', subject: 'Offer updated', html: 'h', mailbox: funderMailbox });
+        // Gmail thread ids belong to one mailbox: no threadId, but the ISO-side chain is kept.
+        expect(sendViaGmailApi.mock.calls[0][0]).toMatchObject({
+            accessToken: 'ftok',
+            from: { address: 'funding@tiberian.test' },
+            threadId: undefined,
+            inReplyTo: '<a1@mail.gmail.com>',
+            references: '<a1@mail.gmail.com>',
+            subject: 'Re: Application Approved — Acme',
+        });
+        expect(threads.get('app-3')).toMatchObject({
+            ownerFunderMailboxId: 'mb1',
+            ownerUserId: null,
+            mailboxEmail: 'deals@tiberian.test',
+            gmailThreadId: 'FT1',
+            lastMessageId: '<f1@mail.gmail.com>',
+            lastProvider: 'gmail',
+        });
+
+        sendViaGmailApi.mockResolvedValueOnce({ gmailMessageId: 'f2', gmailThreadId: 'FT1', rfcMessageId: '<l2@x>', accepted: [] });
+        await sendOnApplicationThread({ applicationId: 'app-3', to: 'iso@x.com', subject: 'Offer declined', html: 'h', mailbox: funderMailbox });
+        expect(sendViaGmailApi.mock.calls[1][0]).toMatchObject({ threadId: 'FT1', inReplyTo: '<f1@mail.gmail.com>' });
+    });
+
+    it('does not continue a funder-owned thread from the server mailbox', async () => {
+        threads.set('app-4', {
+            applicationId: 'app-4',
+            ownerUserId: null,
+            ownerFunderMailboxId: 'mb1',
+            mailboxEmail: 'deals@tiberian.test',
+            gmailThreadId: 'FT9',
+            lastMessageId: '<f9@mail.gmail.com>',
+            references: null,
+            subject: 'Approved',
+        });
+        sendViaGmailApi.mockResolvedValueOnce({ gmailMessageId: 's1', gmailThreadId: 'ST1', rfcMessageId: '<l@x>', accepted: [] });
+        await sendOnApplicationThread({ applicationId: 'app-4', to: 'iso@x.com', subject: 'x', html: 'h' });
+        expect(sendViaGmailApi.mock.calls[0][0]).toMatchObject({ accessToken: 'tok', threadId: undefined, inReplyTo: '<f9@mail.gmail.com>' });
+    });
+
+    it('advances the chain over SendGrid and keeps the Gmail thread for later Gmail sends', async () => {
+        threads.set('app-5', {
+            applicationId: 'app-5',
+            ownerUserId: null,
+            ownerFunderMailboxId: null,
+            mailboxEmail: 'deals@nitro.test',
+            gmailThreadId: 'T5',
+            lastMessageId: '<a5@mail.gmail.com>',
+            references: null,
+            subject: 'Approved',
+        });
+        const send = jest.fn(async () => ({ rfcMessageId: '<sg5@tiberian.test>', messageId: 'sg-5' }));
+        const result = await sendOnApplicationChainExternal(
+            { applicationId: 'app-5', to: 'iso@x.com', subject: 'Declined', provider: 'sendgrid' },
+            send,
+        );
+        expect(send).toHaveBeenCalledWith({ subject: 'Re: Approved', inReplyTo: '<a5@mail.gmail.com>', references: '<a5@mail.gmail.com>' });
+        expect(result).toMatchObject({ messageId: 'sg-5', chainSubject: 'Re: Approved' });
+        expect(threads.get('app-5')).toMatchObject({
+            gmailThreadId: 'T5',
+            mailboxEmail: 'deals@nitro.test',
+            lastMessageId: '<sg5@tiberian.test>',
+            references: '<a5@mail.gmail.com>',
+            lastProvider: 'sendgrid',
+        });
+    });
+
+    it('starts a header-only chain over SendGrid that later Gmail sends reply to', async () => {
+        await sendOnApplicationChainExternal(
+            { applicationId: 'app-6', to: 'iso@x.com', subject: 'Approved', provider: 'sendgrid' },
+            async (headers) => {
+                expect(headers).toEqual({ subject: 'Approved', inReplyTo: undefined, references: undefined });
+                return { rfcMessageId: '<sg6@tiberian.test>' };
+            },
+        );
+        expect(hasApplicationEmailChain(threads.get('app-6'))).toBe(true);
+        expect(threads.get('app-6').gmailThreadId).toBeUndefined();
+
+        sendViaGmailApi.mockResolvedValueOnce({ gmailMessageId: 'g6', gmailThreadId: 'T6', rfcMessageId: '<l@x>', accepted: [] });
+        await sendOnApplicationThread({ applicationId: 'app-6', to: 'iso@x.com', subject: 'x', html: 'h' });
+        expect(sendViaGmailApi.mock.calls[0][0]).toMatchObject({ threadId: undefined, inReplyTo: '<sg6@tiberian.test>', subject: 'Re: Approved' });
+    });
+
+    it('reports the send as done even if storing the thread state fails', async () => {
+        const prisma = jest.requireMock('../config/prismaClient').default;
+        prisma.applicationEmailThread.upsert.mockRejectedValueOnce(new Error('db down'));
+        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        sendViaGmailApi.mockResolvedValueOnce({ gmailMessageId: 'g7', gmailThreadId: 'T7', rfcMessageId: '<l@x>', accepted: [] });
+        await expect(
+            sendOnApplicationThread({ applicationId: 'app-7', to: 'iso@x.com', subject: 'x', html: 'h' }),
+        ).resolves.toMatchObject({ gmailMessageId: 'g7' });
+        error.mockRestore();
     });
 });
 
