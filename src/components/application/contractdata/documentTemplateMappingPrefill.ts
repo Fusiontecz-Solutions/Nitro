@@ -1063,6 +1063,16 @@ export function parseLinkedDocManualFieldIds(
     );
 }
 
+/** Disclosure lines whose amount depends on the refinance payoff. */
+const REFI_DEPENDENT_FIELD_IDS = new Set([
+    "disclosure_recipient_funds",
+    "funding_provided_direct",
+    "net_to_merchant",
+    "disclosure_page3_line_2",
+    "disclosure_page3_subtotal",
+    "disclosure_page3_net",
+]);
+
 function mergeFieldRows(
     allDefs: ContractPrefillField[],
     computed: ContractPrefillField[],
@@ -1071,6 +1081,17 @@ function mergeFieldRows(
     const computedById = new Map(computed.map((f) => [f.id, f]));
     const saved = savedForRow ?? {};
     const manualIds = parseLinkedDocManualFieldIds(saved);
+    // A tab saved before the refi balance was entered (or changed) holds the
+    // itemization of a different deal: its line 2 refreshes as a weak 0.00, so
+    // the lines that net the payoff out must refresh with it.
+    const savedRefi = parsePrefillMoneyForMerge(
+        String(saved.disclosure_page3_line_2 ?? saved.disclosure_page3_line_2_p3 ?? "").trim(),
+    );
+    const computedRefi = parsePrefillMoneyForMerge(
+        String(computedById.get("disclosure_page3_line_2")?.value ?? "").trim(),
+    );
+    const refiChanged =
+        computedRefi !== undefined && computedRefi > 0 && (savedRefi ?? 0) !== computedRefi;
     return allDefs.map((def) => {
         const fromSaved = saved[def.id] ?? saved[`${def.id}_p3`];
         const fromSavedTrim =
@@ -1090,6 +1111,9 @@ function mergeFieldRows(
         // unless the preparer typed that amount on this tab by hand.
         const typedByHand = manualIds.has(def.id) && fromSavedTrim !== "";
         if (isOfferDerivedPrefillFieldId(def.id) && computedVal && !typedByHand) {
+            return { id: def.id, label: def.label, value: computedVal, group: def.group };
+        }
+        if (refiChanged && REFI_DEPENDENT_FIELD_IDS.has(def.id) && computedVal && !typedByHand) {
             return { id: def.id, label: def.label, value: computedVal, group: def.group };
         }
         if (fromSavedTrim !== "") {

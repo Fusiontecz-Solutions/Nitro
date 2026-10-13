@@ -854,12 +854,17 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     const netFromPrefill = coerceFiniteNumber(
         contract.netToMerchant ?? contract.net_to_merchant,
     );
+    // First positive balance wins: a "0" saved before the refi was entered must
+    // not hide the balance the offer now carries.
     const refinanceAmountRaw =
-        coerceFiniteNumber(contract.refinanceAmount) ??
-        coerceFiniteNumber(contract.refinance_amount) ??
-        coerceFiniteNumber(prefillOverrides?.refinanceAmount) ??
-        coerceFiniteNumber(offer?.refinanceAmount) ??
-        0;
+        [
+            contract.refinanceAmount,
+            contract.refinance_amount,
+            prefillOverrides?.refinanceAmount,
+            offer?.refinanceAmount,
+        ]
+            .map(coerceFiniteNumber)
+            .find((n): n is number => n !== undefined && n > 0) ?? 0;
     const isRefi = isRefinanceDeal(refinanceAmountRaw);
     const previousDealDate = formatUsDate(
         offer?.previousDealDate ??
@@ -905,7 +910,27 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
             actualDisbursement = netContractedFunding;
         }
     }
-    if (netFromPrefill !== undefined) {
+    /**
+     * On a refi the merchant's cash is net-after-fees minus the payoff. A saved
+     * net above that was saved before the refi was entered (advance − fees) and
+     * still contains the payoff, so it must not replace the computed figure —
+     * that is what kept "Amount Given Directly to You" at 23,750.00 instead of
+     * 9,125.00 on a $25,000 advance refinancing $14,625.
+     */
+    const refiCashCeiling =
+        isRefi && purchaseAmount !== undefined
+            ? Math.max(
+                  0,
+                  (underwritingFees !== undefined
+                      ? purchaseAmount - underwritingFees
+                      : purchaseAmount) - refinanceAmountRaw,
+              )
+            : undefined;
+    const staleRefiNet =
+        refiCashCeiling !== undefined &&
+        netFromPrefill !== undefined &&
+        netFromPrefill > refiCashCeiling + 0.005;
+    if (netFromPrefill !== undefined && !staleRefiNet) {
         const netPrefillUsd = formatUsd(netFromPrefill);
         if (isRefi) {
             actualDisbursement = netPrefillUsd;
