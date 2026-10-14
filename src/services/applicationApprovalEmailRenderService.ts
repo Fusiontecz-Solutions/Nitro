@@ -6,6 +6,16 @@ import {
 } from '../templates/applicationApprovalEmailPlaceholders';
 import { renderApplicationApprovalEmailHtml } from '../templates/applicationApprovalEmailHtml';
 import { renderOfferUpdatedEmailHtml } from '../templates/offerUpdatedEmailHtml';
+import {
+    injectApplicationApprovalEmailValues,
+    type ApplicationApprovalEmailInjectValues,
+} from './applicationApprovalEmailValues';
+
+/** Display-ready offer terms for the approval email's "Approved Offer Details" table. */
+export type IsoApprovalEmailOfferValues = Omit<
+    ApplicationApprovalEmailInjectValues,
+    'approvalUrl' | 'clientName' | 'companyName'
+>;
 
 export type ResolveIsoApprovalEmailHtmlInput = {
     resend: boolean;
@@ -14,6 +24,7 @@ export type ResolveIsoApprovalEmailHtmlInput = {
     calculateApprovalUrl?: string;
     /** Branded HTML from the CRM frontend (may contain merge-field placeholders). */
     customHtml?: string;
+    offerValues?: IsoApprovalEmailOfferValues;
 };
 
 export type IsoApprovalEmailPackage = {
@@ -32,6 +43,7 @@ export function buildIsoApprovalEmailPackage(input: {
     companyName: string;
     isoApprovalUrl: string;
     customSubject?: string;
+    offerValues?: IsoApprovalEmailOfferValues;
 }): IsoApprovalEmailPackage | null {
     const isoApprovalUrl = String(input.isoApprovalUrl || '').trim();
     if (!isoApprovalUrl) return null;
@@ -42,6 +54,7 @@ export function buildIsoApprovalEmailPackage(input: {
         companyName: input.companyName,
         calculateApprovalUrl: isoApprovalUrl,
         customHtml: undefined,
+        offerValues: input.offerValues,
     });
 
     if (htmlContainsApprovalUrlPlaceholder(html)) {
@@ -62,6 +75,7 @@ export function resolveIsoApprovalEmailHtml({
     companyName,
     calculateApprovalUrl,
     customHtml,
+    offerValues,
 }: ResolveIsoApprovalEmailHtmlInput): string {
     const isoApprovalUrl = String(calculateApprovalUrl || '').trim();
     const mergeValues = {
@@ -87,7 +101,15 @@ export function resolveIsoApprovalEmailHtml({
             : renderApplicationApprovalEmailHtml(templateValues);
     }
 
-    const resolved = applyApplicationApprovalEmailPlaceholders(html, mergeValues);
+    // Offer-detail placeholders (approval template) — missing terms render as an em dash.
+    const withOffer = resend
+        ? html
+        : injectApplicationApprovalEmailValues(html, {
+              clientName,
+              companyName,
+              ...offerValues,
+          });
+    const resolved = applyApplicationApprovalEmailPlaceholders(withOffer, mergeValues);
 
     if (htmlContainsApprovalUrlPlaceholder(resolved)) {
         console.warn(

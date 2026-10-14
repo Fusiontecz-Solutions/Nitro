@@ -24,6 +24,9 @@ const mapApplicationForApproval = (app: any) => {
     _id: app.id,
     id: app.id,
     applicationId: app.applicationId,
+    // Lets the portal show "Approved" once the ISO has moved the deal to Contract Pending.
+    currentQueue: app.currentQueue,
+    currentState: app.currentState,
     loanAmount: app.loanAmount,
     commissionPercentage: app.commissionPercentage,
     client: client

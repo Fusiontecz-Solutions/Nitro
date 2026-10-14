@@ -65,7 +65,7 @@ router.post('/extract-business-details', applicationController.processPDFUpload.
 router.post('/extract-pdf', applicationController.processPDFUpload.bind(applicationController));
 
 // Auto-create client + application directly from uploaded PDF
-router.post('/auto-create-from-pdf', requireRoles('CONTRACTS_LOG'), applicationController.autoCreateFromPDF.bind(applicationController));
+router.post('/auto-create-from-pdf', requireRoles('CONTRACTS_LOG', 'AGENT'), applicationController.autoCreateFromPDF.bind(applicationController));
 
 // OCR microservice → parse → create client + application (multipart field: `pdf`)
 router.post(

@@ -7286,6 +7286,40 @@ class ApplicationController {
                 console.error('Send approval email: failed to sync terms offer from offer decision:', syncErr);
             }
 
+            // Re-read after the sync so the "Approved Offer Details" table shows the current terms.
+            let emailTermsOffer: any = latestTermsOffer;
+            try {
+                emailTermsOffer =
+                    (await prisma.termsOffer.findFirst({
+                        where: { applicationId: (application as any).id },
+                        orderBy: { updatedAt: 'desc' },
+                        select: {
+                            approvedAmount: true,
+                            factorRate: true,
+                            paybackAmount: true,
+                            termLength: true,
+                            frequency: true,
+                            paymentAmount: true,
+                        },
+                    })) ?? latestTermsOffer;
+            } catch (termsErr) {
+                console.error('Send approval email: failed to reload terms offer:', termsErr);
+            }
+            const toOfferNumber = (value: unknown): number | null =>
+                value == null || String(value).trim() === '' || !Number.isFinite(Number(value))
+                    ? null
+                    : Number(value);
+            const approvalOfferValues = buildApplicationApprovedEmailInjectValues({
+                requestAmount: toOfferNumber((application as any).loanAmount),
+                approvedAmount: toOfferNumber(emailTermsOffer?.approvedAmount ?? offerDecision?.offer),
+                factorRate: toOfferNumber(emailTermsOffer?.factorRate ?? offerDecision?.rate),
+                paybackAmount: toOfferNumber(emailTermsOffer?.paybackAmount ?? offerDecision?.totalRemit),
+                term: emailTermsOffer?.termLength ?? offerDecision?.term ?? null,
+                repay: toOfferNumber(emailTermsOffer?.paymentAmount ?? offerDecision?.repayPerPeriod),
+                monthlyRepayment: toOfferNumber(offerDecision?.monthlyPayment),
+                achFrequency: emailTermsOffer?.frequency ?? offerDecision?.frequency ?? null,
+            });
+
             const baseUrl = resolveCrmFrontendBaseUrl() || '';
 
             const fallbackId = (application as any).id;
@@ -7337,6 +7371,7 @@ class ApplicationController {
                         approvalUrl: calculateApprovalUrl,
                         clientName: isoRecipientName,
                         companyName,
+                        ...approvalOfferValues,
                     })
                     : undefined;
             const emailHtml =
@@ -7346,6 +7381,7 @@ class ApplicationController {
                     clientName: isoRecipientName,
                     companyName,
                     calculateApprovalUrl,
+                    offerValues: approvalOfferValues,
                 });
 
             const trackingId = randomUUID();
