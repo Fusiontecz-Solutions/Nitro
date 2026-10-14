@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm, Controller, useWatch } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import * as yup from "yup";
@@ -225,6 +225,8 @@ type ApprovalProps = {
     termsOffers?: TermsOffer[];
     /** Preloaded offer decision (e.g. public approval page) — skips client fetch. */
     offerDecision?: Record<string, unknown> | null;
+    /** Open the approve-review dialog on arrival (ISO email "Approve Application" link). */
+    autoOpenApproveReview?: boolean;
 };
 
 const Approval = ({
@@ -234,6 +236,7 @@ const Approval = ({
     applicationData: applicationDataProp,
     termsOffers: termsOffersProp,
     offerDecision: offerDecisionProp,
+    autoOpenApproveReview = false,
 }: ApprovalProps) => {
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
@@ -389,6 +392,16 @@ const Approval = ({
         POST_APPROVAL_TOKENS.has(effectiveQueueToken) ||
         POST_APPROVAL_TOKENS.has(effectiveStateToken);
     const isApproved = currentlyApproved || locallyApproved;
+
+    // Email CTA lands with `?action=approve` — show the review/confirm dialog once.
+    // Never approve without a click: mail scanners pre-open links.
+    const autoOpenedReviewRef = useRef(false);
+    useEffect(() => {
+        if (!autoOpenApproveReview || autoOpenedReviewRef.current) return;
+        if (!applicationId || isApproved) return;
+        autoOpenedReviewRef.current = true;
+        setReviewOpen(true);
+    }, [autoOpenApproveReview, applicationId, isApproved]);
 
     // Fetch scrubbing terms offers for this application (skip when preloaded or in read-only mode)
     useEffect(() => {

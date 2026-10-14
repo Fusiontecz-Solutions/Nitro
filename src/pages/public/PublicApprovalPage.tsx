@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { useDispatch } from "react-redux";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import type { TermsOffer } from "@/types/termsOfferTypes";
@@ -25,6 +25,8 @@ type PublicApprovalResponse = {
 
 const PublicApprovalPage = () => {
   const { token } = useParams<{ token: string }>();
+  const [searchParams] = useSearchParams();
+  const autoOpenApproveReview = searchParams.get("action") === "approve";
   // This page is publicly accessible, so we intentionally keep users here.
   // (Redirecting to a protected route would show sidebar/tabs and/or require login.)
 
@@ -193,6 +195,7 @@ const PublicApprovalPage = () => {
               applicationData={application}
               termsOffers={termsOffers}
               offerDecision={offerDecision}
+              autoOpenApproveReview={autoOpenApproveReview}
             />
             <div className="mt-6">
               <CommentSection

@@ -123,7 +123,7 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
     name: "Application Approval Email",
     category: "email",
     description:
-      "Email sent to an ISO / client when an application is pre-approved, with a link to calculate approvals.",
+      "Email sent to an ISO when an application is approved, with the offer terms inline and an Approve button that moves the deal to Contract Pending.",
     variables: APPLICATION_APPROVAL_EMAIL_VARIABLES,
     Component: ApplicationApprovalEmail,
     renderHtml: renderApplicationApprovalEmailHtml,

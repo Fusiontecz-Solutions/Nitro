@@ -17,6 +17,10 @@ import PDFViewerDocsModal from "./PDFViewerDocsModal"
 import ApplicationKycUploadPanel from "./ApplicationKycUploadPanel"
 import { formatDateTimeUS, cn } from "@/lib/utils"
 import { isPinnedDocumentSlug } from "@/constants/documentRequestTypes"
+import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole"
+
+/** Roles that don't get the AI "Fill application from this PDF" action. */
+const ROLES_WITHOUT_AI_FILL = new Set(["AGENT", "UNDERWRITER", "FINAL_UNDERWRITER", "SUPER_ADMIN"])
 
 const fileDocumentSlug = (file: ApplicationFiles): string =>
     String((file as any).documentType || (file as any).requestedDocumentSlug || "").trim()
@@ -51,6 +55,11 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
     )
     const { loading: uploadLoading } = useSelector(
         (state: RootState) => state.uploadDocuments
+    )
+    const loginUser = useSelector((state: RootState) => state.login.data?.user)
+    const canUseAiFill = useMemo(
+        () => !ROLES_WITHOUT_AI_FILL.has(normalizeRoleKey(resolveEffectiveRole(loginUser))),
+        [loginUser]
     )
     const dispatch: AppDispatch = useDispatch()
 
@@ -439,7 +448,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                                 >
                                                     <Eye className="size-4" />
                                                 </Button>
-                                                {!readOnly && isPdfApplicationFile(file) && (
+                                                {!readOnly && canUseAiFill && isPdfApplicationFile(file) && (
                                                     <Button
                                                         type="button"
                                                         variant="ghost"
