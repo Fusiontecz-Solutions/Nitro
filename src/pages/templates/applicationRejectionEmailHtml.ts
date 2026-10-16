@@ -3,13 +3,13 @@ import {
   escapeHtml,
   resolveApplicationRejectionEmailFields,
 } from "./applicationRejectionEmailShared";
-import { APP_BRAND_LOGO_URL } from "@/constants/appBranding";
+import { APP_EMAIL_LOGO_URL } from "@/constants/appBranding";
 
 /** Brand logo for outbound email / in-app template previews. */
-const APPLICATION_DECLINE_EMAIL_LOGO_SRC = APP_BRAND_LOGO_URL;
+const APPLICATION_DECLINE_EMAIL_LOGO_SRC = APP_EMAIL_LOGO_URL;
 
 /** Bottom-right watermark for the email content body. */
-const APPLICATION_DECLINE_EMAIL_WATERMARK_SRC = APP_BRAND_LOGO_URL;
+const APPLICATION_DECLINE_EMAIL_WATERMARK_SRC = APP_EMAIL_LOGO_URL;
 
 const EMAIL_WIDTH = 600;
 const CONTENT_WIDTH = 510;

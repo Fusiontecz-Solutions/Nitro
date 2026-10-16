@@ -80,6 +80,14 @@ const normalizeNoteNewlines = (note: string): string => note.replace(/\r\n/g, "\
 /** Internal Application.note marker when Gmail subject-fallback auto-creates a deal (dedupe guard). */
 const GMAIL_AUTO_CREATE_MSG_NOTE_RE = /^\s*gmail-msg:[a-f0-9]+\s*$/i;
 
+/** Drop the `gmail-msg:` marker lines from a note shown to users, keeping the rest as typed. */
+export const stripGmailMessageNoteMarker = (note: unknown): string =>
+  normalizeNoteNewlines(String(note ?? ""))
+    .split("\n")
+    .filter((line) => !GMAIL_AUTO_CREATE_MSG_NOTE_RE.test(line))
+    .join("\n")
+    .trim();
+
 const stripInternalSystemNotes = (note: string): string =>
   normalizeNoteNewlines(note)
     .split(/\n+/)

@@ -17,6 +17,8 @@ import Replay from "@mui/icons-material/Replay";
 import Email from "@mui/icons-material/Email";
 import History from "@mui/icons-material/History";
 import SpaceDashboard from "@mui/icons-material/SpaceDashboard";
+import SupportAgent from "@mui/icons-material/SupportAgent";
+import Gavel from "@mui/icons-material/Gavel";
 import { resolveEffectiveRole } from "@/lib/sessionRole";
 import { isAgentRole, isSuperAdminAppRole, isUnderwriterRole, isWorkflowRole } from "@/lib/roleAccess";
 import { useQuery } from "@tanstack/react-query";
@@ -42,9 +44,10 @@ import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashb
 import { useLogout } from "@/hooks/useLogout";
 import { APP_SHORT_ICON_SRC, APP_SHORT_ICON_DARK_SRC, resolveAppLogoSrc } from "@/constants/appLogo";
 import { useTheme } from "@/context/ThemeContext";
-import { useEffect, useMemo, type ComponentType } from "react";
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
 import { cn } from "@/lib/utils";
-import { Loader2 } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
+import { axiosGet } from "@/redux/axios";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
 import { prefetchCrmPage } from "@/lib/prefetchCrmPage";
 import {
@@ -70,6 +73,8 @@ type SidebarNavItem = {
   icon: SidebarNavIcon;
   operationsStatus?: string;
   children?: SidebarNavChildItem[];
+  /** Parent row toggles its children (arrow) instead of navigating. */
+  collapsible?: boolean;
 };
 
 type SidebarNavSection = {
@@ -157,7 +162,6 @@ const workflowSettingsSection: SidebarNavSection = {
   title: "SETTINGS",
   items: [
     { label: "Settings", url: "/user-setting", icon: Settings },
-    { label: "Email", url: "/user-setting?tab=email", icon: MailOutline },
   ],
 };
 
@@ -208,8 +212,8 @@ const underwriterSections: SidebarNavSection[] = [
 ];
 
 /**
- * Super Admin: everything Contracts Log has, plus both workflow seats (Agent + Underwriter,
- * via `?scope=`) and Super Admin-only modules (Gmail workspace).
+ * Super Admin: one DEAL PIPELINE hierarchy — All Applications, then Agent / Underwriter /
+ * Contract groups that expand (arrow) to their stages — plus Super Admin-only modules.
  */
 const superAdminSections: SidebarNavSection[] = [
   {
@@ -222,26 +226,54 @@ const superAdminSections: SidebarNavSection[] = [
       { label: "New Application", url: "/create-applications", icon: AddCircleOutline },
     ],
   },
-  sidebarSections[1],
   {
-    title: "AGENT WORKFLOW",
+    title: "DEAL PIPELINE",
     items: [
-      { label: "Agent Dashboard", url: "/workflow-dashboard?scope=agent", icon: SpaceDashboard },
-      { label: "All Applications", url: "/pipeline?scope=agent&bucket=all", icon: InsertDriveFileIcon },
-      { label: "Awaiting Approval", url: "/pipeline?scope=agent&bucket=awaiting_my_approval", icon: FactCheck },
-      { label: "Sent to ISO", url: "/pipeline?scope=agent&bucket=sent_to_iso", icon: MailOutline },
-      { label: "Contract Pending", url: "/pipeline?scope=agent&bucket=contract_pending", icon: Article },
-    ],
-  },
-  {
-    title: "UNDERWRITING",
-    items: [
-      { label: "Underwriter Dashboard", url: "/workflow-dashboard?scope=underwriter", icon: SpaceDashboard },
-      { label: "Incoming", url: "/pipeline?scope=underwriter&bucket=incoming", icon: Inbox },
-      { label: "Claimed", url: "/pipeline?scope=underwriter&bucket=my_claimed", icon: AssignmentInd },
-      { label: "Needs Re-Review", url: "/pipeline?scope=underwriter&bucket=needs_re_review", icon: Replay },
-      { label: "Sent to Agent", url: "/pipeline?scope=underwriter&bucket=sent_to_agent", icon: FactCheck },
-      { label: "Completed", url: "/pipeline?scope=underwriter&bucket=completed", icon: Article },
+      { label: "All Applications", url: "/applications", icon: InsertDriveFileIcon },
+      {
+        label: "Agent",
+        url: "/workflow-dashboard?scope=agent",
+        icon: SupportAgent,
+        collapsible: true,
+        children: [
+          { label: "All Applications", url: "/pipeline?scope=agent&bucket=all", icon: InsertDriveFileIcon },
+          { label: "Awaiting My Approval", url: "/pipeline?scope=agent&bucket=awaiting_my_approval", icon: FactCheck },
+          { label: "Sent to ISO", url: "/pipeline?scope=agent&bucket=sent_to_iso", icon: MailOutline },
+          { label: "Contract Pending", url: "/pipeline?scope=agent&bucket=contract_pending", icon: Article },
+        ],
+      },
+      {
+        label: "Underwriter",
+        url: "/workflow-dashboard?scope=underwriter",
+        icon: Gavel,
+        collapsible: true,
+        children: [
+          { label: "Dashboard", url: "/workflow-dashboard?scope=underwriter", icon: SpaceDashboard },
+          { label: "Incoming", url: "/pipeline?scope=underwriter&bucket=incoming", icon: Inbox },
+          { label: "Claimed", url: "/pipeline?scope=underwriter&bucket=my_claimed", icon: AssignmentInd },
+          { label: "Needs Re-Review", url: "/pipeline?scope=underwriter&bucket=needs_re_review", icon: Replay },
+          { label: "Sent to Agent", url: "/pipeline?scope=underwriter&bucket=sent_to_agent", icon: FactCheck },
+          { label: "Completed", url: "/pipeline?scope=underwriter&bucket=completed", icon: Article },
+        ],
+      },
+      {
+        label: "Contract",
+        url: "/applications",
+        operationsStatus: "Contracted",
+        icon: Article,
+        collapsible: true,
+        children: [
+          { label: "Pending", operationsStatus: "Contract_Pending" },
+          { label: "Sent", operationsStatus: "Contract_Sent" },
+          { label: "Signed", operationsStatus: "Contract_Signed" },
+        ],
+      },
+      {
+        label: "Recently Deleted",
+        url: "/applications",
+        operationsStatus: "Recently_Deleted",
+        icon: DeleteOutline,
+      },
     ],
   },
   {
@@ -255,11 +287,37 @@ const superAdminSections: SidebarNavSection[] = [
     title: "SETTINGS",
     items: [
       { label: "Settings", url: "/user-setting", icon: Settings },
-      { label: "Email", url: "/user-setting?tab=email", icon: MailOutline },
       { label: "Team & Roles", url: "/user-setting?tab=team", icon: ManageAccounts },
     ],
   },
 ];
+
+const EXPANDED_GROUPS_STORAGE_KEY = "sidebar:expanded-groups";
+
+function readExpandedGroups(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(EXPANDED_GROUPS_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeExpandedGroups(groups: Record<string, boolean>) {
+  try {
+    window.localStorage.setItem(EXPANDED_GROUPS_STORAGE_KEY, JSON.stringify(groups));
+  } catch {
+    // Storage unavailable (private window) — expansion just isn't remembered.
+  }
+}
+
+/** Live (not deleted) application total, read from the list endpoint's pagination. */
+async function fetchApplicationsTotal(): Promise<number> {
+  const response = await axiosGet("/applications?page=1&limit=1", { skipCache: true });
+  const p = (response.data as { pagination?: { totalItems?: number; total?: number } })?.pagination;
+  return Number(p?.totalItems ?? p?.total ?? 0);
+}
 
 function sectionsForRole(role: string): SidebarNavSection[] {
   if (isSuperAdminAppRole(role)) return superAdminSections;
@@ -333,6 +391,9 @@ function isChildNavActive(
   if (child.operationsStatus) {
     return isOperationsPipelineItemActive(pathname, searchParams, child.operationsStatus);
   }
+  if (child.url?.startsWith("/pipeline") || child.url?.startsWith("/workflow-dashboard")) {
+    return isPipelineHrefActive(pathname, searchParams, child.url);
+  }
   if (child.url) {
     return isSettingsTabHrefActive(pathname, searchParams, child.url);
   }
@@ -353,6 +414,11 @@ function isNavItemActive(
 ): boolean {
   if (item.url === "/") {
     return pathname === "/";
+  }
+
+  if (item.collapsible) {
+    return (item.children ?? []).some((child) => isChildNavActive(pathname, searchParams, child)) ||
+      isOperationsPipelineItemActive(pathname, searchParams, item.operationsStatus);
   }
 
   if (item.url === "/clients") {
@@ -478,6 +544,25 @@ const Sidebar = () => {
     return typeof n === "number" ? n : null;
   };
 
+  // Super Admin "All Applications" badge — same total the Applications list paginates over.
+  const applicationsTotal = useQuery({
+    queryKey: ["sidebar-applications-total"],
+    queryFn: fetchApplicationsTotal,
+    enabled: superAdmin,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(readExpandedGroups);
+  const toggleGroup = useCallback((label: string, currentlyOpen: boolean) => {
+    setExpandedGroups((prev) => {
+      const next = { ...prev, [label]: !currentlyOpen };
+      writeExpandedGroups(next);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     // Contract pipeline counts are a Super Admin concern — Agents / Underwriters use workflow counts.
     if (workflowViewer) return;
@@ -561,16 +646,43 @@ const Sidebar = () => {
                           operationsCaseStageCounts,
                           rejectedApplicationCount,
                         )
-                      : workflowBucketCount(item.url);
+                      : superAdmin && item.url === "/applications"
+                        ? (applicationsTotal.data ?? null)
+                        : workflowBucketCount(item.url);
                     const showPipelineCount =
                       !hasChildren && pipelineCount != null;
 
                     if (hasChildren) {
+                      const isToggle = Boolean(item.collapsible) && !isCollapsed;
+                      // Remembered choice wins; otherwise open the group holding the current page.
+                      const isOpen = !item.collapsible || (expandedGroups[item.label] ?? isActive);
                       return (
                         <SidebarMenuItem
                           key={item.label}
                           className="w-full group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:justify-center"
                         >
+                          {isToggle ? (
+                            <SidebarMenuButton
+                              isActive={isActive && !isOpen}
+                              className={navButtonClass}
+                              aria-expanded={isOpen}
+                              onClick={() => toggleGroup(item.label, isOpen)}
+                            >
+                              <span className="relative shrink-0">
+                                <NavIcon icon={item.icon} />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate">
+                                {item.label}
+                              </span>
+                              <ChevronRight
+                                aria-hidden
+                                className={cn(
+                                  "!size-4 shrink-0 transition-transform duration-200",
+                                  isOpen && "rotate-90",
+                                )}
+                              />
+                            </SidebarMenuButton>
+                          ) : (
                           <SidebarMenuButton
                             asChild
                             isActive={isActive}
@@ -589,6 +701,8 @@ const Sidebar = () => {
                               </span>
                             </Link>
                           </SidebarMenuButton>
+                          )}
+                          {isOpen ? (
                           <SidebarMenuSub className="mx-1.5 border-l px-2">
                             {childItems.map((child) => {
                               const childTo = buildChildHref(child);
@@ -605,7 +719,9 @@ const Sidebar = () => {
                                     operationsCaseStageCounts,
                                     rejectedApplicationCount,
                                   )
-                                : null;
+                                : child.url
+                                  ? workflowBucketCount(child.url)
+                                  : null;
                               const showChildCount = childCount != null;
 
                               return (
@@ -675,6 +791,7 @@ const Sidebar = () => {
                               );
                             })}
                           </SidebarMenuSub>
+                          ) : null}
                         </SidebarMenuItem>
                       );
                     }

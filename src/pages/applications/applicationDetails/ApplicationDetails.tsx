@@ -63,6 +63,7 @@ import ApplicationProgressBar from "@/components/application/ApplicationProgress
 import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
 import { normalizeRoleKey, resolveEffectiveRole, resolveSessionUser } from "@/lib/sessionRole";
 import WorkflowActionPanel from "@/components/workflow/WorkflowActionPanel";
+import { WORKFLOW_QUEUE, isWorkflowQueue } from "@/lib/workflowApi";
 
 
 /** CRM-only re-read of a deal awaiting signatures (no SignNow calls). */
@@ -212,6 +213,9 @@ const ApplicationDetails = () => {
         currentState,
     ]);
 
+    /** Agent viewing their deal while it sits with an underwriter: Approval tab is decline-only. */
+    const agentInUnderwriting = isAgent && isWorkflowQueue(queue, WORKFLOW_QUEUE.UNDERWRITER);
+
     // Determine tabs based on status and user role (contract workflow only).
     const getTabs = () => {
         const isCompleted = status?.toLowerCase() === 'completed';
@@ -241,8 +245,10 @@ const ApplicationDetails = () => {
         }
 
         // Agent: once underwriting is handed back, review the scrubbed offer (read-only) before sending to the ISO.
+        // While still in underwriting the tab is shown too, but only Decline is enabled there.
         if (isAgent || isTopSuperAdmin) {
             const offerReady =
+                agentInUnderwriting ||
                 queueNorm === 'agent review' ||
                 queueNorm === 'agent approval' ||
                 queueNorm === 'approval sent' ||
@@ -294,6 +300,7 @@ const ApplicationDetails = () => {
         isFinalUnderwriter,
         isUnderwriter,
         isAgent,
+        agentInUnderwriting,
     ]);
 
     const tabsForOperationsUi = tabs;
@@ -1038,7 +1045,11 @@ const ApplicationDetails = () => {
                                         readOnly
                                         enableCreate={false}
                                         showBankStatementUpload={false}
-                                        allowDecline={(isAgent || isTopSuperAdmin) && !isViewOnlyBrowse && !isStagePreview}
+                                        allowDecline={
+                                            (isAgent || isTopSuperAdmin) &&
+                                            !isViewOnlyBrowse &&
+                                            (!isStagePreview || agentInUnderwriting)
+                                        }
                                     />
                                     <div className="mt-6"><CommentSection readOnly={commentsReadOnly} /></div>
                             </LazyTabContent>

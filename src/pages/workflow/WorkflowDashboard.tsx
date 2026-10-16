@@ -58,6 +58,30 @@ const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 
 type TrendView = "monthly" | "yearly";
 
+const TREND_TICK_COUNT = 5;
+
+/** Even Y-axis ticks on a 1 / 2 / 2.5 / 5 × 10ⁿ step, so the top tick never crowds the others. */
+function niceTrendTicks(max: number): number[] {
+  if (max <= 0) return [0, 1];
+  const rawStep = max / TREND_TICK_COUNT;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const step = ([1, 2, 2.5, 5, 10].find((m) => m * magnitude >= rawStep) ?? 10) * magnitude;
+  const ticks: number[] = [];
+  for (let v = 0; v <= max + step * 0.001 || ticks.length < 2; v += step) ticks.push(v);
+  if (ticks[ticks.length - 1] < max) ticks.push(ticks[ticks.length - 1] + step);
+  return ticks;
+}
+
+/** Short axis label: $18.6M / $250K / $900. */
+function formatCompactCurrency(value: number): string {
+  const abs = Math.abs(value);
+  const trim = (n: number) => n.toFixed(1).replace(/\.0$/, "");
+  if (abs >= 1_000_000_000) return `$${trim(value / 1_000_000_000)}B`;
+  if (abs >= 1_000_000) return `$${trim(value / 1_000_000)}M`;
+  if (abs >= 1_000) return `$${trim(value / 1_000)}K`;
+  return `$${Math.round(value)}`;
+}
+
 /** Katam-style colored icon + amount caption per workflow bucket. */
 const BUCKET_CARD_STYLE: Record<string, { icon: ReactNode; caption: string }> = {
   all: { icon: <ClipboardList className="text-indigo-600" />, caption: "Total submitted amount" },
@@ -240,10 +264,23 @@ export default function WorkflowDashboard() {
   const trendData = useMemo(() => {
     const rows = summary.data?.trend ?? [];
     if (trendView === "monthly") {
-      return rows.map((r) => {
-        const [y, m] = r.dateKey.split("-");
-        return { ...r, name: `${MONTH_SHORT[Number(m) - 1] ?? m} ${y.slice(2)}` };
-      });
+      if (rows.length === 0) return [];
+      // Backend only returns months that have applications — fill the gaps so the axis is continuous.
+      const byKey = new Map(rows.map((r) => [r.dateKey, r]));
+      const [startY, startM] = rows[0].dateKey.split("-").map(Number);
+      const [endY, endM] = rows[rows.length - 1].dateKey.split("-").map(Number);
+      const filled: Array<{ dateKey: string; submitted: number; approved: number; name: string }> = [];
+      for (let y = startY, m = startM; y < endY || (y === endY && m <= endM); m === 12 ? ((m = 1), (y += 1)) : (m += 1)) {
+        const dateKey = `${y}-${String(m).padStart(2, "0")}`;
+        const r = byKey.get(dateKey);
+        filled.push({
+          dateKey,
+          submitted: r?.submitted ?? 0,
+          approved: r?.approved ?? 0,
+          name: `${MONTH_SHORT[m - 1]} ${String(y).slice(2)}`,
+        });
+      }
+      return filled;
     }
     const byYear = new Map<string, { submitted: number; approved: number }>();
     for (const r of rows) {
@@ -256,14 +293,10 @@ export default function WorkflowDashboard() {
     return Array.from(byYear.entries()).map(([y, v]) => ({ ...v, dateKey: y, name: y }));
   }, [summary.data?.trend, trendView]);
 
-  const trendChartYMax = useMemo(() => {
+  const trendChartTicks = useMemo(() => {
     let max = 0;
     for (const p of trendData) max = Math.max(max, p.submitted, p.approved);
-    if (max <= 0) return 1;
-    const padded = max * 1.12;
-    const step =
-      padded >= 1_000_000 ? 100_000 : padded >= 100_000 ? 10_000 : padded >= 10_000 ? 1_000 : padded >= 1_000 ? 100 : 10;
-    return Math.max(Math.ceil(padded / step) * step, step);
+    return niceTrendTicks(max * 1.05);
   }, [trendData]);
 
   const recent = summary.data?.recent ?? [];
@@ -395,14 +428,14 @@ export default function WorkflowDashboard() {
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-          <div className="mt-10 h-[210px]">
+          <div className="mt-8 h-[220px]">
             {trendData.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                 {summary.isLoading ? "Loading…" : "No applications in this range"}
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={trendData} barCategoryGap={20} barGap={0} margin={{ top: 5, right: 5, bottom: 5, left: 30 }}>
+                <ComposedChart data={trendData} barCategoryGap="30%" barGap={2} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
                   <CartesianGrid vertical={false} horizontal={false} strokeDasharray="3 3" />
                   <XAxis dataKey="name" tickLine={false} axisLine fontSize={12} stroke={axisColor} tick={{ fill: axisColor }} />
                   <YAxis
@@ -410,11 +443,13 @@ export default function WorkflowDashboard() {
                     axisLine
                     stroke={axisColor}
                     fontSize={12}
+                    width={56}
                     tick={{ fill: axisColor }}
-                    label={{ value: "Amount", angle: -90, position: "insideLeft", offset: -20, style: { textAnchor: "middle" } }}
-                    tickFormatter={(value) => formatCurrency(value as number)}
-                    domain={[0, trendChartYMax]}
-                    tickCount={6}
+                    tickFormatter={(value) => formatCompactCurrency(value as number)}
+                    domain={[0, trendChartTicks[trendChartTicks.length - 1]]}
+                    ticks={trendChartTicks}
+                    interval={0}
+                    allowDecimals={false}
                   />
                   <Tooltip
                     cursor={{ fill: "rgba(0, 0, 0, 0.05)" }}
@@ -430,12 +465,14 @@ export default function WorkflowDashboard() {
                       </div>
                     )}
                   />
-                  <Bar dataKey="submitted" name="Submitted" fill="var(--brand)" radius={[3, 3, 0, 0]} barSize={12} />
-                  <Bar dataKey="approved" name="Approved" fill="#76B7E2" radius={[3, 3, 0, 0]} barSize={12} />
+                  <Bar dataKey="submitted" name="Submitted" fill="var(--brand)" radius={[3, 3, 0, 0]} maxBarSize={28} />
+                  <Bar dataKey="approved" name="Approved" fill="#76B7E2" radius={[3, 3, 0, 0]} maxBarSize={28} />
                 </ComposedChart>
               </ResponsiveContainer>
             )}
-            <div className="mt-2 flex justify-center text-muted-foreground">{trendView === "monthly" ? "Months" : "Years"}</div>
+          </div>
+          <div className="mt-2 flex justify-center text-sm text-muted-foreground">
+            Loan amount by {trendView === "monthly" ? "month" : "year"}
           </div>
         </div>
 

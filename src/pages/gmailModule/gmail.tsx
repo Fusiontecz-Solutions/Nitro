@@ -869,7 +869,7 @@ const GmailPage = () => {
       ).unwrap();
       const file = new globalThis.File([blob], pdf.filename || 'application.pdf', { type: 'application/pdf' });
 
-      const created = await dispatch(parseApplicationPdfForClientPrefill({ pdfFile: file, isoId })).unwrap();
+      const created = await dispatch(parseApplicationPdfForClientPrefill({ pdfFile: file, isoId, source: 'gmail', senderEmail: senderEmail || undefined, gmailMessageId: message.id })).unwrap();
 
       try {
         await dispatch(markGmailMessagesInCrm(detailIds)).unwrap();

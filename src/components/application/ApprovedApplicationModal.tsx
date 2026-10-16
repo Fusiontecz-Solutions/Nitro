@@ -1212,8 +1212,8 @@ const ApprovedApplicationModal = ({
                     <DialogDescription className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                         {showIsoRecipientFields
                             ? resendApprovalEmail
-                                ? "Review loan terms, edit the offer if needed, then send the updated offer email to the ISO."
-                                : "Review loan terms, edit the offer if needed, then send the approval email to the ISO."
+                                ? "Set To/CC, review loan terms, then send the updated offer email to the ISO."
+                                : "Set To/CC, review loan terms, then send the approval email to the ISO."
                             : isUnderwriterDirectApprove
                             ? "Review loan terms, update the offer if needed, then approve this application."
                             : isFinalUnderwriter
@@ -1225,6 +1225,130 @@ const ApprovedApplicationModal = ({
                 </DialogHeader>
 
                 <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+                    {showIsoRecipientFields ? (
+                        <div className="space-y-4 rounded-lg border border-border/60 p-4">
+                            {hasLinkedIso ? (
+                                <div
+                                    className={`flex items-start gap-3 rounded-lg border p-4 ${isDark ? "border-gray-700 bg-muted/40" : "border-gray-200 bg-gray-50"}`}
+                                >
+                                    <Mail
+                                        className={`h-4 w-4 shrink-0 ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        strokeWidth={2}
+                                        aria-hidden
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                        <p
+                                            className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-gray-900"}`}
+                                        >
+                                            {linkedIsoName || "Linked ISO"}
+                                        </p>
+                                        {linkedIsoPhone ? (
+                                            <span
+                                                className={`mt-1 flex items-center gap-1.5 text-sm ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                                            >
+                                                <Phone
+                                                    className="h-3.5 w-3.5 shrink-0"
+                                                    strokeWidth={2}
+                                                    aria-hidden
+                                                />
+                                                <span className="truncate">
+                                                    {formatUSPhoneNumber(linkedIsoPhone) || linkedIsoPhone}
+                                                </span>
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div
+                                    className={`flex items-start gap-3 rounded-lg border p-4 ${isDark ? "border-amber-500/30 bg-amber-500/10" : "border-amber-200 bg-amber-50"}`}
+                                >
+                                    <AlertTriangle
+                                        className={`h-4 w-4 shrink-0 ${isDark ? "text-amber-400" : "text-amber-600"}`}
+                                        strokeWidth={2}
+                                        aria-hidden
+                                    />
+                                    <p
+                                        className={`text-sm ${isDark ? "text-amber-200" : "text-amber-800"}`}
+                                    >
+                                        No ISO is linked to this application. Enter a recipient email below to send the approval template.
+                                    </p>
+                                </div>
+                            )}
+
+                            <div className="space-y-2">
+                                <Label className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
+                                    ISO email (To) <span className="text-red-500">*</span>
+                                </Label>
+                                <Input
+                                    type="email"
+                                    placeholder="Enter ISO email"
+                                    value={isoRecipientEmail}
+                                    onChange={(e) => {
+                                        isoEmailTouchedRef.current = true;
+                                        setIsoRecipientEmail(e.target.value);
+                                    }}
+                                    className={isDark ? "bg-muted border-gray-700" : ""}
+                                />
+                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                                    {isoRecipientHelper}
+                                </p>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
+                                    CC
+                                </Label>
+                                <div className="mb-2 flex flex-wrap gap-2">
+                                    {ccEmails.map((email) => (
+                                        <span
+                                            key={email}
+                                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${isDark ? "border-gray-600 bg-gray-800" : "border-gray-200 bg-gray-50"}`}
+                                        >
+                                            {email}
+                                            <button
+                                                type="button"
+                                                className="text-gray-500 hover:text-red-600"
+                                                onClick={() =>
+                                                    setCcEmails(ccEmails.filter((e) => e !== email))
+                                                }
+                                            >
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        </span>
+                                    ))}
+                                </div>
+                                <div className="flex gap-2">
+                                    <Input
+                                        type="email"
+                                        placeholder="cc@example.com"
+                                        value={ccDraft}
+                                        onChange={(e) => setCcDraft(e.target.value)}
+                                        className={isDark ? "bg-muted border-gray-700" : ""}
+                                        onKeyDown={(e) => {
+                                            if (e.key === "Enter") {
+                                                e.preventDefault();
+                                                addCcEmail(ccDraft);
+                                            }
+                                        }}
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => addCcEmail(ccDraft)}
+                                    >
+                                        Add
+                                    </Button>
+                                </div>
+                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                                    Press Enter or Add for each CC address. Any valid address left in the field is included when you send.
+                                </p>
+                            </div>
+
+                            {reinitiateContractCheckbox}
+                        </div>
+                    ) : null}
+
                     {isPlainUnderwriter ? (
                         <div
                             className={`rounded-lg border p-4 ${
@@ -1611,130 +1735,6 @@ const ApprovedApplicationModal = ({
                     </div>
 
                     </div>
-
-                    {showIsoRecipientFields ? (
-                        <div className="space-y-4 rounded-lg border border-border/60 p-4">
-                            {hasLinkedIso ? (
-                                <div
-                                    className={`flex items-start gap-3 rounded-lg border p-4 ${isDark ? "border-gray-700 bg-muted/40" : "border-gray-200 bg-gray-50"}`}
-                                >
-                                    <Mail
-                                        className={`h-4 w-4 shrink-0 ${isDark ? "text-gray-400" : "text-gray-500"}`}
-                                        strokeWidth={2}
-                                        aria-hidden
-                                    />
-                                    <div className="min-w-0 flex-1">
-                                        <p
-                                            className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-gray-900"}`}
-                                        >
-                                            {linkedIsoName || "Linked ISO"}
-                                        </p>
-                                        {linkedIsoPhone ? (
-                                            <span
-                                                className={`mt-1 flex items-center gap-1.5 text-sm ${isDark ? "text-gray-300" : "text-gray-700"}`}
-                                            >
-                                                <Phone
-                                                    className="h-3.5 w-3.5 shrink-0"
-                                                    strokeWidth={2}
-                                                    aria-hidden
-                                                />
-                                                <span className="truncate">
-                                                    {formatUSPhoneNumber(linkedIsoPhone) || linkedIsoPhone}
-                                                </span>
-                                            </span>
-                                        ) : null}
-                                    </div>
-                                </div>
-                            ) : (
-                                <div
-                                    className={`flex items-start gap-3 rounded-lg border p-4 ${isDark ? "border-amber-500/30 bg-amber-500/10" : "border-amber-200 bg-amber-50"}`}
-                                >
-                                    <AlertTriangle
-                                        className={`h-4 w-4 shrink-0 ${isDark ? "text-amber-400" : "text-amber-600"}`}
-                                        strokeWidth={2}
-                                        aria-hidden
-                                    />
-                                    <p
-                                        className={`text-sm ${isDark ? "text-amber-200" : "text-amber-800"}`}
-                                    >
-                                        No ISO is linked to this application. Enter a recipient email below to send the approval template.
-                                    </p>
-                                </div>
-                            )}
-
-                            <div className="space-y-2">
-                                <Label className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
-                                    ISO email (To) <span className="text-red-500">*</span>
-                                </Label>
-                                <Input
-                                    type="email"
-                                    placeholder="Enter ISO email"
-                                    value={isoRecipientEmail}
-                                    onChange={(e) => {
-                                        isoEmailTouchedRef.current = true;
-                                        setIsoRecipientEmail(e.target.value);
-                                    }}
-                                    className={isDark ? "bg-muted border-gray-700" : ""}
-                                />
-                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
-                                    {isoRecipientHelper}
-                                </p>
-                            </div>
-
-                            <div className="space-y-2">
-                                <Label className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
-                                    CC
-                                </Label>
-                                <div className="mb-2 flex flex-wrap gap-2">
-                                    {ccEmails.map((email) => (
-                                        <span
-                                            key={email}
-                                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${isDark ? "border-gray-600 bg-gray-800" : "border-gray-200 bg-gray-50"}`}
-                                        >
-                                            {email}
-                                            <button
-                                                type="button"
-                                                className="text-gray-500 hover:text-red-600"
-                                                onClick={() =>
-                                                    setCcEmails(ccEmails.filter((e) => e !== email))
-                                                }
-                                            >
-                                                <X className="h-3 w-3" />
-                                            </button>
-                                        </span>
-                                    ))}
-                                </div>
-                                <div className="flex gap-2">
-                                    <Input
-                                        type="email"
-                                        placeholder="cc@example.com"
-                                        value={ccDraft}
-                                        onChange={(e) => setCcDraft(e.target.value)}
-                                        className={isDark ? "bg-muted border-gray-700" : ""}
-                                        onKeyDown={(e) => {
-                                            if (e.key === "Enter") {
-                                                e.preventDefault();
-                                                addCcEmail(ccDraft);
-                                            }
-                                        }}
-                                    />
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => addCcEmail(ccDraft)}
-                                    >
-                                        Add
-                                    </Button>
-                                </div>
-                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
-                                    Press Enter or Add for each CC address. Any valid address left in the field is included when you send.
-                                </p>
-                            </div>
-
-                            {reinitiateContractCheckbox}
-                        </div>
-                    ) : null}
 
                     {showReinitiateContractOption && !showIsoRecipientFields
                         ? reinitiateContractCheckbox

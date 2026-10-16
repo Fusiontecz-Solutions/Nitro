@@ -51,7 +51,9 @@ import {
     applySharedDbaToMappingBlob,
     extractOnlineBankingFromTabValues,
     getDocumentTemplatePrefillFieldRowsForEditor,
+    LINKED_DOC_MANUAL_FIELD_IDS_KEY,
     omitMappingBlobIds,
+    parseLinkedDocManualFieldIds,
     resolveSharedDbaValue,
     usesCoordinateLayoutTemplate,
 } from "./documentTemplateMappingPrefill";
@@ -201,6 +203,16 @@ export function TemplateMappingPrefillEditDialog({
     const [saving, setSaving] = useState(false);
     /** Only hydrate once per open/row — contract status polls must not wipe in-progress edits. */
     const hydratedSessionKeyRef = useRef<string | null>(null);
+    /**
+     * Fields typed by hand on this tab, saved as `_manualFieldIds`. Without the
+     * mark, an offer-derived amount (the PayOff Addendum's "Net Amount to
+     * Merchant") was recomputed over the typed value on the next rebuild, so it
+     * reached SignNow unchanged however often it was edited.
+     */
+    const manualIdsRef = useRef<Set<string>>(new Set());
+    const markManual = useCallback((id: string) => {
+        manualIdsRef.current.add(id);
+    }, []);
 
     const coordinateLayout = usesCoordinateLayoutTemplate(row);
     const isAchDailyRow = Boolean(
@@ -280,6 +292,9 @@ export function TemplateMappingPrefillEditDialog({
         if (hydratedSessionKeyRef.current === sessionKey) return;
         if (editorRows.length === 0) return;
         hydratedSessionKeyRef.current = sessionKey;
+        manualIdsRef.current = parseLinkedDocManualFieldIds(
+            documentTemplatePrefillByMappingId[row.id],
+        );
         const fromRows = Object.fromEntries(editorRows.map((r) => [r.id, r.value ?? ""]));
         if (isolateExhibitCInstance) {
             // Extra Exhibit C: only this mapping's saved values — no shared DBA seed.
@@ -325,7 +340,14 @@ export function TemplateMappingPrefillEditDialog({
             const existingBlob = parseDocumentTemplatePrefillByMappingId(rawOverrides);
             const envelopeBlob = parseDocumentTemplateEnvelopeByMappingId(rawOverrides);
 
-            const tabValues = { ...fieldValues };
+            const tabValues: Record<string, string> = { ...fieldValues };
+            delete tabValues[LINKED_DOC_MANUAL_FIELD_IDS_KEY];
+            const keptManualIds = [...manualIdsRef.current].filter((id) =>
+                String(tabValues[id] ?? "").trim(),
+            );
+            if (keptManualIds.length) {
+                tabValues[LINKED_DOC_MANUAL_FIELD_IDS_KEY] = keptManualIds.join(",");
+            }
             // Balance Transfer Remaining Balance must map to the CRM-scoped DocuSign
             // label (balance_transfer_purchase_price) — never overwrite main RPA purchase_price.
             const remainingBalance = String(
@@ -673,11 +695,12 @@ export function TemplateMappingPrefillEditDialog({
                                                             rows={installmentRows}
                                                             values={fieldValues}
                                                             idPrefix="tmpl-field-"
-                                                            onChange={(id, next) =>
+                                                            onChange={(id, next) => {
+                                                                markManual(id);
                                                                 setFieldValues((prev) =>
                                                                     syncSiblingBankFields(prev, id, next),
-                                                                )
-                                                            }
+                                                                );
+                                                            }}
                                                         />
                                                     ) : null}
                                                     {otherRows.length > 0 ? (
@@ -695,6 +718,7 @@ export function TemplateMappingPrefillEditDialog({
                                                                         value={fieldValues[r.id] ?? ""}
                                                                         onChange={(e) => {
                                                                             const next = e.target.value;
+                                                                            markManual(r.id);
                                                                             setFieldValues((prev) =>
                                                                                 syncSiblingBankFields(
                                                                                     prev,

@@ -1,6 +1,7 @@
 /** Nitro Advance brand — matches document-request email templates. */
 import {
   APP_BRAND_LOGO_URL,
+  APP_EMAIL_LOGO_URL,
   APP_BRAND_LOGO_WATERMARK_URL,
   APP_COMPANY_CRM_NAME,
   APP_COMPANY_NAME,
@@ -28,10 +29,10 @@ export const APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER =
   "__APPROVAL_COMPANY_NAME__";
 
 /** Brand logo for outbound email / in-app template previews. */
-export const APPLICATION_APPROVAL_EMAIL_LOGO_SRC = APP_BRAND_LOGO_URL;
+export const APPLICATION_APPROVAL_EMAIL_LOGO_SRC = APP_EMAIL_LOGO_URL;
 
 /** Center faded background watermark layout image. */
-export const APPLICATION_APPROVAL_EMAIL_WATERMARK_SRC = APP_BRAND_LOGO_URL;
+export const APPLICATION_APPROVAL_EMAIL_WATERMARK_SRC = APP_EMAIL_LOGO_URL;
 
 /**
  * Body background watermark for the approval / offer-updated emails. Email clients

@@ -3,6 +3,7 @@ import { ArrowRight, Loader2, MessageSquareText } from "lucide-react";
 import { axiosGet } from "@/redux/axios";
 import { cn, formatDateTimeUS } from "@/lib/utils";
 import { useTheme } from "@/context/ThemeContext";
+import { stripGmailMessageNoteMarker } from "@/lib/formatActionRequired";
 
 /** Activity-log actions whose `metadata.note` is a hand-off message between Agent and Underwriter. */
 const HANDOFF_ACTIONS: Record<string, { from: string; to: string }> = {
@@ -76,7 +77,8 @@ export default function WorkflowNotesPanel({
   });
 
   const notes: WorkflowNote[] = [...(query.data ?? [])];
-  const intake = String(intakeNote ?? "").trim();
+  // Gmail auto-created deals carry an internal `gmail-msg:<id>` marker in the note — never show it.
+  const intake = stripGmailMessageNoteMarker(intakeNote);
   if (intake) {
     notes.push({
       id: "intake-note",

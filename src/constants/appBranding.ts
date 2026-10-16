@@ -9,6 +9,14 @@ export const APP_BRAND_LOGO_URL =
   String(import.meta.env?.VITE_BRAND_LOGO_URL ?? "").trim() ||
   "/harbor_logo.png";
 
+/**
+ * Logo for outbound HTML emails. Must be an absolute, publicly hosted URL — mail clients
+ * cannot load the in-app `/harbor_logo.png`. Override with `VITE_EMAIL_LOGO_URL`.
+ */
+export const APP_EMAIL_LOGO_URL =
+  String(import.meta.env?.VITE_EMAIL_LOGO_URL ?? "").trim() ||
+  "https://res.cloudinary.com/ofdznkd2/image/upload/v1788547878/ih-crm/funder-letter-logos/d9e5b7a2-7911-4b36-abff-349bfc765396/ykxdwjt1qkgrqx2j65fn.png";
+
 /** Faded watermark for letter/email backgrounds. Override with `VITE_BRAND_LOGO_WATERMARK_URL`. */
 export const APP_BRAND_LOGO_WATERMARK_URL =
   String(import.meta.env?.VITE_BRAND_LOGO_WATERMARK_URL ?? "").trim() ||

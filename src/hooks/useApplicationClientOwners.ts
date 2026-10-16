@@ -11,7 +11,7 @@ import {
 
 /**
  * Application list/cache payloads often include only the primary owner on `client.owner`.
- * Load full client detail so `owners[]` is available for overview / approval UIs.
+ * Load full client detail so `owners[]` is available 
  */
 export function useApplicationClientOwners(applicationClient: unknown) {
     const dispatch = useDispatch<AppDispatch>();

@@ -1940,7 +1940,10 @@ function payoffAddendumValues(
             str(c.refinanceAmount) ||
             str(c.previousRefiBalance) ||
             "0.00",
-        netToMerchant: sctx.fundingDisbursed || sctx.netContractedFunding,
+        // "After deduction of the payoff amount ... Net Amount to Merchant": the
+        // cash left once the payoff is taken out, not advance − fees.
+        netToMerchant:
+            sctx.actualDisbursement || sctx.fundingDisbursed || sctx.netContractedFunding,
         printName: sctx.merchantName || str(c.clientName) || sctx.recipientName,
         printTitle: "OWNER",
     };

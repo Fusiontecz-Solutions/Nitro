@@ -1,4 +1,4 @@
-import { APP_BRAND_LOGO_URL, APP_COMPANY_NAME, APP_EMAIL_BRAND } from "@/constants/appBranding";
+import { APP_EMAIL_LOGO_URL, APP_COMPANY_NAME, APP_EMAIL_BRAND } from "@/constants/appBranding";
 import type { TemplateValues } from "./types";
 
 /**
@@ -345,7 +345,7 @@ function brandFieldsFromValues(values: TemplateValues): ContractEmailBrandFields
     documentNames: get("document_names").split(/[\n,]/),
     attachmentName: get("attachment_name"),
     companyName: get("company_name") || get("book_name") || APP_COMPANY_NAME,
-    logoSrc: get("logo_url") || APP_BRAND_LOGO_URL,
+    logoSrc: get("logo_url") || APP_EMAIL_LOGO_URL,
     brandPrimary: get("brand_primary") || APP_EMAIL_BRAND.accent,
     brandAccent: get("brand_accent") || "#F26C11",
   };

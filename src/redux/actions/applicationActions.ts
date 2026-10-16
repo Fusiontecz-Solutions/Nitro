@@ -1093,6 +1093,12 @@ export type AutoCreateFromPdfPayload = {
     pdfFile?: File;
     applicationType?: string;
     isoId?: string;
+    /** `gmail` = Send to CRM: deal starts in the Underwriter queue. */
+    source?: 'gmail';
+    /** Gmail sender — backend links / auto-creates the ISO from it when `isoId` is not set. */
+    senderEmail?: string;
+    /** Source Gmail message — ISO approval / decline mails reply on its thread. */
+    gmailMessageId?: string;
     driverLicense?: File | null;
     driverLicenseOwner2?: File | null;
     voidedCheck?: File | null;
@@ -1145,6 +1151,15 @@ export const parseApplicationPdfForClientPrefill = createAsyncThunk(
                 }
                 if (payload.isoId) {
                     formData.append('isoId', payload.isoId);
+                }
+                if (payload.source) {
+                    formData.append('source', payload.source);
+                }
+                if (payload.senderEmail) {
+                    formData.append('senderEmail', payload.senderEmail);
+                }
+                if (payload.gmailMessageId) {
+                    formData.append('gmailMessageId', payload.gmailMessageId);
                 }
             }
 

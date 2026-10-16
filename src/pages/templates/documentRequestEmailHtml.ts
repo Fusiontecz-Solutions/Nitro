@@ -3,17 +3,17 @@ import {
   escapeHtml,
   resolveDocumentRequestEmailFields,
 } from "./documentRequestEmailShared";
-import { APP_BRAND_LOGO_URL } from "@/constants/appBranding";
+import { APP_EMAIL_LOGO_URL } from "@/constants/appBranding";
 
 /** Hosted logo for outbound email (Gmail/Outlook-safe absolute URL). */
-const DOCUMENT_REQUEST_EMAIL_LOGO_SRC = APP_BRAND_LOGO_URL;
+const DOCUMENT_REQUEST_EMAIL_LOGO_SRC = APP_EMAIL_LOGO_URL;
 
 /** Hosted PNG document icon shown in the "Required Documents" circle. */
 const DOCUMENT_REQUEST_EMAIL_ICON_SRC =
     "https://res.cloudinary.com/dehrku8og/image/upload/q_auto/f_auto/v1781888571/Document_Icon_1_etkhnd.png";
 
 /** Center faded background watermark layout image. */
-const DOCUMENT_REQUEST_EMAIL_WATERMARK_SRC = APP_BRAND_LOGO_URL;
+const DOCUMENT_REQUEST_EMAIL_WATERMARK_SRC = APP_EMAIL_LOGO_URL;
 
 /** Use two columns when the list has this many items or more. */
 const TWO_COLUMN_MIN_ITEMS = 4;

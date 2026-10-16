@@ -48,6 +48,7 @@ const PipelineCountsSync = () => {
             // Agent / Underwriter sidebar badges + workflow dashboard (e.g. ISO approval
             // moving a deal from Sent to ISO → Contract Pending).
             void appQueryClient.invalidateQueries({ queryKey: ["workflow-summary"] });
+            void appQueryClient.invalidateQueries({ queryKey: ["sidebar-applications-total"] });
             void dispatch(fetchOperationsDashboardSummary());
             invalidateDashboardData(dispatch);
         },

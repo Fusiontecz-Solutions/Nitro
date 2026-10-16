@@ -19,7 +19,7 @@ import {
 } from "@/lib/workflowApi";
 import WorkflowStatusBadge from "./WorkflowStatusBadge";
 import WorkflowNoteDialog from "./WorkflowNoteDialog";
-import SendToIsoDialog from "./SendToIsoDialog";
+import ApprovedApplicationModal from "@/components/application/ApprovedApplicationModal";
 // import IsoEmailThreadCard from "./IsoEmailThreadCard";
 
 const CONTRACT_STAGE_TOKENS = new Set(
@@ -108,7 +108,6 @@ export default function WorkflowActionPanel({
   const underwriter = application.assignedUnderwriter;
   const underwriterId = String(application.assignedUnderwriterId ?? underwriter?._id ?? underwriter?.id ?? "");
   const underwriterName = personName(underwriter);
-  const businessName = application.client?.business?.name ?? null;
 
   const isDraft = isWorkflowQueue(queue, WORKFLOW_QUEUE.AGENT_DRAFT) || isWorkflowQueue(queue, "New");
   const inUnderwriting = isWorkflowQueue(queue, WORKFLOW_QUEUE.UNDERWRITER);
@@ -249,7 +248,7 @@ export default function WorkflowActionPanel({
               <Button variant="outline" className="gap-1.5" onClick={() => setDialog("returnToUw")}>
                 <Undo2 className="size-4" /> Request changes
               </Button>
-              <Button className="gap-1.5" onClick={() => setDialog("sendToIso")} disabled={!iso}>
+              <Button className="gap-1.5" onClick={() => setDialog("sendToIso")}>
                 <Mail className="size-4" /> Send to ISO for approval
               </Button>
             </>
@@ -348,15 +347,15 @@ export default function WorkflowActionPanel({
         }}
       />
       {uuid ? (
-        <SendToIsoDialog
+        // Same To/CC + loan-terms modal the Underwriter uses. Always the approval template:
+        // the "resend" flag switches to the Super Admin "offer values updated" template.
+        <ApprovedApplicationModal
           open={dialog === "sendToIso"}
           onOpenChange={(open) => setDialog(open ? "sendToIso" : null)}
-          applicationUuid={uuid}
-          isoName={iso?.name}
-          isoEmail={iso?.email}
-          businessName={businessName}
-          resend={isoPending}
-          onSent={refresh}
+          isFinalUnderwriter
+          showIsoRecipientFields
+          resendApprovalEmail={false}
+          onProceedToContract={refresh}
         />
       ) : null}
     </div>
