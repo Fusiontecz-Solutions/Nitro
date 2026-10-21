@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useSocket } from "@/context/SocketContext";
 
-/** Matches backend `CONTRACT_SIGNING_STATUS_SOCKET_EVENT`. */
+/** MatchET_EVENT`. */
 export const CONTRACT_SIGNING_STATUS_SOCKET_EVENT = "contract:signing-status";
 
 export type ContractSigningStatusRealtimePayload = {

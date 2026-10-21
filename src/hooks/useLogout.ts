@@ -10,7 +10,7 @@ import { clearCrmCacheOnLogout } from "@/lib/crmCache";
 import { clearAllPersistentCaches } from "@/lib/persistentCache/clearAllPersistentCaches";
 import { clearHttpGetCache } from "@/lib/httpGetCache";
 
-/** CRM sign-out shared by the sidebar and the Gmail account menu. */
+/** CRM sign-out shared by the sidebar at menu. */
 export function useLogout() {
   const dispatch: AppDispatch = useDispatch();
   const navigate = useNavigate();

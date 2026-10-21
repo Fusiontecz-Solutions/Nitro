@@ -211,9 +211,6 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "payment_frequency",
         // SignNow's own spelling on the disclosure page-1 payment row.
         "disclouser_pg2_frequency",
-        // Cadence beside the Estimated Term on disclosure page 2.
-        "page2_frequency",
-        "Text Field 9",
     ],
     client_name: [
         "client_name",
@@ -561,8 +558,16 @@ export function expandDisclosureEditorValuesToPdfFields(
         out[id] = value.toUpperCase();
     }
 
+    // Unit beside the Estimated Term on disclosure page 2. The term is always stated
+    // in days (weekly = weeks × 7), so the label is DAYS for daily and weekly deals.
+    const termUnit = String(out.disclosure_term_days ?? "").trim() ? "DAYS" : "";
+    for (const id of DISCLOSURE_PAGE2_TERM_UNIT_IDS) out[id] = termUnit;
+
     return out;
 }
+
+/** SignNow names for the unit label next to the page-2 Estimated Term. */
+const DISCLOSURE_PAGE2_TERM_UNIT_IDS = ["page2_frequency", "Text Field 9"] as const;
 
 export function buildDisclosureEditorFieldsFromContext(
     ctx: StateDisclosureContext,

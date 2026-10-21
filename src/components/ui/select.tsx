@@ -121,6 +121,7 @@ function SelectContent({
   searchThreshold = 0,
   allowCreate = false,
   createOptionLabel,
+  onSearchChange,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content> & {
   /** Force the search box on/off. Defaults to auto (shown when there are enough options). */
@@ -132,9 +133,17 @@ function SelectContent({
   allowCreate?: boolean
   /** Label for the create option. Defaults to `Use "{query}"`. */
   createOptionLabel?: (query: string) => React.ReactNode
+  /** Notified on every search-box change, e.g. to fetch options the caller has not loaded yet. */
+  onSearchChange?: (query: string) => void
 }) {
   const [query, setQuery] = React.useState("")
   const inputRef = React.useRef<HTMLInputElement>(null)
+
+  const onSearchChangeRef = React.useRef(onSearchChange)
+  onSearchChangeRef.current = onSearchChange
+  React.useEffect(() => {
+    onSearchChangeRef.current?.(query)
+  }, [query])
 
   // Reset the query whenever the dropdown re-opens so stale filters don't stick.
   React.useEffect(() => {

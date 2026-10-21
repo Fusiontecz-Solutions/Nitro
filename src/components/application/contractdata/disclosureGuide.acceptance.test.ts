@@ -471,6 +471,19 @@ test("Disclosure PDF frequency is day/week; CRM editor stays Daily/Weekly", () =
     assert.equal(pdf.payment_frequency, "WEEK");
 });
 
+test("Page-2 Estimated Term unit is DAYS for weekly and daily deals", () => {
+    for (const frequency of ["Weekly", "Daily"]) {
+        const pdf = expandDisclosureEditorValuesToPdfFields({
+            disclosure_payment_frequency: frequency,
+            disclosure_term_days: "98",
+            funder_name: "Nitro Advance",
+        });
+        assert.equal(pdf.estimated_term_p2, "98");
+        assert.equal(pdf.page2_frequency, "DAYS");
+        assert.equal(pdf["Text Field 9"], "DAYS");
+    }
+});
+
 test("Guide Utah provider-pays field left blank", () => {
     const fields = getStateDisclosurePrefillFieldsByName("daily_utah", {
         fundingProvided: "100000.00",

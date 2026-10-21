@@ -15,6 +15,8 @@ import {
     parseApplicationPdfForClientPrefill,
 } from '@/redux/actions/applicationActions'
 import { getClients } from '@/redux/actions/clientActions'
+import { axiosGet } from '@/redux/axios'
+import { buildClientsListUrl } from '@/lib/clientsListCache'
 import {
     resetCreateApplication,
     resetUpdateApplication,
@@ -158,6 +160,16 @@ function formatDealUsDate(value: unknown): string {
         year: 'numeric',
         timeZone: 'UTC',
     }).format(d)
+}
+
+function toClientOption(client: any): SelectOption {
+    return {
+        value: client._id,
+        label:
+            client.business?.name ||
+            `${client.owner?.firstName || ''} ${client.owner?.lastName || ''}`.trim() ||
+            client._id,
+    }
 }
 
 function mapApiDealToRefinanceOption(raw: Record<string, unknown>): ClientDealForRefinance {
@@ -761,13 +773,39 @@ const CreateApplication = () => {
     // Generate client options from fetched clients
     useEffect(() => {
         if (clients && Array.isArray(clients)) {
-            const options: SelectOption[] = clients.map((client: any) => ({
-                value: client._id,
-                label: client.business?.name || `${client.owner?.firstName || ''} ${client.owner?.lastName || ''}`.trim() || client._id,
-            }))
+            const options: SelectOption[] = clients.map(toClientOption)
             setClientOptions(options)
         }
     }, [clients])
+
+    // The preloaded list is capped at 100 newest clients, so search the server for the rest
+    // and merge hits into the options (the dropdown then filters them locally as usual).
+    const [clientSearch, setClientSearch] = useState('')
+    useEffect(() => {
+        const search = clientSearch.trim()
+        if (search.length < 2) return
+        let cancelled = false
+        const timer = setTimeout(async () => {
+            try {
+                const res = await axiosGet(buildClientsListUrl({ search, limit: 50, lite: 1 }))
+                const found: SelectOption[] = Array.isArray(res.data?.data)
+                    ? res.data.data.map(toClientOption)
+                    : []
+                if (cancelled || found.length === 0) return
+                setClientOptions((prev) => {
+                    const known = new Set(prev.map((o) => o.value))
+                    const added = found.filter((o) => !known.has(o.value))
+                    return added.length ? [...prev, ...added] : prev
+                })
+            } catch {
+                /* keep local results */
+            }
+        }, 300)
+        return () => {
+            cancelled = true
+            clearTimeout(timer)
+        }
+    }, [clientSearch])
 
     // Hooks must run before any early return (edit mode flips isPageLoading between renders).
     const { resolvedTheme } = useTheme()
@@ -1107,7 +1145,7 @@ const CreateApplication = () => {
                                                     <SelectTrigger className={`${fieldInputClass} w-full`}>
                                                         <SelectValue placeholder={clientsLoading ? "Loading clients..." : "Select Client"} />
                                                     </SelectTrigger>
-                                                    <SelectContent>
+                                                    <SelectContent onSearchChange={setClientSearch}>
                                                         {clientOptions.length === 0 ? (
                                                             <div className="px-3 py-2 text-sm text-muted-foreground">
                                                                 {clientsLoading ? 'Loading clients...' : 'No clients found.'}
