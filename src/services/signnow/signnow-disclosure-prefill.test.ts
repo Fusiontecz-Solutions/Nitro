@@ -114,7 +114,7 @@ describe('the state disclosure fills from the offer alone', () => {
     // Page 2.
     expect(out.payement_exceeded_percent_p2_s1).toBe('21.65');
     expect(out.estimated_term_p2).toBe('60');
-    expect(out.page2_frequency).toBe('DAILY'); // unit beside the term
+    expect(out.page2_frequency).toBe('DAYS'); // unit beside the term
     expect(out.finance_charge_p2).toBe('22,500.00');
     expect(out.signature_date_p2).toBe('09/22/2026');
     // Page 3 itemization — the lines add back up to the advance.
@@ -270,7 +270,7 @@ describe('the state disclosure fills from the offer alone', () => {
     expect(out.estimated_term_p2).toBe('70'); // calendar days, not 10
     expect(out['Text Field 7']).toBe('29,000.00'); // payment x 4 weeks
     expect(out.disclouser_pg2_frequency).toBe('WEEKLY');
-    expect(out.page2_frequency).toBe('WEEKLY');
+    expect(out.page2_frequency).toBe('DAYS');
   });
 
   it('publishes nothing when the deal has no live offer', () => {

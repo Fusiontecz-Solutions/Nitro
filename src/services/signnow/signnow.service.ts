@@ -157,6 +157,7 @@ import {
   parseDocumentTemplatePrefillBlob,
   pickSignNowDocumentTabEntry,
   tabValuesOverLiveValues,
+  isHandTypedTabField,
   type SignNowDocumentTabValues,
 } from './utils/signnow-document-tab-values';
 import { EXHIBIT_C_ENTITIES_PREFILL_KEY } from '../contractKycPrefillMapper';
@@ -176,6 +177,7 @@ import {
 } from './utils/signnow-offer-values';
 import {
   dropZeroDisclosurePlaceholders,
+  dropSupersededOfferSnapshot,
   layerContractPrefillDefaults,
 } from './utils/signnow-disclosure-values';
 import {
@@ -784,18 +786,33 @@ export function signNowDocumentPrefillValues(
   // live CRM value, so a corrected deal reaches every document on regenerate.
   const tabs = tabValuesOverLiveValues(tab, base.values);
   /**
-   * What the preparer saved on this document's tab prints exactly as saved. It
-   * used to go through the TOTAL FEES alignment too, which re-derived a saved
-   * PayOff Addendum "Net Amount to Merchant" of 36,000.00 into 35,975.00. A
-   * disclosure tab saved from a calculation that ran without inputs holds 0.00
-   * placeholders; those still must not bury the deal's real amounts.
+   * What the preparer typed on this document's tab prints exactly as typed (a
+   * PayOff Addendum "Net Amount to Merchant" of 36,000.00 must not become
+   * 35,975.00). Every other tab field is a calculator snapshot from the moment
+   * the tab was saved: a disclosure tab saved while the "$25 wire fee" box was
+   * still ticked, or before the refi balance was entered, kept printing
+   * "Origination Fee 50,025.00 / funds provided 449,975.00" beside a contract
+   * TOTAL FEES of 50,000.00 and a 217,548.64 payoff. Those lines follow the
+   * contract like the package values do. A tab saved from a calculation that ran
+   * without inputs holds 0.00 placeholders; those must not bury real amounts.
    */
-  // A tab saved before the refi balance was entered still nets only the fees
-  // out of "Amount Given Directly to You" — the one saved figure that is moved.
-  const merged = alignDisclosureRecipientFundsWithRefinance({
-    ...aligned,
-    ...dropZeroDisclosurePlaceholders(tabs, base.values),
-  });
+  const manual = new Set(tab.manualFieldIds ?? []);
+  const isHandTyped = (key: string) => isHandTypedTabField(key, manual);
+  const typed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(tabs)) {
+    if (isHandTyped(key)) typed[key] = value;
+  }
+  // A tab calculated against a superseded offer gives way to the live deal.
+  const current = dropSupersededOfferSnapshot(tabs, aligned, isHandTyped);
+  const merged = {
+    ...alignDisclosureRecipientFundsWithRefinance(
+      alignDisclosureWireFeeWithTotalFees({
+        ...aligned,
+        ...dropZeroDisclosurePlaceholders(current, base.values),
+      }),
+    ),
+    ...typed,
+  };
   // Only an isolated copy prints its own entity's DBA; a tab saved on any other
   // document must not bring an Exhibit C copy's DBA back in.
   return { ...base, values: base.isolated ? merged : withoutExhibitCCopyDbas(merged, entities) };

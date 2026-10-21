@@ -164,6 +164,66 @@ export function dropZeroDisclosurePlaceholders(
   return out;
 }
 
+/** Tab keys that record the advance a disclosure calculation ran against. */
+const SNAPSHOT_ADVANCE_KEYS = [
+  'funding_provided',
+  'funding_provided_p1',
+  'disclosure_page3_subtotal',
+  'disclosure_page3_subtotal_p3',
+];
+
+/**
+ * Saved tab values, minus the calculator snapshot of a superseded offer.
+ *
+ * The disclosure tab is saved straight from the CRM calculator, so it records
+ * the whole deal as it stood at that save. When the offer is then changed, the
+ * tab still wins on its document: a Nitro deal moved from $90,000 to $50,000
+ * sent a disclosure reading "funding provided 90,000.00 / total payment
+ * 129,600.00" beside an agreement for 50,000.00. A tab whose advance is no
+ * longer the deal's drops every amount line and every value the live deal
+ * resolves for the same key; a field the preparer typed by hand
+ * (`isHandTyped`) still prints as typed.
+ */
+export function dropSupersededOfferSnapshot(
+  tabs: Record<string, string>,
+  base: Record<string, string>,
+  isHandTyped: (key: string) => boolean,
+): Record<string, string> {
+  const savedAdvance = parseMoney(
+    SNAPSHOT_ADVANCE_KEYS.map((key) => tabs[key]).find(hasDisclosureAmount),
+  );
+  const liveAdvance = parseMoney(
+    [base.purchase_price, base.approved_amount, base.funding_provided].find(hasDisclosureAmount),
+  );
+  if (savedAdvance == null || liveAdvance == null) return tabs;
+  if (Math.abs(savedAdvance - liveAdvance) < 0.01) return tabs;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(tabs)) {
+    // The average monthly revenue comes from the bank analyses, not the offer,
+    // so a changed offer does not make it stale.
+    const offerIndependent = OFFER_INDEPENDENT_TAB_KEYS.has(key.toLowerCase().replace(/_p\d+$/, ''));
+    // An amount line of the old calculation goes even when the live deal names
+    // it differently (`funding_provided_direct` prints from the live recipient
+    // funds through the widget's aliases).
+    if (
+      !isHandTyped(key) &&
+      !offerIndependent &&
+      (String(base[key] ?? '').trim() || isDisclosureAmountKey(key))
+    ) {
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+const OFFER_INDEPENDENT_TAB_KEYS = new Set([
+  'disclosure_avg_monthly_revenue',
+  'avarage_monthly_income',
+  'monthly_income',
+  'text field 4',
+]);
+
 /**
  * Lay the contract's stored values (`loadContractPrefillDefaults`) under the
  * package map, in place.

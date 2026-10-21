@@ -2408,3 +2408,47 @@ describe('Exhibit C entity-only DBA', () => {
     ).toBe('');
   });
 });
+
+/**
+ * Every funder's PayOff Addendum prints a "," between the signer's name and
+ * title as a numbered widget (Obsidian `Text Field 7`, Tiberian `Text Field 5`,
+ * Nitro `Text Field 13`). The CA-disclosure / ACH aliases for those numbers
+ * replaced it with the monthly cost, the finance charge or a security answer.
+ */
+describe('PayOff Addendum numbered separators', () => {
+  const values = {
+    disclosure_monthly_cost: '185,000.00',
+    disclosure_finance_charge: '240,000.00',
+    ach_security_q3: 'Blue',
+    net_to_merchant: '232,451.36',
+  };
+  it.each([
+    ['Payoff Addendum (REFI) - Obsidian Capital Group', 'Text Field 7'],
+    ['PAYOFF ADDENDUM TIBERIAN FUNDING.docx', 'Text Field 5'],
+    ['Payoff Addendum (refi) - Nitro Advance - Updated', 'Text Field 13'],
+  ])('%s keeps %s as printed', (documentName, separator) => {
+    const names = ['addendum_p_pay_up_to_amount_p1', 'net_to_merchant_p1', separator];
+    const options = signNowPrefillOptionsForDocument(documentName, names);
+    expect(options?.documentKind).toBe('payoff_addendum');
+    expect(shouldSkipSignNowPrefill(separator, options)).toBe(true);
+    const texts = buildSignNowDocumentPrefillTexts(names, values, options);
+    expect(texts.find((t) => t.field_name === separator)).toBeUndefined();
+    expect(texts.find((t) => t.field_name === 'net_to_merchant_p1')?.prefilled_text).toBe(
+      '232,451.36',
+    );
+  });
+
+  it('recognises the addendum by its widgets when the title is generic', () => {
+    const options = signNowPrefillOptionsForDocument('Addendum', [
+      'addendum_p_pay_up_to_amount_p1',
+      'net_to_merchant_p1',
+      'Text Field 7',
+    ]);
+    expect(options?.documentKind).toBe('payoff_addendum');
+  });
+
+  it('leaves a payoff-named disclosure on the disclosure aliases', () => {
+    const options = signNowPrefillOptionsForDocument('Payoff Disclosure', ['Text Field 7']);
+    expect(options?.documentKind).not.toBe('payoff_addendum');
+  });
+});

@@ -552,17 +552,12 @@ const ALIASES: Record<string, string[]> = {
     'frequency',
   ],
   /**
-   * Cadence label printed beside the Estimated Term on disclosure page 2
-   * ("40 DAILY"), so the term reads in the offer's own unit. Same widget name
-   * on the Nitro, Obsidian and Tiberian disclosures.
+   * Unit label printed beside the Estimated Term on disclosure page 2. The term
+   * is always calendar days, so this reads "DAYS" (set by
+   * `buildOfferPrefillOverrides`) and must never fall back to the payment
+   * cadence. Same widget name on the Nitro, Obsidian and Tiberian disclosures.
    */
-  page2_frequency: [
-    'page2_frequency',
-    'disclouser_pg2_frequency',
-    'disclosure_payment_frequency',
-    'payment_frequency',
-    'frequency',
-  ],
+  page2_frequency: ['page2_frequency'],
   // CA-style disclosure page 1 — SignNow still uses default "Text Field N" names.
   'text field 1': [
     'funding_provided',
@@ -940,7 +935,8 @@ export type SignNowPrefillDocumentKind =
   | 'obsidian_agreement'
   | 'tiberian_agreement'
   | 'exhibit_c'
-  | 'ach_weekly';
+  | 'ach_weekly'
+  | 'payoff_addendum';
 
 export type SignNowPrefillOptions = {
   documentKind?: SignNowPrefillDocumentKind;
@@ -1603,12 +1599,31 @@ function looksLikeAgreementDocumentName(value: unknown): boolean {
   return /agreement|contract/i.test(String(value || '').trim());
 }
 
+/**
+ * The PayOff Addendum (refi) — every funder's copy. Its only numbered widget is
+ * the `,` printed between the signer's name and title (`Text Field 7` on
+ * Obsidian, `Text Field 5` on Tiberian, `Text Field 13` on Nitro), which the
+ * CA-disclosure / ACH aliases for those numbers overwrote with the monthly cost,
+ * the finance charge or a security answer.
+ */
+function isPayoffAddendumDocument(documentName: unknown, fieldNames?: string[]): boolean {
+  const name = String(documentName || '');
+  if (/pay\s*-?\s*off/i.test(name) && !isDisclosureDocumentName(name)) return true;
+  const names = new Set((fieldNames || []).map((n) => String(n || '').trim().toLowerCase()));
+  return (
+    names.has('addendum_p_pay_up_to_amount_p1') &&
+    names.has('net_to_merchant_p1') &&
+    names.size <= 20
+  );
+}
+
 export function signNowPrefillDocumentKind(
   documentName?: unknown,
   fieldNames?: string[],
 ): SignNowPrefillDocumentKind | undefined {
   if (isMonthlyFeeDocumentName(documentName)) return 'monthly_fee';
   if (isExhibitCDocumentName(documentName)) return 'exhibit_c';
+  if (isPayoffAddendumDocument(documentName, fieldNames)) return 'payoff_addendum';
   // A funder's disclosure carries the funder name too — never let it be read as
   // that funder's agreement (see `isDisclosureDocumentName`). Tiberian's copy is
   // titled just "TIBERIAN FUNDING", with no word the title test can see, so the
@@ -1927,6 +1942,9 @@ export function shouldSkipSignNowPrefill(
     if (options?.documentKind === 'exhibit_c') {
       return !(num in EXHIBIT_C_TEXT_FIELD_CRM_IDS);
     }
+    // The PayOff Addendum's numbered widgets are printed punctuation (see
+    // `isPayoffAddendumDocument`); their template text must survive.
+    if (options?.documentKind === 'payoff_addendum') return true;
     const aliasKey = `text field ${num}`;
     if (ALIASES[aliasKey]) return false;
     // 1–9 are the CA disclosure page-1 money/APR slots on the SignNow template.

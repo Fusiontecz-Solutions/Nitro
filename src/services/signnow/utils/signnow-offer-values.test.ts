@@ -122,7 +122,8 @@ describe('buildOfferPrefillOverrides', () => {
     expect(overrides.payment_frequency).toBe('Weekly');
     expect(overrides.disclosure_payment_frequency).toBe('Weekly');
     expect(overrides.disclouser_pg2_frequency).toBe('Weekly');
-    expect(overrides.page2_frequency).toBe('Weekly');
+    // The unit beside the page-2 estimated term: the term is in days.
+    expect(overrides.page2_frequency).toBe('DAYS');
   });
 
   it('discloses a weekly term in days (weeks x 7)', () => {
@@ -446,7 +447,8 @@ describe('values saved in the Verify contract prefill editor', () => {
   it('ignores a saved net that was never entered by hand', () => {
     const saved = readSavedOfferPrefillFromOverrides({ netToMerchant: '36,000.00' });
     const overrides = buildOfferPrefillOverrides({ ...source(REFI_OFFER, true), saved }, {});
-    expect(overrides.net_to_merchant).toBe('35,975.00');
+    // 40,000 − 4,025 fees − 19,500 payoff.
+    expect(overrides.net_to_merchant).toBe('16,475.00');
   });
 
   it('uses the saved offer amounts, remittance and fee over the offer row', () => {
@@ -462,7 +464,56 @@ describe('values saved in the Verify contract prefill editor', () => {
     expect(overrides.remittance).toBe('900.00');
     expect(overrides.appendix_underwriting_fees).toBe('3,000.00');
     expect(overrides.total_fees).toBe('3,000.00');
-    expect(overrides.net_to_merchant).toBe('42,000.00');
+    // 45,000 − 3,000 fees − 19,500 payoff.
+    expect(overrides.net_to_merchant).toBe('22,500.00');
+  });
+});
+
+/**
+ * The Obsidian refi deal from the bug report: $500,000 advance, $50,000 fee,
+ * $217,548.64 payoff, "$25 wire fee" unchecked. The CRM printed NET AMOUNT
+ * 232,451.36; the sent contract printed TOTAL FEES 50,025.00 and NET AMOUNT
+ * 449,975.00 — the payoff left in and the wire fee back on.
+ */
+describe('a refinance deal NET AMOUNT', () => {
+  const CARBON_OFFER = {
+    offer: 500000,
+    totalRemit: 740000,
+    term: '16',
+    frequency: 'weekly',
+    repayPerPeriod: 46250,
+    fees: 50000,
+    refinanceAmount: 217548.64,
+  };
+
+  it('takes the payoff out, with the wire fee off', () => {
+    const overrides = buildOfferPrefillOverrides(source(CARBON_OFFER, false), {
+      total_fees: '50,000.00',
+      net_to_merchant: '232,451.36',
+    });
+    expect(overrides.total_fees).toBe('50,000.00');
+    expect(overrides.net_to_merchant).toBe('232,451.36');
+  });
+
+  it('takes the payoff out, with the wire fee on', () => {
+    const overrides = buildOfferPrefillOverrides(source(CARBON_OFFER, true), {});
+    expect(overrides.total_fees).toBe('50,025.00');
+    expect(overrides.net_to_merchant).toBe('232,426.36');
+  });
+
+  it('uses a payoff saved in the prefill editor over the offer row', () => {
+    const saved = readSavedOfferPrefillFromOverrides({ refinanceAmount: '200,000.00' });
+    const overrides = buildOfferPrefillOverrides({ ...source(CARBON_OFFER, false), saved }, {});
+    expect(overrides.net_to_merchant).toBe('250,000.00');
+  });
+
+  it('leaves NET AMOUNT unset when fees and payoff exceed the advance', () => {
+    const overrides = buildOfferPrefillOverrides(
+      source({ ...CARBON_OFFER, refinanceAmount: 460000 }, false),
+      {},
+    );
+    expect(overrides.total_fees).toBe('50,000.00');
+    expect(overrides.net_to_merchant).toBeUndefined();
   });
 });
 

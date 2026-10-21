@@ -3687,10 +3687,22 @@ class ApplicationController {
                     return sum;
                 }, 0);
                 mapped.positions = positions;
+                /**
+                 * With no position balance on file, the payoff is what the funded
+                 * deal still owes — at most its payback (`totalRemit`). The
+                 * requested loan amount was used here, so refinancing a $6,000 /
+                 * $8,994 deal opened with a $35,000 REFI amount (the original ask)
+                 * and the new contract's NET AMOUNT went negative.
+                 */
+                const decisionRaw = (app as any).OfferDecision;
+                const decision = Array.isArray(decisionRaw) ? decisionRaw[0] : decisionRaw;
+                const payback = Number(String(decision?.totalRemit ?? '').replace(/[$,\s]/g, ''));
                 mapped.refinanceBalance =
                     refinanceBalance > 0
                         ? refinanceBalance
-                        : Number((app as any).loanAmount) || 0;
+                        : Number.isFinite(payback) && payback > 0
+                          ? payback
+                          : Number((app as any).loanAmount) || 0;
                 mapped.OfferDecision = (app as any).OfferDecision ?? null;
                 return mapped;
             });

@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 const ADMIN_ROLES = new Set(['ADMIN', 'CONTRACTS_LOG', 'SUPER_ADMIN']);
 
 /**
- * Requires req.user to be set (use after authenticateToken) and role ADMIN, CONTRACTS_LOG or SUPER_ADMIN.
+ * RenticateToken) and role ADMIN, CONTRACTS_LOG or SUPER_ADMIN.
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   if (!req.user) {

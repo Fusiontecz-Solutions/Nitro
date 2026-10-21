@@ -115,7 +115,6 @@ export function buildOfferPrefillOverrides(
   put('payment_frequency', derived.frequency);
   put('disclosure_payment_frequency', derived.frequency);
   put('disclouser_pg2_frequency', derived.frequency);
-  put('page2_frequency', derived.frequency);
 
   if (derived.disclosureTermDays != null) {
     const termDaysText = String(derived.disclosureTermDays);
@@ -130,6 +129,12 @@ export function buildOfferPrefillOverrides(
      * Tiberian — names the slot identically, so one override covers all three.
      */
     put('estimated_term_p2', termDaysText);
+    /**
+     * Unit printed beside that term. The term is always calendar days (a weekly
+     * deal is weeks × 7), so the label is DAYS on every deal — printing the
+     * cadence here read "70 WEEKLY" / "10 DAILY".
+     */
+    put('page2_frequency', 'DAYS');
   }
 
   const origination = parseMoney(derived.appendixUnderwritingFees ?? undefined);
@@ -147,11 +152,23 @@ export function buildOfferPrefillOverrides(
      * with the CRM's own fee/recipient-funds figures.
      */
     const totalFees = underwriting;
+    /**
+     * NET AMOUNT is the cash the merchant receives: advance − TOTAL FEES − the
+     * refinance payoff, exactly as the CRM computes it. Leaving the payoff in
+     * printed a refi deal's NET AMOUNT as 449,975.00 instead of 232,451.36 on
+     * the sent contract, over the correct figure the CRM had posted.
+     */
+    const refi =
+      derived.refinanceAmount != null && derived.refinanceAmount > 0
+        ? derived.refinanceAmount
+        : 0;
     // Only publish the derived totals while they still describe a real deal; a fee at or
     // above the advance means the inputs disagree, and a wrong NET is worse than a stale one.
     if (funded != null && totalFees < funded) {
       put('total_fees', money(totalFees));
-      put('net_to_merchant', money(funded - totalFees));
+      if (totalFees + refi < funded) {
+        put('net_to_merchant', money(funded - totalFees - refi));
+      }
     }
   }
   // A net the preparer typed into the prefill editor prints as typed.

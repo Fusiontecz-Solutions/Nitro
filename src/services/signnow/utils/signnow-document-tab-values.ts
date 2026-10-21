@@ -175,7 +175,7 @@ export function pickSignNowDocumentTabEntry(
   return null;
 }
 
-function isHandTypedTabField(key: string, manualFieldIds: ReadonlySet<string>): boolean {
+export function isHandTypedTabField(key: string, manualFieldIds: ReadonlySet<string>): boolean {
   if (manualFieldIds.has(key)) return true;
   // The editor marks the field id; the tab may store it under a page-suffixed widget name.
   const unsuffixed = key.replace(/_p\d+$/i, '');
