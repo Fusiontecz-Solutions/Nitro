@@ -115,13 +115,23 @@ describe('provider selection', () => {
         expect(sendViaSendGrid).not.toHaveBeenCalled();
     });
 
-    it('sends a SendGrid-only email through SendGrid even when the funder is on Gmail', async () => {
+    it("sends a SendGrid-only email from the funder's own Gmail when the funder is on Gmail", async () => {
         resolveMailFunder.mockResolvedValue(funder('gmail'));
+        getFunderGmailMailboxForSend.mockResolvedValue(funderMailbox);
+        const result = await sendMail({ to: 'iso@x.com', subject: 's', html: 'h', from: TIBERIAN_SENDER, applicationId: 'app-1', sendgridOnly: true });
+        expect(result).toMatchObject({ provider: 'gmail', mailboxEmail: 'deals@tiberian.test' });
+        expect(sendViaGmailApi.mock.calls[0][0]).toMatchObject({ accessToken: 'tok' });
+        expect(getSystemGmailMailbox).not.toHaveBeenCalled();
+        expect(sendViaSendGrid).not.toHaveBeenCalled();
+    });
+
+    it("sends a SendGrid-only email through SendGrid when the funder's Gmail is disconnected", async () => {
+        resolveMailFunder.mockResolvedValue(funder('gmail'));
+        getFunderGmailMailboxForSend.mockResolvedValue(null);
         const result = await sendMail({ to: 'iso@x.com', subject: 's', html: 'h', from: TIBERIAN_SENDER, applicationId: 'app-1', sendgridOnly: true });
         expect(result.provider).toBe('sendgrid');
         expect(sendViaSendGrid.mock.calls[0][0]).toMatchObject({ from: TIBERIAN_SENDER });
-        expect(getFunderGmailMailboxForSend).not.toHaveBeenCalled();
-        expect(sendViaGmailApi).not.toHaveBeenCalled();
+        expect(getSystemGmailMailbox).not.toHaveBeenCalled();
     });
 
     it('never falls back to Gmail for a SendGrid-only email', async () => {

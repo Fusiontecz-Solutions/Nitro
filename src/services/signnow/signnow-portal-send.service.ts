@@ -278,8 +278,12 @@ export async function verifyPortalAccess(input: {
     where: { envelopeId },
     select: { status: true },
   });
+  // The deal's contract was regenerated after this email, which replaces its
+  // envelope; the signer is usually holding an older invite.
   if (!document) {
-    throw new BadRequest('This contract is no longer available.');
+    throw new BadRequest(
+      'This contract is no longer available. A newer version was sent — please open the most recent signing email you received.',
+    );
   }
   const status = String(document.status || '').toLowerCase();
   if (['voided', 'declined', 'cancelled'].includes(status)) {

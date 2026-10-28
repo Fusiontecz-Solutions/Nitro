@@ -1,8 +1,10 @@
 import { randomUUID } from 'crypto';
 import prisma from '../config/prismaClient';
 import type { MailSender } from './mailSenderIdentity';
+import { resolveMailFunder } from './mail/mailRouting';
 import { createOutboundCommunication, storeSgMessageIdOnOutbound } from './outboundCommunicationService';
 import { resolveSignedCopyParties } from './signnow/utils/signnow-signed-copy-parties';
+import { signingPortalTokenTtlMs, verifySigningPortalToken } from './signnow/utils/signnow-portal-token';
 
 /**
  * Every email a contract sent, one row per recipient, for the Contract tab's
@@ -97,8 +99,9 @@ export type TrackedMailOptions = {
 
 /**
  * "Contract Sent" notices (CC and agent copies, and their resends) go out only
- * through SendGrid with the funder's verified sender. Gmail rewrites the From
- * address to its own mailbox, so the funder's name arrived on a Nitro address.
+ * from the funder's own address: its connected Gmail when the funder is on
+ * Gmail, else SendGrid with its verified sender. The server Gmail rewrites the
+ * From address to its own mailbox, so the funder's name arrived on a Nitro address.
  */
 const SENDGRID_ONLY_KINDS: ReadonlySet<ContractEmailKind> = new Set(['cc_copy', 'agent_sent_notice']);
 
@@ -130,9 +133,16 @@ export async function sendTrackedContractEmail(input: {
   // mailbox, which keeps the funder's display name but not its address.
   let applicationId: string | null = String(input.applicationId || '').trim() || null;
   const sendgridOnly = input.mail.sendgridOnly ?? SENDGRID_ONLY_KINDS.has(input.kind);
-  const provider = sendgridOnly ? 'sendgrid' : input.provider;
+  let provider: string = sendgridOnly ? 'sendgrid' : input.provider;
   try {
     applicationId = applicationId || (await applicationIdForEnvelope(input.groupId));
+    // The history shows this until the mailer stamps the provider that actually
+    // sent, so label it with the funder's provider, the one the mailer tries first.
+    const funder = await resolveMailFunder({
+      funderName: input.mail.funderName,
+      applicationId: input.mail.applicationId ?? applicationId,
+    }).catch(() => null);
+    if (funder) provider = funder.mailProvider;
     await createOutboundCommunication({
       id: trackingId,
       applicationId,
@@ -251,7 +261,10 @@ export type ContractEmailHistoryRow = {
   groupId: string | null;
   /** `outbound_communications` id the row reads from, when it has one. */
   outboundId: string | null;
+  /** Provider that actually sent it: `gmail`, `sendgrid`, `smtp` or `signnow`. */
   provider: string | null;
+  /** Mailbox / sender address it went out from, when the mailer recorded it. */
+  senderEmail: string | null;
   /** True when SendGrid events update this row's status. */
   tracked: boolean;
   /** True when the sent HTML is stored and can be viewed. */
@@ -264,6 +277,24 @@ export type ContractEmailHistoryRow = {
   /** Bounce / drop reason or send error. */
   failureReason: string | null;
   resendOf: string | null;
+  /** The signing-portal link a signing invite carried, and whether it still opens. */
+  signingLink: SigningLinkInfo | null;
+};
+
+/**
+ * What the signer sees when they click the link, judged by the same checks
+ * the portal runs (`verifyPortalAccess`), with no SignNow call:
+ * - `superseded`: the deal's contract was regenerated, so the envelope is gone
+ *   and the portal answers "This contract is no longer available."
+ * - `signer_replaced`: the contract was resent to a different signer address.
+ */
+export type SigningLinkState = 'open' | 'expired' | 'superseded' | 'signer_replaced' | 'closed';
+
+export type SigningLinkInfo = {
+  url: string;
+  state: SigningLinkState;
+  /** When the link's token stops working. */
+  expiresAt: string | null;
 };
 
 type Meta = Record<string, unknown>;
@@ -308,6 +339,7 @@ async function currentPartyRoles(
 const UNTRACKED = {
   outboundId: null,
   provider: null,
+  senderEmail: null,
   tracked: false,
   canView: false,
   canResend: false,
@@ -316,6 +348,7 @@ const UNTRACKED = {
   openCount: 0,
   failureReason: null,
   resendOf: null,
+  signingLink: null,
 };
 
 const isSigningKind = (kind: ContractEmailKind) =>
@@ -370,6 +403,70 @@ async function unloggedPortalInvites(
   return rows;
 }
 
+/** The portal link in a stored signing email: its button's `href`. */
+export function signingLinkFromHtml(html: string | null | undefined): string | null {
+  const match = /href="([^"]*\/sign\/[^"]*)"/.exec(String(html || ''));
+  if (!match) return null;
+  return match[1].replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+}
+
+const CLOSED_ENVELOPE_STATUSES = new Set(['voided', 'declined', 'cancelled', 'revoked']);
+
+/** Judge each row's signing link against the deal's current envelope and signer queue. */
+async function attachSigningLinkStates(
+  applicationId: string,
+  pending: Array<{ row: ContractEmailHistoryRow; url: string }>,
+): Promise<void> {
+  if (!pending.length) return;
+  const parsed = pending.map(({ row, url }) => {
+    try {
+      const u = new URL(url);
+      const envelopeId = decodeURIComponent(u.pathname.split('/sign/')[1] || '').replace(/\/+$/, '');
+      return { row, url, envelopeId, email: u.searchParams.get('email') || '', token: u.searchParams.get('token') || '' };
+    } catch {
+      return { row, url, envelopeId: '', email: '', token: '' };
+    }
+  });
+  const envelopeIds = [...new Set(parsed.map((p) => p.envelopeId).filter(Boolean))];
+  const [documents, contract] = await Promise.all([
+    prisma.document.findMany({
+      where: { envelopeId: { in: envelopeIds } },
+      select: { envelopeId: true, status: true },
+    }),
+    prisma.contract.findFirst({
+      where: { applicationId },
+      orderBy: { updatedAt: 'desc' },
+      select: { contractPrefillOverrides: true },
+    }),
+  ]);
+  const statusByEnvelope = new Map(documents.map((d) => [String(d.envelopeId), String(d.status || '').toLowerCase()]));
+  const queue = asMeta(asMeta(contract?.contractPrefillOverrides).portalSigningQueue);
+  const queueEnvelope = String(queue.envelopeId || '').trim();
+  const aliasBase = (email: string) => {
+    const [local, domain] = lower(email).split('@');
+    return local && domain ? `${local.split('+')[0]}@${domain}` : lower(email);
+  };
+  const queued = new Set(
+    (Array.isArray(queue.recipients) ? queue.recipients : []).map((r) => aliasBase(String(asMeta(r).email || ''))),
+  );
+
+  for (const p of parsed) {
+    const verification = verifySigningPortalToken({ token: p.token, envelopeId: p.envelopeId, email: p.email });
+    const issuedAt = Number(p.token.split('_')[0]);
+    const expiresAt = Number.isFinite(issuedAt) && issuedAt > 0
+      ? new Date(issuedAt + signingPortalTokenTtlMs()).toISOString()
+      : null;
+    let state: SigningLinkState = 'open';
+    if (!verification.valid) state = 'expired';
+    else if (!statusByEnvelope.has(p.envelopeId)) state = 'superseded';
+    else if (CLOSED_ENVELOPE_STATUSES.has(statusByEnvelope.get(p.envelopeId) || '')) state = 'closed';
+    else if (queueEnvelope === p.envelopeId && queued.size && !queued.has(aliasBase(p.email))) {
+      state = 'signer_replaced';
+    }
+    p.row.signingLink = { url: p.url, state, expiresAt };
+  }
+}
+
 const contractEmailRows = (applicationId: string) => ({
   applicationId,
   OR: [
@@ -388,6 +485,7 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
 
   const partyCache = new Map<string, Promise<Map<string, ContractEmailRole>>>();
   const out: ContractEmailHistoryRow[] = [];
+  const withLinks: Array<{ row: ContractEmailHistoryRow; url: string }> = [];
   for (const row of rows) {
     const meta = asMeta(row.metadata);
     const sentAt = row.createdAt.toISOString();
@@ -400,7 +498,7 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
       const provider = String(meta.provider || '').trim() || null;
       const tracking = asMeta(meta.tracking);
       const hasPayload = Boolean(row.body) && Boolean(meta.resend);
-      out.push({
+      const historyRow: ContractEmailHistoryRow = {
         id: row.id,
         sentAt,
         email: row.recipient,
@@ -413,6 +511,7 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
         groupId,
         outboundId: row.id,
         provider,
+        senderEmail: String(meta.mailboxEmail || '').trim() || null,
         tracked: hasPayload,
         canView: Boolean(row.body),
         // A portal signing link is re-minted on resend; anything else needs the
@@ -424,7 +523,11 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
         openCount: Number(tracking.openCount) || 0,
         failureReason: String(tracking.bounceReason || meta.error || '').trim() || null,
         resendOf: String(meta.resendOf || '').trim() || null,
-      });
+        signingLink: null,
+      };
+      out.push(historyRow);
+      const url = isSigningKind(kind) ? signingLinkFromHtml(row.body) : null;
+      if (url) withLinks.push({ row: historyRow, url });
       continue;
     }
 
@@ -460,6 +563,12 @@ export async function listContractEmailHistory(applicationId: string): Promise<C
         (recorded[lower(e)] as ContractEmailRole | undefined) || fallback.get(lower(e)) || 'SIGNER';
       push(e, role, i++);
     }
+  }
+
+  try {
+    await attachSigningLinkStates(applicationId, withLinks);
+  } catch (err) {
+    console.warn('[contract-email] signing link state unavailable:', err);
   }
 
   try {

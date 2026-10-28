@@ -14,6 +14,11 @@ jest.mock('./outboundCommunicationService', () => ({
   storeSgMessageIdOnOutbound: jest.fn(async () => undefined),
 }));
 
+const resolveMailFunder = jest.fn(async (_lookup: unknown): Promise<unknown> => null);
+jest.mock('./mail/mailRouting', () => ({
+  resolveMailFunder: (lookup: unknown) => resolveMailFunder(lookup),
+}));
+
 import prisma from '../config/prismaClient';
 import { listContractEmailHistory, sendTrackedContractEmail } from './contractEmailHistoryService';
 
@@ -31,6 +36,8 @@ beforeEach(() => {
   jest.restoreAllMocks();
   resolveSignedCopyParties.mockReset();
   createOutboundCommunication.mockClear();
+  resolveMailFunder.mockReset();
+  resolveMailFunder.mockResolvedValue(null);
 });
 
 it('splits a signed-copy notice into one row per recipient with its role', async () => {
@@ -283,6 +290,32 @@ it('sends Contract Sent notices through SendGrid only, and logs them as SendGrid
   ]);
 });
 
+it("logs every contract email with its funder's provider before the send finishes", async () => {
+  jest.spyOn(prisma.outbound_communications, 'updateMany').mockResolvedValue({ count: 1 } as never);
+  const send = jest.fn(async (_options: Record<string, unknown>) => ({}));
+  const base = {
+    groupId: GROUP,
+    applicationId: APP,
+    provider: 'smtp' as const,
+    mail: { subject: 'S', html: '<p>S</p>' },
+    resend: { attachments: [] },
+    send,
+  };
+  const kinds = ['agent_sent_notice', 'cc_copy', 'signed_copy'] as const;
+
+  for (const mailProvider of ['gmail', 'sendgrid'] as const) {
+    resolveMailFunder.mockResolvedValue({ id: 'f1', name: 'Nitro Advance', mailProvider, sender: null });
+    createOutboundCommunication.mockClear();
+    for (const kind of kinds) {
+      await sendTrackedContractEmail({ ...base, kind, recipient: { email: 'x@acme.com', role: 'AGENT' } });
+    }
+    expect(createOutboundCommunication.mock.calls.map(([row]) => (row as any).metadata.provider)).toEqual(
+      kinds.map(() => mailProvider),
+    );
+  }
+  expect(resolveMailFunder).toHaveBeenCalledWith({ funderName: undefined, applicationId: APP });
+});
+
 it('marks a contract email failed when it cannot be sent', async () => {
   jest.spyOn(prisma.outbound_communications, 'findUnique').mockResolvedValue({ metadata: { source: 'contract_email' } } as never);
   const update = jest.spyOn(prisma.outbound_communications, 'update').mockResolvedValue({} as never);
@@ -307,4 +340,74 @@ it('marks a contract email failed when it cannot be sent', async () => {
       data: { status: 'failed', metadata: { source: 'contract_email', error: 'SMTP down' } },
     }),
   );
+});
+
+describe('signing link on a signing invite', () => {
+  const OLD = 'group-old';
+  const prevSecret = process.env.SIGNING_PORTAL_SECRET;
+  beforeAll(() => {
+    process.env.SIGNING_PORTAL_SECRET = 'test-secret';
+  });
+  afterAll(() => {
+    process.env.SIGNING_PORTAL_SECRET = prevSecret;
+  });
+
+  function invite(id: string, groupId: string, email: string, issuedAt: number) {
+    const { buildSigningPortalUrl, createSigningPortalToken } = jest.requireActual(
+      './signnow/utils/signnow-portal-token',
+    );
+    const url = buildSigningPortalUrl({
+      baseUrl: 'https://crm.example.com',
+      envelopeId: groupId,
+      email,
+      token: createSigningPortalToken({ envelopeId: groupId, email, issuedAt }),
+    });
+    const href = url.replace(/&/g, '&amp;');
+    return {
+      row: {
+        id,
+        createdAt: new Date(issuedAt),
+        recipient: email,
+        subject: 'Nitro Advance Acme $20,000.00',
+        status: 'clicked',
+        body: `<a href="${href}">Review and sign</a>`,
+        metadata: { source: 'contract_email', kind: 'signing_invite', role: 'SIGNER', groupId, provider: 'gmail', resend: { attachments: [] } },
+      },
+      url,
+    };
+  }
+
+  it('shows the link and says which ones the signer can still open', async () => {
+    const now = Date.now();
+    const current = invite('i-new', GROUP, 'owner@acme.com', now - 60_000);
+    const replaced = invite('i-old', OLD, 'owner@acme.com', now - 3_600_000);
+    const stale = invite('i-stale', GROUP, 'owner@acme.com', now - 8 * 24 * 3_600_000);
+    mockRows([current.row, replaced.row, stale.row], {
+      portalSigningQueue: { envelopeId: GROUP, recipients: [{ email: 'owner@acme.com' }] },
+    });
+    jest
+      .spyOn(prisma.document, 'findMany')
+      .mockResolvedValue([{ envelopeId: GROUP, status: 'sent' }] as never);
+
+    const rows = await listContractEmailHistory(APP);
+    const byId = new Map(rows.map((r) => [r.id, r.signingLink]));
+
+    expect(byId.get('i-new')).toEqual(expect.objectContaining({ url: current.url, state: 'open' }));
+    expect(byId.get('i-old')?.state).toBe('superseded');
+    expect(byId.get('i-stale')?.state).toBe('expired');
+  });
+
+  it('flags a link whose signer was swapped out by a resend', async () => {
+    const sent = invite('i1', GROUP, 'old@acme.com', Date.now());
+    mockRows([sent.row], {
+      portalSigningQueue: { envelopeId: GROUP, recipients: [{ email: 'new@acme.com' }] },
+    });
+    jest
+      .spyOn(prisma.document, 'findMany')
+      .mockResolvedValue([{ envelopeId: GROUP, status: 'sent' }] as never);
+
+    const [row] = await listContractEmailHistory(APP);
+
+    expect(row.signingLink?.state).toBe('signer_replaced');
+  });
 });

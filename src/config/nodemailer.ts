@@ -199,9 +199,10 @@ export interface SendMailOptions {
     funderProfileId?: string | null;
     funderName?: string | null;
     /**
-     * Send through SendGrid only — never the funder's / server Gmail mailbox or
-     * Gmail SMTP, which would replace the sender's address with the mailbox's.
-     * A SendGrid failure is thrown, not retried on another provider.
+     * Send through SendGrid, or the funder's own connected Gmail when the funder
+     * is on Gmail — never the server Gmail mailbox or Gmail SMTP, which would
+     * replace the sender's address with the mailbox's. A SendGrid failure is
+     * thrown, not retried on another provider.
      */
     sendgridOnly?: boolean;
     /**
@@ -496,7 +497,10 @@ async function deliver(options: Prepared): Promise<SendMailResult> {
         console.warn('[mail] funder lookup failed, sending as no-funder mail:', (error as Error)?.message);
     }
 
-    const routes: MailRoute[] = options.sendgridOnly ? ['sendgrid'] : planMailRoutes(funder);
+    // The funder's own Gmail sends from the funder's address, so it is allowed for SendGrid-only mail.
+    const routes: MailRoute[] = options.sendgridOnly
+        ? funder?.mailProvider === 'gmail' ? ['funder_gmail', 'sendgrid'] : ['sendgrid']
+        : planMailRoutes(funder);
     let lastError: unknown = null;
     for (const [index, route] of routes.entries()) {
         try {
