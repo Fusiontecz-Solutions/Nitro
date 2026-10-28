@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Eye, Loader2, RefreshCw, Send } from "lucide-react";
+import { Copy, Eye, Loader2, RefreshCw, Send } from "lucide-react";
 import { toast } from "react-toastify";
 import {
     Dialog,
@@ -35,6 +35,8 @@ type ContractEmailHistoryRow = {
     groupId: string | null;
     outboundId: string | null;
     provider: string | null;
+    /** Mailbox / sender address it went out from, when recorded. */
+    senderEmail: string | null;
     tracked: boolean;
     canView: boolean;
     canResend: boolean;
@@ -43,7 +45,49 @@ type ContractEmailHistoryRow = {
     openCount: number;
     failureReason: string | null;
     resendOf: string | null;
+    /** The signing link a signing invite carried, and whether it still opens. */
+    signingLink: SigningLinkInfo | null;
 };
+
+type SigningLinkState = "open" | "expired" | "superseded" | "signer_replaced" | "closed";
+
+type SigningLinkInfo = {
+    url: string;
+    state: SigningLinkState;
+    expiresAt: string | null;
+};
+
+const LINK_STATE_LABEL: Record<SigningLinkState, string> = {
+    open: "Link works",
+    expired: "Link expired",
+    superseded: "Old contract",
+    signer_replaced: "Signer replaced",
+    closed: "Contract closed",
+};
+
+/** What the signer sees on clicking the link, and what to do about it. */
+function linkStateTitle(link: SigningLinkInfo): string {
+    switch (link.state) {
+        case "open":
+            return link.expiresAt
+                ? `The signer can open this link until ${formatDateTimeUS(link.expiresAt)}.`
+                : "The signer can open this link.";
+        case "expired":
+            return "Older than 7 days — the signer sees \"This signing link has expired\". Resend to email a fresh link.";
+        case "superseded":
+            return "A newer contract was generated for this deal, so this link shows \"This contract is no longer available\". The signer must use the latest signing invite.";
+        case "signer_replaced":
+            return "The contract was resent to a different signer address, so this link no longer opens.";
+        case "closed":
+            return "The contract was voided, declined or revoked and is not open for signing.";
+    }
+}
+
+function linkStateClass(state: SigningLinkState): string {
+    return state === "open"
+        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200"
+        : "bg-red-50 text-red-700 dark:bg-red-900/40 dark:text-red-200";
+}
 
 type ContractEmailContent = {
     id: string;
@@ -81,6 +125,24 @@ const KIND_LABEL: Record<ContractEmailKind, string> = {
     agent_sent_notice: "Contract sent notice",
     signed_copy: "Signed contract",
 };
+
+const PROVIDER_LABEL: Record<string, string> = {
+    gmail: "Gmail",
+    sendgrid: "SendGrid",
+    smtp: "SMTP",
+    signnow: "SignNow",
+};
+
+function providerClass(provider: string | null): string {
+    switch (provider) {
+        case "gmail":
+            return "bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-200";
+        case "sendgrid":
+            return "bg-sky-50 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200";
+        default:
+            return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200";
+    }
+}
 
 const STATUS_LABEL: Record<string, string> = {
     sending: "Sending",
@@ -251,6 +313,15 @@ export function ContractEmailHistoryDialog({
         [historyUrl],
     );
 
+    const copyLink = useCallback(async (url: string) => {
+        try {
+            await navigator.clipboard.writeText(url);
+            toast.success("Signing link copied");
+        } catch {
+            toast.error("Could not copy the link.");
+        }
+    }, []);
+
     const roleCounts = useMemo(() => {
         const counts = new Map<ContractEmailRole, number>();
         for (const row of rows) counts.set(row.role, (counts.get(row.role) ?? 0) + 1);
@@ -268,7 +339,7 @@ export function ContractEmailHistoryDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-6xl dark:bg-slate-900 dark:text-slate-100">
+            <DialogContent className="w-[96vw] max-w-[96vw] sm:max-w-7xl dark:bg-slate-900 dark:text-slate-100">
                 <DialogHeader>
                     <DialogTitle>Contract email recipients</DialogTitle>
                     <DialogDescription>
@@ -328,6 +399,7 @@ export function ContractEmailHistoryDialog({
                                     <th className="px-3 py-2 font-semibold">Role</th>
                                     <th className="px-3 py-2 font-semibold">Email</th>
                                     <th className="px-3 py-2 font-semibold">Subject</th>
+                                    <th className="whitespace-nowrap px-3 py-2 font-semibold">Sent via</th>
                                     <th className="whitespace-nowrap px-3 py-2 font-semibold">Sent</th>
                                     <th className="px-3 py-2 font-semibold">Status</th>
                                     <th className="px-3 py-2 text-right font-semibold">Actions</th>
@@ -337,7 +409,7 @@ export function ContractEmailHistoryDialog({
                                 {visible.map((row) => (
                                     <tr key={row.id} className="align-top">
                                         <td className="px-3 py-2">
-                                            <div className="break-all font-medium">{row.email}</div>
+                                            <div className="whitespace-nowrap font-medium">{row.email}</div>
                                             {row.name ? (
                                                 <div className="text-xs text-slate-500 dark:text-slate-400">
                                                     {row.name}
@@ -366,6 +438,50 @@ export function ContractEmailHistoryDialog({
                                         </td>
                                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300">
                                             {row.subject || "—"}
+                                            {/* Shown, not linked: opening it from the CRM would start
+                                                the signer's SignNow session. */}
+                                            {row.signingLink ? (
+                                                <div className="mt-1 flex items-center gap-1.5">
+                                                    <span
+                                                        title={linkStateTitle(row.signingLink)}
+                                                        className={`inline-block cursor-default whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${linkStateClass(row.signingLink.state)}`}
+                                                    >
+                                                        {LINK_STATE_LABEL[row.signingLink.state]}
+                                                    </span>
+                                                    <span
+                                                        className="min-w-0 max-w-[16rem] truncate select-all font-mono text-xs text-slate-500 dark:text-slate-400"
+                                                        title={row.signingLink.url}
+                                                    >
+                                                        {row.signingLink.url}
+                                                    </span>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="h-6 cursor-pointer px-1"
+                                                        title="Copy the signing link"
+                                                        onClick={() => void copyLink(row.signingLink!.url)}
+                                                    >
+                                                        <Copy className="h-3.5 w-3.5" aria-hidden />
+                                                        <span className="sr-only">Copy link</span>
+                                                    </Button>
+                                                </div>
+                                            ) : null}
+                                        </td>
+                                        <td className="px-3 py-2">
+                                            {row.provider ? (
+                                                <span
+                                                    className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${providerClass(row.provider)}`}
+                                                >
+                                                    {PROVIDER_LABEL[row.provider] ?? row.provider}
+                                                </span>
+                                            ) : (
+                                                <span className="text-slate-400">—</span>
+                                            )}
+                                            {row.senderEmail ? (
+                                                <div className="mt-0.5 whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">
+                                                    {row.senderEmail}
+                                                </div>
+                                            ) : null}
                                         </td>
                                         <td className="whitespace-nowrap px-3 py-2 text-slate-600 dark:text-slate-400">
                                             {formatDateTimeUS(row.sentAt)}
