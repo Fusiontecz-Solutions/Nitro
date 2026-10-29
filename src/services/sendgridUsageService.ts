@@ -57,6 +57,25 @@ function describeFailure(label: string, reason: unknown): string {
   return `${label}: ${message}`;
 }
 
+/** Sums `requests` across every row/bucket a `/stats` response returns. */
+function sumRequests(rows: unknown): number {
+  if (!Array.isArray(rows)) return 0;
+  let sum = 0;
+  for (const row of rows) {
+    for (const stat of row?.stats ?? []) sum += toNumber(stat?.metrics?.requests) ?? 0;
+  }
+  return sum;
+}
+
+/**
+ * Plan size: `SENDGRID_MONTHLY_EMAIL_LIMIT` overrides what SendGrid reports,
+ * for accounts whose `/user/credits` total doesn't match the purchased plan.
+ */
+function resolvePlanTotal(reported: number | null): number | null {
+  const override = toNumber(process.env.SENDGRID_MONTHLY_EMAIL_LIMIT?.trim() || undefined);
+  return override && override > 0 ? override : reported;
+}
+
 function buildPlanName(accountType: string | null): string | null {
   const override = process.env.SENDGRID_PLAN_NAME?.trim();
   if (override) return override;
@@ -106,9 +125,29 @@ async function fetchUsage(apiKey: string): Promise<SendGridUsageSummary> {
     warnings.push(describeFailure('Stats', statsRes.reason));
   }
 
-  const total = toNumber(creditsData?.total);
+  const total = resolvePlanTotal(toNumber(creditsData?.total));
   const resetFrequency = creditsData?.reset_frequency ? String(creditsData.reset_frequency) : null;
   const accountType = accountData?.type ? String(accountData.type) : null;
+  const lastReset = creditsData?.last_reset ? String(creditsData.last_reset).slice(0, 10) : null;
+
+  // `/user/credits` keeps `used` at 0 on paid plans, so count the period's
+  // sends from global stats instead (requests since the last reset, UTC days).
+  let used = toNumber(creditsData?.used);
+  const periodStart = lastReset ?? `${date.slice(0, 8)}01`;
+  if (periodStart === date && today) {
+    used = Math.max(used ?? 0, today.requests);
+  } else if (periodStart < date) {
+    try {
+      const periodRes = await client.get('/stats', {
+        params: { start_date: periodStart, end_date: date, aggregated_by: 'month' },
+      });
+      used = Math.max(used ?? 0, sumRequests(periodRes.data));
+    } catch (err) {
+      warnings.push(describeFailure('Period stats', err));
+    }
+  }
+  const remaining =
+    total != null && used != null ? Math.max(0, total - used) : toNumber(creditsData?.remain);
 
   return {
     configured: true,
@@ -116,8 +155,8 @@ async function fetchUsage(apiKey: string): Promise<SendGridUsageSummary> {
     accountType,
     credits: {
       total,
-      used: toNumber(creditsData?.used),
-      remaining: toNumber(creditsData?.remain),
+      used,
+      remaining,
       overage: toNumber(creditsData?.overage),
       resetFrequency,
       lastReset: creditsData?.last_reset ? String(creditsData.last_reset) : null,
