@@ -1,0 +1,143 @@
+import { createAsyncThunk } from "@reduxjs/toolkit";
+import { axiosGet, axiosPost, axiosPut, axiosDelete } from "../axios";
+import type { CreateClientPayload, UpdateClientPayload } from "../../types/clientTypes";
+import {
+    buildClientsListUrl,
+    clientsListParamsCacheKey,
+    getCachedClientsList,
+    invalidateClientsListCache,
+    setCachedClientsList,
+} from "@/lib/clientsListCache";
+import {
+    getCachedClientDetail,
+    invalidateClientDetailCache,
+    setCachedClientDetail,
+} from "@/lib/clientDetailCache";
+
+// Create Client
+export const createClient = createAsyncThunk(
+    'client/create',
+    async (payload: CreateClientPayload, { rejectWithValue }) => {
+        try {
+            const response = await axiosPost('/clients', payload);
+            invalidateClientsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Create client error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to create client'
+            );
+        }
+    }
+);
+
+// Get All Clients
+export const getClients = createAsyncThunk(
+    'client/getAll',
+    async (params: { 
+        page?: number
+        limit?: number
+        search?: string
+        status?: string
+        sortBy?: string
+        sortOrder?: 'asc' | 'desc'
+        lite?: number | boolean
+    } = {}, { rejectWithValue }) => {
+        try {
+            const cacheKey = clientsListParamsCacheKey(params);
+            const cached = getCachedClientsList(cacheKey);
+            if (cached !== undefined) {
+                return cached;
+            }
+
+            const url = buildClientsListUrl(params);
+            const response = await axiosGet(url);
+            setCachedClientsList(cacheKey, response.data);
+            return response.data;
+        } catch (error: any) {
+            console.error('Get clients error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fetch clients'
+            );
+        }
+    }
+);
+
+// Get Single Client by UUID
+export const getClientById = createAsyncThunk(
+    'client/getById',
+    async (id: string, { rejectWithValue }) => {
+        try {
+            const cached = getCachedClientDetail(id);
+            if (cached !== undefined) {
+                return cached;
+            }
+            const response = await axiosGet(`/clients/${id}`);
+            setCachedClientDetail(id, response.data);
+            return response.data;
+        } catch (error: any) {
+            console.error('Get client by id error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fetch client'
+            );
+        }
+    }
+);
+
+// Get Single Client by clientId
+export const getClientByClientId = createAsyncThunk(
+    'client/getByClientId',
+    async (clientId: string, { rejectWithValue }) => {
+        try {
+            const cached = getCachedClientDetail(clientId);
+            if (cached !== undefined) {
+                return cached;
+            }
+            const response = await axiosGet(`/clients/clientId/${clientId}`);
+            setCachedClientDetail(clientId, response.data);
+            return response.data;
+        } catch (error: any) {
+            console.error('Get client by clientId error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fetch client'
+            );
+        }
+    }
+);
+
+// Update Client
+export const updateClient = createAsyncThunk(
+    'client/update',
+    async ({ id, data }: UpdateClientPayload, { rejectWithValue }) => {
+        try {
+            const response = await axiosPut(`/clients/${id}`, data);
+            invalidateClientsListCache();
+            invalidateClientDetailCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Update client error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to update client'
+            );
+        }
+    }
+);
+
+// Delete Client
+export const deleteClient = createAsyncThunk(
+    'client/delete',
+    async (id: string, { rejectWithValue }) => {
+        try {
+            const response = await axiosDelete(`/clients/${id}`);
+            invalidateClientsListCache();
+            invalidateClientDetailCache();
+            return { ...response.data, deletedId: id };
+        } catch (error: any) {
+            console.error('Delete client error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to delete client'
+            );
+        }
+    }
+);
+
