@@ -80,7 +80,17 @@ import {
   markSignNowInviteSent,
 } from './utils/signnow-invite-send';
 import { postGroupInviteSafely } from './utils/signnow-groupinvite-post';
+import {
+  assertContractFunderResolved,
+  resolveContractFunderProfileId,
+  resolveFunderContractTemplateId,
+} from './utils/signnow-contract-funder';
 import { resolveSignNowGroupStatus } from './utils/signnow-group-status';
+import {
+  describeSignNowDocumentReadiness,
+  findUnloadableSignNowDocuments,
+  isSignNowGroupAlreadySent,
+} from './utils/signnow-invite-readiness';
 import {
   decryptField,
   decryptSensitiveField,
@@ -121,13 +131,12 @@ import {
 import {
   applyContractFillableFont,
   applySignNowSignatureFieldFont,
+  bakedTextsForStampedPage,
   collectCommittedSignNowTexts,
   copySignNowTemplateStyle,
-  dropBakedTextsAlreadyStamped,
   hasSignNowSignatureFieldFont,
   clearExhibitCCopyLabels,
   nameExhibitCCopyFieldsForReview,
-  mergeCommittedSignNowTexts,
   collectOwnerReviewEdits,
   parseSignNowPrefillValidationField,
   sanitizeSignNowPutFields,
@@ -135,7 +144,6 @@ import {
   splitPrefillPutPayload,
   stripExhibitCCopyFieldName,
   withoutSignNowSignatureFieldFont,
-  type CommittedSignNowText,
 } from './utils/signnow-prefill-put';
 import {
   countSignNowDocumentFields,
@@ -223,6 +231,10 @@ import {
   readStoredTemplateDocument,
   writeStoredTemplateDocument,
 } from './utils/signnow-template-store';
+import {
+  hasDealDefiningValues,
+  resolveApplicationIdForEnvelope,
+} from './utils/signnow-envelope-application';
 import {
   invalidateStoredTemplatePdf,
   resolveTemplatePdf,
@@ -2365,7 +2377,26 @@ export class SignNowService {
     }
 
     const includeMainContract = options.sendPackage?.includeMainContract !== false;
-    const funderProfileId = String(options.funderProfileId || '').trim();
+    // Request may carry only the funder name — resolve the id so the funder's own
+    // agreement template is used, not the platform one.
+    const resolvedFunder = await resolveContractFunderProfileId({
+      funderProfileId: options.funderProfileId,
+      funderName: options.funderName,
+      applicationId: options.applicationId,
+      contractId: options.contractId,
+    });
+    try {
+      assertContractFunderResolved(resolvedFunder);
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : String(err));
+    }
+    const funderProfileId = resolvedFunder.funderProfileId;
+    if (funderProfileId !== String(options.funderProfileId || '').trim()) {
+      console.info('[SignNow] resolved funder profile from name', {
+        funderName: resolvedFunder.funderName,
+        funderProfileId,
+      });
+    }
     // The OAuth/token handshake and the funder read touch different systems —
     // start both before awaiting either.
     const [client, funderRow] = await Promise.all([
@@ -2411,11 +2442,16 @@ export class SignNowService {
             funderRow?.name || options.funderName || fromPrefill.funderName,
           );
         })();
-    const funderContractTemplateId = extractSignNowTemplateId(
-      funderRow?.signnowContractTemplateLink,
-    );
-    const resolvedContractTemplateId =
-      funderContractTemplateId || SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID;
+    let resolvedContractTemplateId: string;
+    try {
+      resolvedContractTemplateId = resolveFunderContractTemplateId({
+        funderRow,
+        requestedFunderName: resolvedFunder.funderName,
+        platformTemplateId: SIGNNOW_DOCUMENT_GROUP_TEMPLATE_ID,
+      });
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : String(err));
+    }
     if (!resolvedContractTemplateId) {
       throw new BadRequestException(
         'Could not load the SignNow agreement. Check SignNow credentials on the server.',
@@ -2696,8 +2732,8 @@ export class SignNowService {
           options.sendPackage ?? { includeMainContract: true },
           Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
           {
-            funderName: options.funderName,
-            funderProfileId: options.funderProfileId,
+            funderName: funderRow?.name || options.funderName,
+            funderProfileId: funderRow?.id || options.funderProfileId,
           },
         ),
       ]);
@@ -3388,6 +3424,43 @@ export class SignNowService {
       const byId = new Map(hydrated.map((d) => [d.id, d]));
       documents = documents.map((d) => byId.get(d.id) || d);
     }
+    /**
+     * SignNow accepts an embedded invite on the group even when one of its
+     * documents cannot be read, and the signer then gets "Could not load
+     * document (Unsuccessful HTTP request)". The readiness wait above returns
+     * such a document instead of failing, so stop here, before the invite.
+     */
+    console.info('[SignNow] embedded-invite document readiness', {
+      groupId: options.groupId,
+      documents: describeSignNowDocumentReadiness(documents),
+    });
+    const unloadable = findUnloadableSignNowDocuments(documents);
+    if (unloadable.length) {
+      const statuses = await Promise.all(
+        unloadable.map(async (doc) => {
+          const res = await client
+            .get(`/document/${doc.documentId}`, { validateStatus: () => true })
+            .catch(() => null);
+          return {
+            documentId: doc.documentId,
+            name: doc.name,
+            httpStatus: res?.status ?? 0,
+            detail: res ? this.signNowErrorDetail(res).slice(0, 200) : 'request failed',
+          };
+        }),
+      );
+      console.error('[SignNow] embedded invite refused: document not readable', {
+        groupId: options.groupId,
+        documents: statuses,
+      });
+      throw new BadRequestException(
+        'Could not open SignNow: ' +
+          statuses
+            .map((s) => `${s.name || s.documentId} (HTTP ${s.httpStatus || 'n/a'})`)
+            .join(', ') +
+          ' could not be loaded from SignNow. Wait a moment and try again; if it keeps failing, start a new contract.',
+      );
+    }
     const documentId = options.documentId || this.pickEditorDocumentId(documents);
     if (!documentId) {
       throw new BadRequestException(
@@ -3684,6 +3757,13 @@ export class SignNowService {
       created = await postEmbedded(embedSigners);
     }
     let inviteId = this.extractEmbeddedInviteId(created.res.data);
+    console.info('[SignNow] embedded-invite response', {
+      groupId: options.groupId,
+      httpStatus: created.res.status,
+      inviteId: inviteId || null,
+      documentIds: documents.map((d) => d.id),
+      error: created.res.status >= 400 ? this.signNowErrorDetail(created.res).slice(0, 200) : null,
+    });
     // One SignNow error = one missing/unknown role on one document. A full
     // agreement + addenda package needs enough retries to cover every role.
     const maxRoleRetries = Math.max(24, documents.length * 4);
@@ -4614,6 +4694,17 @@ export class SignNowService {
     if (!id) throw new BadRequestException('Missing SignNow document group id');
     const requestId = String(options.requestId || randomUUID()).trim();
     const appIdEarly = String(options.applicationId || '').trim();
+    try {
+      assertContractFunderResolved(
+        await resolveContractFunderProfileId({
+          funderProfileId: options.funderProfileId,
+          funderName: options.funderName,
+          applicationId: appIdEarly,
+        }),
+      );
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : String(err));
+    }
     const existingDoc = await prisma.document.findUnique({
       where: { envelopeId: id },
       select: { status: true, sentAt: true, prefillFingerprint: true },
@@ -4801,6 +4892,19 @@ export class SignNowService {
         values,
       ),
     );
+    // Same rule as the portal publish: the bake below deletes the Owner widgets
+    // and stamps their values, so without the deal's values it sends a blank contract.
+    if (!hasDealDefiningValues(values)) {
+      console.error('[SignNow] send refused: no deal values resolved', {
+        groupId: sendGroupId,
+        applicationId: options.applicationId ?? appIdEarly ?? null,
+        payloadFields: options.prefillFields?.length ?? 0,
+      });
+      throw new BadRequestException(
+        'The contract values for this deal could not be loaded, so nothing was sent ' +
+          '(the contract would have gone out blank). Run Review in SignNow again, then send.',
+      );
+    }
     applyMerchantSignerPrefill(values, signers);
     // Review writes Owner `prefilled_text` only. Merchants and the downloaded PDF
     // show committed text — bake/expose those values now, in parallel batches.
@@ -6601,40 +6705,31 @@ export class SignNowService {
       ownerRole,
     });
     /**
-     * `PUT /document/{id}` only ever APPENDS `texts`, so the values this publish
-     * bakes would land on top of the stamps an earlier publish left behind and
-     * both would render — the overlapping Exhibit C / Exhibit C (2) values.
-     * Carry forward any earlier stamp this send does not cover, then clear the
-     * document's text elements before writing, so every spot ends up with
-     * exactly one value: the current one.
+     * `PUT /document/{id}` only ever APPENDS `texts`, and nothing can take a
+     * stamp off the page any more: the text delete this publish used to clear
+     * the page first now answers 400 and leaves the document unreadable for
+     * minutes, losing the write that follows — every funder's contract went out
+     * blank on 2026-11-12. So no text is ever removed. The page's own stamps
+     * stand (on a first send, the Owner's Finish values: what the preparer
+     * reviewed and approved) and this send writes only where the page is empty.
+     * A value that must change on an already-stamped page needs a fresh package
+     * (re-initiate), which starts from an unstamped copy of the template.
      */
     const committedTexts = bakeFilledText
       ? collectCommittedSignNowTexts(remote)
       : [];
-    const mergedTexts = mergeCommittedSignNowTexts(bakedRaw.texts, committedTexts, {
-      // Every widget this send knows about owns its spot, so a stamp left
-      // there by an earlier send is replaced (or dropped when the CRM value
-      // is now blank) instead of being carried forward.
-      ownedSpots: putFields,
-    });
-    /**
-     * Clear before deciding what to write: SignNow refuses text deletes once the
-     * group is out for signature, and re-sending the carried-forward set onto a
-     * page that still holds it is what stacked two copies of every page-1 amount.
-     * When the clear fails, only values this page does not already carry go out.
-     */
-    const clearedCommittedTexts =
-      committedTexts.length && mergedTexts.length
-        ? await this.clearCommittedSignNowTexts(client, documentId, committedTexts)
-        : true;
+    const stampable = bakedTextsForStampedPage(bakedRaw.texts, committedTexts);
+    if (stampable.occupied.length) {
+      console.info('[SignNow] kept values already stamped on the page', {
+        documentId,
+        documentName,
+        kept: stampable.occupied.length,
+        sample: stampable.occupied.slice(0, 5),
+      });
+    }
     const baked = {
       fields: fieldsOnExistingPages(bakedRaw.fields, pageCount),
-      texts: fieldsOnExistingPages(
-        clearedCommittedTexts
-          ? mergedTexts
-          : dropBakedTextsAlreadyStamped(bakedRaw.texts, committedTexts),
-        pageCount,
-      ),
+      texts: fieldsOnExistingPages(stampable.texts, pageCount),
     };
     const fieldBodies = bakeFilledText
       ? [baked.fields, baked.fields.map(({ id: _id, ...rest }) => rest)]
@@ -6678,6 +6773,8 @@ export class SignNowService {
     if (hasSignNowSignatureFieldFont(lastFields)) {
       pushPut(withoutSignNowSignatureFieldFont(lastFields), true);
     }
+    /** Set when a write was accepted but the page reads back short of its values. */
+    let bakedTextShortfall: string | null = null;
     for (const attempt of attempts) {
       try {
         const putStarted = Date.now();
@@ -6705,7 +6802,20 @@ export class SignNowService {
             exposeToMerchant,
             path: attempt.path,
           });
-          return applied;
+          // Everything that was on the page plus everything this send added.
+          const expectedOnPage = committedTexts.length + baked.texts.length;
+          if (!bakeFilledText || !expectedOnPage) return applied;
+          /**
+           * A merchant publish deletes the Owner widgets, so the page text is the
+           * only place the deal's values survive. Read it back: SignNow answering
+           * a step with a status that did not match what it did is how every
+           * funder's contract went out blank on 2026-11-12. Checked outside the
+           * attempt's try, so a short page fails the send instead of retrying the
+           * PUT (which would append a second copy of every stamp).
+           */
+          bakedTextShortfall = await this.bakedTextShortfall(client, documentId, expectedOnPage);
+          if (!bakedTextShortfall) return applied;
+          break;
         }
         lastFailureDetail = this.signNowErrorDetail(res);
         console.warn(
@@ -6720,6 +6830,17 @@ export class SignNowService {
           err instanceof Error ? err.message : String(err),
         );
       }
+    }
+    if (bakedTextShortfall) {
+      console.error('[SignNow] merchant publish left the page without its values', {
+        documentId,
+        documentName,
+        detail: bakedTextShortfall,
+      });
+      throw new BadRequestException(
+        `The contract values did not stay on "${documentName || documentId}" in SignNow ` +
+          `(${bakedTextShortfall}), so it was not sent. Run Review in SignNow again, then send.`,
+      );
     }
     /**
      * Returning quietly here is what hid the real failure: SignNow rejects every
@@ -6739,49 +6860,38 @@ export class SignNowService {
   }
 
   /**
-   * Remove every text element committed by an earlier publish.
+   * Null when the page carries at least the `expected` stamped values; otherwise
+   * a short description of the shortfall.
    *
-   * `DELETE /document/{id}/text/{textId}` clears ALL of the document's text
-   * elements, not just the id passed — which is what makes it usable as the
-   * "clear" step SignNow otherwise has no endpoint for (`texts: []` on the PUT
-   * is a no-op). The caller must already hold the full replacement set.
+   * A 404 right after an accepted write is a shortfall, not an unknown: it is
+   * the state SignNow's text delete left documents in on 2026-11-12, where the
+   * write was answered 200 and lost. Any other failed read is reported as
+   * unconfirmed rather than failing a write SignNow accepted. Never throws.
    */
-  private async clearCommittedSignNowTexts(
+  private async bakedTextShortfall(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     documentId: string,
-    committed: readonly CommittedSignNowText[],
-  ): Promise<boolean> {
-    const textIds = committed.map((row) => row.id).filter(Boolean);
-    if (!textIds.length) return false;
-    let lastDetail = '';
-    // The delete drops every text element, so one success is enough — but a
-    // single id can be rejected on its own (already removed by an earlier
-    // partial clear), and giving up there left the whole stale set on the page.
-    for (const textId of textIds) {
-      try {
-        const res = await client.delete(`/document/${documentId}/text/${textId}`, {
-          validateStatus: () => true,
+    expected: number,
+  ): Promise<string | null> {
+    try {
+      const res = await client.get(`/document/${documentId}`, { validateStatus: () => true });
+      if (res.status === 404) return 'SignNow cannot load the document';
+      if (res.status >= 400 || !res.data) {
+        console.warn('[SignNow] could not read back baked page text', {
+          documentId,
+          status: res.status,
         });
-        if (res.status < 400) {
-          console.info('[SignNow] cleared previously baked page text before re-publish', {
-            documentId,
-            cleared: committed.length,
-          });
-          return true;
-        }
-        lastDetail = this.signNowErrorDetail(res);
-      } catch (err) {
-        lastDetail = err instanceof Error ? err.message : String(err);
+        return null;
       }
+      const onPage = Array.isArray(res.data.texts) ? res.data.texts.length : 0;
+      return onPage >= expected ? null : `${onPage} of ${expected} values on the page`;
+    } catch (err) {
+      console.warn('[SignNow] could not read back baked page text', {
+        documentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
     }
-    // Not fatal: the caller drops the values this page already carries so they
-    // cannot stack, and still writes the ones that changed.
-    console.warn('[SignNow] could not clear baked page text; keeping existing stamps', {
-      documentId,
-      attempted: textIds.length,
-      detail: lastDetail,
-    });
-    return false;
   }
 
   private unwrapGroupTemplatePayload(raw: any): any | null {
@@ -9249,6 +9359,11 @@ export class SignNowService {
       roles?: SignerRoleInput[];
       /** Live "$25 wire fee" checkbox; wins over the contract row when sent. */
       includeWireFee?: unknown;
+      /**
+       * The deal this group belongs to, when the caller knows it. The group's
+       * `Document` row alone cannot say once a newer group has replaced it.
+       */
+      applicationId?: string | null;
     },
   ): Promise<{
     documentCount: number;
@@ -9259,6 +9374,9 @@ export class SignNowService {
   }> {
     const id = String(groupId || '').trim();
     if (!id) return { documentCount: 0, failed: [], errors: {}, valueCount: 0 };
+    // Resolved before anything is read from SignNow: without its deal the
+    // publish below would delete the Owner widgets and stamp nothing.
+    const applicationId = await resolveApplicationIdForEnvelope(id, options?.applicationId);
     const client = await createSignNowApiClient();
     const groupRes = await client.get(`/documentgroup/${id}`, { validateStatus: () => true });
     if (groupRes.status >= 400) {
@@ -9274,7 +9392,10 @@ export class SignNowService {
     const values = prefillRecord(options?.prefillFields);
     // Latest CRM values from the database, under whatever the caller sent — except the
     // offer-derived amounts, which go over it so a resend cannot re-bake an old offer.
-    const { defaults: fromDb, offerSource } = await this.loadContractPrefillDefaults(id);
+    const { defaults: fromDb, offerSource } = await this.loadContractPrefillDefaults(
+      id,
+      applicationId ?? undefined,
+    );
     layerContractPrefillDefaults(values, fromDb);
     Object.assign(
       values,
@@ -9283,6 +9404,25 @@ export class SignNowService {
         values,
       ),
     );
+    /**
+     * A merchant publish deletes every Owner widget and stamps its value as page
+     * text. With no deal values there is nothing to stamp, so it would hand the
+     * merchant an agreement with every CRM line blank — and the merchant signs
+     * it. Checked before the signer names are layered in (those are present
+     * even when the deal is not) and before any document is touched.
+     */
+    if (!hasDealDefiningValues(values)) {
+      console.error('[SignNow] merchant publish refused: no deal values resolved', {
+        groupId: id,
+        applicationId,
+        payloadFields: options?.prefillFields?.length ?? 0,
+        dbFields: Object.keys(fromDb).length,
+      });
+      throw new BadRequestException(
+        'The contract values for this deal could not be loaded, so the contract was not ' +
+          'sent (it would have gone out blank). Run Review in SignNow again, then send.',
+      );
+    }
     if (options?.roles?.length) {
       applyMerchantSignerPrefill(values, orderedSigners(options.roles));
     }
@@ -9355,7 +9495,17 @@ export class SignNowService {
     // Restore the embedded invites the unlock removed — `mintPortalSigningLink`
     // refuses to mint a session for a group that has none. No link is minted
     // here: each signer gets a fresh one when they open their 7-day portal link.
-    if (options?.roles?.length) {
+    //
+    // Not when a document failed: its Owner widgets may already be gone with no
+    // value stamped in their place. Both callers abort on `failed`, but on a
+    // resend the merchant's earlier portal link is still valid and would remint
+    // a session from this invite onto that blank document.
+    if (failed.length) {
+      console.error('[SignNow] merchant publish incomplete; embedded invite not recreated', {
+        groupId: id,
+        failed,
+      });
+    } else if (options?.roles?.length) {
       try {
         await this.mintGroupEmbeddedInviteLink(client, {
           documentId: '',
@@ -9922,15 +10072,39 @@ export class SignNowService {
       cached.documents.length &&
       (!fingerprint || signNowPackageFingerprintsEqual(cached.fingerprint, fingerprint))
     ) {
-      const liveFromCache = await this.loadLiveDocumentGroup(client, cached.groupId);
-      if (liveFromCache && matchesPackage(liveFromCache.documents)) {
-        return liveFromCache;
+      // The cache outlives the send. Handing back a group that is already out
+      // for signature lets Review delete its embedded invites and re-prefill it
+      // under the merchant — their open session then fails to load.
+      const cachedRow = await prisma.document
+        .findUnique({
+          where: { envelopeId: cached.groupId },
+          select: { status: true, sentAt: true, portalSentAt: true },
+        })
+        .catch(() => null);
+      countSignNowDb();
+      if (isSignNowGroupAlreadySent(cachedRow)) {
+        console.info('[SignNow] not reusing draft group — already sent', {
+          applicationId,
+          groupId: cached.groupId,
+          source: 'cache',
+        });
+      } else {
+        const liveFromCache = await this.loadLiveDocumentGroup(client, cached.groupId);
+        if (liveFromCache && matchesPackage(liveFromCache.documents)) {
+          return liveFromCache;
+        }
       }
     }
 
     const existing = await prisma.document.findUnique({
       where: { applicationId },
-      select: { envelopeId: true, status: true, prefillFingerprint: true },
+      select: {
+        envelopeId: true,
+        status: true,
+        prefillFingerprint: true,
+        sentAt: true,
+        portalSentAt: true,
+      },
     });
     countSignNowDb();
     const status = String(existing?.status || '').toLowerCase();
@@ -9940,6 +10114,20 @@ export class SignNowService {
       status === 'declined' ||
       status === 'cancelled'
     ) {
+      return null;
+    }
+    /**
+     * A sent group is the merchant's live package, not a draft. Same values or
+     * not, reusing it would clear the merchant's embedded invites (and with them
+     * their open signing session) before the Owner re-prefill. Build a fresh
+     * group instead, exactly as the values-changed branch below already does.
+     */
+    if (isSignNowGroupAlreadySent(existing)) {
+      console.info('[SignNow] not reusing draft group — already sent', {
+        applicationId,
+        groupId: existing?.envelopeId || '',
+        source: 'document',
+      });
       return null;
     }
     /**

@@ -773,6 +773,48 @@ export function dropBakedTextsAlreadyStamped(
 }
 
 /**
+ * The baked values a merchant publish may write onto a page that already
+ * carries stamped text, without removing any of it.
+ *
+ * SignNow text can only be appended: a PUT that names an existing text id adds
+ * a second copy, and since 2026-11-12 `DELETE /document/{id}/text/{textId}`
+ * answers 400 and leaves the document unreadable (404) for minutes — every
+ * write made meanwhile is lost, which is how every funder's contract went out
+ * blank. So the page's own stamps stand. On a first send those are the Owner's
+ * Finish values, i.e. what the preparer reviewed and approved (hand edits
+ * included), and a baked value is written only where the page has nothing yet.
+ *
+ * `occupied` lists the spots skipped because a DIFFERENT value is already there
+ * (stamping it would print two values over each other).
+ */
+export function bakedTextsForStampedPage(
+  bakedTexts: Record<string, unknown>[],
+  committed: readonly CommittedSignNowText[],
+  tolerance = TEXT_SPOT_TOLERANCE,
+): {
+  texts: Record<string, unknown>[];
+  occupied: Array<{ page: number; onPage: string; skipped: string }>;
+} {
+  if (!committed.length) return { texts: bakedTexts, occupied: [] };
+  const texts: Record<string, unknown>[] = [];
+  const occupied: Array<{ page: number; onPage: string; skipped: string }> = [];
+  for (const row of bakedTexts) {
+    if (committed.some((old) => isStaleDuplicateStamp(row, old))) continue;
+    const taken = committed.find((old) => isSameSignNowTextSpot(row, old, tolerance));
+    if (taken) {
+      occupied.push({
+        page: taken.page_number,
+        onPage: taken.data,
+        skipped: String(row.data ?? '').trim(),
+      });
+      continue;
+    }
+    texts.push(row);
+  }
+  return { texts, occupied };
+}
+
+/**
  * The exact `texts` set a re-publish should end with: this send's baked values,
  * plus any earlier stamp whose spot this send does not cover (agreement text
  * that no longer has a widget behind it must not be wiped by the clear).

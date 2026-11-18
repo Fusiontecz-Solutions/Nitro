@@ -10,6 +10,7 @@ import {
 } from '../signnow/utils/signnow-client';
 import { signNowService } from '../signnow/signnow.service';
 import { resolveSignNowAddendumTemplate } from '../signnow/utils/signnow-addendum-templates';
+import { resolveContractFunderProfileId } from '../signnow/utils/signnow-contract-funder';
 import {
   clearSignNowReviewSession,
   readSignNowApplicationReviewState,
@@ -395,10 +396,11 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
       typeof req.query.signnowTemplateId === 'string'
         ? req.query.signnowTemplateId.trim()
         : '';
-    const funderProfileIdForSignNow =
-      typeof req.query.funderProfileId === 'string'
-        ? req.query.funderProfileId.trim()
-        : '';
+    const { funderProfileId: funderProfileIdForSignNow } = await resolveContractFunderProfileId({
+      funderProfileId:
+        typeof req.query.funderProfileId === 'string' ? req.query.funderProfileId : '',
+      funderName: typeof req.query.funderName === 'string' ? req.query.funderName : '',
+    });
     const isSignNowContractRef = /^signnow-contract$/i.test(ref);
     const rawSignNowTemplateId = extractSignNowTemplateId(ref);
     const signNowPreview =

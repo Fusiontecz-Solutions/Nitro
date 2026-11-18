@@ -71,6 +71,11 @@ function makeClient(remote: any) {
     post: jest.fn(async () => ({ status: 200, data: {} })),
     put: jest.fn(async (path: string, body?: any) => {
       puts.push({ path, body });
+      // Like SignNow: texts sent with the document PUT are kept on the page,
+      // which the merchant publish reads back before it reports success.
+      if (/^\/document\//.test(path) && Array.isArray(body?.texts)) {
+        remote.texts = [...(remote.texts || []), ...body.texts];
+      }
       return { status: 200, data: {} };
     }),
     delete: jest.fn(async () => ({ status: 200, data: {} })),

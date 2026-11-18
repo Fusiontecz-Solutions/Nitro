@@ -5,6 +5,7 @@ import { resolveMailSender } from '../mailSenderIdentity';
 import { resolveCrmFrontendBaseUrl } from '../../utils/crmFrontendUrl';
 import { createSignNowApiClient } from './utils/signnow-client';
 import { assertPackageWasPrefilledByReview, signNowService } from './signnow.service';
+import { resolveApplicationIdForEnvelope } from './utils/signnow-envelope-application';
 import {
   buildSigningPortalUrl,
   createSigningPortalToken,
@@ -372,14 +373,14 @@ async function syncPortalSendWorkflow(envelopeId: string): Promise<void> {
 
 async function findContractForEnvelope(
   envelopeId: string,
+  applicationIdHint?: string | null,
 ): Promise<{ id: number; overrides: Record<string, unknown> } | null> {
-  const document = await prisma.document.findUnique({
-    where: { envelopeId },
-    select: { applicationId: true },
-  });
-  if (!document?.applicationId) return null;
+  // Not the `Document` row alone: it follows the deal's newest group, so a
+  // group a re-initiate has replaced would lose its signing queue here.
+  const applicationId = await resolveApplicationIdForEnvelope(envelopeId, applicationIdHint);
+  if (!applicationId) return null;
   const contract = await prisma.contract.findFirst({
-    where: { applicationId: document.applicationId },
+    where: { applicationId },
     select: { id: true, contractPrefillOverrides: true },
     orderBy: { updatedAt: 'desc' },
   });
@@ -707,6 +708,8 @@ export type PortalSendInput = {
   ccEmails?: string[];
   /** Live "$25 wire fee" checkbox from the contract modal. */
   includeWireFee?: unknown;
+  /** The deal being sent, from the CRM screen; see `resolveApplicationIdForEnvelope`. */
+  applicationId?: string | null;
   /**
    * Agent emails from the send panel (array, or a comma-separated string).
    * Saved on the contract before the send, so every agent is emailed the
@@ -767,9 +770,12 @@ async function prepareContractPortalSend(input: PortalSendInput): Promise<Prepar
   const resent = Boolean(existing?.portalSentAt || existing?.sentAt);
   // Same guard as the SignNow invite send: an unprefilled package goes out blank.
   if (!resent) assertPackageWasPrefilledByReview(existing?.prefillFingerprint);
-  if (input.agentEmails !== undefined && existing?.applicationId) {
+  // The group's own row first; once a newer group has replaced it, the deal the
+  // screen is sending, then the contract's records of this group.
+  const applicationId = await resolveApplicationIdForEnvelope(envelopeId, input.applicationId);
+  if (input.agentEmails !== undefined && applicationId) {
     try {
-      await saveContractAgentEmail(String(existing.applicationId), input.agentEmails);
+      await saveContractAgentEmail(applicationId, input.agentEmails);
     } catch (err) {
       throw new BadRequest(err instanceof Error ? err.message : 'Invalid agent email.');
     }
@@ -778,7 +784,7 @@ async function prepareContractPortalSend(input: PortalSendInput): Promise<Prepar
     input,
     envelopeId,
     recipients,
-    applicationId: existing?.applicationId ? String(existing.applicationId) : null,
+    applicationId,
     resent,
   };
 }
@@ -821,6 +827,7 @@ async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<
         prefillFields: input.prefillFields,
         roles: input.roles as never,
         includeWireFee: input.includeWireFee,
+        applicationId: existing.applicationId,
       }),
       emailSubjectPromise,
     ]);
@@ -909,7 +916,7 @@ async function deliverContractPortalSend(prepared: PreparedPortalSend): Promise<
     throw new BadRequest(`Could not email the signing-portal link to any signer.${reason}`);
   }
 
-  const contract = await findContractForEnvelope(envelopeId);
+  const contract = await findContractForEnvelope(envelopeId, existing.applicationId);
   if (contract) {
     await saveQueue(contract.id, contract.overrides, queue);
   } else {

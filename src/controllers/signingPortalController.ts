@@ -46,6 +46,7 @@ class SigningPortalController {
         includeWireFee,
         agentEmail,
         agentEmails,
+        applicationId,
       } = req.body ?? {};
       const id = String(envelopeId ?? '').trim();
       if (!id) {
@@ -87,6 +88,10 @@ class SigningPortalController {
           : undefined,
         // Live "$25 wire fee" checkbox; see `withRequestWireFeePreference`.
         includeWireFee,
+        // The deal on screen: the group's `Document` row stops naming it once a
+        // newer group replaces it, and the publish then had no values to bake.
+        applicationId:
+          typeof applicationId === 'string' && applicationId.trim() ? applicationId.trim() : null,
       }, async (outcome, context) => {
         const payload = outcome.ok
           ? {
