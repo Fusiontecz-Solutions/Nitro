@@ -6034,6 +6034,17 @@ const PDFViewerModal = ({
                 // Saved on the contract server-side too, in case the panel's
                 // own save is still in flight when Send is clicked.
                 ...(savedAgentEmails.length ? { agentEmails: savedAgentEmails } : {}),
+                // The deal being sent. The server finds a package's deal through
+                // its group, and a re-initiate moves that link to the newer group,
+                // after which the publish read no contract values and the merchant
+                // received a blank agreement.
+                ...(String(applicationIdForLookupRef.current || applicationIdForLookup || "").trim()
+                    ? {
+                          applicationId: String(
+                              applicationIdForLookupRef.current || applicationIdForLookup,
+                          ).trim(),
+                      }
+                    : {}),
             }, {
                 // The backend only validates before answering; the SignNow publish
                 // and SendGrid emails finish in the background and report back
