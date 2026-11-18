@@ -1,0 +1,104 @@
+import express, { Router } from 'express';
+import { authenticateToken } from '../../middleware/authMiddleware';
+import signingPortalController from '../../controllers/signingPortalController';
+import { requireAdmin } from '../../middleware/requireAdmin';
+import {
+  connectDocusign,
+  getDocusignAuthStatus,
+  getDocusignConsentUrl,
+  docusignCallback,
+  sendTemplate,
+  addRecipientsToTemplate,
+  prefillFormFields,
+  getEmbeddedRequestUrl,
+  getEmbeddedSignLink,
+  voidDocument,
+  getDocumentProperties,
+  downloadSignedPdf,
+  downloadPrefilledPdfByApplication,
+  downloadTemplatePdf,
+  listDocuments,
+  docusignWebhook,
+  syncDocusignEnvelopeStatus,
+  mergeAndSendTemplates,
+  getTemplateRecipients,
+  createDraftEnvelope,
+  getSenderView,
+  sendEnvelope,
+  getSignNowInviteDiagnostics,
+  getSignNowReviewStatus,
+  getSignNowReviewState,
+  resetSignNowReviewState,
+  markSignNowReviewFinished,
+  syncEnvelopeCc,
+  getSignedPdf,
+} from './docusign.controller';
+
+const router = Router();
+
+router.get('/auth/status', authenticateToken, getDocusignAuthStatus);
+router.get('/consent-url', authenticateToken, getDocusignConsentUrl);
+router.get('/connect', authenticateToken, connectDocusign);
+router.get('/callback', docusignCallback);
+
+router.post('/send-template', authenticateToken, sendTemplate);
+router.post('/add-template-recipients', authenticateToken, addRecipientsToTemplate);
+router.get('/template/recipients', authenticateToken, getTemplateRecipients);
+router.patch('/prefill-fields', authenticateToken, prefillFormFields);
+router.post('/merge-and-send', authenticateToken, mergeAndSendTemplates);
+router.post('/embedded-request-url', authenticateToken, getEmbeddedRequestUrl);
+router.post('/embedded-sign-link', authenticateToken, getEmbeddedSignLink);
+router.post('/void-document', authenticateToken, voidDocument);
+router.get('/document-properties/:documentId', authenticateToken, getDocumentProperties);
+router.get(
+  '/prefilled-pdf/application/:applicationId',
+  authenticateToken,
+  downloadPrefilledPdfByApplication,
+);
+router.get('/template/:templateId/download', authenticateToken, downloadTemplatePdf);
+/** Legacy + SuperAdmin: envelope ID in path (param name is envelopeId). */
+router.get('/download/:envelopeId', authenticateToken, downloadSignedPdf);
+router.get('/signed-pdf/:envelopeId', authenticateToken, getSignedPdf);
+router.get('/list', authenticateToken, listDocuments);
+
+/** Accept JSON or legacy XML Connect payloads (global express.json skips XML). */
+const docusignWebhookBody = express.text({
+  type: ['application/json', 'application/xml', 'text/xml', 'text/*', '*/*'],
+  limit: '10mb',
+});
+
+router.post('/webhook', docusignWebhookBody, docusignWebhook);
+router.post('/sync-envelope-status', authenticateToken, syncDocusignEnvelopeStatus);
+
+/** Legacy aliases */
+router.post('/create-draft-envelope', authenticateToken, createDraftEnvelope);
+router.post('/sender-view', authenticateToken, getSenderView);
+router.post('/send-envelope', authenticateToken, sendEnvelope);
+router.get('/signnow-invite-status', authenticateToken, requireAdmin, getSignNowInviteDiagnostics);
+/** Polled while the Review iframe is open — tells the CRM when Finish was clicked. */
+router.get('/signnow-review-status', authenticateToken, getSignNowReviewStatus);
+/** Persisted review state — survives CRM refresh, closed tabs and expired sessions. */
+router.get('/signnow-review-state', authenticateToken, getSignNowReviewState);
+router.post('/signnow-review-reset', authenticateToken, resetSignNowReviewState);
+router.post('/signnow-review-finished', authenticateToken, markSignNowReviewFinished);
+router.post('/sync-envelope-cc', authenticateToken, syncEnvelopeCc);
+// Email the contract to signers through the CRM signing portal (SendGrid)
+// instead of a SignNow group invite.
+router.post(
+  '/send-contract-portal',
+  authenticateToken,
+  signingPortalController.sendContractPortal.bind(signingPortalController),
+);
+// Resend the SAME unsigned contract (optionally to a corrected signer email).
+router.get(
+  '/contract-portal-recipients',
+  authenticateToken,
+  signingPortalController.getContractPortalRecipients.bind(signingPortalController),
+);
+router.post(
+  '/resend-contract-portal',
+  authenticateToken,
+  signingPortalController.resendContractPortal.bind(signingPortalController),
+);
+
+export default router;

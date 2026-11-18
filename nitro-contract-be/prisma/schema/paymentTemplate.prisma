@@ -1,0 +1,24 @@
+/// Reusable email / letter / contract bodies (ported from Katan). The Gmail workspace
+/// compose and reply windows insert them; "New template" on the Gmail page creates them.
+model PaymentTemplate {
+  id          String              @id @default(uuid()) @db.Uuid
+  name        String
+  category    PaymentTemplateType
+  variables   String[]            @default([])
+  body        String
+  status      String              @default("active")
+  createdById String?             @db.Uuid
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  User        User?               @relation(fields: [createdById], references: [id])
+
+  @@index([category])
+  @@index([createdById])
+  @@index([updatedAt])
+}
+
+enum PaymentTemplateType {
+  contract
+  email
+  letter
+}

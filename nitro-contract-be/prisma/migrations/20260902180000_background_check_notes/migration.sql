@@ -1,0 +1,1 @@
+ALTER TYPE "BackgroundCheckType" ADD VALUE IF NOT EXISTS 'NOTES';

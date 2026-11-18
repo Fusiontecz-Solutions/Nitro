@@ -1,0 +1,67 @@
+/// Google mailbox a funder sends its deal mail from (Settings → Funders → Gmail).
+/// One per funder; connected through the shared Google OAuth client
+/// (GET /api/v1/google/callback with a `funder_gmail_connect` state).
+model FunderMailbox {
+  id               String                   @id @default(uuid()) @db.Uuid
+  funderProfileId  String                   @unique @db.Uuid
+  provider         String                   @default("gmail")
+  /// Google account address that granted access.
+  email            String?
+  /// Verified Gmail "Send mail as" alias matching the funder's sender address, if any.
+  sendAsEmail      String?
+  /// Refresh token, AES-256-GCM encrypted (utils/fieldEncryption). Never returned by the API.
+  refreshTokenEnc  String?
+  /// GOOGLE_CLIENT_ID that minted the token; a different current client means reconnect.
+  oauthClientId    String?
+  scopes           String[]                 @default([])
+  /// connected | needs_reconnect | disconnected
+  status           String                   @default("disconnected")
+  /// Last time a live token refresh + Gmail profile read succeeded.
+  verifiedAt       DateTime?
+  connectedById    String?                  @db.Uuid
+  connectedAt      DateTime?
+  lastUsedAt       DateTime?
+  lastError        String?
+  lastErrorAt      DateTime?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  funderProfile    FunderProfile            @relation(fields: [funderProfileId], references: [id], onDelete: Cascade)
+  connectedBy      User?                    @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+  threads          ApplicationEmailThread[]
+
+  @@index([email])
+  @@index([status])
+}
+
+/// Durable idempotency ledger: one row per physical outbound email that carries
+/// an idempotency key. `sending` / `unknown` rows block a resend (the provider may
+/// already have accepted the message); only `failed` (definitely not accepted) may
+/// be reclaimed.
+model MailSendClaim {
+  id                      String       @id @default(uuid()) @db.Uuid
+  idempotencyKey          String       @unique
+  /// sending | sent | failed | unknown
+  state                   String       @default("sending")
+  /// gmail | sendgrid | smtp
+  provider                String?
+  applicationId           String?      @db.Uuid
+  /// Mail-log row (outbound_communications.id) this email belongs to, when tracked.
+  outboundCommunicationId String?      @db.Uuid
+  funderProfileId         String?      @db.Uuid
+  mailboxEmail            String?
+  recipient               String?
+  subject                 String?
+  providerMessageId       String?
+  gmailThreadId           String?
+  rfcMessageId            String?
+  error                   String?
+  attempts                Int          @default(1)
+  completedAt             DateTime?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  application             Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([applicationId])
+  @@index([outboundCommunicationId])
+  @@index([state, createdAt])
+}

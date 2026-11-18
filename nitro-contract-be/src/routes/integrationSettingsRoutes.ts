@@ -1,0 +1,82 @@
+import { Router } from 'express';
+import { authenticateToken } from '../middleware/authMiddleware';
+import { requireSuperAdmin } from '../middleware/requireSuperAdmin';
+import {
+  createDocuSignProfile,
+  createFunder,
+  getContractCcDefaults,
+  getSendGridUsage,
+  getDocuSignProfile,
+  getFunder,
+  listDocuSignProfileOptions,
+  listDocuSignProfiles,
+  listFunders,
+  removeDocuSignProfile,
+  removeFunder,
+  listFunderDocuments,
+  uploadFunderDisclosure,
+  uploadFunderAddendum,
+  removeFunderDocument,
+  shareFunderTemplates,
+  updateDocuSignProfile,
+  updateFunder,
+} from '../controllers/integrationSettingsController';
+import {
+  connectFunderGmail,
+  disconnectFunderGmailHandler,
+  getFunderGmail,
+  verifyFunderGmail,
+} from '../controllers/funderGmail.controller';
+
+const router = Router();
+
+/** Contract UI — any authenticated user can list funders for dropdown. */
+router.get('/funders', authenticateToken, listFunders);
+
+/** Contract/ACH send UI — tenant default + funder-resolved CC emails. */
+router.get('/contract-cc-defaults', authenticateToken, getContractCcDefaults);
+
+/** Super admin — SendGrid plan, credits left and today's sends (Applications page). */
+router.get('/sendgrid-usage', authenticateToken, requireSuperAdmin, getSendGridUsage);
+
+/** Admin — DocuSign account profiles */
+router.get('/docusign-accounts', authenticateToken, requireSuperAdmin, listDocuSignProfiles);
+router.get(
+  '/docusign-accounts/options',
+  authenticateToken,
+  requireSuperAdmin,
+  listDocuSignProfileOptions,
+);
+router.get('/docusign-accounts/:id', authenticateToken, requireSuperAdmin, getDocuSignProfile);
+router.post('/docusign-accounts', authenticateToken, requireSuperAdmin, createDocuSignProfile);
+router.patch('/docusign-accounts/:id', authenticateToken, requireSuperAdmin, updateDocuSignProfile);
+router.delete('/docusign-accounts/:id', authenticateToken, requireSuperAdmin, removeDocuSignProfile);
+
+/** Super admin — funder profiles */
+router.get('/funders/:id', authenticateToken, requireSuperAdmin, getFunder);
+router.post('/funders', authenticateToken, requireSuperAdmin, createFunder);
+router.patch('/funders/:id', authenticateToken, requireSuperAdmin, updateFunder);
+router.delete('/funders/:id', authenticateToken, requireSuperAdmin, removeFunder);
+router.get('/funders/:id/documents', authenticateToken, requireSuperAdmin, listFunderDocuments);
+
+/** Super admin — funder Gmail mailbox (OAuth callback is the shared GET /google/callback). */
+router.get('/funders/:id/gmail', authenticateToken, requireSuperAdmin, getFunderGmail);
+router.post('/funders/:id/gmail/connect', authenticateToken, requireSuperAdmin, connectFunderGmail);
+router.post('/funders/:id/gmail/verify', authenticateToken, requireSuperAdmin, verifyFunderGmail);
+router.delete('/funders/:id/gmail', authenticateToken, requireSuperAdmin, disconnectFunderGmailHandler);
+router.post('/funders/:id/disclosures', authenticateToken, requireSuperAdmin, uploadFunderDisclosure);
+router.post('/funders/:id/addendums', authenticateToken, requireSuperAdmin, uploadFunderAddendum);
+router.post(
+  '/funders/:id/share-templates',
+  authenticateToken,
+  requireSuperAdmin,
+  shareFunderTemplates,
+);
+router.delete(
+  '/funders/:id/documents/:templateId',
+  authenticateToken,
+  requireSuperAdmin,
+  removeFunderDocument,
+);
+
+export default router;

@@ -1,0 +1,321 @@
+import { Request, Response } from 'express';
+import prisma from '../config/prismaClient';
+import {
+  advancePortalSigningQueue,
+  mintPortalSigningLink,
+  readPortalSigningRecipients,
+  resolvePortalRecipients,
+  startContractPortalResend,
+  startContractPortalSend,
+  syncPortalEnvelopeAfterSignerFinished,
+  verifyPortalAccess,
+} from '../services/signnow/signnow-portal-send.service';
+import { emitToUser } from '../socket';
+import { emitContractSigningStatusRealtime } from '../services/contractSigningStatusEffects';
+
+/** Outcome of a background "Send via SignNow" portal send, pushed to the user who clicked. */
+const PORTAL_SEND_RESULT_SOCKET_EVENT = 'contract:portal-send-result';
+import { markSignNowEnvelopeActive } from '../cron-job/signNowContractStatusJob';
+import { signNowWebhooksVerified } from '../services/signnow/utils/signnow-webhook-mode';
+
+function fail(res: Response, error: any) {
+  const status = Number(error?.status) || 500;
+  return res.status(status).json({
+    success: false,
+    message: error?.message || 'Signing portal request failed.',
+  });
+}
+
+class SigningPortalController {
+  /**
+   * POST /docusign/send-contract-portal  (authenticated)
+   * Emails each merchant signer a portal link via SendGrid instead of letting
+   * SignNow send the invite.
+   */
+  async sendContractPortal(req: Request, res: Response) {
+    try {
+      const {
+        envelopeId,
+        roles,
+        contractLabel,
+        funderName,
+        preparerEmail,
+        replyToEmail,
+        prefillFields,
+        ccEmails,
+        includeWireFee,
+        agentEmail,
+        agentEmails,
+        applicationId,
+      } = req.body ?? {};
+      const id = String(envelopeId ?? '').trim();
+      if (!id) {
+        return res.status(400).json({ success: false, message: 'envelopeId is required.' });
+      }
+      if (!Array.isArray(roles) || roles.length === 0) {
+        return res.status(400).json({ success: false, message: 'roles is required.' });
+      }
+      const recipients = resolvePortalRecipients(roles, preparerEmail);
+      if (!recipients.length) {
+        return res.status(400).json({
+          success: false,
+          message: 'No merchant signer email to send to (the preparer is excluded).',
+        });
+      }
+      const senderUserId = String((req as any).user?.id ?? '').trim();
+      const senderEmail = String((req as any).user?.email ?? '').trim();
+      // Answered as soon as the send is validated; the SignNow publish and the
+      // SendGrid emails finish in the background (they took 1–2 minutes inline).
+      const accepted = await startContractPortalSend({
+        envelopeId: id,
+        recipients,
+        contractLabel: String(contractLabel ?? '').trim() || 'Your funding agreement',
+        funderName: typeof funderName === 'string' ? funderName.trim() : null,
+        replyToEmail: typeof replyToEmail === 'string' ? replyToEmail.trim() : null,
+        agentEmails: Array.isArray(agentEmails)
+          ? agentEmails.map((v: unknown) => String(v ?? '').trim()).filter(Boolean)
+          : typeof agentEmail === 'string'
+            ? agentEmail.trim()
+            : undefined,
+        // The sender gets the signed copy when every signer has finished.
+        senderEmail: senderEmail.includes('@') ? senderEmail : null,
+        // Same payload `/send-envelope` receives, so the portal bakes the values
+        // the CRM holds right now instead of whatever Owner review left behind.
+        prefillFields: Array.isArray(prefillFields) ? prefillFields : undefined,
+        roles,
+        ccEmails: Array.isArray(ccEmails)
+          ? ccEmails.map((v: unknown) => String(v ?? '').trim()).filter(Boolean)
+          : undefined,
+        // Live "$25 wire fee" checkbox; see `withRequestWireFeePreference`.
+        includeWireFee,
+        // The deal on screen: the group's `Document` row stops naming it once a
+        // newer group replaces it, and the publish then had no values to bake.
+        applicationId:
+          typeof applicationId === 'string' && applicationId.trim() ? applicationId.trim() : null,
+      }, async (outcome, context) => {
+        const payload = outcome.ok
+          ? {
+              envelopeId: context.envelopeId,
+              applicationId: context.applicationId,
+              ok: true,
+              recipientEmails: outcome.result.recipientEmails,
+            }
+          : {
+              envelopeId: context.envelopeId,
+              applicationId: context.applicationId,
+              ok: false,
+              message:
+                (outcome.error as Error)?.message || 'Could not email the signing link.',
+            };
+        if (senderUserId) emitToUser(senderUserId, PORTAL_SEND_RESULT_SOCKET_EVENT, payload);
+        // Every CRM user watching the deal refreshes to Contract Sent.
+        if (outcome.ok && context.applicationId) {
+          await emitContractSigningStatusRealtime({
+            applicationId: context.applicationId,
+            envelopeId: context.envelopeId,
+            status: 'sent',
+            provider: 'signnow',
+          });
+        }
+      });
+      return res.status(202).json({ success: true, data: { ...accepted, queued: true } });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+
+  /**
+   * GET /docusign/contract-portal-recipients?envelopeId=  (authenticated)
+   * Signers of a sent contract, for the Resend dialog.
+   */
+  async getContractPortalRecipients(req: Request, res: Response) {
+    try {
+      const id = String(req.query.envelopeId ?? '').trim();
+      if (!id) {
+        return res.status(400).json({ success: false, message: 'envelopeId is required.' });
+      }
+      const data = await readPortalSigningRecipients(id);
+      if (!data) {
+        return res.status(404).json({
+          success: false,
+          message: 'This contract was not sent through the signing portal.',
+        });
+      }
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+
+  /**
+   * POST /docusign/resend-contract-portal  (authenticated)
+   * Body: { envelopeId, recipientChanges?: [{ email, newEmail, newName? }] }
+   *
+   * Re-emails the signing link of every signer who has not signed the SAME
+   * contract yet — nothing is rebuilt or reset. With `recipientChanges` the
+   * signer's address is corrected first; that runs in the background (202) and
+   * reports over the portal-send socket event.
+   */
+  async resendContractPortal(req: Request, res: Response) {
+    try {
+      const { envelopeId, recipientChanges } = req.body ?? {};
+      const id = String(envelopeId ?? '').trim();
+      if (!id) {
+        return res.status(400).json({ success: false, message: 'envelopeId is required.' });
+      }
+      const senderUserId = String((req as any).user?.id ?? '').trim();
+      const accepted = await startContractPortalResend(
+        {
+          envelopeId: id,
+          recipientChanges: Array.isArray(recipientChanges) ? recipientChanges : undefined,
+        },
+        async (outcome, context) => {
+          const document = await prisma.document
+            .findUnique({ where: { envelopeId: context.envelopeId }, select: { applicationId: true } })
+            .catch(() => null);
+          const applicationId = document?.applicationId ? String(document.applicationId) : null;
+          const payload = outcome.ok
+            ? {
+                envelopeId: context.envelopeId,
+                applicationId,
+                ok: true,
+                resend: true,
+                recipientEmails: outcome.result.emailed,
+              }
+            : {
+                envelopeId: context.envelopeId,
+                applicationId,
+                ok: false,
+                resend: true,
+                message:
+                  (outcome.error as Error)?.message || 'Could not resend the signing link.',
+              };
+          if (senderUserId) emitToUser(senderUserId, PORTAL_SEND_RESULT_SOCKET_EVENT, payload);
+        },
+      );
+      return res.status(accepted.queued ? 202 : 200).json({ success: true, data: accepted });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+
+  /**
+   * GET /public/signing-portal/:envelopeId/summary?token=&email=
+   * Minimal, non-sensitive context so the portal can render before signing.
+   */
+  async getSummary(req: Request, res: Response) {
+    try {
+      const envelopeId = String(req.params.envelopeId ?? '').trim();
+      const email = String(req.query.email ?? '').trim();
+      const token = String(req.query.token ?? '').trim();
+      await verifyPortalAccess({ envelopeId, email, token });
+
+      // Safety net for sequential signing: if the signer ahead of this one has
+      // finished but the completion callback never arrived, hand the contract on.
+      try {
+        // Webhook mode: only email anyone never reached — no SignNow read.
+        await advancePortalSigningQueue(envelopeId, { readSignNow: !signNowWebhooksVerified() });
+      } catch (queueError) {
+        console.warn('[SignNow] portal queue advance on summary failed', queueError);
+      }
+
+      const document = await prisma.document.findUnique({
+        where: { envelopeId },
+        select: { status: true, sentAt: true, portalSentAt: true, applicationId: true },
+      });
+      const contract = document?.applicationId
+        ? await prisma.contract.findFirst({
+            where: { applicationId: document.applicationId },
+            select: { customerName: true, legalName: true, funderName: true },
+            orderBy: { updatedAt: 'desc' },
+          })
+        : null;
+
+      return res.json({
+        success: true,
+        data: {
+          envelopeId,
+          email: email.toLowerCase(),
+          status: document?.status ?? null,
+          sentAt: document?.portalSentAt ?? document?.sentAt ?? null,
+          merchantName: contract?.legalName || contract?.customerName || null,
+          funderName: contract?.funderName || null,
+        },
+      });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+
+  /**
+   * POST /public/signing-portal/:envelopeId/link
+   * Body: { token, email } → a fresh SignNow embedded signing URL.
+   * Minted on open, not at send time, so the session cannot expire in the inbox.
+   */
+  async createSigningLink(req: Request, res: Response) {
+    try {
+      const envelopeId = String(req.params.envelopeId ?? '').trim();
+      const email = String(req.body?.email ?? '').trim();
+      const token = String(req.body?.token ?? '').trim();
+      const verified = await verifyPortalAccess({ envelopeId, email, token });
+      // The signer is opening SignNow now: check this contract every status-job tick.
+      markSignNowEnvelopeActive(verified.envelopeId);
+      const url = await mintPortalSigningLink({
+        envelopeId: verified.envelopeId,
+        signerEmail: verified.email,
+      });
+      return res.json({ success: true, data: { url } });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+
+  /**
+   * POST /public/signing-portal/:envelopeId/completed
+   * Called by the portal page when the signer finishes in the SignNow iframe.
+   * Emails the next signer in order — SignNow is asked to confirm the current
+   * signer really finished, so a spoofed call cannot skip anyone ahead. When
+   * the last signer is done the CRM moves to Contract Signed right away.
+   * Answered immediately: the sync waits out SignNow's settling delay in the
+   * background and the portal page does not read the result.
+   */
+  async markCompleted(req: Request, res: Response) {
+    try {
+      const envelopeId = String(req.params.envelopeId ?? '').trim();
+      const email = String(req.body?.email ?? '').trim();
+      const token = String(req.body?.token ?? '').trim();
+      const verified = await verifyPortalAccess({ envelopeId, email, token });
+      markSignNowEnvelopeActive(verified.envelopeId);
+      if (signNowWebhooksVerified()) {
+        // The signed SignNow webhook reports this finish (and the group's
+        // completion), so the return trip spends no SignNow API calls.
+        void advancePortalSigningQueue(verified.envelopeId, { readSignNow: false }).catch((err) =>
+          console.warn('[SignNow] portal queue email step failed', {
+            envelopeId: verified.envelopeId,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        return res.json({ success: true, data: { accepted: true } });
+      }
+      void syncPortalEnvelopeAfterSignerFinished(verified.envelopeId, undefined, verified.email)
+        .then(({ queue, status }) =>
+          console.info('[SignNow] portal finish synced', {
+            envelopeId: verified.envelopeId,
+            ...queue,
+            status,
+          }),
+        )
+        .catch((err) =>
+          console.warn('[SignNow] portal finish sync failed', {
+            envelopeId: verified.envelopeId,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      return res.json({ success: true, data: { accepted: true } });
+    } catch (error: any) {
+      return fail(res, error);
+    }
+  }
+}
+
+export default new SigningPortalController();
