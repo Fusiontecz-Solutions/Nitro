@@ -4,7 +4,9 @@
 # folder, copies into backend/, and runs dist/index.js as pm2 "backend" on port 8035.
 # .env and certificate files on the server are kept.
 #
-# NOT automatic: database schema changes. After changing prisma/schema, run by hand
+# Database schema: safe 'prisma db push' runs on every deploy (never with
+# --accept-data-loss). Changes that would delete data stop the deploy and must be
+# done by hand on the server.
 # on the server:  cd ~/backend && npx prisma db push   (or a migration).
 name: Deploy backend
 
@@ -52,6 +54,15 @@ jobs:
 
       - name: Install and build
         run: npm run build
+
+      - name: Update the database schema (safe push only)
+        run: |
+          # Uses DATABASE_URL from the server .env copied above. Without
+          # --accept-data-loss, Prisma refuses any change that would delete data
+          # (dropped columns/tables, etc.) and the deploy stops here, before the
+          # live site is touched. Such changes must be done by hand.
+          grep -q '^DATABASE_URL=' .env || { echo "No DATABASE_URL in the server .env"; exit 1; }
+          npx prisma db push
 
       - name: Go live
         env:
