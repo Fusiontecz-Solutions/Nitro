@@ -66,58 +66,24 @@ export function loadBackendEnv(): void {
     `[env] BOOTSTRAP_SUPER_ADMIN_SECRET ${bootstrapSecretLen >= 24 ? 'loaded' : 'MISSING'} (${bootstrapSecretLen} chars) from ${loadedFrom ?? '(none)'}`,
   );
 
-  const docAiProcessorId = String(
-    process.env.DOCUMENT_AI_PROCESSOR_ID || process.env.DOCAI_PROCESSOR_ID || '',
+  // All document extraction (application creation, driver's license, voided check)
+  // runs on OpenAI; Google Document AI is not used.
+  const openAiKey = String(
+    process.env.OPEN_AI_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.OPENAI_KEY ||
+      process.env.OPEN_AI_API_KEY ||
+      '',
   ).trim();
-  const docAiOk =
-    !!String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim() &&
-    !!docAiProcessorId;
-  const openAiKey = String(process.env.OPEN_AI_KEY || process.env.OPENAI_API_KEY || '').trim();
-  const explicitProvider = String(process.env.PDF_EXTRACTION_PROVIDER || '').trim().toLowerCase();
-  const useOpenAi =
-    ['openai', 'open_ai', 'gpt'].includes(explicitProvider) || (!explicitProvider && !!openAiKey);
-  if (useOpenAi) {
-    if (openAiKey) {
-      console.log(
-        `[env] OpenAI extraction ready (application scan, driver's license, voided check; model=${String(process.env.OPENAI_PDF_MODEL || '').trim() || 'gpt-4o'})`,
-      );
-    } else {
-      console.warn(
-        `[env] PDF_EXTRACTION_PROVIDER=openai but OPEN_AI_KEY is not set in ${BACKEND_DOTENV_PATH}`,
-      );
-    }
-    return;
-  }
-  const provider = explicitProvider || 'claude';
-  const useClaude = provider !== 'documentai' && provider !== 'document_ai' && provider !== 'google';
-  const keyOk = useClaude
-    ? !!String(process.env.ANTHROPIC_API_KEY ?? '').trim()
-    : docAiOk;
-
-  if (!keyOk) {
-    console.warn(
-      useClaude
-        ? `[env] ANTHROPIC_API_KEY is not set (PDF_EXTRACTION_PROVIDER=claude).\n` +
-            ` - Expected backend .env at: ${BACKEND_DOTENV_PATH}` +
-            ` (${fs.existsSync(BACKEND_DOTENV_PATH) ? 'exists' : 'missing'})\n` +
-            ` - First loaded dotenv path: ${loadedFrom ?? '(none)'}`
-        : `[env] Document AI is not configured (PDF_EXTRACTION_PROVIDER=documentai).\n` +
-            ` - Set GOOGLE_CLOUD_PROJECT and DOCUMENT_AI_PROCESSOR_ID in ${BACKEND_DOTENV_PATH}\n` +
-            ` - Optional: DOCUMENT_AI_KYC_PROCESSOR_ID, DOCUMENT_AI_OCR_PROCESSOR_ID, DOCUMENT_AI_LOCATION\n` +
-            ` - Auth: GOOGLE_APPLICATION_CREDENTIALS or Application Default Credentials\n` +
-            ` - Default is Claude; remove PDF_EXTRACTION_PROVIDER=documentai to use Claude`,
-    );
-  } else if (!useClaude) {
-    const credRaw = String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
-    const credResolved = credRaw
-      ? path.isAbsolute(credRaw)
-        ? credRaw
-        : fs.existsSync(path.resolve(process.cwd(), credRaw))
-          ? path.resolve(process.cwd(), credRaw)
-          : path.resolve(BACKEND_PACKAGE_ROOT, credRaw)
-      : '';
+  if (openAiKey) {
     console.log(
-      `[env] Document AI ready (provider=documentai, project=${String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim()}, processor=${docAiProcessorId}, creds=${credResolved && fs.existsSync(credResolved) ? 'file-ok' : 'missing-or-adc'})`,
+      `[env] OpenAI extraction ready (key ${openAiKey.slice(0, 7)}…, ${openAiKey.length} chars; model=${String(process.env.OPENAI_PDF_MODEL || '').trim() || 'gpt-4o'}) from ${loadedFrom ?? '(none)'}`,
+    );
+  } else {
+    console.warn(
+      '[env] OPEN_AI_KEY is NOT set — application creation, driver\'s license and voided check scans will fail.\n' +
+        ` - Add OPEN_AI_KEY=... to ${BACKEND_DOTENV_PATH} (${fs.existsSync(BACKEND_DOTENV_PATH) ? 'exists' : 'missing'})\n` +
+        ` - First loaded dotenv path: ${loadedFrom ?? '(none)'}`,
     );
   }
 }

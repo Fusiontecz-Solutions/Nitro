@@ -28,7 +28,13 @@ type ChatContentPart =
   | { type: 'file'; file: { filename: string; file_data: string } };
 
 export function readOpenAiApiKey(): string {
-  return String(process.env.OPEN_AI_KEY || process.env.OPENAI_API_KEY || '').trim();
+  return String(
+    process.env.OPEN_AI_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.OPENAI_KEY ||
+      process.env.OPEN_AI_API_KEY ||
+      '',
+  ).trim();
 }
 
 function readPositiveInt(key: string, fallback: number): number {
