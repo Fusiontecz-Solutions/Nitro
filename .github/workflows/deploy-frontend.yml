@@ -1,0 +1,76 @@
+# Deploys the Nitro frontend (nitro-contract-fe/) when it changes on main.
+# Self-hosted runner on 46.202.160.243 (user fusiontecz-www-nitro, label nitro).
+# Builds in the runner's work folder, copies into frontend/FE, and runs
+# server.mjs (serves dist/) as pm2 "frontend" on port 3035. .env files are kept.
+name: Deploy frontend
+
+on:
+  push:
+    branches: [main]
+    paths: ['nitro-contract-fe/**', '.github/workflows/deploy-frontend.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: production-frontend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, nitro]
+    env:
+      APP_DIR: /home/fusiontecz-www-nitro/frontend/FE
+      PM2_NAME: frontend
+      PORT: 3035
+    defaults:
+      run:
+        working-directory: nitro-contract-fe
+    steps:
+      - name: Check the live folder
+        working-directory: /tmp
+        run: |
+          [ -d "$APP_DIR" ] || { echo "No folder $APP_DIR, stopping"; exit 1; }
+
+      - uses: actions/checkout@v4
+
+      - name: Use the site's Node (nvm)
+        working-directory: /tmp
+        run: |
+          export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+          BIN="$(dirname "$(nvm which default)")"
+          [ -x "$BIN/pm2" ] || "$BIN/npm" install -g pm2
+          echo "$BIN" >> "$GITHUB_PATH"
+
+      - name: Copy env files from the live folder
+        run: |
+          for f in .env .env.local .env.production .env.production.local; do
+            if [ -f "$APP_DIR/$f" ]; then cp "$APP_DIR/$f" "$f"; fi
+          done
+
+      - name: Install
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Go live
+        env:
+          # Keep the runner's end-of-job cleanup from killing pm2 and the app.
+          RUNNER_TRACKING_ID: ""
+        run: |
+          rsync -a --delete --exclude '.env*' --exclude 'node_modules' ./ "$APP_DIR/"
+          cd "$APP_DIR"
+          if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
+            pm2 delete "$PM2_NAME"
+          fi
+          pm2 start server.mjs --name "$PM2_NAME" --update-env
+          pm2 save
+
+      - name: Health check
+        run: |
+          for i in 1 2 3 4 5 6; do
+            sleep 5
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/" || true)
+            echo "attempt $i: $code"
+            [ "$code" = "200" ] && exit 0
+          done
+          echo "Frontend did not answer 200 on port $PORT"; pm2 logs "$PM2_NAME" --lines 50 --nostream; exit 1

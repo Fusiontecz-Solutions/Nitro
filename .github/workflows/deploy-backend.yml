@@ -1,0 +1,81 @@
+# Deploys the Nitro backend (nitro-contract-be/) when it changes on main.
+# Self-hosted runner on 46.202.160.243 (user fusiontecz-www-nitro, label nitro).
+# Builds (npm install, prisma generate, tsc, asset copy) in the runner's work
+# folder, copies into backend/, and runs dist/index.js as pm2 "backend" on port 8035.
+# .env and certificate files on the server are kept.
+#
+# NOT automatic: database schema changes. After changing prisma/schema, run by hand
+# on the server:  cd ~/backend && npx prisma db push   (or a migration).
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths: ['nitro-contract-be/**', '.github/workflows/deploy-backend.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: production-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, nitro]
+    env:
+      APP_DIR: /home/fusiontecz-www-nitro/backend
+      PM2_NAME: backend
+      PORT: 8035
+    defaults:
+      run:
+        working-directory: nitro-contract-be
+    steps:
+      - name: Check the live folder
+        working-directory: /tmp
+        run: |
+          [ -f "$APP_DIR/.env" ] || { echo "No .env in $APP_DIR, put it there first"; exit 1; }
+
+      - uses: actions/checkout@v4
+
+      - name: Use the site's Node (nvm)
+        working-directory: /tmp
+        run: |
+          export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+          BIN="$(dirname "$(nvm which default)")"
+          [ -x "$BIN/pm2" ] || "$BIN/npm" install -g pm2
+          echo "$BIN" >> "$GITHUB_PATH"
+
+      - name: Copy env files from the live folder
+        run: |
+          for f in .env .env.local .env.production; do
+            if [ -f "$APP_DIR/$f" ]; then cp "$APP_DIR/$f" "$f"; fi
+          done
+
+      - name: Install and build
+        run: npm run build
+
+      - name: Go live
+        env:
+          # Keep the runner's end-of-job cleanup from killing pm2 and the app.
+          RUNNER_TRACKING_ID: ""
+        run: |
+          rsync -a --delete \
+            --exclude '.env*' --exclude '*.pfx' --exclude '*.p12' --exclude '*.pem' \
+            --exclude 'output.csv' --exclude 'loan_extract.json' --exclude 'uploads' \
+            ./ "$APP_DIR/"
+          cd "$APP_DIR"
+          if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
+            pm2 restart "$PM2_NAME" --update-env
+          else
+            pm2 start dist/index.js --name "$PM2_NAME" --update-env
+          fi
+          pm2 save
+
+      - name: Health check
+        run: |
+          for i in 1 2 3 4 5 6 7 8; do
+            sleep 5
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/" || true)
+            echo "attempt $i: $code"
+            if [ "$code" != "000" ] && [ "$code" -lt 500 ]; then exit 0; fi
+          done
+          echo "Backend not answering on port $PORT (check PORT in backend .env)"; pm2 logs "$PM2_NAME" --lines 50 --nostream; exit 1
