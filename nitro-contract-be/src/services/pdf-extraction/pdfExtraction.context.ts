@@ -1,7 +1,7 @@
 import type { ConfigService } from '@nestjs/config';
 import { ClaudePdfExtractionService } from '../../nestjs-claude-pdf/claude-pdf-extraction.service';
 
-export type PdfExtractionProvider = 'claude' | 'documentai';
+export type PdfExtractionProvider = 'claude' | 'documentai' | 'openai';
 
 export interface PdfExtractionServiceLike {
   getRuntimeDebugConfig(): Record<string, unknown>;
@@ -28,13 +28,20 @@ function hasDocumentAiConfig(): boolean {
   return !!(project && processor);
 }
 
-function readProvider(): PdfExtractionProvider {
+function hasOpenAiKey(): boolean {
+  return !!String(process.env.OPEN_AI_KEY || process.env.OPENAI_API_KEY || '').trim();
+}
+
+export function readProvider(): PdfExtractionProvider {
   const raw = String(process.env.PDF_EXTRACTION_PROVIDER || '')
     .trim()
     .toLowerCase();
+  if (raw === 'openai' || raw === 'open_ai' || raw === 'gpt') return 'openai';
   if (raw === 'documentai' || raw === 'document_ai' || raw === 'google') return 'documentai';
   if (raw === 'claude') return 'claude';
-  // No explicit provider: use Document AI when GCP is configured and Claude is not.
+  // No explicit provider: prefer OpenAI when its key is set.
+  if (hasOpenAiKey()) return 'openai';
+  // Otherwise use Document AI when GCP is configured and Claude is not.
   if (hasDocumentAiConfig() && !String(process.env.ANTHROPIC_API_KEY || '').trim()) {
     return 'documentai';
   }
@@ -58,8 +65,16 @@ function createClaudeService(): PdfExtractionServiceLike {
   return new ClaudePdfExtractionService(buildEnvConfigService() as ConfigService);
 }
 
+function createOpenAiService(): PdfExtractionServiceLike {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { OpenAiPdfExtractionService } = require('../openai/openAiPdfExtraction.service');
+  return new OpenAiPdfExtractionService();
+}
+
 function buildPdfExtractionService(): PdfExtractionServiceLike {
-  if (readProvider() === 'documentai') {
+  const provider = readProvider();
+  if (provider === 'openai') return createOpenAiService();
+  if (provider === 'documentai') {
     // Optional — only when PDF_EXTRACTION_PROVIDER=documentai
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { DocumentAiPdfExtractionService } = require('../document-ai/documentAiPdfExtraction.service');
@@ -71,6 +86,24 @@ function buildPdfExtractionService(): PdfExtractionServiceLike {
 /** Claude by default; set PDF_EXTRACTION_PROVIDER=documentai only if you use Google Document AI. */
 export function getPdfExtractionService(): PdfExtractionServiceLike {
   return (singleton ??= buildPdfExtractionService());
+}
+
+let kycSingleton: PdfExtractionServiceLike | undefined;
+
+/**
+ * Driver's license / voided check extraction. Uses OpenAI when that is the active
+ * provider; otherwise Google Document AI, as before.
+ */
+export function getKycExtractionService(): PdfExtractionServiceLike {
+  if (kycSingleton) return kycSingleton;
+  if (readProvider() === 'openai') {
+    kycSingleton = createOpenAiService();
+  } else {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { DocumentAiPdfExtractionService } = require('../document-ai/documentAiPdfExtraction.service');
+    kycSingleton = new DocumentAiPdfExtractionService() as PdfExtractionServiceLike;
+  }
+  return kycSingleton;
 }
 
 /** Always returns Claude extraction (ignores PDF_EXTRACTION_PROVIDER). */

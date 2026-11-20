@@ -72,7 +72,23 @@ export function loadBackendEnv(): void {
   const docAiOk =
     !!String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim() &&
     !!docAiProcessorId;
-  const provider = String(process.env.PDF_EXTRACTION_PROVIDER || 'claude').trim().toLowerCase();
+  const openAiKey = String(process.env.OPEN_AI_KEY || process.env.OPENAI_API_KEY || '').trim();
+  const explicitProvider = String(process.env.PDF_EXTRACTION_PROVIDER || '').trim().toLowerCase();
+  const useOpenAi =
+    ['openai', 'open_ai', 'gpt'].includes(explicitProvider) || (!explicitProvider && !!openAiKey);
+  if (useOpenAi) {
+    if (openAiKey) {
+      console.log(
+        `[env] OpenAI extraction ready (application scan, driver's license, voided check; model=${String(process.env.OPENAI_PDF_MODEL || '').trim() || 'gpt-4o'})`,
+      );
+    } else {
+      console.warn(
+        `[env] PDF_EXTRACTION_PROVIDER=openai but OPEN_AI_KEY is not set in ${BACKEND_DOTENV_PATH}`,
+      );
+    }
+    return;
+  }
+  const provider = explicitProvider || 'claude';
   const useClaude = provider !== 'documentai' && provider !== 'document_ai' && provider !== 'google';
   const keyOk = useClaude
     ? !!String(process.env.ANTHROPIC_API_KEY ?? '').trim()

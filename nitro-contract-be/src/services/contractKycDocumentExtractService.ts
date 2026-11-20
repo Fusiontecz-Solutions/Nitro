@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { DocumentAiPdfExtractionService } from './document-ai/documentAiPdfExtraction.service';
+import { getKycExtractionService } from './pdf-extraction/pdfExtraction.context';
 import { resolveMimeTypeFromBuffer } from '../utils/mimeTypeFromBuffer';
 import {
   type KycDocumentType,
@@ -45,7 +45,7 @@ class ContractKycDocumentExtractService {
     documentType: KycDocumentType,
     ownerIndex: KycOwnerIndex = 1,
   ): Promise<KycExtractionMapped> {
-    const svc = new DocumentAiPdfExtractionService();
+    const svc = getKycExtractionService();
     const { key_data } = await svc.extractKycDocument(buffer, mimeType, documentType);
     return mapKycKeyDataToPrefill(documentType, key_data, ownerIndex);
   }
