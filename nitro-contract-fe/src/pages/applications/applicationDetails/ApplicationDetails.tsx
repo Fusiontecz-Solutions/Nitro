@@ -31,9 +31,11 @@ import {
   invalidateApplicationDetailCache,
 } from "@/lib/applicationDetailCache";
 import {
+    invalidateHttpGetCacheForRecord,
     invalidateHttpGetCacheForResource,
     invalidateHttpGetCacheForUrl,
 } from "@/lib/httpGetCache";
+import { useSocket } from "@/context/SocketContext";
 import { resolveApplicationTableCurrentQueue } from "@/lib/applicationSummaryStatus";
 import { useContractSigningStatusRealtime } from "@/hooks/useContractSigningStatusRealtime";
 import { isFinalUnderwriterWorkflowQueue } from "@/lib/applicationWorkflowState";
@@ -66,8 +68,13 @@ import WorkflowActionPanel from "@/components/workflow/WorkflowActionPanel";
 import { WORKFLOW_QUEUE, isWorkflowQueue } from "@/lib/workflowApi";
 
 
-/** CRM-only re-read of a deal awaiting signatures (no SignNow calls). */
+/**
+ * CRM-only re-read of a deal awaiting signatures (no SignNow calls). Signing
+ * updates normally arrive over the socket, so poll slowly while it is connected
+ * and only fall back to the fast interval when pushes cannot arrive.
+ */
 const APPLICATION_STAGE_FALLBACK_POLL_MS = 10_000;
+const APPLICATION_STAGE_CONNECTED_POLL_MS = 60_000;
 
 const ApplicationDetails = () => {
     const { applicationId } = useParams<{ applicationId: string; tab?: string }>()
@@ -372,20 +379,22 @@ const ApplicationDetails = () => {
             .toLowerCase(),
     );
     const numericApplicationId = (applicationData as any)?.applicationId ?? null;
+    const { isConnected: socketConnected } = useSocket();
     useEffect(() => {
         if (!awaitingSignature) return;
         const timer = window.setInterval(() => {
             if (document.visibilityState !== "visible") return;
-            if (applicationUuid) invalidateApplicationDetailCache(String(applicationUuid));
-            if (applicationId) invalidateApplicationDetailCache(applicationId);
-            if (numericApplicationId != null) {
-                invalidateApplicationDetailCache(String(numericApplicationId));
+            // Only this deal's cached GETs — wiping every "applications" entry here
+            // also threw away all cached list pages every few seconds.
+            for (const id of [applicationUuid, applicationId, numericApplicationId]) {
+                if (id == null || id === "") continue;
+                invalidateApplicationDetailCache(String(id));
+                invalidateHttpGetCacheForRecord("applications", String(id));
             }
-            invalidateHttpGetCacheForResource("applications");
             refetchApplicationDetail();
-        }, APPLICATION_STAGE_FALLBACK_POLL_MS);
+        }, socketConnected ? APPLICATION_STAGE_CONNECTED_POLL_MS : APPLICATION_STAGE_FALLBACK_POLL_MS);
         return () => window.clearInterval(timer);
-    }, [awaitingSignature, applicationUuid, applicationId, numericApplicationId, refetchApplicationDetail]);
+    }, [awaitingSignature, applicationUuid, applicationId, numericApplicationId, refetchApplicationDetail, socketConnected]);
 
     const { activeTab, handleTabChange } = useTabRouting(
         tabs,

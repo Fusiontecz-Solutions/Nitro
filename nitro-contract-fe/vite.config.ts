@@ -125,15 +125,30 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) return;
-          if (id.includes('react-dom') || id.includes('/react/') || id.includes('react-router') || id.includes('react-redux')) {
+        manualChunks(rawId) {
+          const id = rawId.replace(/\\/g, '/');
+          if (!id.includes('/node_modules/')) return;
+          const pkg = (name: string) => id.includes(`/node_modules/${name}/`);
+          // Core runtime + state libs every page needs. redux/immer/reselect must
+          // live here: recharts also depends on them, and when they were unmatched
+          // the bundler parked them in vendor-charts, which made the entry (and the
+          // login page) preload ~500 kB of chart code.
+          if (
+            pkg('react') || pkg('react-dom') || pkg('scheduler') || pkg('react-router') ||
+            pkg('react-redux') || pkg('@reduxjs/toolkit') || pkg('redux') || pkg('redux-thunk') ||
+            pkg('immer') || pkg('reselect') || pkg('use-sync-external-store')
+          ) {
             return 'vendor-react';
           }
-          if (id.includes('@tanstack')) return 'vendor-query';
-          if (id.includes('@mui')) return 'vendor-mui';
-          if (id.includes('recharts') || id.includes('framer-motion')) return 'vendor-charts';
-          if (id.includes('pdfjs') || id.includes('react-pdf')) return 'vendor-pdf';
+          if (pkg('@tanstack/react-query') || pkg('@tanstack/query-core')) return 'vendor-query';
+          if (pkg('@mui/material') || pkg('@mui/system') || pkg('@mui/utils') || pkg('@mui/icons-material') || pkg('@mui/styled-engine') || pkg('@mui/private-theming') || pkg('@mui/core-downloads-tracker')) {
+            return 'vendor-mui';
+          }
+          // recharts / pdfjs / react-pdf are deliberately NOT forced into named
+          // chunks: the bundler pulls a manual chunk's dependencies (lodash, clsx,
+          // ...) in with it, and the app entry then had to preload the whole chart
+          // and PDF bundles on every page. Default splitting keeps them with the
+          // lazy routes that actually use them.
         },
       },
     },
