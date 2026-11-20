@@ -45,7 +45,8 @@ type ApplicationSheetMailLogProps = {
 };
 
 const DEFAULT_MAIL_LOG_POLL_MS = Number(
-  import.meta.env.VITE_MAIL_LOG_POLL_MS ?? 5_000,
+  // Each tick re-downloads the deal's full activity log; 5s was far too eager.
+  import.meta.env.VITE_MAIL_LOG_POLL_MS ?? 30_000,
 );
 
 type MailLogRow = {

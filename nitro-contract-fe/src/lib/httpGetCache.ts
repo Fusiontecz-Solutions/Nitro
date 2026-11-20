@@ -132,6 +132,23 @@ export function invalidateHttpGetCacheForResource(resource: string): void {
   }
 }
 
+/**
+ * Drop cached GETs for one record of a resource, e.g. ("applications", id) drops
+ * `/applications/<id>` and its sub-resources but leaves list pages cached.
+ */
+export function invalidateHttpGetCacheForRecord(resource: string, id: string | number): void {
+  const root = String(resource || "").replace(/^\/|\/$/g, "");
+  const rid = String(id ?? "").trim();
+  if (!root || !rid) return;
+  const needle = `/${root}/${rid}`;
+  for (const key of [...memory.keys()]) {
+    if (!key.includes(needle)) continue;
+    const next = key.charAt(key.indexOf(needle) + needle.length);
+    // Avoid /applications/12 matching /applications/123.
+    if (next === "" || next === "/" || next === "?" || next === "&") memory.delete(key);
+  }
+}
+
 /** Drop the cached GET for exactly this URL (any params / auth tag). */
 export function invalidateHttpGetCacheForUrl(url: string): void {
   const prefix = `get:${String(url || "")}?`;

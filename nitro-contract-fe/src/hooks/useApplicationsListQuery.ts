@@ -32,6 +32,7 @@ export function useApplicationsListQuery(
     },
     staleTime: QUERY_STALE_TIME_MS,
     refetchOnMount: true,
-    refetchOnWindowFocus: true,
+    // Focus refreshes are owned by PipelineCountsSync (coalesced, rate-limited).
+    refetchOnWindowFocus: false,
   });
 }

@@ -527,9 +527,9 @@ const Sidebar = () => {
     queryFn: () => fetchWorkflowSummary(scope, { startDate: "", endDate: "" }),
     enabled,
     staleTime: 15_000,
-    // Socket / focus refreshes come from PipelineCountsSync; this is the fallback poll.
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: true,
+    // Socket / focus / fallback-poll refreshes all come from PipelineCountsSync,
+    // which invalidates this key; a second poll here only doubled the traffic.
+    refetchOnWindowFocus: false,
   });
   const agentSummary = useQuery(summaryQuery("agent", superAdmin || isAgentRole(sessionRole)));
   const underwriterSummary = useQuery(summaryQuery("underwriter", superAdmin || isUnderwriterRole(sessionRole)));
@@ -550,8 +550,8 @@ const Sidebar = () => {
     queryFn: fetchApplicationsTotal,
     enabled: superAdmin,
     staleTime: 15_000,
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: true,
+    // Refreshed by PipelineCountsSync (invalidates ["sidebar-applications-total"]).
+    refetchOnWindowFocus: false,
   });
 
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(readExpandedGroups);

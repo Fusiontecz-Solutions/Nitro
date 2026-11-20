@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EmailPlanButton } from "@/pages/settings/EmailPlanSettings";
 import { useParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
+import { useSocket } from "@/context/SocketContext";
 import { store, type AppDispatch, type RootState } from "@/redux/store";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
@@ -75,11 +76,14 @@ import { Ban, Eye, FileText, Landmark, Loader2, Mail, MailPlus, RefreshCw } from
 import {
     filterBankDetailsForApplication,
 } from "@/lib/bankDetailUtils";
-import PDFViewerModal from "./PDFViewerModal";
 import { ResendUnsignedContractDialog } from "./ResendUnsignedContractDialog";
 import { ContractEmailHistoryDialog } from "./ContractEmailHistoryDialog";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
-import ACHFormViewerModal from "./ACHFormViewerModal";
+
+// The contract editor (~15k lines + pdf.js) and the ACH viewer are only needed
+// once the user opens them, so load their code on demand instead of with the tab.
+const PDFViewerModal = lazy(() => import("./PDFViewerModal"));
+const ACHFormViewerModal = lazy(() => import("./ACHFormViewerModal"));
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 import {
     fetchMainContractTemplatePreview,
@@ -407,6 +411,8 @@ interface ContractTabProps {
 
 /** CRM-only re-read of a SignNow contract awaiting signature (no SignNow calls). */
 const CONTRACT_STATUS_FALLBACK_POLL_MS = 5_000;
+/** Same re-read while the socket is connected and pushes arrive on their own. */
+const CONTRACT_STATUS_CONNECTED_POLL_MS = 30_000;
 
 /** Waits before re-trying a contract lookup that failed for a transient reason. */
 const CONTRACT_LOOKUP_RETRY_DELAYS_MS = [1_500, 4_000];
@@ -477,6 +483,16 @@ export default function ContractTab({
     const [achTemplateMappings, setAchTemplateMappings] = useState<AchDocumentTemplateMappingRow[]>([]);
     const [loadingAchMappings, setLoadingAchMappings] = useState(false);
     const [achViewerOpen, setAchViewerOpen] = useState(false);
+    // Mount the lazily-loaded viewers on first open, then keep them mounted so
+    // their internal state behaves exactly as when they were always mounted.
+    const [pdfViewerMounted, setPdfViewerMounted] = useState(false);
+    const [achViewerMounted, setAchViewerMounted] = useState(false);
+    useEffect(() => {
+        if (pdfViewerOpen) setPdfViewerMounted(true);
+    }, [pdfViewerOpen]);
+    useEffect(() => {
+        if (achViewerOpen) setAchViewerMounted(true);
+    }, [achViewerOpen]);
     const [, setPreparingAchViewer] = useState(false);
     /** Which Info Required ACH row feeds the ACH Form modal (first / last picked). */
     const [selectedAchRecordId, setSelectedAchRecordId] = useState<string | null>(null);
@@ -2190,6 +2206,7 @@ export default function ContractTab({
             refreshApplicationStage();
         }
     }, [contractFullySigned, ccSignedNoticeSent, refreshApplicationStage]);
+    const { isConnected: socketConnected } = useSocket();
     useEffect(() => {
         if (!awaitingSignNowUpdate) return;
         const timer = window.setInterval(() => {
@@ -2197,9 +2214,9 @@ export default function ContractTab({
             void reloadFetchedContract().catch(() => {
                 /* next tick retries */
             });
-        }, CONTRACT_STATUS_FALLBACK_POLL_MS);
+        }, socketConnected ? CONTRACT_STATUS_CONNECTED_POLL_MS : CONTRACT_STATUS_FALLBACK_POLL_MS);
         return () => window.clearInterval(timer);
-    }, [awaitingSignNowUpdate, reloadFetchedContract]);
+    }, [awaitingSignNowUpdate, reloadFetchedContract, socketConnected]);
 
     /**
      * Coming back to the Contract tab re-reads the contract from the CRM, so the
@@ -5327,6 +5344,8 @@ export default function ContractTab({
 
             {/* Document Viewer for generated contract */}
 
+            {achViewerMounted && (
+            <Suspense fallback={null}>
             <ACHFormViewerModal
                 isOpen={achViewerOpen}
                 onClose={() => {
@@ -5357,6 +5376,8 @@ export default function ContractTab({
                 getSignerEmail={getPrimaryRecipientEmail}
                 getSignerName={getPrimaryRecipientName}
             />
+            </Suspense>
+            )}
 
             <ResendUnsignedContractDialog
                 open={Boolean(resendUnsignedRow)}
@@ -5367,6 +5388,8 @@ export default function ContractTab({
                 contractLabel={resendUnsignedRow?.label}
                 onResent={() => void refreshContractEnvelopeStatus(false, { force: true })}
             />
+            {pdfViewerMounted && (
+            <Suspense fallback={null}>
             <PDFViewerModal
                 isOpen={pdfViewerOpen}
                 onClose={() => {
@@ -5388,6 +5411,8 @@ export default function ContractTab({
                     isReadOnly ? undefined : (payload) => prepareDocuSignDraft(payload)
                 }
             />
+            </Suspense>
+            )}
 
             <PDFViewerDocsModal
                 isOpen={signedPdfPreviewOpen}

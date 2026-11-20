@@ -302,6 +302,11 @@ model Application {
   @@index([category])
   @@index([deletedAt])
   @@index([deletedById])
+  @@index([clientId])
+  @@index([salesRepresentativeId])
+  @@index([updatedAt])
+  @@index([currentState])
+  @@index([deletedAt, createdAt(sort: Desc)])
 }
 
 /// Per-application DocuSign / contract business fields (1:1 with Application)
@@ -567,6 +572,7 @@ model TermsOffer {
 
   @@index([applicationId])
   @@index([createdById])
+  @@index([applicationId, createdAt(sort: Desc)])
 }
 
 model ApplicationQuestionResponse {
@@ -622,6 +628,9 @@ model Document {
   updatedAt         DateTime    @updatedAt
   userId            Int
   application       Application @relation(fields: [applicationId], references: [id])
+
+  @@index([status, sentAt])
+  @@index([status, completedAt])
 }
 
 /// Cached SignNow template documents (field face, roles, page count).
