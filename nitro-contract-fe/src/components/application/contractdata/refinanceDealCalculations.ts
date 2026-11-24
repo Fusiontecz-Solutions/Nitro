@@ -29,6 +29,8 @@ export interface RefinanceDealCalculationInput {
     contractAmount: number;
     /** Origination / underwriting fee in dollars (not percent). */
     originationFee: number;
+    /** The deal's "$25 wire fee" box. false = no $25; omitted = the fee-on default. */
+    includeWireFee?: boolean;
     /** Optional percent (e.g. 10 for 10%). Used only for display when fee dollars are derived. */
     originationFeePercent?: number | null;
     factorRate: number;
@@ -139,7 +141,12 @@ export function calculateRefinanceDealMetrics(
     input: RefinanceDealCalculationInput,
 ): RefinanceDealCalculationResult {
     const contractAmount = Math.max(0, input.contractAmount);
-    const originationFee = applyDisclosurePlatformFee(Math.max(0, input.originationFee));
+    // The $25 wire fee rides on the origination fee unless the deal's box is unticked.
+    // Callers never passed the box before, so an unticked REFI deal still got the $25.
+    const originationFee = applyDisclosurePlatformFee(
+        Math.max(0, input.originationFee),
+        input.includeWireFee !== false,
+    );
     const previousRefiBalance = Math.max(0, input.previousRefiBalance);
     const factorRate = input.factorRate > 0 ? input.factorRate : 1;
     const frequency = normalizeFrequency(String(input.paymentFrequency));

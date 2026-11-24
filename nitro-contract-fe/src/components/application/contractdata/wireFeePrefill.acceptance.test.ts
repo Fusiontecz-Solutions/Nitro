@@ -17,6 +17,7 @@ import {
     stripStaleOfferOverridesFromPersisted,
     type BuildContractPrefillFieldsArgs,
 } from "./Contract";
+import { calculateRefinanceDealMetrics } from "./refinanceDealCalculations";
 
 let passed = 0;
 function test(name: string, fn: () => void) {
@@ -268,6 +269,30 @@ test("Send path: round trip with no preference still assumes the fee is on", () 
     ]);
     assert.equal(money(partial.appendixUnderwritingFees), "2000.00");
     assert.equal(partial.includeWireFee, undefined);
+});
+
+/**
+ * REFI money layer (calculateRefinanceDealMetrics) never received the box, so it
+ * always added the $25. Numbers from a reported deal: $10,000 advance, $1,000 fee,
+ * $4,500 refinance — printed TOTAL FEES 1,025.00 / NET 4,475.00 with the box unticked.
+ */
+test("REFI metrics: unticked box adds no $25 (10,000 / 1,000 fee / 4,500 refi)", () => {
+    const base = {
+        paymentFrequency: "Daily",
+        contractAmount: 10000,
+        originationFee: 1000,
+        factorRate: 1.5,
+        previousRefiBalance: 4500,
+        numberOfPayments: 8,
+    };
+    const off = calculateRefinanceDealMetrics({ ...base, includeWireFee: false });
+    assert.equal(off.originationFee, 1000);
+    assert.equal(off.netContractedFunding, 9000);
+    assert.equal(off.actualDisbursement, 4500);
+
+    const on = calculateRefinanceDealMetrics({ ...base, includeWireFee: true });
+    assert.equal(on.originationFee, 1025);
+    assert.equal(on.actualDisbursement, 4475);
 });
 
 console.log(`\n${passed} tests passed`);
