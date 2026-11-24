@@ -24,6 +24,7 @@ import {
     isTexasFundingGroupFunder,
     resolveDisclosureWireFeeUsd,
     resolveIncludeWireFee,
+    resolveIncludeWireFeeForDeal,
 } from "./platformDocumentConfig";
 
 export interface ContractPrefillField {
@@ -674,7 +675,8 @@ export const buildContractPrefillFields = ({
     remittance = "",
     refinanceAmount = "",
     frequency = "",
-    includeWireFee = "true",
+    // No default: an absent choice resolves per deal (REFI = no wire fee) below.
+    includeWireFee = "",
     netToMerchant = "",
     achProgramFee = "",
 
@@ -809,7 +811,7 @@ export const buildContractPrefillFields = ({
     exhibitAValue9 = "",
     exhibitAValue10 = "",
 }: BuildContractPrefillFieldsArgs): ContractPrefillField[] => {
-    const wireFeeOn = resolveIncludeWireFee(includeWireFee);
+    const wireFeeOn = resolveIncludeWireFeeForDeal(includeWireFee, refinanceAmount);
     const remittanceAmountOnly = stripInitialInstallmentFrequency(remittance);
     return [
         ...mapIds(FIELD_IDS.legalName, "Legal Name", legalName),
@@ -1671,15 +1673,6 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
                 ? appendixFees
                 : 0;
 
-    /** Include the optional $25 wire fee so Final Calculation matches disclosures. */
-    const includeWireFee = resolveIncludeWireFee(
-        sources.prefill?.includeWireFee ??
-            (normalizeContractPrefillOverrides(
-                sources.contract?.contractPrefillOverrides,
-            ) as Partial<BuildContractPrefillFieldsArgs> | null)?.includeWireFee,
-    );
-    const feesWithPlatform = (fees || 0) + resolveDisclosureWireFeeUsd(includeWireFee);
-
     const refinance =
         coerceToFiniteNumber(odRoot?.refinanceAmount) ??
         coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
@@ -1687,6 +1680,19 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
         coerceToFiniteNumber(odEff?.RefinanceAmount) ??
         coerceToFiniteNumber(sources.prefill?.refinanceAmount) ??
         0;
+
+    /**
+     * Include the optional $25 wire fee so Final Calculation matches disclosures.
+     * With no saved choice a REFI deal gets no wire fee (only a ticked box adds it).
+     */
+    const includeWireFee = resolveIncludeWireFeeForDeal(
+        sources.prefill?.includeWireFee ??
+            (normalizeContractPrefillOverrides(
+                sources.contract?.contractPrefillOverrides,
+            ) as Partial<BuildContractPrefillFieldsArgs> | null)?.includeWireFee,
+        refinance,
+    );
+    const feesWithPlatform = (fees || 0) + resolveDisclosureWireFeeUsd(includeWireFee);
 
     return Math.max(0, Math.round((advance - feesWithPlatform - refinance) * 100) / 100);
 }
@@ -1802,11 +1808,12 @@ export function deriveOfferFeesDollarsForNetToMerchant(
         0;
 
     /** Total gap includes the optional $25 wire fee; persist applicable fee only. */
-    const includeWireFee = resolveIncludeWireFee(
+    const includeWireFee = resolveIncludeWireFeeForDeal(
         sources.prefill?.includeWireFee ??
             (normalizeContractPrefillOverrides(
                 sources.contract?.contractPrefillOverrides,
             ) as Partial<BuildContractPrefillFieldsArgs> | null)?.includeWireFee,
+        refinance,
     );
     const totalFees = Math.max(
         0,
@@ -5023,12 +5030,15 @@ export function omitLiveOfferMoneyPrefillKeys(
 
 /**
  * Resolve the "$25 wire fee" preference for a deal.
- * Order: explicit value (live form) → saved `contractPrefillOverrides` → Contract column → on.
- * Must never read a stripped contract copy, or unchecking the box silently re-adds the fee.
+ * Order: explicit value (live form) → saved `contractPrefillOverrides` → Contract column →
+ * default: off for a REFI deal (the $25 only goes on a REFI deal when the box is ticked),
+ * on otherwise. Must never read a stripped contract copy, or unchecking the box silently
+ * re-adds the fee.
  */
 export function resolveIncludeWireFeePreference(
     explicit: unknown,
     contract?: Record<string, unknown> | null,
+    ...refinanceAmounts: unknown[]
 ): boolean {
     const fromExplicit = str(explicit);
     if (fromExplicit) return resolveIncludeWireFee(fromExplicit);
@@ -5040,7 +5050,15 @@ export function resolveIncludeWireFeePreference(
     if (fromOverrides) return resolveIncludeWireFee(fromOverrides);
     const fromColumn = str(contract?.includeWireFee);
     if (fromColumn) return resolveIncludeWireFee(fromColumn);
-    return true;
+    const offer = (contract?.offer ?? null) as Record<string, unknown> | null;
+    return resolveIncludeWireFeeForDeal(
+        undefined,
+        ...refinanceAmounts,
+        overrides?.refinanceAmount,
+        contract?.refinanceAmount,
+        offer?.refinanceAmount,
+        (contract?.offerDecision as Record<string, unknown> | null | undefined)?.refinanceAmount,
+    );
 }
 
 function getLiveOfferPrefillArgs(

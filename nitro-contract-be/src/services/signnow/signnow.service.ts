@@ -9264,7 +9264,10 @@ export class SignNowService {
         defaults: out,
         offerSource: {
           values: derived,
-          includeWireFee: readIncludeWireFeeFromOverrides(contract.contractPrefillOverrides),
+          includeWireFee: readIncludeWireFeeFromOverrides(
+            contract.contractPrefillOverrides,
+            contract.offer?.refinanceAmount,
+          ),
           saved: readSavedOfferPrefillFromOverrides(contract.contractPrefillOverrides),
         },
       };

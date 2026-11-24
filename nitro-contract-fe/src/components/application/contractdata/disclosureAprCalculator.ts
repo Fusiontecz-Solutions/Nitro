@@ -10,7 +10,7 @@ import { resolveAppendixUnderwritingFeesDollars, getApplicationClientPrefillArgs
 import {
     DISCLOSURE_PLATFORM_FEE_USD,
     resolveDisclosureWireFeeUsd,
-    resolveIncludeWireFee,
+    resolveIncludeWireFeeForDeal,
 } from "./platformDocumentConfig";
 
 export { DISCLOSURE_PLATFORM_FEE_USD };
@@ -749,8 +749,10 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     const overrides =
         (contract.contractPrefillOverrides as Record<string, unknown> | null) ?? {};
     const liveWireFee = String(args.includeWireFee ?? "").trim();
-    const includeWireFee = resolveIncludeWireFee(
+    // No saved choice on a REFI deal = no wire fee (only a ticked box adds it).
+    const includeWireFee = resolveIncludeWireFeeForDeal(
         liveWireFee || (overrides.includeWireFee ?? args.contract?.includeWireFee),
+        refinanceAmount,
     );
     const paymentAmount =
         parseMoney(offer?.paymentAmount ?? offer?.repayPerPeriod ?? offer?.daysWeeks) ||

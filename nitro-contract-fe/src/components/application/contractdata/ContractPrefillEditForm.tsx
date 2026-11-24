@@ -102,7 +102,11 @@ import {
     parseContractSignerOverridesFromPrefill,
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
-import { DISCLOSURE_WIRE_FEE_USD, resolveIncludeWireFee } from "./platformDocumentConfig";
+import {
+    DISCLOSURE_WIRE_FEE_USD,
+    resolveIncludeWireFee,
+    resolveIncludeWireFeeForDeal,
+} from "./platformDocumentConfig";
 import { isSignNowContractUiEnabled } from "./contractTemplatePreview";
 import { isSignNowDisclosureLayoutKey } from "./signnowAddendumTemplates";
 import {
@@ -1089,7 +1093,14 @@ function mergeFormState(
         const v = base[k];
         rec[k] = v === undefined || v === null ? rec[k] : String(v);
     }
-    if (!String(rec.includeWireFee ?? "").trim()) rec.includeWireFee = "true";
+    // The box starts unticked on a REFI deal (the $25 only goes on when someone ticks
+    // it) and ticked otherwise; a saved choice always wins.
+    rec.includeWireFee = resolveIncludeWireFeeForDeal(
+        base.includeWireFee,
+        rec.refinanceAmount,
+    )
+        ? "true"
+        : "false";
     const frequency = coercePaymentFrequencyLabel(rec.frequency);
     if (frequency) rec.frequency = frequency;
     normalizeSsnFormValues(rec);

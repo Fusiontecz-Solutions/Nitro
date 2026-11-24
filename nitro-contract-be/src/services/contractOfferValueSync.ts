@@ -250,11 +250,30 @@ export function resolveIncludeWireFee(value: unknown): boolean {
   return true;
 }
 
-export function readIncludeWireFeeFromOverrides(overrides: unknown): boolean {
-  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return true;
-  const raw = (overrides as Record<string, unknown>).includeWireFee;
-  if (raw === undefined || raw === null || String(raw).trim() === '') return true;
-  return resolveIncludeWireFee(raw);
+function refinanceDollars(value: unknown): number {
+  const n = Number(String(value ?? '').replace(/[$,\s]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * The saved "$25 wire fee" choice. With nothing saved, a REFI deal (any positive
+ * refinance amount, passed in or saved on the overrides) gets NO wire fee — the $25
+ * goes on a REFI deal only when the box was ticked — and other deals stay fee-on.
+ */
+export function readIncludeWireFeeFromOverrides(
+  overrides: unknown,
+  ...refinanceAmounts: unknown[]
+): boolean {
+  const o =
+    overrides && typeof overrides === 'object' && !Array.isArray(overrides)
+      ? (overrides as Record<string, unknown>)
+      : {};
+  const raw = o.includeWireFee;
+  if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+    return resolveIncludeWireFee(raw);
+  }
+  const isRefi = [...refinanceAmounts, o.refinanceAmount].some((v) => refinanceDollars(v) > 0);
+  return !isRefi;
 }
 
 /**
@@ -401,7 +420,10 @@ export async function loadOfferDerivedValuesForContract(target: {
     });
     return {
       values: resolveOfferDerivedContractValues(contract?.offer),
-      includeWireFee: readIncludeWireFeeFromOverrides(contract?.contractPrefillOverrides),
+      includeWireFee: readIncludeWireFeeFromOverrides(
+        contract?.contractPrefillOverrides,
+        contract?.offer?.refinanceAmount,
+      ),
       saved: readSavedOfferPrefillFromOverrides(contract?.contractPrefillOverrides),
     };
   } catch (err) {

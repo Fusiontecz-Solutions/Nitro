@@ -1354,6 +1354,7 @@ export default function ContractTab({
                 includeWireFee: resolveIncludeWireFeePreference(
                     undefined,
                     contractRecordForActions,
+                    (offerDecision as Record<string, unknown> | null | undefined)?.refinanceAmount,
                 )
                     ? "true"
                     : "false",
@@ -2949,6 +2950,7 @@ export default function ContractTab({
                 const includeWireFeeForSend = resolveIncludeWireFeePreference(
                     sendPayload.includeWireFee,
                     (latestContract as Record<string, unknown> | null | undefined) ?? null,
+                    (offerDecision as Record<string, unknown> | null | undefined)?.refinanceAmount,
                 )
                     ? "true"
                     : "false";
@@ -3328,6 +3330,7 @@ export default function ContractTab({
                                 sendPayload.includeWireFee,
                                 (latestContract as Record<string, unknown> | null | undefined) ??
                                     null,
+                                (offerDecision as Record<string, unknown> | null | undefined)?.refinanceAmount,
                             )
                                 ? "true"
                                 : "false",
@@ -3618,6 +3621,7 @@ export default function ContractTab({
                 includeWireFee: resolveIncludeWireFeePreference(
                     sendPayload.includeWireFee,
                     (latestContract as Record<string, unknown> | null | undefined) ?? null,
+                    (offerDecision as Record<string, unknown> | null | undefined)?.refinanceAmount,
                 )
                     ? "true"
                     : "false",

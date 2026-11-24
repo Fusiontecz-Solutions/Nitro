@@ -25,7 +25,7 @@ import {
 import {
     PLATFORM_DISCLOSURE_FUNDER_NAME,
     resolveDisclosureWireFeeUsd,
-    resolveIncludeWireFee,
+    resolveIncludeWireFeeForDeal,
 } from "./platformDocumentConfig";
 import {
     calculateRefinanceDealMetrics,
@@ -785,9 +785,14 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
                 contract.total_fees,
         );
     /** Display / net stack includes the optional $25 wire fee (calculators also apply it). */
-    const includeWireFee = resolveIncludeWireFee(
+    // No saved choice on a REFI deal = no wire fee (only a ticked box adds it).
+    const includeWireFee = resolveIncludeWireFeeForDeal(
         (contract.contractPrefillOverrides as Record<string, unknown> | null)?.includeWireFee ??
             contract.includeWireFee,
+        contract.refinanceAmount,
+        (contract as Record<string, unknown>).refinance_amount,
+        (contract.contractPrefillOverrides as Record<string, unknown> | null)?.refinanceAmount,
+        offer?.refinanceAmount,
     );
     const underwritingFees =
         underwritingFeesApplicable !== undefined

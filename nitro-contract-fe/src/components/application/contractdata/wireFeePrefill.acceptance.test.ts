@@ -168,13 +168,23 @@ test("Non-Refi / default: the $25 wire fee is still included when left checked",
     );
 });
 
-test("Default (no includeWireFee saved) still behaves as fee-on", () => {
+test("REFI with no includeWireFee saved: no $25 (only a ticked box adds it)", () => {
     const net = computeNetToMerchantDollars({
         application: APPLICATION,
         offerDecision: OFFER,
         contract: contractRow({ appendixUnderwritingFees: "2000.00" }),
     });
-    assert.equal(net, NET_WITH_WIRE);
+    assert.equal(net, NET_WITHOUT_WIRE);
+});
+
+test("Non-REFI with no includeWireFee saved still behaves as fee-on", () => {
+    const noRefiOffer = { ...OFFER, refinanceAmount: 0 };
+    const net = computeNetToMerchantDollars({
+        application: { ...APPLICATION, offerDecision: noRefiOffer },
+        offerDecision: noRefiOffer,
+        contract: { ...contractRow({ appendixUnderwritingFees: "2000.00" }), offer: noRefiOffer },
+    });
+    assert.equal(net, 50000 - 2025);
 });
 
 /**
@@ -200,8 +210,8 @@ test("Send path: an explicit wire-fee preference survives a stale contract row",
     );
     assert.equal(
         money(withoutPreference.netToMerchant),
-        "37975.00",
-        "regression guard: with no preference the overlay re-adds the $25",
+        "38000.00",
+        "REFI with no preference anywhere: no $25 (only a ticked box adds it)",
     );
 
     const withPreference = applyLiveOfferSyncToPrefillPartial(fromModal, APPLICATION, OFFER, {

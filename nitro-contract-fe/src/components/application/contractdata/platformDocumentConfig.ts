@@ -34,6 +34,36 @@ export function resolveIncludeWireFee(value: unknown): boolean {
     return true;
 }
 
+function refinanceDollars(value: unknown): number {
+    const n = Number(String(value ?? "").replace(/[$,\s]/g, ""));
+    return Number.isFinite(n) ? n : 0;
+}
+
+/** True when any of the given refinance / previous-balance amounts is positive. */
+export function isRefinanceForWireFee(...refinanceAmounts: unknown[]): boolean {
+    return refinanceAmounts.some((v) => refinanceDollars(v) > 0);
+}
+
+/**
+ * The deal's "$25 wire fee" choice, with a REFI-aware default.
+ *
+ * An explicit choice (the box, ticked or unticked) always wins. With no saved
+ * choice, REFI deals get NO wire fee — the $25 is added to a REFI deal only when
+ * someone ticked the box — while other deals keep the fee-on default.
+ * Every place that used to fall back to "on" for a REFI deal is what printed
+ * TOTAL FEES / NET AMOUNT $25 off after the box was unticked.
+ */
+export function resolveIncludeWireFeeForDeal(
+    value: unknown,
+    ...refinanceAmounts: unknown[]
+): boolean {
+    if (value === true || value === false || value === 0 || value === 1) {
+        return resolveIncludeWireFee(value);
+    }
+    if (String(value ?? "").trim()) return resolveIncludeWireFee(value);
+    return !isRefinanceForWireFee(...refinanceAmounts);
+}
+
 export function resolveDisclosureWireFeeUsd(includeWireFee?: boolean): number {
     return includeWireFee === false ? 0 : DISCLOSURE_WIRE_FEE_USD;
 }
