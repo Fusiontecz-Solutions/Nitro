@@ -360,8 +360,22 @@ export function buildDisclosurePrefillDefaults(
 
   const financeCharge = payback != null && payback > funded ? payback - funded : null;
 
-  put('disclosure_amount_financed', money(funded));
+  /**
+   * Amount Financed. On a REFI it is what the merchant actually receives — the
+   * advance less the fees and the previous balance paid off — on every state's
+   * disclosure, matching the contract's NET AMOUNT. (Printing advance − fees there
+   * showed 45,000.00 on a 50,000 / 5,000 / 10,000-refi deal whose NET was 35,000.00.)
+   */
+  put(
+    'disclosure_amount_financed',
+    money(refiBalance > 0 && recipientFunds != null ? recipientFunds : funded),
+  );
   if (recipientFunds != null) put('disclosure_recipient_funds', money(recipientFunds));
+  // Prepaid finance charge / origination fee lines print the deal's fee.
+  if (recipientFunds != null) {
+    put('disclosure_origination_fee', money(origination));
+    put('disclosure_fees_deducted', money(origination));
+  }
   if (financeCharge != null) put('disclosure_finance_charge', money(financeCharge));
   if (payback != null && payback > 0) put('disclosure_total_payment', money(payback));
 

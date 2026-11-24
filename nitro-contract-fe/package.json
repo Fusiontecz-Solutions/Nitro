@@ -19,7 +19,8 @@
     "test:merchant-address": "npx --yes tsx src/components/application/contractdata/merchantAddressPrefill.acceptance.test.ts",
     "test:funder-template-sharing": "npx --yes tsx src/pages/settings/funderTemplateSharing.acceptance.test.ts",
     "test:exhibit-c-dba": "npx --yes tsx src/components/application/contractdata/exhibitCCopyDbaLeak.acceptance.test.ts",
-    "test": "npm run test:ach-daily && npm run test:disclosure && npm run test:tiberian-disclosure && npm run test:tiberian-payoff && npm run test:wire-fee && npm run test:offer-refresh && npm run test:funder-template-sharing && npm run test:merchant-address && npm run test:exhibit-c-dba"
+    "test": "npm run test:ach-daily && npm run test:disclosure && npm run test:tiberian-disclosure && npm run test:tiberian-payoff && npm run test:wire-fee && npm run test:offer-refresh && npm run test:funder-template-sharing && npm run test:merchant-address && npm run test:exhibit-c-dba && npm run test:refi-amount-financed",
+    "test:refi-amount-financed": "npx --yes tsx src/components/application/contractdata/refiAmountFinanced.acceptance.test.ts"
   },
   "overrides": {
     "vite": "npm:rolldown-vite@7.3.1"

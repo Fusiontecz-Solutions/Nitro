@@ -404,13 +404,18 @@ function applyConnecticutPage1AmountFields(
     const recipientN = parseDisclosurePrefillMoney(recipientRaw);
     let feesN = parseDisclosurePrefillMoney(fees);
 
+    // REFI: Amount Financed already has the previous balance taken off, so it is not a fee.
+    const refiN =
+        parseDisclosurePrefillMoney(
+            editorValues.disclosure_page3_line_2 ?? out.disclosure_page3_line_2,
+        ) ?? 0;
     if (
         !fees &&
         purchaseN !== undefined &&
         amountN !== undefined &&
         amountN < purchaseN - 0.009
     ) {
-        fees = formatDisclosureUsd(Math.max(0, purchaseN - amountN));
+        fees = formatDisclosureUsd(Math.max(0, purchaseN - amountN - refiN));
         feesN = parseDisclosurePrefillMoney(fees);
     }
 
@@ -478,11 +483,31 @@ export function expandDisclosureEditorValuesToPdfFields(
     const recipient = parseDisclosurePrefillMoney(
         editorValues.disclosure_recipient_funds ?? out.disclosure_recipient_funds,
     );
+    /**
+     * The fee itself when it is known (page-3 line 1 is the origination fee). The old
+     * "financed − recipient" fallback is 0.00 on a REFI now that Amount Financed has
+     * the payoff taken off, so it is only the last resort.
+     */
+    const page3Fee = parseDisclosurePrefillMoney(
+        editorValues.disclosure_page3_line_1 ?? out.disclosure_page3_line_1,
+    );
+    const purchaseForFees = parseDisclosurePrefillMoney(
+        editorValues.disclosure_purchase_price ??
+            editorValues.funding_provided ??
+            out.disclosure_purchase_price,
+    );
+    const refiLine = parseDisclosurePrefillMoney(
+        editorValues.disclosure_page3_line_2 ?? out.disclosure_page3_line_2,
+    ) ?? 0;
     const derivedFees =
         explicitFees ||
-        (financed !== undefined && recipient !== undefined
-            ? formatDisclosureUsd(Math.max(0, financed - recipient))
-            : "");
+        (page3Fee !== undefined && page3Fee > 0
+            ? formatDisclosureUsd(page3Fee)
+            : purchaseForFees !== undefined && financed !== undefined && purchaseForFees > financed
+              ? formatDisclosureUsd(Math.max(0, purchaseForFees - financed - refiLine))
+              : financed !== undefined && recipient !== undefined
+                ? formatDisclosureUsd(Math.max(0, financed - recipient))
+                : "");
     if (derivedFees) {
         for (const pdfId of EDITOR_TO_PDF_FIELD_IDS.disclosure_fees_deducted ?? []) {
             if (!String(out[pdfId] ?? "").trim()) out[pdfId] = derivedFees;
@@ -602,7 +627,10 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_purchase_price: ctx.fundingProvided || ctx.amountBusinessFund || "",
         total_amount_business_fund: ctx.fundingProvided || ctx.amountBusinessFund || "",
         purchase_amount: ctx.fundingProvided || ctx.amountBusinessFund || "",
-        disclosure_amount_financed: netFunding || ctx.amountBusinessFund || "",
+        /** Amount Financed: on a REFI the previous balance comes off too (every state). */
+        disclosure_amount_financed: ctx.isRefinance
+            ? ctx.actualDisbursement || netFunding || ctx.amountBusinessFund || ""
+            : netFunding || ctx.amountBusinessFund || "",
         /** Guide: page-3 amount given directly = net funding (NO REFI) / actual disbursement (REFI). */
         disclosure_recipient_funds: page3TopLine,
         NetFundProvided: page3TopLine,
@@ -786,7 +814,13 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
         disclosure_purchase_price: formatDisclosureUsd(purchasePrice),
         total_amount_business_fund: formatDisclosureUsd(purchasePrice),
         purchase_amount: formatDisclosureUsd(purchasePrice),
-        disclosure_amount_financed: formatDisclosureUsd(netFunding),
+        /**
+         * Amount Financed = advance − fees, and on a REFI also − the previous
+         * balance paid off (every state): the same figure as the contract's NET AMOUNT.
+         */
+        disclosure_amount_financed: formatDisclosureUsd(
+            isRefinance ? actualDisbursement : netFunding,
+        ),
         /** Net Funds Provided / recipient funds. */
         disclosure_recipient_funds: formatDisclosureUsd(page3AmountGiven),
         NetFundProvided: formatDisclosureUsd(page3AmountGiven),
