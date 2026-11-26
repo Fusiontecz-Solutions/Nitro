@@ -210,6 +210,20 @@ export function TemplateMappingPrefillEditDialog({
      * reached SignNow unchanged however often it was edited.
      */
     const manualIdsRef = useRef<Set<string>>(new Set());
+    /**
+     * The contract's Exhibit C copy ids, fetched as the dialog opens so Save does not
+     * wait on a GET before it can write (see `handleSave`).
+     */
+    const copyIdsPromiseRef = useRef<{ cid: number; promise: Promise<string[]> } | null>(null);
+    useEffect(() => {
+        const cid = contractId != null && Number.isFinite(Number(contractId)) ? Number(contractId) : null;
+        if (!open || cid == null) return;
+        if (copyIdsPromiseRef.current?.cid === cid) return;
+        copyIdsPromiseRef.current = { cid, promise: fetchExhibitCCopyMappingIds(cid) };
+    }, [open, contractId]);
+    useEffect(() => {
+        if (!open) copyIdsPromiseRef.current = null;
+    }, [open]);
     const markManual = useCallback((id: string) => {
         manualIdsRef.current.add(id);
     }, []);
@@ -441,7 +455,9 @@ export function TemplateMappingPrefillEditDialog({
             const copyIds = Array.from(
                 new Set([
                     ...(exhibitCCopyMappingIds ?? []),
-                    ...(await fetchExhibitCCopyMappingIds(cid)),
+                    ...(await (copyIdsPromiseRef.current?.cid === cid
+                        ? copyIdsPromiseRef.current.promise
+                        : fetchExhibitCCopyMappingIds(cid))),
                 ]),
             );
             const sharedDba = resolveSharedDbaValue({
@@ -530,59 +546,11 @@ export function TemplateMappingPrefillEditDialog({
                     ? (savedPayload as { contractPrefillOverrides?: unknown }).contractPrefillOverrides
                     : contractPrefillOverrides;
 
-            const achPatchSource = coordinateLayout ? achCamel : null;
-            if (achPatchSource) {
-                const achId = Number(
-                    (contractRecords?.ach as { id?: unknown } | null | undefined)?.id,
-                );
-                if (Number.isFinite(achId) && achId > 0) {
-                    const achPatch = achCamelPartialToAchRecordPatch(achPatchSource);
-                    const hasAchData = Object.values(achPatch).some(Boolean);
-                    const achRow =
-                        (contractRecords?.ach as Record<string, unknown> | null | undefined) ??
-                        null;
-                    const achChanged = Object.entries(achPatch).some(([key, value]) => {
-                        if (!value) return false;
-                        return String(achRow?.[key] ?? "").trim() !== String(value).trim();
-                    });
-                    if (hasAchData && achChanged) {
-                        try {
-                            await dispatch(
-                                updateACH({ id: achId, data: achPatch }),
-                            ).unwrap();
-                        } catch (achErr) {
-                            console.warn("[ACH] Failed to sync Info Required ACH row:", achErr);
-                        }
-                    }
-                }
-            }
-
-            const existingBank = mergeSharedBankDetails(
-                extractSharedBankDetailsFromRecord(contractRecords?.bankDetail ?? null),
-                extractSharedBankDetailsFromRecord(
-                    (contractRecords?.ach as Record<string, unknown> | null) ?? null,
-                ),
-            );
-            const bankChanged =
-                Boolean(bankCamel) &&
-                hasSharedBankDetails(sharedBank) &&
-                (sharedBank.bankName !== existingBank.bankName ||
-                    sharedBank.routingNumber !== existingBank.routingNumber ||
-                    sharedBank.accountNumber !== existingBank.accountNumber);
-            if (bankChanged && bankCamel) {
-                try {
-                    await upsertApplicationBankDetailFromPrefill({
-                        dispatch,
-                        applicationUuid,
-                        applicationData,
-                        prefill: bankCamel,
-                        bankDetail: (contractRecords?.bankDetail as Record<string, unknown> | null) ?? null,
-                    });
-                } catch (bankErr) {
-                    console.warn("[Bank] Failed to persist shared bank details:", bankErr);
-                }
-            }
-
+            /**
+             * Saved: the contract row holds every value this tab prints. Close now and
+             * mirror the ACH row / application bank row in the background — those are
+             * copies for other screens, and waiting on them is what made Save slow.
+             */
             toast.success(
                 coordinateLayout
                     ? "ACH form field values saved."
@@ -593,6 +561,62 @@ export function TemplateMappingPrefillEditDialog({
                 contractPrefillOverrides: savedOverrides ?? contractPrefillOverrides,
             });
             onOpenChange(false);
+
+            const achPatchSource = coordinateLayout ? achCamel : null;
+            void (async () => {
+                if (achPatchSource) {
+                    const achId = Number(
+                        (contractRecords?.ach as { id?: unknown } | null | undefined)?.id,
+                    );
+                    if (Number.isFinite(achId) && achId > 0) {
+                        const achPatch = achCamelPartialToAchRecordPatch(achPatchSource);
+                        const hasAchData = Object.values(achPatch).some(Boolean);
+                        const achRow =
+                            (contractRecords?.ach as Record<string, unknown> | null | undefined) ??
+                            null;
+                        const achChanged = Object.entries(achPatch).some(([key, value]) => {
+                            if (!value) return false;
+                            return String(achRow?.[key] ?? "").trim() !== String(value).trim();
+                        });
+                        if (hasAchData && achChanged) {
+                            try {
+                                await dispatch(
+                                    updateACH({ id: achId, data: achPatch }),
+                                ).unwrap();
+                            } catch (achErr) {
+                                console.warn("[ACH] Failed to sync Info Required ACH row:", achErr);
+                            }
+                        }
+                    }
+                }
+
+                const existingBank = mergeSharedBankDetails(
+                    extractSharedBankDetailsFromRecord(contractRecords?.bankDetail ?? null),
+                    extractSharedBankDetailsFromRecord(
+                        (contractRecords?.ach as Record<string, unknown> | null) ?? null,
+                    ),
+                );
+                const bankChanged =
+                    Boolean(bankCamel) &&
+                    hasSharedBankDetails(sharedBank) &&
+                    (sharedBank.bankName !== existingBank.bankName ||
+                        sharedBank.routingNumber !== existingBank.routingNumber ||
+                        sharedBank.accountNumber !== existingBank.accountNumber);
+                if (bankChanged && bankCamel) {
+                    try {
+                        await upsertApplicationBankDetailFromPrefill({
+                            dispatch,
+                            applicationUuid,
+                            applicationData,
+                            prefill: bankCamel,
+                            bankDetail: (contractRecords?.bankDetail as Record<string, unknown> | null) ?? null,
+                        });
+                    } catch (bankErr) {
+                        console.warn("[Bank] Failed to persist shared bank details:", bankErr);
+                        toast.warn("Saved, but the application's bank details could not be updated.");
+                    }
+                }
+            })();
         } catch (e: unknown) {
             console.error(e);
             const msg =

@@ -48,6 +48,7 @@ import { mergePreservingDocuSignEnvelopeMeta } from './docusign/utils/preserve-d
 import {
   readBankFieldsFromPrefill,
   syncBankFieldsEverywhereSafe,
+  bankSyncContractFields,
 } from './bankFieldSync';
 import {
   applyOfferDerivedValuesToContractRow,
@@ -92,34 +93,38 @@ async function loadContractRowForUpdateResponse(id: number) {
   const row = await prisma.contract.findUnique({ where: { id } });
   if (!row) return null;
 
-  const client = row.clientId
-    ? await prisma.client.findUnique({
-        where: { id: row.clientId },
-        select: { id: true, businessName: true, businessEmail: true },
-      })
-    : null;
-  const application = row.applicationId
-    ? await prisma.application.findUnique({
-        where: { id: row.applicationId },
-        select: { id: true, applicationId: true },
-      })
-    : null;
-  const offer = row.offerId
-    ? await prisma.offerDecision.findUnique({
-        where: { id: row.offerId },
-        select: { id: true },
-      })
-    : null;
-  const paymentTerms = await prisma.paymentTerms.findMany({
-    where: { contractId: id },
-    select: { id: true, paymentMethod: true, paymentFrequency: true },
-  });
-  const paymentBank = row.paymentBankId
-    ? await prisma.bankDetail.findUnique({
-        where: { id: row.paymentBankId },
-        select: { id: true, bankName: true },
-      })
-    : null;
+  // Five independent single-row reads: run them together (separate pool clients),
+  // not as five round trips one after another on every prefill Save.
+  const [client, application, offer, paymentTerms, paymentBank] = await Promise.all([
+    row.clientId
+      ? prisma.client.findUnique({
+          where: { id: row.clientId },
+          select: { id: true, businessName: true, businessEmail: true },
+        })
+      : null,
+    row.applicationId
+      ? prisma.application.findUnique({
+          where: { id: row.applicationId },
+          select: { id: true, applicationId: true },
+        })
+      : null,
+    row.offerId
+      ? prisma.offerDecision.findUnique({
+          where: { id: row.offerId },
+          select: { id: true },
+        })
+      : null,
+    prisma.paymentTerms.findMany({
+      where: { contractId: id },
+      select: { id: true, paymentMethod: true, paymentFrequency: true },
+    }),
+    row.paymentBankId
+      ? prisma.bankDetail.findUnique({
+          where: { id: row.paymentBankId },
+          select: { id: true, bankName: true },
+        })
+      : null,
+  ]);
 
   return { ...row, client, application, offer, paymentTerms, paymentBank };
 }
@@ -2284,6 +2289,28 @@ class ContractService {
       ) as Prisma.InputJsonValue;
     }
 
+    /**
+     * Bank block edited in the prefill editor (or its Exhibit C entity modal): its
+     * contract columns and prefill aliases go into THIS write, so the save needs no
+     * second contract update before it can answer. The ACH rows and the application
+     * bank row are other tables; they are mirrored after the response (below).
+     */
+    const bankForSync =
+      data.contractPrefillOverrides != null && updateData.contractPrefillOverrides
+        ? readBankFieldsFromPrefill(updateData.contractPrefillOverrides)
+        : null;
+    const bankContractFields = bankForSync
+      ? bankSyncContractFields(updateData.contractPrefillOverrides, bankForSync)
+      : null;
+    if (bankContractFields) {
+      for (const [column, value] of Object.entries(bankContractFields.columns)) {
+        if ((updateData as Record<string, unknown>)[column] === undefined) {
+          (updateData as Record<string, unknown>)[column] = value;
+        }
+      }
+      updateData.contractPrefillOverrides = bankContractFields.overrides as Prisma.InputJsonValue;
+    }
+
     if (Object.keys(updateData).length === 0) {
       throw new Error('No contract fields provided for update');
     }
@@ -2303,11 +2330,15 @@ class ContractService {
       { maxAttempts: 5, baseDelayMs: 400, label: 'updateContract.write' },
     );
 
-    // Bank block edited in the prefill editor (or its Exhibit C entity modal): mirror it into
-    // the contract columns, ACH rows and the application bank row so it is never retyped.
-    if (data.contractPrefillOverrides != null && updateData.contractPrefillOverrides) {
-      const bank = readBankFieldsFromPrefill(updateData.contractPrefillOverrides);
-      await syncBankFieldsEverywhereSafe({ contractId: id }, bank);
+    // ACH rows + application bank row follow the saved bank block. They are other
+    // tables and nothing in this response reads them, so the user's Save does not
+    // wait on them; the contract row itself was already written above.
+    if (bankForSync && bankContractFields) {
+      setImmediate(() => {
+        void syncBankFieldsEverywhereSafe({ contractId: id }, bankForSync, {
+          skipContractRow: true,
+        });
+      });
     }
     const row = await withDbRetry(
       async () => {

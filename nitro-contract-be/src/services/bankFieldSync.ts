@@ -280,7 +280,32 @@ export type BankSyncOptions = {
   updateBankDetail?: boolean;
   /** ACH row that triggered the sync; left untouched when mirroring to siblings. */
   sourceAchId?: number;
+  /**
+   * Skip the contract row's columns / prefill overrides — the caller already wrote
+   * them in its own update (see `bankSyncContractFields`). A deferred sync must not
+   * re-read the overrides and write an older bank over a newer save.
+   */
+  skipContractRow?: boolean;
 };
+
+/**
+ * The contract-row half of `syncBankFieldsEverywhere`, computed in memory so a save
+ * can write it in the same update instead of a second round trip.
+ */
+export function bankSyncContractFields(
+  overrides: unknown,
+  rawBank: BankSyncFields,
+): { columns: Record<string, string>; overrides: unknown } | null {
+  const bank = normalizeBankSyncFields(rawBank);
+  if (!hasBankSyncValues(bank)) return null;
+  const columns: Record<string, string> = {};
+  for (const field of BANK_SYNC_FIELDS) {
+    const column = CONTRACT_COLUMNS[field];
+    const value = bank[field];
+    if (column && value) columns[column] = value;
+  }
+  return { columns, overrides: applyBankFieldsToPrefill(overrides, bank) };
+}
 
 /**
  * Mirror a saved bank block into the contract columns, the prefill overrides (including the
@@ -296,7 +321,7 @@ export async function syncBankFieldsEverywhere(
 
   const contract = await findContractForSync(locator);
 
-  if (contract) {
+  if (contract && !options.skipContractRow) {
     const contractUpdate: Record<string, unknown> = {};
     for (const field of BANK_SYNC_FIELDS) {
       const column = CONTRACT_COLUMNS[field];
@@ -322,10 +347,9 @@ export async function syncBankFieldsEverywhere(
         data: contractUpdate as any,
       });
     }
-
-    if (options.updateAchRows !== false) {
-      await syncAchRows(contract.id, bank, options);
-    }
+  }
+  if (contract && options.updateAchRows !== false) {
+    await syncAchRows(contract.id, bank, options);
   }
 
   const applicationId = locator.applicationId ?? contract?.applicationId ?? null;

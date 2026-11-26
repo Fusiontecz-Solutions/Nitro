@@ -98,3 +98,30 @@ describe('applyBankFieldsToPrefill', () => {
     ]);
   });
 });
+
+describe('bankSyncContractFields (bank block written in the save itself)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { bankSyncContractFields } = require('./bankFieldSync');
+
+  it('returns the contract columns and the levelled prefill in one go', () => {
+    const out = bankSyncContractFields(
+      { authorizationClientBankName: 'JP Morgan', unrelated: 'kept' },
+      { bankName: 'JP Morgan', accountNumber: '789846303', routingNumber: '021000021' },
+    );
+    expect(out.columns).toEqual({
+      authorizationClientBankName: 'JP Morgan',
+      authorizationClientBankAccount: '789846303',
+      authorizationClientBankRouting: '021000021',
+    });
+    expect(out.overrides).toMatchObject({
+      unrelated: 'kept',
+      achAuthorizationAccountHolderBankName: 'JP Morgan',
+      achAuthorizationAccountHolderBankAccountNumber: '789846303',
+      achAuthorizationAccountHolderBankRoutingNumber: '021000021',
+    });
+  });
+
+  it('is null when the save carries no bank block', () => {
+    expect(bankSyncContractFields({ legalName: 'ACME' }, {})).toBeNull();
+  });
+});

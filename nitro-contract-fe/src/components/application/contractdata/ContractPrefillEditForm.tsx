@@ -3140,32 +3140,36 @@ export function ContractPrefillEditForm({
                 fromDb ?? (payload as Partial<BuildContractPrefillFieldsArgs>),
                 parsedBlob,
             );
-            try {
-                await syncContractPrefillToSourceRecords({
-                    dispatch,
-                    applicationData,
-                    applicationUuid,
-                    prefill: payload,
-                    offerDecision,
-                    contractGuarantors: contractRecords?.guarantors ?? null,
-                    contractOwners: contractRecords?.owners ?? null,
-                    contractAch: (contractRecords?.ach as Record<string, unknown> | null) ?? null,
-                    bankDetail: contractRecords?.bankDetail ?? null,
-                });
-            } catch (syncErr) {
-                console.error(syncErr);
-                const syncMsg =
-                    syncErr instanceof Error
-                        ? syncErr.message
-                        : "Contract saved, but application or offer sync failed.";
-                toast.warn(syncMsg);
-            }
+            /**
+             * Saved: every document reads the contract row just written. Close now; the
+             * application / offer / owner / ACH / bank copies follow in the background
+             * (waiting on those round trips is what made Save slow). A failure there
+             * still surfaces as a warning.
+             */
             setSaveError(null);
             toast.success("Prefill saved.");
             queueMicrotask(() => {
                 onAfterPrefillSaved?.();
             });
             onOpenChange(false);
+            void syncContractPrefillToSourceRecords({
+                dispatch,
+                applicationData,
+                applicationUuid,
+                prefill: payload,
+                offerDecision,
+                contractGuarantors: contractRecords?.guarantors ?? null,
+                contractOwners: contractRecords?.owners ?? null,
+                contractAch: (contractRecords?.ach as Record<string, unknown> | null) ?? null,
+                bankDetail: contractRecords?.bankDetail ?? null,
+            }).catch((syncErr: unknown) => {
+                console.error(syncErr);
+                const syncMsg =
+                    syncErr instanceof Error
+                        ? syncErr.message
+                        : "Contract saved, but application or offer sync failed.";
+                toast.warn(syncMsg);
+            });
         } catch (e) {
             console.error(e);
             const msg = messageFromSaveError(e, "Failed to save contract prefill fields.");
