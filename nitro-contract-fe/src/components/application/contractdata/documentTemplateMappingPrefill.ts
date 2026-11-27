@@ -1929,21 +1929,35 @@ function payoffAddendumValues(
     const label = resolveRefiLabelName(
         sctx.funderName || str(c.funderName) || PLATFORM_DISCLOSURE_FUNDER_NAME,
     );
+    const payUpToAmount =
+        sctx.previousRefiBalance ||
+        str(c.refinanceAmount) ||
+        str(c.previousRefiBalance) ||
+        "0.00";
+    /**
+     * "After deduction of the payoff amount ... Net Amount to Merchant": the cash left
+     * once the payoff is taken out, not advance − fees. When the context has no actual
+     * disbursement yet (the refi balance only lives on the contract row), take the
+     * payoff off the net funding here rather than printing advance − fees.
+     */
+    const payoffN = Number(String(payUpToAmount).replace(/[$,s]/g, ""));
+    const netBase = sctx.fundingDisbursed || sctx.netContractedFunding || "";
+    const netBaseN = Number(String(netBase).replace(/[$,s]/g, ""));
+    const netAfterPayoff =
+        Number.isFinite(payoffN) && payoffN > 0 && Number.isFinite(netBaseN) && netBaseN > payoffN
+            ? (Math.round((netBaseN - payoffN) * 100) / 100).toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+              })
+            : "";
     return {
         addendumDated: today,
         funderAndBusinessName: sctx.recipientName,
         // A real DBA only — a blank DBA stays blank, never the merchant's legal name.
         merchantDba: str(c.doingBusinessAs) || str(c.dba),
         agreementToLabelName: label,
-        payUpToAmount:
-            sctx.previousRefiBalance ||
-            str(c.refinanceAmount) ||
-            str(c.previousRefiBalance) ||
-            "0.00",
-        // "After deduction of the payoff amount ... Net Amount to Merchant": the
-        // cash left once the payoff is taken out, not advance − fees.
-        netToMerchant:
-            sctx.actualDisbursement || sctx.fundingDisbursed || sctx.netContractedFunding,
+        payUpToAmount,
+        netToMerchant: sctx.actualDisbursement || netAfterPayoff || netBase,
         printName: sctx.merchantName || str(c.clientName) || sctx.recipientName,
         printTitle: "OWNER",
     };
