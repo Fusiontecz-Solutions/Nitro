@@ -9319,7 +9319,42 @@ const PDFViewerModal = ({
                 wantedKinds,
             );
 
-            const currentMappings = linkedAddendumMappingsRef.current;
+            let currentMappings = linkedAddendumMappingsRef.current;
+            /**
+             * Nothing selected yet — the moment right after a contract (re)loads, when
+             * the selection was just reset and the linked rows may not have arrived.
+             * Read what is actually saved before deciding anything: computing from an
+             * empty list here wrote only the auto addenda back and deleted every
+             * addendum the user had added (Monthly Fee, Exhibit C ×N). If the saved
+             * list cannot be read, change nothing.
+             */
+            const nothingSelected =
+                !addendumOptimisticRefsRef.current?.length &&
+                selectedAddendumOptionsRef.current.length === 0;
+            if (nothingSelected) {
+                try {
+                    const res = await axiosGet(
+                        `/contract/${effectiveContractId}/document-template-mappings`,
+                        { skipCache: true },
+                    );
+                    const rows = (res?.data?.data ?? res?.data ?? []) as ContractDocumentTemplateMappingRow[];
+                    const savedAddenda = (Array.isArray(rows) ? rows : [])
+                        .filter((row) => String(row.documentType || "").toLowerCase() === "addendum")
+                        .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0));
+                    if (savedAddenda.length > currentMappings.length) {
+                        currentMappings = savedAddenda;
+                    }
+                } catch {
+                    return;
+                }
+                // The user may have picked something while the read was in flight.
+                if (
+                    addendumOptimisticRefsRef.current?.length ||
+                    selectedAddendumOptionsRef.current.length > 0
+                ) {
+                    return;
+                }
+            }
             const readLiveRefs = (): string[] => {
                 const fromOptimistic = addendumOptimisticRefsRef.current;
                 const fromSelected = fromOptimistic ??
