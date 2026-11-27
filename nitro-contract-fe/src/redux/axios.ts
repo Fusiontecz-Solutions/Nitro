@@ -1,6 +1,7 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
 import {
+    httpGetCacheEpoch,
     clearInFlightGet,
     getInFlightGet,
     httpGetCacheKey,
@@ -119,14 +120,17 @@ function cachedGet(url: string, config?: AxiosRequestConfig) {
         }
     }
 
+    const startedAtEpoch = httpGetCacheEpoch();
     const request = axiosInstance.get(url, config).then((response) => {
-        if (shouldUseGetResponseCache(url, config)) {
+        // A save landed while this read was in flight: its data may predate the
+        // save, so hand it to this caller but never cache it for the next one.
+        if (shouldUseGetResponseCache(url, config) && startedAtEpoch === httpGetCacheEpoch()) {
             writeCachedGetResponse(key, response);
         }
         return response;
     });
     setInFlightGet(key, request);
-    void request.finally(() => clearInFlightGet(key));
+    void request.finally(() => clearInFlightGet(key, request)).catch(() => undefined);
     return request;
 }
 

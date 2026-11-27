@@ -114,17 +114,43 @@ export function setInFlightGet(
   inFlight.set(key, promise);
 }
 
-export function clearInFlightGet(key: string): void {
+export function clearInFlightGet(key: string, promise?: Promise<AxiosResponse>): void {
+  // Only drop the entry this request owns: an invalidation may already have
+  // replaced it with a newer request for the same URL.
+  if (promise && inFlight.get(key) !== promise) return;
   inFlight.delete(key);
+}
+
+/**
+ * Bumped by every invalidation. A GET records the value when it starts and may
+ * only cache its response if no invalidation happened while it was in flight.
+ *
+ * Without this, a read that started before a save (the 4s status poll, a tab
+ * refresh) finished after the save had cleared the cache, wrote the PRE-save
+ * contract back in for 90s, and the next Review was built from the old values.
+ * Invalidation also forgets in-flight reads, so a read issued after a save never
+ * joins one that started before it.
+ */
+let invalidationEpoch = 0;
+
+export function httpGetCacheEpoch(): number {
+  return invalidationEpoch;
+}
+
+function noteInvalidation(): void {
+  invalidationEpoch += 1;
+  inFlight.clear();
 }
 
 /** Drop all GET responses — call on logout. */
 export function clearHttpGetCache(): void {
+  noteInvalidation();
   memory.clear();
 }
 
 /** Drop cached GETs whose key mentions this resource path segment. */
 export function invalidateHttpGetCacheForResource(resource: string): void {
+  noteInvalidation();
   const needle = String(resource || "").replace(/^\//, "").split("/")[0];
   if (!needle) return;
   for (const key of [...memory.keys()]) {
@@ -137,6 +163,7 @@ export function invalidateHttpGetCacheForResource(resource: string): void {
  * `/applications/<id>` and its sub-resources but leaves list pages cached.
  */
 export function invalidateHttpGetCacheForRecord(resource: string, id: string | number): void {
+  noteInvalidation();
   const root = String(resource || "").replace(/^\/|\/$/g, "");
   const rid = String(id ?? "").trim();
   if (!root || !rid) return;
@@ -151,6 +178,7 @@ export function invalidateHttpGetCacheForRecord(resource: string, id: string | n
 
 /** Drop the cached GET for exactly this URL (any params / auth tag). */
 export function invalidateHttpGetCacheForUrl(url: string): void {
+  noteInvalidation();
   const prefix = `get:${String(url || "")}?`;
   for (const key of [...memory.keys()]) {
     if (key.startsWith(prefix)) memory.delete(key);
@@ -159,6 +187,7 @@ export function invalidateHttpGetCacheForUrl(url: string): void {
 
 /** Drop cached GETs for the mutated resource family only. */
 export function invalidateHttpGetCacheByUrl(url: string): void {
+  noteInvalidation();
   const path = String(url || "").split("?")[0].replace(/^\//, "");
   if (!path) return;
   const family = path.split("/").slice(0, 2).join("/");
