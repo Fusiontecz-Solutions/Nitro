@@ -2541,11 +2541,20 @@ function normalizeBusinessName(value: string): string {
  * with the business name and saved it into the per-template prefill, so the
  * value arriving here can be the legal name under a DBA key; that prints blank.
  */
+/** Prefix of the keys holding a value edited on this exact widget in SignNow Review. */
+export const SIGNNOW_REVIEW_EDIT_KEY_PREFIX = '__signnow_review_edit__:';
+
 export function resolveSignNowPrefillValue(
   fieldName: string,
   prefill: Record<string, string>,
   options?: SignNowPrefillOptions,
 ): string {
+  // What the preparer typed on this widget in SignNow Review outranks every CRM
+  // source, the computed TOTAL FEES / positional Exhibit C rows included.
+  const edited = String(
+    prefill[`${SIGNNOW_REVIEW_EDIT_KEY_PREFIX}${String(fieldName || '').trim()}`] ?? '',
+  ).trim();
+  if (edited && !shouldSkipSignNowPrefill(fieldName, options)) return edited;
   const value = resolveSignNowPrefillValueUnguarded(fieldName, prefill, options);
   if (!value || !isDbaWidget(fieldName, options)) return value;
   // An entity-only Exhibit C copy reads its DBA from that entity's own record

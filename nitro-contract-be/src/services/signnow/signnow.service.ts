@@ -127,6 +127,8 @@ import {
   isSignNowDbaWidget,
   shouldSkipSignNowPrefill,
   signNowPrefillOptionsForDocument,
+  SIGNNOW_REVIEW_EDIT_KEY_PREFIX,
+  signNowPrefillDocumentKind,
 } from './utils/signnow-field-map';
 import {
   applyContractFillableFont,
@@ -160,6 +162,12 @@ import {
   signNowExhibitCTemplateId,
   type SignNowAddendumTemplate,
 } from './utils/signnow-addendum-templates';
+import { Prisma } from '@prisma/client';
+import {
+  readSignNowReviewSnapshot,
+  signNowReviewEdits,
+  snapshotSignNowWidgetValues,
+} from './utils/signnow-review-edits';
 import {
   buildSignNowDocumentTabValues,
   parseDocumentTemplatePrefillBlob,
@@ -825,6 +833,36 @@ export function signNowDocumentPrefillValues(
     ),
     ...typed,
   };
+  /**
+   * PayOff Addendum "Net Amount to Merchant" must have the payoff taken off. A tab
+   * saved before the payoff was entered (or computed without it) printed advance −
+   * fees — 80,975.00 beside a contract NET of 48,974.93. A net saved at exactly that
+   * figure on a deal that has a payoff is that stale value, so it follows the
+   * contract's NET AMOUNT; any other saved net still prints as saved.
+   */
+  if (signNowPrefillDocumentKind(documentName) === 'payoff_addendum') {
+    const money = (v: unknown) => {
+      const n = Number(String(v ?? '').replace(/[$,s]/g, ''));
+      return Number.isFinite(n) ? n : NaN;
+    };
+    const contractNet = String(aligned.net_to_merchant ?? '').trim();
+    const funded = money(aligned.purchase_price || aligned.approved_amount || aligned.funding_provided);
+    const fees = money(aligned.total_fees);
+    const payoff = money(
+      aligned.refinance_amount || aligned.disclosure_page3_line_2 || merged.addendum_p_pay_up_to_amount_p1,
+    );
+    const printed = money(merged.net_to_merchant_p1);
+    const advanceLessFees = funded - fees;
+    if (
+      contractNet &&
+      payoff > 0 &&
+      Number.isFinite(advanceLessFees) &&
+      Number.isFinite(printed) &&
+      Math.abs(printed - advanceLessFees) < 0.01
+    ) {
+      merged.net_to_merchant_p1 = contractNet;
+    }
+  }
   // Only an isolated copy prints its own entity's DBA; a tab saved on any other
   // document must not bring an Exhibit C copy's DBA back in.
   return { ...base, values: base.isolated ? merged : withoutExhibitCCopyDbas(merged, entities) };
@@ -2983,7 +3021,14 @@ export class SignNowService {
         await prisma.document
           .updateMany({
             where: { applicationId: appId, envelopeId: groupId },
-            data: { prefillFingerprint },
+            data: {
+              prefillFingerprint,
+              // Send compares the page with this to keep edits made in SignNow Review.
+              reviewWidgetValues: {
+                groupId,
+                documents: verified.widgetValues,
+              } as Prisma.InputJsonValue,
+            },
           })
           .catch((err) =>
             console.warn(
@@ -4928,6 +4973,7 @@ export class SignNowService {
       exhibitCEntities: exhibitCEntities.length,
       crmPrefillKeys: Object.keys(values).filter((k) => values[k]).length,
     });
+    const reviewSnapshot = await this.loadReviewWidgetSnapshot(sendGroupId);
     const bakeDocuments = async (docs: typeof sendDocs, fresh: boolean) => {
       const failures: Array<{ doc: (typeof sendDocs)[number]; error: string }> = [];
       for (let i = 0; i < docs.length; i += PREFILL_BATCH) {
@@ -4950,6 +4996,8 @@ export class SignNowService {
                 // the widget, otherwise copy 2 keeps copy 1's baked text. An Exhibit C
                 // with no entity yet goes out blank, never with the deal's bank.
                 ignoreExistingFieldValues: isolated,
+                // Values changed in SignNow Review go out as edited.
+                reviewWidgetValues: reviewSnapshot?.documents[doc.id],
               });
             } catch (err) {
               failures.push({ doc, error: err instanceof Error ? err.message : String(err) });
@@ -5822,12 +5870,37 @@ export class SignNowService {
    * The pause between rounds only paces SignNow while it finishes attaching a
    * copy's widgets; what releases the link is the read-back itself.
    */
+  /** What Review recorded on the group's documents (see `snapshotSignNowWidgetValues`). */
+  private async loadReviewWidgetSnapshot(groupId: string) {
+    const id = String(groupId || '').trim();
+    if (!id) return null;
+    try {
+      const row = await prisma.document.findFirst({
+        where: { envelopeId: id },
+        select: { reviewWidgetValues: true },
+      });
+      countSignNowDb();
+      return readSignNowReviewSnapshot(row?.reviewWidgetValues, id);
+    } catch (err) {
+      console.warn('[SignNow] could not read the Review widget snapshot', {
+        groupId: id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   private async ensureReviewPrefillComplete(
     client: Awaited<ReturnType<typeof createSignNowApiClient>>,
     groupId: string,
     initial: ReviewPrefillOutcome[],
     options: { requireFields: boolean },
-  ): Promise<{ rounds: number; repaired: number }> {
+  ): Promise<{
+    rounds: number;
+    repaired: number;
+    /** What each document's widgets show now — see `snapshotSignNowWidgetValues`. */
+    widgetValues: Record<string, Record<string, string>>;
+  }> {
     let outcomes = initial;
     let repaired = 0;
     let readBack: ReviewPrefillReadBack[] = [];
@@ -5842,7 +5915,12 @@ export class SignNowService {
           repaired,
           documents: checks.length,
         });
-        return { rounds: round, repaired };
+        const widgetValues: Record<string, Record<string, string>> = {};
+        for (const row of readBack) {
+          const docId = String(row.outcome.plan.documentId || '').trim();
+          if (docId && row.remote) widgetValues[docId] = snapshotSignNowWidgetValues(row.remote);
+        }
+        return { rounds: round, repaired, widgetValues };
       }
       const incomplete = incompleteReviewPrefillDocuments(checks);
       console.warn('[SignNow] review prefill incomplete on read-back', {
@@ -5958,6 +6036,11 @@ export class SignNowService {
           keepParty2?: boolean;
           remote?: any;
           ignoreExistingFieldValues?: boolean;
+          /**
+           * What this document's widgets showed when Review opened. Widgets whose
+           * value on the page differs from it were edited in SignNow and keep that value.
+           */
+          reviewWidgetValues?: Record<string, string>;
         } = false,
   ): Promise<{
     applied: number;
@@ -6010,6 +6093,20 @@ export class SignNowService {
           ),
           ...values,
         };
+    const reviewSnapshot =
+      typeof exposeToMerchant === 'object' ? exposeToMerchant.reviewWidgetValues : undefined;
+    if (reviewSnapshot) {
+      const edits = signNowReviewEdits(reviewSnapshot, snapshotSignNowWidgetValues(docRes.data));
+      for (const [name, value] of Object.entries(edits)) {
+        mergedValues[`${SIGNNOW_REVIEW_EDIT_KEY_PREFIX}${name}`] = value;
+      }
+      if (Object.keys(edits).length) {
+        console.info('[SignNow] keeping values edited in SignNow Review', {
+          documentId,
+          widgets: Object.keys(edits),
+        });
+      }
+    }
     const unmatched: string[] = [];
     const filledSample: string[] = [];
     for (const name of fieldNames) {
@@ -9450,6 +9547,7 @@ export class SignNowService {
     const { entities: exhibitCEntities, documentTabValues } =
       await this.loadGroupDocumentPrefillContext(id, values);
     const errors: Record<string, string> = {};
+    const reviewSnapshot = await this.loadReviewWidgetSnapshot(id);
     const publishDocuments = async (docs: SignNowDocumentRef[], fresh: boolean) => {
       const failures: string[] = [];
       for (let i = 0; i < docs.length; i += PUBLISH_BATCH) {
@@ -9469,6 +9567,8 @@ export class SignNowService {
                 // A retry re-reads the document: the snapshot is what failed.
                 remote: fresh ? undefined : doc.remote,
                 ignoreExistingFieldValues: isolated,
+                // Values changed in SignNow Review go out as edited.
+                reviewWidgetValues: reviewSnapshot?.documents[doc.id],
               });
             } catch (err) {
               failures.push(doc.id);

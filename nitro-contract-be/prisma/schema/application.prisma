@@ -624,6 +624,9 @@ model Document {
   ccSignedNoticeSentAt DateTime?
   /// CC addresses the signed-contract notice was actually delivered to.
   ccSignedNoticeEmails String[] @default([])
+  /// What each SignNow widget showed when Review opened ({ groupId, documents: { docId: { widget: value } } }).
+  /// Send compares the page with it so values edited inside SignNow go out instead of the CRM ones.
+  reviewWidgetValues Json?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   userId            Int
